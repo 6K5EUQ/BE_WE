@@ -54,10 +54,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /home/dsa/BE_WE
+CMAKE_SOURCE_DIR = /home/dsa/bewe/BE_WE
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /home/dsa/BE_WE/build
+CMAKE_BINARY_DIR = /home/dsa/bewe/BE_WE/build
 
 #=============================================================================
 # Directory level rules for the build root directory
@@ -81,14 +81,14 @@ clean: CMakeFiles/be_we.dir/clean
 CMakeFiles/be_we.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/be_we.dir/build.make CMakeFiles/be_we.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/be_we.dir/build.make CMakeFiles/be_we.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=1,2 "Built target be_we"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/dsa/bewe/BE_WE/build/CMakeFiles --progress-num=1,2 "Built target be_we"
 .PHONY : CMakeFiles/be_we.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/be_we.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/dsa/BE_WE/build/CMakeFiles 2
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/dsa/bewe/BE_WE/build/CMakeFiles 2
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/be_we.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/dsa/BE_WE/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/dsa/bewe/BE_WE/build/CMakeFiles 0
 .PHONY : CMakeFiles/be_we.dir/rule
 
 # Convenience name for target.

@@ -1,4 +1,4 @@
-# Install script for directory: /home/dsa/BE_WE
+# Install script for directory: /home/dsa/bewe/BE_WE
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
@@ -50,5 +50,5 @@ endif()
 
 string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
-file(WRITE "/home/dsa/BE_WE/build/${CMAKE_INSTALL_MANIFEST}"
+file(WRITE "/home/dsa/bewe/BE_WE/build/${CMAKE_INSTALL_MANIFEST}"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")
