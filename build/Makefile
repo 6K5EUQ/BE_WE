@@ -57,10 +57,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /home/dsa/BE_WE/BladeRF_1
+CMAKE_SOURCE_DIR = "/home/dsa/BE_WE/SDR Recorder"
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /home/dsa/BE_WE/BladeRF_1/build
+CMAKE_BINARY_DIR = "/home/dsa/BE_WE/SDR Recorder/build"
 
 #=============================================================================
 # Targets provided globally by CMake.
@@ -87,9 +87,9 @@ rebuild_cache/fast: rebuild_cache
 
 # The main all target
 all: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/dsa/BE_WE/BladeRF_1/build/CMakeFiles /home/dsa/BE_WE/BladeRF_1/build//CMakeFiles/progress.marks
+	$(CMAKE_COMMAND) -E cmake_progress_start "/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles" "/home/dsa/BE_WE/SDR Recorder/build//CMakeFiles/progress.marks"
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 all
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/dsa/BE_WE/BladeRF_1/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start "/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles" 0
 .PHONY : all
 
 # The main clean target
@@ -117,41 +117,246 @@ depend:
 .PHONY : depend
 
 #=============================================================================
-# Target rules for targets named Simple_Recorder
+# Target rules for targets named record_with_fft
 
 # Build rule for target.
-Simple_Recorder: cmake_check_build_system
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 Simple_Recorder
-.PHONY : Simple_Recorder
+record_with_fft: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 record_with_fft
+.PHONY : record_with_fft
 
 # fast build rule for target.
-Simple_Recorder/fast:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Simple_Recorder.dir/build.make CMakeFiles/Simple_Recorder.dir/build
-.PHONY : Simple_Recorder/fast
+record_with_fft/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/record_with_fft.dir/build.make CMakeFiles/record_with_fft.dir/build
+.PHONY : record_with_fft/fast
 
-src/main.o: src/main.cpp.o
-.PHONY : src/main.o
+#=============================================================================
+# Target rules for targets named view_fft
+
+# Build rule for target.
+view_fft: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 view_fft
+.PHONY : view_fft
+
+# fast build rule for target.
+view_fft/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/build
+.PHONY : view_fft/fast
+
+src/record_with_fft.o: src/record_with_fft.cpp.o
+.PHONY : src/record_with_fft.o
 
 # target to build an object file
-src/main.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Simple_Recorder.dir/build.make CMakeFiles/Simple_Recorder.dir/src/main.cpp.o
-.PHONY : src/main.cpp.o
+src/record_with_fft.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/record_with_fft.dir/build.make CMakeFiles/record_with_fft.dir/src/record_with_fft.cpp.o
+.PHONY : src/record_with_fft.cpp.o
 
-src/main.i: src/main.cpp.i
-.PHONY : src/main.i
+src/record_with_fft.i: src/record_with_fft.cpp.i
+.PHONY : src/record_with_fft.i
 
 # target to preprocess a source file
-src/main.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Simple_Recorder.dir/build.make CMakeFiles/Simple_Recorder.dir/src/main.cpp.i
-.PHONY : src/main.cpp.i
+src/record_with_fft.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/record_with_fft.dir/build.make CMakeFiles/record_with_fft.dir/src/record_with_fft.cpp.i
+.PHONY : src/record_with_fft.cpp.i
 
-src/main.s: src/main.cpp.s
-.PHONY : src/main.s
+src/record_with_fft.s: src/record_with_fft.cpp.s
+.PHONY : src/record_with_fft.s
 
 # target to generate assembly for a file
-src/main.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Simple_Recorder.dir/build.make CMakeFiles/Simple_Recorder.dir/src/main.cpp.s
-.PHONY : src/main.cpp.s
+src/record_with_fft.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/record_with_fft.dir/build.make CMakeFiles/record_with_fft.dir/src/record_with_fft.cpp.s
+.PHONY : src/record_with_fft.cpp.s
+
+src/view_fft.o: src/view_fft.cpp.o
+.PHONY : src/view_fft.o
+
+# target to build an object file
+src/view_fft.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/src/view_fft.cpp.o
+.PHONY : src/view_fft.cpp.o
+
+src/view_fft.i: src/view_fft.cpp.i
+.PHONY : src/view_fft.i
+
+# target to preprocess a source file
+src/view_fft.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/src/view_fft.cpp.i
+.PHONY : src/view_fft.cpp.i
+
+src/view_fft.s: src/view_fft.cpp.s
+.PHONY : src/view_fft.s
+
+# target to generate assembly for a file
+src/view_fft.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/src/view_fft.cpp.s
+.PHONY : src/view_fft.cpp.s
+
+usr/include/imgui/backends/imgui_impl_glfw.o: usr/include/imgui/backends/imgui_impl_glfw.cpp.o
+.PHONY : usr/include/imgui/backends/imgui_impl_glfw.o
+
+# target to build an object file
+usr/include/imgui/backends/imgui_impl_glfw.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o
+.PHONY : usr/include/imgui/backends/imgui_impl_glfw.cpp.o
+
+usr/include/imgui/backends/imgui_impl_glfw.i: usr/include/imgui/backends/imgui_impl_glfw.cpp.i
+.PHONY : usr/include/imgui/backends/imgui_impl_glfw.i
+
+# target to preprocess a source file
+usr/include/imgui/backends/imgui_impl_glfw.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.i
+.PHONY : usr/include/imgui/backends/imgui_impl_glfw.cpp.i
+
+usr/include/imgui/backends/imgui_impl_glfw.s: usr/include/imgui/backends/imgui_impl_glfw.cpp.s
+.PHONY : usr/include/imgui/backends/imgui_impl_glfw.s
+
+# target to generate assembly for a file
+usr/include/imgui/backends/imgui_impl_glfw.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.s
+.PHONY : usr/include/imgui/backends/imgui_impl_glfw.cpp.s
+
+usr/include/imgui/backends/imgui_impl_opengl3.o: usr/include/imgui/backends/imgui_impl_opengl3.cpp.o
+.PHONY : usr/include/imgui/backends/imgui_impl_opengl3.o
+
+# target to build an object file
+usr/include/imgui/backends/imgui_impl_opengl3.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o
+.PHONY : usr/include/imgui/backends/imgui_impl_opengl3.cpp.o
+
+usr/include/imgui/backends/imgui_impl_opengl3.i: usr/include/imgui/backends/imgui_impl_opengl3.cpp.i
+.PHONY : usr/include/imgui/backends/imgui_impl_opengl3.i
+
+# target to preprocess a source file
+usr/include/imgui/backends/imgui_impl_opengl3.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.i
+.PHONY : usr/include/imgui/backends/imgui_impl_opengl3.cpp.i
+
+usr/include/imgui/backends/imgui_impl_opengl3.s: usr/include/imgui/backends/imgui_impl_opengl3.cpp.s
+.PHONY : usr/include/imgui/backends/imgui_impl_opengl3.s
+
+# target to generate assembly for a file
+usr/include/imgui/backends/imgui_impl_opengl3.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.s
+.PHONY : usr/include/imgui/backends/imgui_impl_opengl3.cpp.s
+
+usr/include/imgui/imgui.o: usr/include/imgui/imgui.cpp.o
+.PHONY : usr/include/imgui/imgui.o
+
+# target to build an object file
+usr/include/imgui/imgui.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/imgui.cpp.o
+.PHONY : usr/include/imgui/imgui.cpp.o
+
+usr/include/imgui/imgui.i: usr/include/imgui/imgui.cpp.i
+.PHONY : usr/include/imgui/imgui.i
+
+# target to preprocess a source file
+usr/include/imgui/imgui.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/imgui.cpp.i
+.PHONY : usr/include/imgui/imgui.cpp.i
+
+usr/include/imgui/imgui.s: usr/include/imgui/imgui.cpp.s
+.PHONY : usr/include/imgui/imgui.s
+
+# target to generate assembly for a file
+usr/include/imgui/imgui.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/imgui.cpp.s
+.PHONY : usr/include/imgui/imgui.cpp.s
+
+usr/include/imgui/imgui_demo.o: usr/include/imgui/imgui_demo.cpp.o
+.PHONY : usr/include/imgui/imgui_demo.o
+
+# target to build an object file
+usr/include/imgui/imgui_demo.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/imgui_demo.cpp.o
+.PHONY : usr/include/imgui/imgui_demo.cpp.o
+
+usr/include/imgui/imgui_demo.i: usr/include/imgui/imgui_demo.cpp.i
+.PHONY : usr/include/imgui/imgui_demo.i
+
+# target to preprocess a source file
+usr/include/imgui/imgui_demo.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/imgui_demo.cpp.i
+.PHONY : usr/include/imgui/imgui_demo.cpp.i
+
+usr/include/imgui/imgui_demo.s: usr/include/imgui/imgui_demo.cpp.s
+.PHONY : usr/include/imgui/imgui_demo.s
+
+# target to generate assembly for a file
+usr/include/imgui/imgui_demo.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/imgui_demo.cpp.s
+.PHONY : usr/include/imgui/imgui_demo.cpp.s
+
+usr/include/imgui/imgui_draw.o: usr/include/imgui/imgui_draw.cpp.o
+.PHONY : usr/include/imgui/imgui_draw.o
+
+# target to build an object file
+usr/include/imgui/imgui_draw.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/imgui_draw.cpp.o
+.PHONY : usr/include/imgui/imgui_draw.cpp.o
+
+usr/include/imgui/imgui_draw.i: usr/include/imgui/imgui_draw.cpp.i
+.PHONY : usr/include/imgui/imgui_draw.i
+
+# target to preprocess a source file
+usr/include/imgui/imgui_draw.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/imgui_draw.cpp.i
+.PHONY : usr/include/imgui/imgui_draw.cpp.i
+
+usr/include/imgui/imgui_draw.s: usr/include/imgui/imgui_draw.cpp.s
+.PHONY : usr/include/imgui/imgui_draw.s
+
+# target to generate assembly for a file
+usr/include/imgui/imgui_draw.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/imgui_draw.cpp.s
+.PHONY : usr/include/imgui/imgui_draw.cpp.s
+
+usr/include/imgui/imgui_tables.o: usr/include/imgui/imgui_tables.cpp.o
+.PHONY : usr/include/imgui/imgui_tables.o
+
+# target to build an object file
+usr/include/imgui/imgui_tables.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/imgui_tables.cpp.o
+.PHONY : usr/include/imgui/imgui_tables.cpp.o
+
+usr/include/imgui/imgui_tables.i: usr/include/imgui/imgui_tables.cpp.i
+.PHONY : usr/include/imgui/imgui_tables.i
+
+# target to preprocess a source file
+usr/include/imgui/imgui_tables.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/imgui_tables.cpp.i
+.PHONY : usr/include/imgui/imgui_tables.cpp.i
+
+usr/include/imgui/imgui_tables.s: usr/include/imgui/imgui_tables.cpp.s
+.PHONY : usr/include/imgui/imgui_tables.s
+
+# target to generate assembly for a file
+usr/include/imgui/imgui_tables.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/imgui_tables.cpp.s
+.PHONY : usr/include/imgui/imgui_tables.cpp.s
+
+usr/include/imgui/imgui_widgets.o: usr/include/imgui/imgui_widgets.cpp.o
+.PHONY : usr/include/imgui/imgui_widgets.o
+
+# target to build an object file
+usr/include/imgui/imgui_widgets.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/imgui_widgets.cpp.o
+.PHONY : usr/include/imgui/imgui_widgets.cpp.o
+
+usr/include/imgui/imgui_widgets.i: usr/include/imgui/imgui_widgets.cpp.i
+.PHONY : usr/include/imgui/imgui_widgets.i
+
+# target to preprocess a source file
+usr/include/imgui/imgui_widgets.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/imgui_widgets.cpp.i
+.PHONY : usr/include/imgui/imgui_widgets.cpp.i
+
+usr/include/imgui/imgui_widgets.s: usr/include/imgui/imgui_widgets.cpp.s
+.PHONY : usr/include/imgui/imgui_widgets.s
+
+# target to generate assembly for a file
+usr/include/imgui/imgui_widgets.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/usr/include/imgui/imgui_widgets.cpp.s
+.PHONY : usr/include/imgui/imgui_widgets.cpp.s
 
 # Help Target
 help:
@@ -161,10 +366,35 @@ help:
 	@echo "... depend"
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
-	@echo "... Simple_Recorder"
-	@echo "... src/main.o"
-	@echo "... src/main.i"
-	@echo "... src/main.s"
+	@echo "... record_with_fft"
+	@echo "... view_fft"
+	@echo "... src/record_with_fft.o"
+	@echo "... src/record_with_fft.i"
+	@echo "... src/record_with_fft.s"
+	@echo "... src/view_fft.o"
+	@echo "... src/view_fft.i"
+	@echo "... src/view_fft.s"
+	@echo "... usr/include/imgui/backends/imgui_impl_glfw.o"
+	@echo "... usr/include/imgui/backends/imgui_impl_glfw.i"
+	@echo "... usr/include/imgui/backends/imgui_impl_glfw.s"
+	@echo "... usr/include/imgui/backends/imgui_impl_opengl3.o"
+	@echo "... usr/include/imgui/backends/imgui_impl_opengl3.i"
+	@echo "... usr/include/imgui/backends/imgui_impl_opengl3.s"
+	@echo "... usr/include/imgui/imgui.o"
+	@echo "... usr/include/imgui/imgui.i"
+	@echo "... usr/include/imgui/imgui.s"
+	@echo "... usr/include/imgui/imgui_demo.o"
+	@echo "... usr/include/imgui/imgui_demo.i"
+	@echo "... usr/include/imgui/imgui_demo.s"
+	@echo "... usr/include/imgui/imgui_draw.o"
+	@echo "... usr/include/imgui/imgui_draw.i"
+	@echo "... usr/include/imgui/imgui_draw.s"
+	@echo "... usr/include/imgui/imgui_tables.o"
+	@echo "... usr/include/imgui/imgui_tables.i"
+	@echo "... usr/include/imgui/imgui_tables.s"
+	@echo "... usr/include/imgui/imgui_widgets.o"
+	@echo "... usr/include/imgui/imgui_widgets.i"
+	@echo "... usr/include/imgui/imgui_widgets.s"
 .PHONY : help
 
 
