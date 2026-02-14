@@ -94,6 +94,14 @@ public:
     std::string window_title;
     std::mutex data_mutex;
     int pending_new_fft_idx = -1;
+    
+    bool use_8bit_mode = false;
+    bladerf_format format_mode = BLADERF_FORMAT_SC16_Q11;
+    
+    bool is_auto_scaling = true;
+    std::chrono::steady_clock::time_point capture_start_time;
+    float auto_scale_min = 999.0f;
+    float auto_scale_max = -999.0f;
 
     bool initialize_bladerf(float center_freq_mhz, float sample_rate_msps) {
         int status = bladerf_open(&dev, nullptr);
@@ -105,26 +113,31 @@ public:
         status = bladerf_set_frequency(dev, CHANNEL, static_cast<uint64_t>(center_freq_mhz * 1e6));
         if (status != 0) {
             fprintf(stderr, "Failed to set frequency: %s\n", bladerf_strerror(status));
+            bladerf_close(dev);
             return false;
         }
 
-        // oversample mode 필요 확인
-        bool needs_oversample = (sample_rate_msps > 61.44f);
-        
-        if (needs_oversample) {
-            fprintf(stderr, "Attempting oversample mode for %.2f MSPS\n", sample_rate_msps);
+        // 122.88 MSPS 확인 - oversample mode 필요
+        if (sample_rate_msps > 61.44f) {
+            printf("Enabling OVERSAMPLE mode for %.2f MSPS\n", sample_rate_msps);
+            status = bladerf_enable_feature(dev, BLADERF_FEATURE_OVERSAMPLE, true);
+            if (status != 0) {
+                fprintf(stderr, "Failed to enable oversample: %s\n", bladerf_strerror(status));
+                bladerf_close(dev);
+                return false;
+            }
+            use_8bit_mode = true;
+            format_mode = BLADERF_FORMAT_SC8_Q7;
+        } else {
+            use_8bit_mode = false;
+            format_mode = BLADERF_FORMAT_SC16_Q11;
         }
 
-        // set_sample_rate 시도
         uint32_t actual_rate = 0;
         status = bladerf_set_sample_rate(dev, CHANNEL, static_cast<uint32_t>(sample_rate_msps * 1e6), &actual_rate);
         
         if (status != 0) {
             fprintf(stderr, "Failed to set sample rate: %s\n", bladerf_strerror(status));
-            if (needs_oversample) {
-                fprintf(stderr, "Note: Oversample mode may require FPGA bitstream loaded\n");
-                fprintf(stderr, "Check: bladerf-cli -p (look for 'FPGA loaded: Yes')\n");
-            }
             bladerf_close(dev);
             return false;
         }
@@ -137,23 +150,31 @@ public:
         status = bladerf_set_gain(dev, CHANNEL, RX_GAIN);
         if (status != 0) {
             fprintf(stderr, "Failed to set gain: %s\n", bladerf_strerror(status));
+            bladerf_close(dev);
             return false;
         }
 
         status = bladerf_enable_module(dev, CHANNEL, true);
         if (status != 0) {
             fprintf(stderr, "Failed to enable RX: %s\n", bladerf_strerror(status));
+            bladerf_close(dev);
             return false;
         }
 
-        status = bladerf_sync_config(dev, BLADERF_RX_X1, BLADERF_FORMAT_SC16_Q11, 
-                                     512, 16384, 128, 5000);
+        unsigned int num_buffers = use_8bit_mode ? 256 : 512;
+        unsigned int buffer_size = use_8bit_mode ? 32768 : 16384;
+        
+        status = bladerf_sync_config(dev, BLADERF_RX_X1, format_mode,
+                                     num_buffers, buffer_size, 128, 5000);
         if (status != 0) {
             fprintf(stderr, "Failed to configure sync: %s\n", bladerf_strerror(status));
+            bladerf_close(dev);
             return false;
         }
 
-        printf("BladeRF initialized: %.2f MHz, %.2f MSPS\n", center_freq_mhz, sample_rate_msps);
+        printf("BladeRF initialized: %.2f MHz, %.2f MSPS, Mode: %s\n", 
+               center_freq_mhz, sample_rate_msps, 
+               use_8bit_mode ? "8-bit (SC8_Q7)" : "16-bit (SC16_Q11)");
         
         std::memcpy(header.magic, "FFTD", 4);
         header.version = 1;
@@ -170,7 +191,8 @@ public:
         current_spectrum.resize(FFT_SIZE, -80.0f);
         
         char title[256];
-        snprintf(title, sizeof(title), "Real-time FFT Viewer - %.2f MHz", center_freq_mhz);
+        snprintf(title, sizeof(title), "Real-time FFT Viewer - %.2f MHz (%s)", 
+                 center_freq_mhz, use_8bit_mode ? "Oversample" : "Normal");
         window_title = title;
         
         display_power_min = header.power_min;
@@ -182,6 +204,7 @@ public:
         
         last_input_time = std::chrono::steady_clock::now();
         last_fft_update_time = std::chrono::steady_clock::now();
+        capture_start_time = std::chrono::steady_clock::now();
         
         return true;
     }
@@ -210,10 +233,8 @@ public:
         
         std::vector<float> row_float(FFT_SIZE);
         
-        // 올바른 FFT 정렬: 음수주파수(왼쪽) | CF(중앙) | 양수주파수(오른쪽)
         int half = FFT_SIZE / 2;
         
-        // 음수 주파수: bin FFT_SIZE/2+1 ~ FFT_SIZE-1 → 화면 왼쪽
         for (int i = 0; i < half; i++) {
             int bin = half + 1 + i;
             float power_db = (fft_row[bin] / 127.0f) * (header.power_max - header.power_min) + header.power_min;
@@ -221,12 +242,10 @@ public:
             row_float[i] = std::max(0.0f, std::min(1.0f, normalized));
         }
         
-        // CF: bin 0 → 화면 중앙
         float power_db = (fft_row[0] / 127.0f) * (header.power_max - header.power_min) + header.power_min;
         float normalized = (power_db - display_power_min) / (display_power_max - display_power_min);
         row_float[half] = std::max(0.0f, std::min(1.0f, normalized));
         
-        // 양수 주파수: bin 1 ~ FFT_SIZE/2 → 화면 오른쪽
         for (int i = 1; i <= half; i++) {
             power_db = (fft_row[i] / 127.0f) * (header.power_max - header.power_min) + header.power_min;
             normalized = (power_db - display_power_min) / (display_power_max - display_power_min);
@@ -240,61 +259,165 @@ public:
     }
 
     void capture_and_process() {
-        int16_t *iq_buffer = new int16_t[FFT_SIZE * 2];
         std::vector<float> power_accum(FFT_SIZE, 0.0f);
         int fft_count = 0;
 
-        while (is_running) {
-            int status = bladerf_sync_rx(dev, iq_buffer, FFT_SIZE, nullptr, 5000);
-            if (status != 0) {
-                fprintf(stderr, "RX error: %s\n", bladerf_strerror(status));
-                continue;
-            }
-
-            for (int i = 0; i < FFT_SIZE; i++) {
-                fft_in[i][0] = iq_buffer[i * 2] / 2048.0f;
-                fft_in[i][1] = iq_buffer[i * 2 + 1] / 2048.0f;
-            }
-
-            apply_hann_window(fft_in, FFT_SIZE);
-            fftwf_execute(fft_plan);
-
-            for (int i = 0; i < FFT_SIZE; i++) {
-                float mag_sq = fft_out[i][0] * fft_out[i][0] + fft_out[i][1] * fft_out[i][1];
-                float power_db = 10.0f * log10(mag_sq + 1e-10f);
-                power_accum[i] += power_db;
-            }
-
-            fft_count++;
-
-            if (fft_count >= TIME_AVERAGE) {
-                int fft_idx = total_ffts_captured % MAX_FFTS_MEMORY;
-                int8_t *fft_row = fft_data.data() + fft_idx * FFT_SIZE;
-
-                {
-                    std::lock_guard<std::mutex> lock(data_mutex);
-                    for (int i = 0; i < FFT_SIZE; i++) {
-                        float avg_power = power_accum[i] / fft_count;
-                        float normalized = (avg_power - header.power_min) / (header.power_max - header.power_min);
-                        normalized = std::max(-1.0f, std::min(1.0f, normalized));
-                        fft_row[i] = static_cast<int8_t>(normalized * 127);
-                        current_spectrum[i] = avg_power;
-                    }
-                    
-                    total_ffts_captured++;
-                    current_fft_idx = total_ffts_captured - 1;
-                    header.num_ffts = std::min(total_ffts_captured, MAX_FFTS_MEMORY);
-                    cached_spectrum_idx = -1;
+        if (use_8bit_mode) {
+            int8_t *iq_buffer = new int8_t[FFT_SIZE * 2];
+            
+            while (is_running) {
+                int status = bladerf_sync_rx(dev, iq_buffer, FFT_SIZE, nullptr, 5000);
+                if (status != 0) {
+                    fprintf(stderr, "RX error (8-bit): %s\n", bladerf_strerror(status));
+                    continue;
                 }
 
-                std::fill(power_accum.begin(), power_accum.end(), 0.0f);
-                fft_count = 0;
+                for (int i = 0; i < FFT_SIZE; i++) {
+                    fft_in[i][0] = iq_buffer[i * 2] / 128.0f;
+                    fft_in[i][1] = iq_buffer[i * 2 + 1] / 128.0f;
+                }
+
+                apply_hann_window(fft_in, FFT_SIZE);
+                fftwf_execute(fft_plan);
+
+                for (int i = 0; i < FFT_SIZE; i++) {
+                    float mag_sq = fft_out[i][0] * fft_out[i][0] + fft_out[i][1] * fft_out[i][1];
+                    float power_db = 10.0f * log10(mag_sq + 1e-10f);
+                    power_accum[i] += power_db;
+                }
+
+                // DC spike 제거: bin 0을 양쪽 인접 bin으로 대체
+                power_accum[0] = (power_accum[1] + power_accum[FFT_SIZE-1]) / 2.0f;
+
+                fft_count++;
+
+                if (fft_count >= TIME_AVERAGE) {
+                    int fft_idx = total_ffts_captured % MAX_FFTS_MEMORY;
+                    int8_t *fft_row = fft_data.data() + fft_idx * FFT_SIZE;
+
+                    {
+                        std::lock_guard<std::mutex> lock(data_mutex);
+                        
+                        // 자동 스케일링: 1초 동안 min/max 수집
+                        if (is_auto_scaling) {
+                            auto now = std::chrono::steady_clock::now();
+                            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - capture_start_time).count();
+                            
+                            // 현재 power_accum의 min/max 찾기
+                            for (int i = 0; i < FFT_SIZE; i++) {
+                                float avg_power = power_accum[i] / fft_count;
+                                auto_scale_min = std::min(auto_scale_min, avg_power);
+                                auto_scale_max = std::max(auto_scale_max, avg_power);
+                            }
+                            
+                            // 1초 경과하면 스케일 적용
+                            if (elapsed >= 1000) {
+                                display_power_min = auto_scale_min - 5.0f;
+                                display_power_max = auto_scale_max + 5.0f;
+                                is_auto_scaling = false;
+                                printf("Auto scaling applied: %.1f ~ %.1f dB\n", display_power_min, display_power_max);
+                            }
+                        }
+                        
+                        for (int i = 0; i < FFT_SIZE; i++) {
+                            float avg_power = power_accum[i] / fft_count;
+                            float normalized = (avg_power - header.power_min) / (header.power_max - header.power_min);
+                            normalized = std::max(-1.0f, std::min(1.0f, normalized));
+                            fft_row[i] = static_cast<int8_t>(normalized * 127);
+                            current_spectrum[i] = avg_power;
+                        }
+                        
+                        total_ffts_captured++;
+                        current_fft_idx = total_ffts_captured - 1;
+                        header.num_ffts = std::min(total_ffts_captured, MAX_FFTS_MEMORY);
+                        cached_spectrum_idx = -1;
+                    }
+
+                    std::fill(power_accum.begin(), power_accum.end(), 0.0f);
+                    fft_count = 0;
+                }
             }
+            
+            delete[] iq_buffer;
+        } else {
+            int16_t *iq_buffer = new int16_t[FFT_SIZE * 2];
+            
+            while (is_running) {
+                int status = bladerf_sync_rx(dev, iq_buffer, FFT_SIZE, nullptr, 5000);
+                if (status != 0) {
+                    fprintf(stderr, "RX error (16-bit): %s\n", bladerf_strerror(status));
+                    continue;
+                }
+
+                for (int i = 0; i < FFT_SIZE; i++) {
+                    fft_in[i][0] = iq_buffer[i * 2] / 2048.0f;
+                    fft_in[i][1] = iq_buffer[i * 2 + 1] / 2048.0f;
+                }
+
+                apply_hann_window(fft_in, FFT_SIZE);
+                fftwf_execute(fft_plan);
+
+                for (int i = 0; i < FFT_SIZE; i++) {
+                    float mag_sq = fft_out[i][0] * fft_out[i][0] + fft_out[i][1] * fft_out[i][1];
+                    float power_db = 10.0f * log10(mag_sq + 1e-10f);
+                    power_accum[i] += power_db;
+                }
+
+                // DC spike 제거: bin 0을 양쪽 인접 bin으로 대체
+                power_accum[0] = (power_accum[1] + power_accum[FFT_SIZE-1]) / 2.0f;
+
+                fft_count++;
+
+                if (fft_count >= TIME_AVERAGE) {
+                    int fft_idx = total_ffts_captured % MAX_FFTS_MEMORY;
+                    int8_t *fft_row = fft_data.data() + fft_idx * FFT_SIZE;
+
+                    {
+                        std::lock_guard<std::mutex> lock(data_mutex);
+                        
+                        // 자동 스케일링: 1초 동안 min/max 수집
+                        if (is_auto_scaling) {
+                            auto now = std::chrono::steady_clock::now();
+                            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - capture_start_time).count();
+                            
+                            // 현재 power_accum의 min/max 찾기
+                            for (int i = 0; i < FFT_SIZE; i++) {
+                                float avg_power = power_accum[i] / fft_count;
+                                auto_scale_min = std::min(auto_scale_min, avg_power);
+                                auto_scale_max = std::max(auto_scale_max, avg_power);
+                            }
+                            
+                            // 1초 경과하면 스케일 적용
+                            if (elapsed >= 1000) {
+                                display_power_min = auto_scale_min - 5.0f;
+                                display_power_max = auto_scale_max + 5.0f;
+                                is_auto_scaling = false;
+                                printf("Auto scaling applied: %.1f ~ %.1f dB\n", display_power_min, display_power_max);
+                            }
+                        }
+                        
+                        for (int i = 0; i < FFT_SIZE; i++) {
+                            float avg_power = power_accum[i] / fft_count;
+                            float normalized = (avg_power - header.power_min) / (header.power_max - header.power_min);
+                            normalized = std::max(-1.0f, std::min(1.0f, normalized));
+                            fft_row[i] = static_cast<int8_t>(normalized * 127);
+                            current_spectrum[i] = avg_power;
+                        }
+                        
+                        total_ffts_captured++;
+                        current_fft_idx = total_ffts_captured - 1;
+                        header.num_ffts = std::min(total_ffts_captured, MAX_FFTS_MEMORY);
+                        cached_spectrum_idx = -1;
+                    }
+
+                    std::fill(power_accum.begin(), power_accum.end(), 0.0f);
+                    fft_count = 0;
+                }
+            }
+            
+            delete[] iq_buffer;
         }
-
-        delete[] iq_buffer;
     }
-
 
     ImU32 get_color(float value) {
         if (value < 0.0f) value = 0.0f;
@@ -456,7 +579,60 @@ public:
             draw_list->AddText(ImVec2(x - text_size.x / 2, graph_y + graph_h + 8), IM_COL32(0, 255, 0, 255), label);
         }
 
-        ImGui::InvisibleButton("spectrum_canvas", ImVec2(w, h));
+        ImGui::SetCursorScreenPos(ImVec2(graph_x, graph_y));
+        ImGui::InvisibleButton("spectrum_canvas", ImVec2(graph_w, graph_h));
+        
+        // Y축 드래그로 power_min 조절
+        ImGui::SetCursorScreenPos(ImVec2(pos.x, graph_y));
+        ImGui::InvisibleButton("power_axis_drag", ImVec2(AXIS_LABEL_WIDTH, graph_h));
+        
+        static float drag_start_y = 0.0f;
+        static float drag_start_min = 0.0f;
+        static float drag_start_max = 0.0f;
+        static bool is_dragging_lower = false;
+        
+        if (ImGui::IsItemActive()) {
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                // 드래그 시작 - 시작점 저장
+                ImVec2 mouse = ImGui::GetMousePos();
+                float mid_power = (display_power_min + display_power_max) / 2.0f;
+                float mid_y = graph_y + graph_h * (1.0f - (mid_power - display_power_min) / (display_power_max - display_power_min));
+                
+                drag_start_y = mouse.y;
+                drag_start_min = display_power_min;
+                drag_start_max = display_power_max;
+                is_dragging_lower = (mouse.y > mid_y);
+            }
+            
+            if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+                ImVec2 mouse = ImGui::GetMousePos();
+                float delta_y = mouse.y - drag_start_y;
+                float mid_power = (drag_start_min + drag_start_max) / 2.0f;
+                
+                if (is_dragging_lower) {
+                    // 아래쪽(min 영역): delta_y > 0이면 아래로(min 감소)
+                    float norm = delta_y / (graph_y + graph_h - (graph_y + graph_h * (1.0f - (mid_power - drag_start_min) / (drag_start_max - drag_start_min))));
+                    norm = std::max(-1.0f, std::min(1.0f, norm));
+                    float db_change = norm * 50.0f;
+                    display_power_min = mid_power - db_change;
+                } else {
+                    // 위쪽(max 영역): delta_y < 0이면 위로(max 증가)
+                    float norm = -delta_y / (graph_y + graph_h * (1.0f - (mid_power - drag_start_min) / (drag_start_max - drag_start_min)));
+                    norm = std::max(-1.0f, std::min(1.0f, norm));
+                    float db_change = norm * 50.0f;
+                    display_power_max = mid_power + db_change;
+                }
+                
+                // 최소 범위 보장
+                if (display_power_max - display_power_min < 5.0f) {
+                    float mid = (display_power_min + display_power_max) / 2.0f;
+                    display_power_min = mid - 2.5f;
+                    display_power_max = mid + 2.5f;
+                }
+                
+                cached_spectrum_idx = -1;
+            }
+        }
         
         ImGuiIO& io = ImGui::GetIO();
         if (ImGui::IsItemHovered()) {
@@ -479,7 +655,7 @@ public:
             }
             
             char info[64];
-            snprintf(info, sizeof(info), "%.3f MHz\n%.1f dB", abs_freq, power_db);
+            snprintf(info, sizeof(info), "%.3f MHz", abs_freq);
             
             ImVec2 text_size = ImGui::CalcTextSize(info);
             float text_x = graph_x + graph_w - text_size.x;
@@ -547,7 +723,6 @@ public:
             ImTextureID tex_id = (ImTextureID)(intptr_t)waterfall_texture;
             int display_rows = std::min(static_cast<int>(header.num_ffts), 1000);
             
-            // freq_zoom, freq_pan에 따른 U 좌표 범위 계산
             float nyquist = header.sample_rate / 2.0f / 1e6f;
             float total_range = 2.0f * nyquist;
             float disp_start = -nyquist + freq_pan * total_range;
@@ -556,7 +731,6 @@ public:
             disp_start = std::max(-nyquist, disp_start);
             disp_end = std::min(nyquist, disp_end);
             
-            // FFT bin을 U 좌표로 변환
             float u_start = (disp_start + nyquist) / (2.0f * nyquist);
             float u_end = (disp_end + nyquist) / (2.0f * nyquist);
             
@@ -592,7 +766,6 @@ public:
             float freq_display = disp_start_local + freq_norm * (disp_end_local - disp_start_local);
             float abs_freq = freq_display + header.center_frequency / 1e6f;
             
-            // 시간축 인덱스 계산
             int display_rows = std::min(static_cast<int>(header.num_ffts), 1000);
             int time_row = (int)((graph_h - py) / (graph_h / display_rows));
             int fft_idx = current_fft_idx - display_rows + 1 + time_row;
@@ -602,14 +775,13 @@ public:
                 int mem_idx = fft_idx % MAX_FFTS_MEMORY;
                 int half_fft = header.fft_size / 2;
                 
-                // px → bin 매핑 (올바른 FFT 정렬)
                 int bin;
                 if (px < half_fft) {
-                    bin = half_fft + 1 + px;  // 음수 주파수
+                    bin = half_fft + 1 + px;
                 } else if (px == half_fft) {
-                    bin = 0;  // CF
+                    bin = 0;
                 } else {
-                    bin = px - half_fft;  // 양수 주파수
+                    bin = px - half_fft;
                 }
                 
                 if (bin >= 0 && bin < FFT_SIZE) {
@@ -619,7 +791,7 @@ public:
             }
             
             char info[64];
-            snprintf(info, sizeof(info), "%.3f MHz\n%.1f dB", abs_freq, power_db);
+            snprintf(info, sizeof(info), "%.3f MHz", abs_freq);
             
             ImVec2 text_size = ImGui::CalcTextSize(info);
             float text_x = graph_x + graph_w - text_size.x;
@@ -709,28 +881,11 @@ void run_streaming_viewer() {
             float total_h = ImGui::GetIO().DisplaySize.y;
             float divider_h = 15.0f;
             float h1 = (total_h - divider_h) * viewer.spectrum_height_ratio;
-            float h2 = (total_h - divider_h) * (1.0f - viewer.spectrum_height_ratio);
             
-            // Power Spectrum
             viewer.draw_spectrum(w, h1);
             
             ImVec2 divider_pos = ImGui::GetCursorScreenPos();
             ImGui::InvisibleButton("divider", ImVec2(w, divider_h));
-            
-            ImDrawList *draw_list = ImGui::GetWindowDrawList();
-            draw_list->AddRectFilled(ImVec2(divider_pos.x, divider_pos.y), 
-                                    ImVec2(divider_pos.x + w, divider_pos.y + divider_h),
-                                    IM_COL32(50, 50, 50, 100));
-            draw_list->AddLine(ImVec2(divider_pos.x, divider_pos.y + divider_h/2), 
-                              ImVec2(divider_pos.x + w, divider_pos.y + divider_h/2), 
-                              IM_COL32(100, 100, 100, 255), 2.0f);
-            
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-                draw_list->AddRectFilled(ImVec2(divider_pos.x, divider_pos.y), 
-                                        ImVec2(divider_pos.x + w, divider_pos.y + divider_h),
-                                        IM_COL32(100, 100, 100, 50));
-            }
             
             if (ImGui::IsItemActive()) {
                 ImGuiIO& io = ImGui::GetIO();
@@ -739,13 +894,13 @@ void run_streaming_viewer() {
                 viewer.spectrum_height_ratio = std::max(0.1f, std::min(0.9f, viewer.spectrum_height_ratio));
             }
             
-            // Waterfall
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
-            ImGui::BeginChild("waterfall_plot", ImVec2(w, h2), false, ImGuiWindowFlags_NoScrollbar);
+            float remaining_h = ImGui::GetContentRegionAvail().y;
+            ImGui::BeginChild("waterfall_plot", ImVec2(w, remaining_h), false, ImGuiWindowFlags_NoScrollbar);
             ImDrawList *wf_draw = ImGui::GetWindowDrawList();
             ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
-            ImVec2 canvas_size(w, h2);
+            ImVec2 canvas_size(w, remaining_h);
             
             viewer.draw_waterfall_canvas(wf_draw, canvas_pos, canvas_size);
             ImGui::EndChild();
