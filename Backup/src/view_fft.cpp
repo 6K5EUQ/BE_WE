@@ -51,7 +51,7 @@ public:
     std::atomic<bool> precompute_done{false};
     std::atomic<int> precompute_progress{0};
     std::atomic<bool> precompute_requested{true};
-    int precomputed_num_pixels = 1360;  // ← precompute된 실제 픽셀 크기
+    int precomputed_num_pixels = 1360;
     
     std::vector<float> spectrum_cache;
     int cached_spectrum_idx = -1;
@@ -108,7 +108,7 @@ public:
         float nyquist = header.sample_rate / 2.0f / 1e6f;
         float total_range = 2.0f * nyquist;
         int num_pixels = window_width - 40;
-        precomputed_num_pixels = num_pixels;  // ← 실제 크기 저장
+        precomputed_num_pixels = num_pixels;
         
         float visible_bins = header.fft_size / 1.0f;
         int bin_skip = std::max(1, static_cast<int>(visible_bins / num_pixels));
@@ -188,25 +188,6 @@ public:
             return bin * sr_mhz / n;
         } else {
             return (bin - n) * sr_mhz / n;
-        }
-    }
-
-    void compute_fft_line(int fft_idx, int num_pixels, int bin_skip, float sr_mhz,
-                         float disp_start, float disp_end, std::vector<float>& pixel_powers) {
-        const int8_t *spec = fft_data.data() + fft_idx * header.fft_size;
-        
-        for (int bin = 0; bin < static_cast<int>(header.fft_size); bin += bin_skip) {
-            float freq = get_freq_from_bin(bin, sr_mhz);
-            
-            if (freq < disp_start || freq > disp_end) continue;
-            
-            float norm_freq = (freq - disp_start) / (disp_end - disp_start);
-            int px = static_cast<int>(norm_freq * num_pixels);
-            
-            if (px >= 0 && px < num_pixels) {
-                float power = dequantize(spec[bin]);
-                pixel_powers[px] = std::max(pixel_powers[px], power);
-            }
         }
     }
 
@@ -290,6 +271,18 @@ public:
             float mx = (mouse.x - plot_pos.x) / plot_size.x;
             mx = std::max(0.0f, std::min(1.0f, mx));
             float freq_mouse = disp_start + mx * (disp_end - disp_start);
+            
+            // 호버 시 주파수 표시
+            char info[64];
+            float abs_freq = freq_mouse + header.center_frequency / 1e6f;
+            snprintf(info, sizeof(info), "%.3f MHz", abs_freq);
+            ImVec2 text_size = ImGui::CalcTextSize(info);
+            float text_x = plot_pos.x + plot_size.x - text_size.x - 5;
+            float text_y = plot_pos.y + 5;
+            draw_list->AddRectFilled(ImVec2(text_x, text_y), 
+                                    ImVec2(text_x + text_size.x + 10, text_y + text_size.y + 5),
+                                    IM_COL32(20, 20, 20, 220));
+            draw_list->AddText(ImVec2(text_x + 5, text_y + 2), IM_COL32(0, 255, 0, 255), info);
             
             if (io.MouseWheel != 0.0f) {
                 register_input();
@@ -397,6 +390,7 @@ public:
             mx = std::max(0.0f, std::min(1.0f, mx));
             
             if (io.MouseWheel != 0.0f) {
+                register_input();
                 float freq_mouse = disp_start + mx * (disp_end - disp_start);
                 
                 freq_zoom *= (1.0f + io.MouseWheel * 0.1f);
@@ -412,11 +406,10 @@ public:
 
     ImU32 get_color(float v) {
         v = std::max(0.0f, std::min(1.0f, v));
-        float r, g, b;
-        if (v < 0.25f) { r=0; g=0; b=v/0.25f; }
-        else if (v < 0.5f) { r=0; g=(v-0.25f)/0.25f; b=1.0f; }
-        else if (v < 0.75f) { r=(v-0.5f)/0.25f; g=1.0f; b=1.0f-(v-0.5f)/0.25f; }
-        else { r=1.0f; g=1.0f-(v-0.75f)/0.25f; b=0; }
+        // 빨간색 그래디언트: 검정 → 빨강
+        float r = v;        // 0 ~ 1
+        float g = v * 0.3f; // 0 ~ 0.3 (약간의 주황색)
+        float b = 0.0f;
         return IM_COL32(r*255, g*255, b*255, 255);
     }
 
@@ -467,12 +460,10 @@ int main(int argc, char *argv[]) {
         if (!viewer.precompute_done) {
             ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f - 150, ImGui::GetIO().DisplaySize.y * 0.5f - 50));
             ImGui::SetNextWindowSize(ImVec2(300, 100));
-            ImGui::Begin("Loading Waterfall Data", &show_loading, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
-            
-            ImGui::Text("Precomputing waterfall lines...");
+            ImGui::Begin("Loading", &show_loading, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
+            ImGui::Text("Precomputing waterfall...");
             ImGui::ProgressBar(viewer.precompute_progress / 100.0f, ImVec2(-1, 0));
             ImGui::Text("%d%%", viewer.precompute_progress.load());
-            
             ImGui::End();
         } else {
             viewer.update_playback();
@@ -483,7 +474,7 @@ int main(int argc, char *argv[]) {
             if (ImGui::Begin("FFT Viewer", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize)) {
                 ImGui::BeginGroup();
                 
-                if (ImGui::Button(viewer.is_playing ? "PAUSE##play" : "PLAY##play", ImVec2(50, 0))) {
+                if (ImGui::Button(viewer.is_playing ? "PAUSE" : "PLAY", ImVec2(60, 0))) {
                     viewer.register_input();
                     if (viewer.is_playing) {
                         viewer.is_playing = false;
@@ -495,7 +486,7 @@ int main(int argc, char *argv[]) {
                 
                 ImGui::SameLine();
                 ImGui::PushStyleColor(ImGuiCol_Button, viewer.is_looping ? ImVec4(0.0f, 0.7f, 0.0f, 1.0f) : ImVec4(0.3f, 0.3f, 0.3f, 1.0f));
-                if (ImGui::Button("LOOP##loop", ImVec2(50, 0))) {
+                if (ImGui::Button("LOOP", ImVec2(50, 0))) {
                     viewer.register_input();
                     viewer.is_looping = !viewer.is_looping;
                 }
@@ -514,62 +505,35 @@ int main(int argc, char *argv[]) {
                     }
                 }
                 
-                ImGui::SameLine();
-                ImGui::PushItemWidth(30);
-                ImGui::InputInt("##step", &viewer.fft_index_step, 0, 0);
-                viewer.fft_index_step = std::max(1, viewer.fft_index_step);
-                ImGui::PopItemWidth();
-                
                 ImGui::EndGroup();
                 ImGui::Separator();
 
                 float w = ImGui::GetContentRegionAvail().x;
-                float total_h = ImGui::GetIO().DisplaySize.y - 140;
+                float total_h = ImGui::GetIO().DisplaySize.y - 120;
                 float divider_h = 10.0f;
                 float h1 = (total_h - divider_h) * viewer.spectrum_height_ratio;
                 float h2 = (total_h - divider_h) * (1.0f - viewer.spectrum_height_ratio);
 
-                if (ImGui::CollapsingHeader("Power Spectrum", ImGuiTreeNodeFlags_DefaultOpen)) {
-                    viewer.draw_spectrum(w, h1);
-                }
+                viewer.draw_spectrum(w, h1);
                 
                 ImVec2 divider_pos = ImGui::GetCursorScreenPos();
                 ImGui::InvisibleButton("divider", ImVec2(w, divider_h));
                 
-                ImDrawList *draw_list = ImGui::GetWindowDrawList();
-                draw_list->AddLine(ImVec2(divider_pos.x, divider_pos.y + divider_h/2), 
-                                  ImVec2(divider_pos.x + w, divider_pos.y + divider_h/2), 
-                                  IM_COL32(100, 100, 100, 200), 2.0f);
-                
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-                }
-                
+                if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
                 if (ImGui::IsItemActive()) {
                     viewer.register_input();
                     ImGuiIO& io = ImGui::GetIO();
-                    float delta = io.MouseDelta.y;
-                    viewer.spectrum_height_ratio += delta / total_h;
+                    viewer.spectrum_height_ratio += io.MouseDelta.y / total_h;
                     viewer.spectrum_height_ratio = std::max(0.2f, std::min(0.8f, viewer.spectrum_height_ratio));
                 }
                 
-                if (ImGui::CollapsingHeader("Waterfall", ImGuiTreeNodeFlags_DefaultOpen)) {
-                    ImGui::PushItemWidth(25);
-                    ImGui::VSliderFloat("##max", ImVec2(25, h2 * 0.45f), &viewer.display_power_max, 
-                                       viewer.header.power_max, viewer.header.power_min, "");
-                    ImGui::SameLine();
-                    
-                    ImDrawList *wf_draw = ImGui::GetWindowDrawList();
-                    ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
-                    ImVec2 canvas_size(w - 40, h2);
-                    
-                    viewer.draw_waterfall_canvas(wf_draw, canvas_pos, canvas_size);
-                    
-                    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - h2 * 0.45f);
-                    ImGui::VSliderFloat("##min", ImVec2(25, h2 * 0.45f), &viewer.display_power_min, 
-                                       viewer.header.power_max, viewer.header.power_min, "");
-                    ImGui::PopItemWidth();
-                }
+                ImDrawList *wf_draw = ImGui::GetWindowDrawList();
+                ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+                ImVec2 canvas_size(w, h2);
+                
+                viewer.draw_waterfall_canvas(wf_draw, canvas_pos, canvas_size);
+                ImGui::Dummy(canvas_size);
+                
                 ImGui::End();
             }
         }
@@ -588,11 +552,8 @@ int main(int argc, char *argv[]) {
             show_loading = true;
         }
         
-        if (!viewer.precompute_done) {
-            show_loading = true;
-        } else {
-            show_loading = false;
-        }
+        show_loading = !viewer.precompute_done;
+        
         glViewport(0, 0, dw, dh);
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);

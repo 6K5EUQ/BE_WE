@@ -8,9 +8,7 @@ set(CMAKE_DEPENDS_LANGUAGES
 
 # The set of dependency files which are needed:
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
-  "/home/dsa/BE_WE/SDR Recorder/src/main.cpp" "CMakeFiles/fft_analyzer.dir/src/main.cpp.o" "gcc" "CMakeFiles/fft_analyzer.dir/src/main.cpp.o.d"
-  "/home/dsa/BE_WE/SDR Recorder/src/record_with_fft.cpp" "CMakeFiles/fft_analyzer.dir/src/record_with_fft.cpp.o" "gcc" "CMakeFiles/fft_analyzer.dir/src/record_with_fft.cpp.o.d"
-  "/home/dsa/BE_WE/SDR Recorder/src/streaming_viewer.cpp" "CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o" "gcc" "CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o.d"
+  "/home/dsa/BE_WE/SDR_Recorder/src/streaming_viewer.cpp" "CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o" "gcc" "CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o.d"
   "/usr/include/imgui/backends/imgui_impl_glfw.cpp" "CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o" "gcc" "CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o.d"
   "/usr/include/imgui/backends/imgui_impl_opengl3.cpp" "CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o" "gcc" "CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o.d"
   "/usr/include/imgui/imgui.cpp" "CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui.cpp.o" "gcc" "CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui.cpp.o.d"

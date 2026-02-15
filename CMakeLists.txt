@@ -26,9 +26,7 @@ set(IMGUI_SOURCES
 )
 
 add_executable(fft_analyzer
-    src/main.cpp
     src/streaming_viewer.cpp
-    src/record_with_fft.cpp
     ${IMGUI_SOURCES}
 )
 
@@ -49,20 +47,3 @@ target_link_libraries(fft_analyzer PRIVATE
 )
 
 target_compile_options(fft_analyzer PRIVATE -O3 -march=native)
-
-add_executable(view_fft src/view_fft.cpp ${IMGUI_SOURCES})
-
-target_include_directories(view_fft PRIVATE 
-    ${IMGUI_PATH}
-    ${IMGUI_BACKENDS_PATH}
-    ${FFTW_INCLUDE_DIRS}
-)
-
-target_link_libraries(view_fft PRIVATE 
-    OpenGL::GL 
-    GLEW::GLEW 
-    glfw
-    ${FFTW_LIBRARIES}
-)
-
-target_compile_options(view_fft PRIVATE -O3 -march=native)

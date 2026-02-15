@@ -53,10 +53,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = "/home/dsa/BE_WE/SDR Recorder"
+CMAKE_SOURCE_DIR = /home/dsa/BE_WE/SDR_Recorder
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = "/home/dsa/BE_WE/SDR Recorder/build"
+CMAKE_BINARY_DIR = /home/dsa/BE_WE/SDR_Recorder/build
 
 # Include any dependencies generated for this target.
 include CMakeFiles/fft_analyzer.dir/depend.make
@@ -69,52 +69,24 @@ include CMakeFiles/fft_analyzer.dir/progress.make
 # Include the compile flags for this target's objects.
 include CMakeFiles/fft_analyzer.dir/flags.make
 
-CMakeFiles/fft_analyzer.dir/src/main.cpp.o: CMakeFiles/fft_analyzer.dir/flags.make
-CMakeFiles/fft_analyzer.dir/src/main.cpp.o: /home/dsa/BE_WE/SDR\ Recorder/src/main.cpp
-CMakeFiles/fft_analyzer.dir/src/main.cpp.o: CMakeFiles/fft_analyzer.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir="/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles" --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/fft_analyzer.dir/src/main.cpp.o"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fft_analyzer.dir/src/main.cpp.o -MF CMakeFiles/fft_analyzer.dir/src/main.cpp.o.d -o CMakeFiles/fft_analyzer.dir/src/main.cpp.o -c "/home/dsa/BE_WE/SDR Recorder/src/main.cpp"
-
-CMakeFiles/fft_analyzer.dir/src/main.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/fft_analyzer.dir/src/main.cpp.i"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E "/home/dsa/BE_WE/SDR Recorder/src/main.cpp" > CMakeFiles/fft_analyzer.dir/src/main.cpp.i
-
-CMakeFiles/fft_analyzer.dir/src/main.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/fft_analyzer.dir/src/main.cpp.s"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S "/home/dsa/BE_WE/SDR Recorder/src/main.cpp" -o CMakeFiles/fft_analyzer.dir/src/main.cpp.s
-
 CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o: CMakeFiles/fft_analyzer.dir/flags.make
-CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o: /home/dsa/BE_WE/SDR\ Recorder/src/streaming_viewer.cpp
+CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o: /home/dsa/BE_WE/SDR_Recorder/src/streaming_viewer.cpp
 CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o: CMakeFiles/fft_analyzer.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir="/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles" --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o -MF CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o.d -o CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o -c "/home/dsa/BE_WE/SDR Recorder/src/streaming_viewer.cpp"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/SDR_Recorder/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o -MF CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o.d -o CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o -c /home/dsa/BE_WE/SDR_Recorder/src/streaming_viewer.cpp
 
 CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.i"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E "/home/dsa/BE_WE/SDR Recorder/src/streaming_viewer.cpp" > CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.i
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/dsa/BE_WE/SDR_Recorder/src/streaming_viewer.cpp > CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.i
 
 CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.s"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S "/home/dsa/BE_WE/SDR Recorder/src/streaming_viewer.cpp" -o CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.s
-
-CMakeFiles/fft_analyzer.dir/src/record_with_fft.cpp.o: CMakeFiles/fft_analyzer.dir/flags.make
-CMakeFiles/fft_analyzer.dir/src/record_with_fft.cpp.o: /home/dsa/BE_WE/SDR\ Recorder/src/record_with_fft.cpp
-CMakeFiles/fft_analyzer.dir/src/record_with_fft.cpp.o: CMakeFiles/fft_analyzer.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir="/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles" --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/fft_analyzer.dir/src/record_with_fft.cpp.o"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fft_analyzer.dir/src/record_with_fft.cpp.o -MF CMakeFiles/fft_analyzer.dir/src/record_with_fft.cpp.o.d -o CMakeFiles/fft_analyzer.dir/src/record_with_fft.cpp.o -c "/home/dsa/BE_WE/SDR Recorder/src/record_with_fft.cpp"
-
-CMakeFiles/fft_analyzer.dir/src/record_with_fft.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/fft_analyzer.dir/src/record_with_fft.cpp.i"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E "/home/dsa/BE_WE/SDR Recorder/src/record_with_fft.cpp" > CMakeFiles/fft_analyzer.dir/src/record_with_fft.cpp.i
-
-CMakeFiles/fft_analyzer.dir/src/record_with_fft.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/fft_analyzer.dir/src/record_with_fft.cpp.s"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S "/home/dsa/BE_WE/SDR Recorder/src/record_with_fft.cpp" -o CMakeFiles/fft_analyzer.dir/src/record_with_fft.cpp.s
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/dsa/BE_WE/SDR_Recorder/src/streaming_viewer.cpp -o CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.s
 
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui.cpp.o: CMakeFiles/fft_analyzer.dir/flags.make
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui.cpp.o: /usr/include/imgui/imgui.cpp
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui.cpp.o: CMakeFiles/fft_analyzer.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir="/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles" --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/SDR_Recorder/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui.cpp.o -MF CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui.cpp.o.d -o CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui.cpp.o -c /usr/include/imgui/imgui.cpp
 
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui.cpp.i: cmake_force
@@ -128,7 +100,7 @@ CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui.cpp.s: cmake_force
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_demo.cpp.o: CMakeFiles/fft_analyzer.dir/flags.make
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_demo.cpp.o: /usr/include/imgui/imgui_demo.cpp
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_demo.cpp.o: CMakeFiles/fft_analyzer.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir="/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles" --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_demo.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/SDR_Recorder/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_demo.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_demo.cpp.o -MF CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_demo.cpp.o.d -o CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_demo.cpp.o -c /usr/include/imgui/imgui_demo.cpp
 
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_demo.cpp.i: cmake_force
@@ -142,7 +114,7 @@ CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_demo.cpp.s: cmake_force
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_draw.cpp.o: CMakeFiles/fft_analyzer.dir/flags.make
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_draw.cpp.o: /usr/include/imgui/imgui_draw.cpp
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_draw.cpp.o: CMakeFiles/fft_analyzer.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir="/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles" --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_draw.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/SDR_Recorder/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_draw.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_draw.cpp.o -MF CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_draw.cpp.o.d -o CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_draw.cpp.o -c /usr/include/imgui/imgui_draw.cpp
 
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_draw.cpp.i: cmake_force
@@ -156,7 +128,7 @@ CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_draw.cpp.s: cmake_force
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_tables.cpp.o: CMakeFiles/fft_analyzer.dir/flags.make
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_tables.cpp.o: /usr/include/imgui/imgui_tables.cpp
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_tables.cpp.o: CMakeFiles/fft_analyzer.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir="/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles" --progress-num=$(CMAKE_PROGRESS_7) "Building CXX object CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_tables.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/SDR_Recorder/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_tables.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_tables.cpp.o -MF CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_tables.cpp.o.d -o CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_tables.cpp.o -c /usr/include/imgui/imgui_tables.cpp
 
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_tables.cpp.i: cmake_force
@@ -170,7 +142,7 @@ CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_tables.cpp.s: cmake_force
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_widgets.cpp.o: CMakeFiles/fft_analyzer.dir/flags.make
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_widgets.cpp.o: /usr/include/imgui/imgui_widgets.cpp
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_widgets.cpp.o: CMakeFiles/fft_analyzer.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir="/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles" --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_widgets.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/SDR_Recorder/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_widgets.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_widgets.cpp.o -MF CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_widgets.cpp.o.d -o CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_widgets.cpp.o -c /usr/include/imgui/imgui_widgets.cpp
 
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_widgets.cpp.i: cmake_force
@@ -184,7 +156,7 @@ CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_widgets.cpp.s: cmake_force
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o: CMakeFiles/fft_analyzer.dir/flags.make
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o: /usr/include/imgui/backends/imgui_impl_glfw.cpp
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o: CMakeFiles/fft_analyzer.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir="/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles" --progress-num=$(CMAKE_PROGRESS_9) "Building CXX object CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/SDR_Recorder/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building CXX object CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o -MF CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o.d -o CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o -c /usr/include/imgui/backends/imgui_impl_glfw.cpp
 
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.i: cmake_force
@@ -198,7 +170,7 @@ CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.s: cm
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o: CMakeFiles/fft_analyzer.dir/flags.make
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o: /usr/include/imgui/backends/imgui_impl_opengl3.cpp
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o: CMakeFiles/fft_analyzer.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir="/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles" --progress-num=$(CMAKE_PROGRESS_10) "Building CXX object CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/SDR_Recorder/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o -MF CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o.d -o CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o -c /usr/include/imgui/backends/imgui_impl_opengl3.cpp
 
 CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.i: cmake_force
@@ -211,9 +183,7 @@ CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.s:
 
 # Object files for target fft_analyzer
 fft_analyzer_OBJECTS = \
-"CMakeFiles/fft_analyzer.dir/src/main.cpp.o" \
 "CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o" \
-"CMakeFiles/fft_analyzer.dir/src/record_with_fft.cpp.o" \
 "CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui.cpp.o" \
 "CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_demo.cpp.o" \
 "CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_draw.cpp.o" \
@@ -225,9 +195,7 @@ fft_analyzer_OBJECTS = \
 # External object files for target fft_analyzer
 fft_analyzer_EXTERNAL_OBJECTS =
 
-fft_analyzer: CMakeFiles/fft_analyzer.dir/src/main.cpp.o
 fft_analyzer: CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o
-fft_analyzer: CMakeFiles/fft_analyzer.dir/src/record_with_fft.cpp.o
 fft_analyzer: CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui.cpp.o
 fft_analyzer: CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_demo.cpp.o
 fft_analyzer: CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_draw.cpp.o
@@ -241,7 +209,7 @@ fft_analyzer: /usr/lib/x86_64-linux-gnu/libglfw.so.3.3
 fft_analyzer: /usr/lib/x86_64-linux-gnu/libGLX.so
 fft_analyzer: /usr/lib/x86_64-linux-gnu/libOpenGL.so
 fft_analyzer: CMakeFiles/fft_analyzer.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir="/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles" --progress-num=$(CMAKE_PROGRESS_11) "Linking CXX executable fft_analyzer"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/dsa/BE_WE/SDR_Recorder/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Linking CXX executable fft_analyzer"
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/fft_analyzer.dir/link.txt --verbose=$(VERBOSE)
 
 # Rule to build all files generated by this target.
@@ -253,6 +221,6 @@ CMakeFiles/fft_analyzer.dir/clean:
 .PHONY : CMakeFiles/fft_analyzer.dir/clean
 
 CMakeFiles/fft_analyzer.dir/depend:
-	cd "/home/dsa/BE_WE/SDR Recorder/build" && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" "/home/dsa/BE_WE/SDR Recorder" "/home/dsa/BE_WE/SDR Recorder" "/home/dsa/BE_WE/SDR Recorder/build" "/home/dsa/BE_WE/SDR Recorder/build" "/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles/fft_analyzer.dir/DependInfo.cmake" "--color=$(COLOR)"
+	cd /home/dsa/BE_WE/SDR_Recorder/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/dsa/BE_WE/SDR_Recorder /home/dsa/BE_WE/SDR_Recorder /home/dsa/BE_WE/SDR_Recorder/build /home/dsa/BE_WE/SDR_Recorder/build /home/dsa/BE_WE/SDR_Recorder/build/CMakeFiles/fft_analyzer.dir/DependInfo.cmake "--color=$(COLOR)"
 .PHONY : CMakeFiles/fft_analyzer.dir/depend
 

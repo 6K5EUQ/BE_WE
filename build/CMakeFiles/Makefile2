@@ -54,17 +54,16 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = "/home/dsa/BE_WE/SDR Recorder"
+CMAKE_SOURCE_DIR = /home/dsa/BE_WE/SDR_Recorder
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = "/home/dsa/BE_WE/SDR Recorder/build"
+CMAKE_BINARY_DIR = /home/dsa/BE_WE/SDR_Recorder/build
 
 #=============================================================================
 # Directory level rules for the build root directory
 
 # The main recursive "all" target.
 all: CMakeFiles/fft_analyzer.dir/all
-all: CMakeFiles/view_fft.dir/all
 .PHONY : all
 
 # The main recursive "preinstall" target.
@@ -73,7 +72,6 @@ preinstall:
 
 # The main recursive "clean" target.
 clean: CMakeFiles/fft_analyzer.dir/clean
-clean: CMakeFiles/view_fft.dir/clean
 .PHONY : clean
 
 #=============================================================================
@@ -83,14 +81,14 @@ clean: CMakeFiles/view_fft.dir/clean
 CMakeFiles/fft_analyzer.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir="/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles" --progress-num=1,2,3,4,5,6,7,8,9,10,11 "Built target fft_analyzer"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/dsa/BE_WE/SDR_Recorder/build/CMakeFiles --progress-num=1,2,3,4,5,6,7,8,9 "Built target fft_analyzer"
 .PHONY : CMakeFiles/fft_analyzer.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/fft_analyzer.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start "/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles" 11
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/dsa/BE_WE/SDR_Recorder/build/CMakeFiles 9
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/fft_analyzer.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start "/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles" 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/dsa/BE_WE/SDR_Recorder/build/CMakeFiles 0
 .PHONY : CMakeFiles/fft_analyzer.dir/rule
 
 # Convenience name for target.
@@ -101,32 +99,6 @@ fft_analyzer: CMakeFiles/fft_analyzer.dir/rule
 CMakeFiles/fft_analyzer.dir/clean:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/clean
 .PHONY : CMakeFiles/fft_analyzer.dir/clean
-
-#=============================================================================
-# Target rules for target CMakeFiles/view_fft.dir
-
-# All Build rule for target.
-CMakeFiles/view_fft.dir/all:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/depend
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir="/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles" --progress-num=12,13,14,15,16,17,18,19,20 "Built target view_fft"
-.PHONY : CMakeFiles/view_fft.dir/all
-
-# Build rule for subdir invocation for target.
-CMakeFiles/view_fft.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start "/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles" 9
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/view_fft.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start "/home/dsa/BE_WE/SDR Recorder/build/CMakeFiles" 0
-.PHONY : CMakeFiles/view_fft.dir/rule
-
-# Convenience name for target.
-view_fft: CMakeFiles/view_fft.dir/rule
-.PHONY : view_fft
-
-# clean rule for target.
-CMakeFiles/view_fft.dir/clean:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/view_fft.dir/build.make CMakeFiles/view_fft.dir/clean
-.PHONY : CMakeFiles/view_fft.dir/clean
 
 #=============================================================================
 # Special targets to cleanup operation of make.

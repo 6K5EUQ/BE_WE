@@ -1,8 +1,4 @@
 file(REMOVE_RECURSE
-  "CMakeFiles/fft_analyzer.dir/src/main.cpp.o"
-  "CMakeFiles/fft_analyzer.dir/src/main.cpp.o.d"
-  "CMakeFiles/fft_analyzer.dir/src/record_with_fft.cpp.o"
-  "CMakeFiles/fft_analyzer.dir/src/record_with_fft.cpp.o.d"
   "CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o"
   "CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o.d"
   "CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o"
