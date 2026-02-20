@@ -149,12 +149,11 @@ static uint32_t optimal_iq_sr(uint32_t main_sr,float bw_hz){
     return main_sr/decim;
 }
 
-static void demod_rates(uint32_t main_sr,float bw_hz,bool is_wfm,
+static void demod_rates(uint32_t main_sr,float bw_hz,
                         uint32_t& inter_sr,uint32_t& audio_decim,uint32_t& cap_decim){
     float min_inter=bw_hz*3.0f;
     if(min_inter<(float)AUDIO_SR) min_inter=(float)AUDIO_SR;
     uint32_t ad=(uint32_t)ceilf(min_inter/AUDIO_SR); if(ad<1) ad=1;
-    if(is_wfm&&ad<8) ad=8;
     uint32_t isr=AUDIO_SR*ad; uint32_t cd=main_sr/isr; if(cd<1) cd=1;
     inter_sr=isr; audio_decim=ad; cap_decim=cd;
 }
@@ -168,7 +167,7 @@ struct Channel {
     bool  selected=false;
 
     // Demod
-    enum DemodMode{DM_NONE=0,DM_AM,DM_NFM,DM_WFM} mode=DM_NONE;
+    enum DemodMode{DM_NONE=0,DM_AM,DM_FM} mode=DM_NONE;
     int  pan=0;   // -1=L  0=both  1=R
 
     // Demod thread
@@ -202,9 +201,9 @@ struct Channel {
     }
 
     // Squelch: 0=off, 1-10 (1=auto Lv1 default)
-    std::atomic<int>   sq_level{1};
-    // Squelch display
-    std::atomic<float> sq_sig{0.0f}, sq_nf{0.02f};
+    std::atomic<float> sq_threshold{-50.0f}; // dBFS threshold, default -50
+    // sq_sig = current signal dBFS (for UI bar), sq_gate = gate state
+    std::atomic<float> sq_sig{-120.0f}, sq_nf{0.0f}; // sq_nf unused now
     std::atomic<bool>  sq_gate{false};
 
     // Filter move-drag state
@@ -224,6 +223,7 @@ public:
     FFTHeader  header;
     std::vector<int8_t>  fft_data;
     GLuint               waterfall_texture=0;
+    std::vector<uint32_t> wf_row_buf;   // reused per update_wf_row call
 
     int   fft_size=DEFAULT_FFT_SIZE, time_average=TIME_AVERAGE;
     bool  fft_size_change_req=false; int pending_fft_size=DEFAULT_FFT_SIZE;
@@ -321,29 +321,33 @@ public:
         if(!waterfall_texture) return;
         int mi=fi%MAX_FFTS_MEMORY;
         int8_t* row=fft_data.data()+mi*fft_size;
-        std::vector<uint32_t> u32(fft_size);
+        if((int)wf_row_buf.size()!=fft_size) wf_row_buf.resize(fft_size);
         auto jet=[](float v)->uint32_t{
             float r,g,b;
-            if(v<0.04f){r=0;g=0;b=v/0.04f*0.5f;}
+            if(v<0.04f){r=0;g=0;b=v*12.5f;}
             else if(v<0.15f){float t=(v-0.04f)/0.11f;r=0;g=0;b=0.5f+t*0.5f;}
-            else if(v<0.35f){float t=(v-0.15f)/0.2f;r=0;g=t;b=1-t*0.3f;}
-            else if(v<0.55f){float t=(v-0.35f)/0.2f;r=t;g=1;b=0;}
-            else if(v<0.75f){float t=(v-0.55f)/0.2f;r=1;g=1-t*0.5f;b=0;}
-            else if(v<0.95f){float t=(v-0.75f)/0.2f;r=1;g=0.5f-t*0.5f;b=0;}
-            else{float t=(v-0.95f)/0.05f;r=1;g=t*0.3f;b=t*0.3f;}
+            else if(v<0.35f){float t=(v-0.15f)*5.0f;r=0;g=t;b=1-t*0.3f;}
+            else if(v<0.55f){float t=(v-0.35f)*5.0f;r=t;g=1;b=0;}
+            else if(v<0.75f){float t=(v-0.55f)*5.0f;r=1;g=1-t*0.5f;b=0;}
+            else if(v<0.95f){float t=(v-0.75f)*5.0f;r=1;g=0.5f-t*0.5f;b=0;}
+            else{float t=(v-0.95f)*20.0f;r=1;g=t*0.3f;b=t*0.3f;}
             return IM_COL32((uint8_t)(r*255),(uint8_t)(g*255),(uint8_t)(b*255),255);
         };
-        float wmin=display_power_min,wrng=std::max(1.0f,display_power_max-wmin);
+        float wmin=display_power_min;
+        float wrng_inv=1.0f/std::max(1.0f,display_power_max-wmin);
+        float pscale=(header.power_max-header.power_min)/127.0f;
+        float pbase=header.power_min;
         int half=fft_size/2;
         auto norm=[&](int bin)->float{
-            float p=(row[bin]/127.0f)*(header.power_max-header.power_min)+header.power_min;
-            return std::max(0.0f,std::min(1.0f,(p-wmin)/wrng));
+            float p=row[bin]*pscale+pbase;
+            float v=(p-wmin)*wrng_inv;
+            return v<0.0f?0.0f:v>1.0f?1.0f:v;
         };
-        for(int i=0;i<half;i++) u32[i]=jet(norm(half+1+i));
-        u32[half]=jet(norm(0));
-        for(int i=1;i<=half;i++) u32[half+i]=jet(norm(i));
+        for(int i=0;i<half;i++) wf_row_buf[i]=jet(norm(half+1+i));
+        wf_row_buf[half]=jet(norm(0));
+        for(int i=1;i<=half;i++) wf_row_buf[half+i]=jet(norm(i));
         glBindTexture(GL_TEXTURE_2D,waterfall_texture);
-        glTexSubImage2D(GL_TEXTURE_2D,0,0,mi,fft_size,1,GL_RGBA,GL_UNSIGNED_BYTE,u32.data());
+        glTexSubImage2D(GL_TEXTURE_2D,0,0,mi,fft_size,1,GL_RGBA,GL_UNSIGNED_BYTE,wf_row_buf.data());
         glBindTexture(GL_TEXTURE_2D,0);
     }
 
@@ -393,11 +397,14 @@ public:
             }
             for(int i=0;i<fft_size;i++){fft_in[i][0]=iq[i*2]/2048.0f;fft_in[i][1]=iq[i*2+1]/2048.0f;}
             apply_hann(fft_in,fft_size); fftwf_execute(fft_plan);
-            for(int i=0;i<fft_size;i++){
-                float ms=fft_out[i][0]*fft_out[i][0]+fft_out[i][1]*fft_out[i][1];
-                pacc[i]+=10.0f*log10f(ms/(float)(fft_size*fft_size)*HANN_WINDOW_CORRECTION+1e-10f);
+            {
+                const float scale=HANN_WINDOW_CORRECTION/((float)fft_size*(float)fft_size);
+                for(int i=0;i<fft_size;i++){
+                    float ms=(fft_out[i][0]*fft_out[i][0]+fft_out[i][1]*fft_out[i][1])*scale+1e-10f;
+                    pacc[i]+=10.0f*log10f(ms);
+                }
             }
-            pacc[0]=(pacc[1]+pacc[fft_size-1])/2.0f; fcnt++;
+            pacc[0]=(pacc[1]+pacc[fft_size-1])*0.5f; fcnt++;
             if(fcnt>=time_average){
                 int fi=total_ffts%MAX_FFTS_MEMORY; int8_t* rowp=fft_data.data()+fi*fft_size;
                 {std::lock_guard<std::mutex> lk(data_mtx);
@@ -485,9 +492,8 @@ public:
         uint32_t msr=header.sample_rate;
         float off_hz=(((ch.s+ch.e)/2.0f)-(float)(header.center_frequency/1e6f))*1e6f;
         float bw_hz=fabsf(ch.e-ch.s)*1e6f;
-        bool is_wfm=(mode==Channel::DM_WFM);
         uint32_t inter_sr,audio_decim,cap_decim;
-        demod_rates(msr,bw_hz,is_wfm,inter_sr,audio_decim,cap_decim);
+        demod_rates(msr,bw_hz,inter_sr,audio_decim,cap_decim);
         uint32_t actual_inter=msr/cap_decim;
         uint32_t actual_ad=std::max(1u,(uint32_t)round((double)actual_inter/AUDIO_SR));
         uint32_t actual_asr=actual_inter/actual_ad;
@@ -498,22 +504,23 @@ public:
         double cap_i=0,cap_q=0; int cap_cnt=0;
         IIR1 lpi,lpq; lpi.set(0.45/actual_ad); lpq.set(0.45/actual_ad);
         float prev_i=0,prev_q=0,am_dc=0;
-        IIR1 alf; alf.set((is_wfm?15000.0:8000.0)/actual_inter);
-        float deemph_a=expf(-1.0f/((float)actual_inter*75e-6f)),deemph_s=0;
+        IIR1 alf; alf.set(8000.0/actual_inter);
         double aac=0; int acnt=0;
 
-        // ── Squelch: power measurement in dBFS ───────────────────────────
-        // 200ms RMS power window → compare to noise floor in dBFS
-        const int PWR_WIN = (int)(actual_inter * 0.200f);  // samples
-        float pwr_acc = 0.0f;
-        int   pwr_cnt = 0;
-        float pwr_db  = -120.0f;   // current power dBFS
-        float noise_db = -120.0f;  // noise floor dBFS (updated only when gate closed)
-        bool  noise_init = false;
+        // ── Squelch ───────────────────────────────────────────────────────
+        // sql_avg: EMA-smoothed signal level (dBFS)
+        // Auto-calibration: measure noise floor for 500ms at start,
+        // then set threshold = noise_floor + 10dB (user can adjust after)
+        const float SQL_ALPHA     = 0.05f; // EMA ~20 samples
+        const int   SQL_HOLD_SAMP = 0;     // 0ms hold: instant close
+        const int   CALIB_SAMP    = (int)(actual_inter * 0.500f); // 500ms calibration
+        float sql_avg    = -120.0f;
+        float calib_acc  = 0.0f;
+        int   calib_cnt  = 0;
+        bool  calibrated = false;
         bool  gate_open  = false;
-        // Lv0=off, Lv1=4dB above noise, each step +3dB → Lv10=31dB
-        // threshold_dB = noise_db + 4 + (sql-1)*3
-        int sq_tick = 0;
+        int   gate_hold  = 0;
+        int   sq_ui_tick = 0;
 
         const size_t MAX_LAG=(size_t)(msr*0.08);
         const size_t BATCH=(size_t)cap_decim*actual_asr/50;
@@ -526,7 +533,7 @@ public:
                 size_t keep=(size_t)(msr*0.02);
                 rp=(wp-keep)&IQ_RING_MASK;
                 ch.dem_rp.store(rp,std::memory_order_release);
-                lpi.s=lpq.s=alf.s=0; prev_i=prev_q=0; am_dc=0; deemph_s=0;
+                lpi.s=lpq.s=alf.s=0; prev_i=prev_q=0; am_dc=0;
                 aac=0; acnt=0; cap_i=cap_q=0; cap_cnt=0;
                 lag=(wp-rp)&IQ_RING_MASK;
             }
@@ -543,53 +550,51 @@ public:
                 cap_i=cap_q=0; cap_cnt=0;
                 fi=lpi.p(fi); fq=lpq.p(fq);
 
-                // ── Power measurement ─────────────────────────────────────
-                pwr_acc += fi*fi + fq*fq;
-                pwr_cnt++;
-                if(pwr_cnt >= PWR_WIN){
-                    float rms = sqrtf(pwr_acc / pwr_cnt);
-                    pwr_db = (rms > 1e-10f) ? 20.0f*log10f(rms) : -120.0f;
-                    pwr_acc = 0.0f; pwr_cnt = 0;
+                // ── Squelch ───────────────────────────────────────────────
+                float p_inst = fi*fi + fq*fq;
 
-                    // Noise floor: initialise on first block, update only when gate closed
-                    if(!noise_init){ noise_db = pwr_db; noise_init = true; }
-                    if(!gate_open){
-                        // Slow leak toward current power — but only downward (min tracker)
-                        if(pwr_db < noise_db) noise_db = noise_db*0.95f + pwr_db*0.05f;
-                        // Very slow upward drift so DC offset doesn't lock floor forever
-                        else                  noise_db = noise_db*0.9998f + pwr_db*0.0002f;
-                    }
+                // 1) EMA smoothed dBFS
+                float db_inst = (p_inst > 1e-12f) ? 10.0f*log10f(p_inst) : -120.0f;
+                sql_avg = SQL_ALPHA*db_inst + (1.0f-SQL_ALPHA)*sql_avg;
 
-                    // Squelch gate
-                    int sql = ch.sq_level.load(std::memory_order_relaxed);
-                    if(sql <= 0){
-                        gate_open = true;
-                    } else {
-                        float thr_open  = noise_db + 4.0f + (float)(sql-1)*3.0f;
-                        float thr_close = thr_open - 3.0f;  // 3dB hysteresis
-                        if(!gate_open && pwr_db >= thr_open)  gate_open = true;
-                        if( gate_open && pwr_db <  thr_close) gate_open = false;
+                // 2) Auto-calibrate threshold on first 500ms
+                if(!calibrated){
+                    calib_acc += db_inst;
+                    if(++calib_cnt >= CALIB_SAMP){
+                        float noise_floor = calib_acc / calib_cnt;
+                        ch.sq_threshold.store(noise_floor + 10.0f, std::memory_order_relaxed);
+                        calibrated = true;
                     }
                 }
 
-                if(++sq_tick >= 256){
-                    sq_tick = 0;
-                    ch.sq_sig .store(pwr_db,   std::memory_order_relaxed);
-                    ch.sq_nf  .store(noise_db, std::memory_order_relaxed);
-                    ch.sq_gate.store(gate_open, std::memory_order_relaxed);
+                // 3) Compare to threshold + hold (locked closed until calibrated)
+                float thr = ch.sq_threshold.load(std::memory_order_relaxed);
+                const float HYS = 3.0f;
+                if(calibrated){
+                    if(!gate_open && sql_avg >= thr)
+                        { gate_open = true;  gate_hold = SQL_HOLD_SAMP; }
+                    if( gate_open){
+                        if(sql_avg >= thr - HYS) gate_hold = SQL_HOLD_SAMP;
+                        else if(--gate_hold <= 0){ gate_open = false; gate_hold = 0; }
+                    }
                 }
 
-                // Demodulate
+                // 3) UI update every 256 samples
+                if(++sq_ui_tick >= 256){ sq_ui_tick = 0;
+                    ch.sq_sig .store(sql_avg,   std::memory_order_relaxed);
+                    ch.sq_gate.store(gate_open,  std::memory_order_relaxed);
+                }
+
+                // Demodulate — AM reuses p_inst (no extra sqrtf argument)
                 float samp=0;
                 if(mode==Channel::DM_AM){
-                    float env2=sqrtf(fi*fi+fq*fq);
+                    float env2=sqrtf(p_inst);
                     am_dc=am_dc*0.9995f+env2*0.0005f;
                     samp=alf.p(env2-am_dc)*8.0f;
                 } else {
                     float cross=fi*prev_q-fq*prev_i,dot=fi*prev_i+fq*prev_q;
                     float d=atan2f(cross,dot+1e-12f); prev_i=fi; prev_q=fq;
-                    if(mode==Channel::DM_WFM){deemph_s=deemph_s*deemph_a+d*(1-deemph_a);samp=deemph_s*4.0f;}
-                    else samp=alf.p(d)*4.0f;
+                    samp=alf.p(d)*4.0f;
                 }
                 aac+=samp; acnt++;
                 if(acnt>=(int)actual_ad){
@@ -613,7 +618,7 @@ public:
         ch.dem_stop_req.store(false);
         ch.dem_run.store(true);
         ch.dem_thr=std::thread(&FFTViewer::dem_worker,this,ch_idx);
-        const char* n[]={"NONE","AM","NFM","WFM"};
+        const char* n[]={"NONE","AM","FM"};
         printf("DEM[%d] start: %s  %.4f-%.4f MHz\n",ch_idx,n[(int)mode],ch.s,ch.e);
     }
     void stop_dem(int ch_idx){
@@ -634,17 +639,23 @@ public:
         static constexpr int PERIOD=256;
         std::vector<int16_t> sbuf(PERIOD*2,0);
         while(!mix_stop.load(std::memory_order_relaxed)){
+            // Cache channel state once per period (not per sample)
+            bool  ch_active[MAX_CHANNELS];
+            int   ch_pan[MAX_CHANNELS];
+            for(int c=0;c<MAX_CHANNELS;c++){
+                ch_active[c]=channels[c].dem_run.load(std::memory_order_relaxed);
+                ch_pan[c]   =channels[c].pan;
+            }
             for(int i=0;i<PERIOD;i++){
                 float L=0,R=0;
                 for(int c=0;c<MAX_CHANNELS;c++){
-                    if(!channels[c].dem_run.load()) continue;
-                    float smp=0;
-                    channels[c].pop_audio(smp);
-                    if(channels[c].pan<=0) L+=smp;
-                    if(channels[c].pan>=0) R+=smp;
+                    if(!ch_active[c]) continue;
+                    float smp=0; channels[c].pop_audio(smp);
+                    if(ch_pan[c]<=0) L+=smp;
+                    if(ch_pan[c]>=0) R+=smp;
                 }
-                L=std::max(-1.0f,std::min(1.0f,L));
-                R=std::max(-1.0f,std::min(1.0f,R));
+                L=L< -1.0f?-1.0f:L>1.0f?1.0f:L;
+                R=R< -1.0f?-1.0f:R>1.0f?1.0f:R;
                 sbuf[i*2  ]=(int16_t)(L*32767.0f);
                 sbuf[i*2+1]=(int16_t)(R*32767.0f);
             }
@@ -823,12 +834,12 @@ public:
             if(!show_label) continue;
 
             // Label: channel index + mode + freq + BW
-            const char* mname[4]={"","AM","NFM","WFM"};
+            const char* mname[3]={"","AM","FM"};
             const char* pname[]={" L"," L+R"," R"}; // pan -1,0,1
             int pi=ch.pan+1; if(pi<0)pi=0; if(pi>2)pi=2;
             char lb[128];
             if(rec_on.load()&&i==selected_ch)
-                snprintf(lb,sizeof(lb),"[%d]REC %.3fMHz / %.1fkHz",i+1,(ss+se)/2.0f,(se-ss)*1000.0f);
+                snprintf(lb,sizeof(lb),"[%d] REC %.3fMHz / %.1fkHz",i+1,(ss+se)/2.0f,(se-ss)*1000.0f);
             else
                 snprintf(lb,sizeof(lb),"[%d]%s%s %.3fMHz / %.1fkHz",
                          i+1,mname[(int)ch.mode],pname[pi],(ss+se)/2.0f,(se-ss)*1000.0f);
@@ -1041,8 +1052,7 @@ void run_streaming_viewer(){
                     else { v.stop_dem(sci); v.start_dem(sci,m); }
                 };
                 if(ImGui::IsKeyPressed(ImGuiKey_A,false)) set_mode(Channel::DM_AM);
-                if(ImGui::IsKeyPressed(ImGuiKey_F,false)) set_mode(Channel::DM_NFM);
-                if(ImGui::IsKeyPressed(ImGuiKey_W,false)) set_mode(Channel::DM_WFM);
+                if(ImGui::IsKeyPressed(ImGuiKey_F,false)) set_mode(Channel::DM_FM);
                 // Arrow keys: pan direction
                 if(ImGui::IsKeyPressed(ImGuiKey_LeftArrow,false))  v.channels[sci].pan=-1;
                 if(ImGui::IsKeyPressed(ImGuiKey_RightArrow,false)) v.channels[sci].pan= 1;
@@ -1052,9 +1062,18 @@ void run_streaming_viewer(){
                     // handled by pan already; for move use Ctrl+Arrow
                 }
             }
-            // ESC: deselect
+            // ESC: deselect / Delete: remove selected channel
             if(ImGui::IsKeyPressed(ImGuiKey_Escape,false)){
                 if(sci>=0){ v.channels[sci].selected=false; v.selected_ch=-1; }
+            }
+            if(ImGui::IsKeyPressed(ImGuiKey_Delete,false)){
+                if(sci>=0 && v.channels[sci].filter_active){
+                    v.stop_dem(sci);
+                    v.channels[sci].filter_active=false;
+                    v.channels[sci].selected=false;
+                    v.channels[sci].mode=Channel::DM_NONE;
+                    v.selected_ch=-1;
+                }
             }
             // Enter: focus freq
             if(ImGui::IsKeyPressed(ImGuiKey_Enter,false)||ImGui::IsKeyPressed(ImGuiKey_KeypadEnter,false)){
@@ -1108,10 +1127,8 @@ void run_streaming_viewer(){
         // ── Squelch slider (선택 채널 있을 때만 표시) ────────────────────
         if(sci>=0 && v.channels[sci].filter_active){
             Channel& sch=v.channels[sci];
-            int sql=sch.sq_level.load(std::memory_order_relaxed);
-            float sig=sch.sq_sig.load(std::memory_order_relaxed);
-            float nf =sch.sq_nf .load(std::memory_order_relaxed);
-            bool gopen=sch.sq_gate.load(std::memory_order_relaxed);
+            float sig  =sch.sq_sig .load(std::memory_order_relaxed);
+            bool  gopen=sch.sq_gate.load(std::memory_order_relaxed);
 
             ImGui::Text("SQL:"); ImGui::SameLine();
 
@@ -1120,57 +1137,57 @@ void run_streaming_viewer(){
             sp.y=ImGui::GetWindowPos().y+(TOPBAR_H-SLIDER_H)/2.0f;
             ImDrawList* bdl=ImGui::GetWindowDrawList();
 
-            // Track
+            // dBFS range: sync with spectrum autoscale
+            const float DB_MIN = v.display_power_min;
+            const float DB_MAX = v.display_power_max;
+            const float DB_RNG = std::max(1.0f, DB_MAX - DB_MIN);
+            float thr_db = sch.sq_threshold.load(std::memory_order_relaxed);
+            auto to_x=[&](float db)->float{
+                float t=(db-DB_MIN)/DB_RNG;
+                if(t<0)t=0; if(t>1)t=1;
+                return sp.x+t*SLIDER_W;
+            };
+
+            // Track background
             bdl->AddRectFilled(ImVec2(sp.x,sp.y),ImVec2(sp.x+SLIDER_W,sp.y+SLIDER_H),IM_COL32(40,40,40,255),3);
 
-            // Signal level bar: map pwr_db / noise_db to 0..1 for display
-            // Show 40dB range: noise_db-5 to noise_db+35
-            if(nf > -119.0f){
-                float range=40.0f;
-                float sw=std::min(1.0f,std::max(0.0f,(sig-(nf-5.0f))/range))*SLIDER_W;
+            // Green bar: current signal level
+            float sw=to_x(sig)-sp.x;
+            if(sw>0){
                 ImU32 sc=gopen?IM_COL32(60,220,60,200):IM_COL32(40,110,40,150);
                 bdl->AddRectFilled(ImVec2(sp.x,sp.y),ImVec2(sp.x+sw,sp.y+SLIDER_H),sc,3);
-                // Noise floor marker at its position in the bar
-                float nf_x=sp.x+std::min(1.0f,std::max(0.0f,(nf-(nf-5.0f))/range))*SLIDER_W;
-                bdl->AddLine(ImVec2(nf_x,sp.y),ImVec2(nf_x,sp.y+SLIDER_H),IM_COL32(80,180,255,180),1.5f);
             }
-            // 11 ticks (0..10)
-            for(int i=0;i<=10;i++){
-                float tx2=sp.x+(float)i/10.0f*SLIDER_W;
-                bool cur=(i==sql);
-                float th=cur?SLIDER_H:SLIDER_H*0.4f;
-                bdl->AddLine(ImVec2(tx2,sp.y+SLIDER_H-th),ImVec2(tx2,sp.y+SLIDER_H),
-                             cur?CH_BORD[sci]:IM_COL32(100,100,100,180), cur?2.5f:1.0f);
-            }
-            // Thumb
-            float thumb_x=sp.x+(float)sql/10.0f*SLIDER_W;
-            ImU32 tc=(sql==0)?IM_COL32(130,130,130,255):
-                     (gopen?IM_COL32(60,220,60,255):CH_BORD[sci]);
-            bdl->AddCircleFilled(ImVec2(thumb_x,sp.y+SLIDER_H/2),6,tc);
-            bdl->AddCircle      (ImVec2(thumb_x,sp.y+SLIDER_H/2),6,IM_COL32(210,210,210,200),12,1.2f);
-            // Label
-            char lbl[16]; snprintf(lbl,sizeof(lbl),sql==0?"OFF":"Lv%d",sql);
+
+            // Yellow line: threshold
+            float tx=to_x(thr_db);
+            bdl->AddLine(ImVec2(tx,sp.y),ImVec2(tx,sp.y+SLIDER_H),IM_COL32(255,220,0,230),2.5f);
+
+            // Label: dBFS value
+            char lbl[16]; snprintf(lbl,sizeof(lbl),"%.0fdB",thr_db);
             ImVec2 lsz=ImGui::CalcTextSize(lbl);
             bdl->AddText(ImVec2(sp.x+SLIDER_W/2-lsz.x/2,sp.y+(SLIDER_H-lsz.y)/2),IM_COL32(230,230,230,255),lbl);
 
-            // Interaction
+            // Interaction: mouse wheel moves threshold 1dB per step
             ImGui::SetCursorScreenPos(sp);
             ImGui::InvisibleButton("##sql",ImVec2(SLIDER_W,SLIDER_H));
-            static bool sql_drag=false;
-            if(ImGui::IsItemActivated()) sql_drag=true;
-            if(!ImGui::IsMouseDown(ImGuiMouseButton_Left)) sql_drag=false;
-            if(sql_drag){
-                float mx2=ImGui::GetIO().MousePos.x;
-                int nv=(int)roundf((mx2-sp.x)/SLIDER_W*10.0f);
-                sch.sq_level.store(std::max(0,std::min(10,nv)),std::memory_order_relaxed);
-            }
             if(ImGui::IsItemHovered()){
                 float wheel=ImGui::GetIO().MouseWheel;
-                if(wheel!=0.0f) sch.sq_level.store(std::max(0,std::min(10,sql+(wheel>0?1:-1))),std::memory_order_relaxed);
-                ImGui::SetTooltip("[%d] SQL Lv%d  pwr=%.1fdBFS  nf=%.1fdBFS  thr=%.1fdBFS  gate=%s",
-                                  sci+1, sql, sig, nf,
-                                  sql>0 ? nf+4.0f+(float)(sql-1)*3.0f : -999.0f,
-                                  gopen?"OPEN":"CLOSED");
+                if(wheel!=0.0f){
+                    float nthr=thr_db+(wheel>0?5.0f:-5.0f);
+                    if(nthr<DB_MIN) nthr=DB_MIN;
+                    if(nthr>DB_MAX) nthr=DB_MAX;
+                    sch.sq_threshold.store(nthr,std::memory_order_relaxed);
+                }
+                ImGui::SetTooltip("[%d] SQL thr=%.1fdBFS  sig=%.1fdBFS  gate=%s",
+                                  sci+1, thr_db, sig, gopen?"OPEN":"CLOSED");
+            }
+            // Drag to set threshold directly
+            if(ImGui::IsItemActive()){
+                float mx=ImGui::GetIO().MousePos.x;
+                float nthr=DB_MIN+((mx-sp.x)/SLIDER_W)*DB_RNG;
+                if(nthr<DB_MIN) nthr=DB_MIN;
+                if(nthr>DB_MAX) nthr=DB_MAX;
+                sch.sq_threshold.store(nthr,std::memory_order_relaxed);
             }
             ImGui::SetCursorScreenPos(ImVec2(sp.x+SLIDER_W+6,ImGui::GetCursorScreenPos().y));
         }
@@ -1193,7 +1210,7 @@ void run_streaming_viewer(){
             for(int i=MAX_CHANNELS-1;i>=0;i--){
                 Channel& ch=v.channels[i]; if(!ch.filter_active) continue;
                 float cf_mhz=(std::min(ch.s,ch.e)+std::max(ch.s,ch.e))/2.0f;
-                const char* mn3[4]={"","AM ","NFM ","WFM "};
+                const char* mn3[3]={"","AM ","FM "};
                 bool dem_active=ch.dem_run.load();
                 char cb[64];
                 snprintf(cb,sizeof(cb),"[%d] %s%.3f MHz  ",
@@ -1202,6 +1219,22 @@ void run_streaming_viewer(){
                          cf_mhz);
                 ImVec2 cs2=ImGui::CalcTextSize(cb); rx-=cs2.x;
                 ImU32 tc=ch.sq_gate.load()?CH_BORD[i]:IM_COL32(160,160,160,255);
+
+                // InvisibleButton over text area for double-click
+                ImGui::SetCursorScreenPos(ImVec2(rx, 0));
+                char btn_id[16]; snprintf(btn_id,sizeof(btn_id),"##rch%d",i);
+                ImGui::InvisibleButton(btn_id, ImVec2(cs2.x, TOPBAR_H));
+                if(ImGui::IsItemHovered()){
+                    tc=IM_COL32(255,255,255,255); // hover highlight
+                    ImGui::SetTooltip("double-click to remove");
+                    if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
+                        v.stop_dem(i);
+                        v.channels[i].filter_active=false;
+                        v.channels[i].selected=false;
+                        v.channels[i].mode=Channel::DM_NONE;
+                        if(v.selected_ch==i) v.selected_ch=-1;
+                    }
+                }
                 dl->AddText(ImVec2(rx,ty2),tc,cb);
             }
         }
