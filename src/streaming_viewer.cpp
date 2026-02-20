@@ -226,6 +226,12 @@ public:
     std::thread            dem_thr;
     float                  dem_cf_mhz=0,dem_bw_hz=0;
 
+    // Squelch: 0=off, 1-10 = auto levels (noise floor + margin)
+    std::atomic<int>   squelch_level{0};         // 0=off, 1-10
+    std::atomic<float> squelch_signal{0.0f};     // smoothed signal envelope (demod thread → UI)
+    std::atomic<float> squelch_noise{0.0f};      // estimated noise floor (demod thread → UI)
+    std::atomic<bool>  squelch_open{false};      // current gate state
+
     // ─────────────────────────────────────────────────────────────────────
     bool initialize_bladerf(float cf_mhz,float sr_msps){
         int s=bladerf_open(&dev,nullptr);
@@ -486,6 +492,26 @@ public:
         double aac=0; int acnt=0;
         std::vector<int16_t> abuf; abuf.reserve(2048);
 
+        // ── Auto squelch (SDR++-style noise floor tracker) ────────────────
+        // Fast envelope: 20ms attack, 100ms release
+        const float ENV_ATK  = expf(-1.0f/((float)actual_inter*0.020f));
+        const float ENV_REL  = expf(-1.0f/((float)actual_inter*0.100f));
+        // Noise floor: very slow tracker (updates only when gate is closed)
+        // 2-second time constant so short transmissions don't corrupt the estimate
+        const float NF_ALPHA = expf(-1.0f/((float)actual_inter*2.0f));
+        float sq_env   = 0.0f;   // fast signal envelope
+        float sq_noise = 0.02f;  // noise floor estimate (start with small non-zero)
+        bool  gate_open = false;
+
+        // Threshold = noise_floor × factor(level)
+        // Level 1: 1.5×, each step adds ~0.6× (→ level 10 ≈ 7×)
+        auto sq_threshold=[](float nf, int lvl)->float{
+            if(lvl<=0) return 0.0f;
+            return nf*(1.0f+(float)lvl*0.65f);
+        };
+        // Hysteresis: close at 85% of open threshold
+        const float HYS=0.85f;
+
         constexpr int FLUSH_FRAMES=256;
         // Max allowed lag: 80ms worth of IQ samples. Beyond this we skip ahead.
         const size_t MAX_LAG = (size_t)(msr * 0.08);
@@ -524,11 +550,41 @@ public:
                 float fi=(float)(cap_i/cap_cnt),fq=(float)(cap_q/cap_cnt);
                 cap_i=cap_q=0; cap_cnt=0;
                 fi=lpi.p(fi); fq=lpq.p(fq);
+
+                // ── Auto squelch ──────────────────────────────────────────
+                float env_now=sqrtf(fi*fi+fq*fq);
+                // Asymmetric envelope follower: fast attack, slower release
+                if(env_now>sq_env) sq_env=ENV_ATK*sq_env+(1.0f-ENV_ATK)*env_now;
+                else               sq_env=ENV_REL*sq_env+(1.0f-ENV_REL)*env_now;
+
+                int sql=squelch_level.load(std::memory_order_relaxed);
+                if(sql>0){
+                    float thr_open =sq_threshold(sq_noise,sql);
+                    float thr_close=thr_open*HYS;
+                    if(!gate_open && sq_env>=thr_open)  gate_open=true;
+                    if( gate_open && sq_env< thr_close) gate_open=false;
+                    // Update noise floor only when gate is closed (quiet period)
+                    if(!gate_open) sq_noise=NF_ALPHA*sq_noise+(1.0f-NF_ALPHA)*sq_env;
+                } else {
+                    gate_open=true;
+                    // Still track noise floor for display even when squelch is off
+                    sq_noise=NF_ALPHA*sq_noise+(1.0f-NF_ALPHA)*sq_env;
+                }
+                // Export to UI (every 128 inter-samples to reduce atomic traffic)
+                static int sq_tick=0;
+                if(++sq_tick>=128){
+                    sq_tick=0;
+                    squelch_signal.store(sq_env,  std::memory_order_relaxed);
+                    squelch_noise .store(sq_noise, std::memory_order_relaxed);
+                    squelch_open  .store(gate_open,std::memory_order_relaxed);
+                }
+                // AM gain: envelope demod output is naturally small compared to
+                // discriminator-based FM. Boost by 8× and re-clip.
                 float samp=0;
                 if(mode==DM_AM){
                     float env=sqrtf(fi*fi+fq*fq);
-                    am_dc=am_dc*0.9999f+env*0.0001f;
-                    samp=alf.p(env-am_dc)*2.0f;
+                    am_dc=am_dc*0.9995f+env*0.0005f;
+                    samp=alf.p(env-am_dc)*8.0f;
                 } else {
                     float cross=fi*prev_q-fq*prev_i,dot=fi*prev_i+fq*prev_q;
                     float d=atan2f(cross,dot+1e-12f); prev_i=fi; prev_q=fq;
@@ -537,7 +593,9 @@ public:
                 }
                 aac+=samp; acnt++;
                 if(acnt>=(int)actual_ad){
-                    float out=std::max(-1.0f,std::min(1.0f,(float)(aac/acnt)));
+                    float out=gate_open
+                              ? std::max(-1.0f,std::min(1.0f,(float)(aac/acnt)))
+                              : 0.0f;
                     aac=0; acnt=0;
                     abuf.push_back((int16_t)(out*32767.0f));
                     if((int)abuf.size()>=FLUSH_FRAMES){alsa.write(abuf.data(),(int)abuf.size());abuf.clear();}
@@ -612,7 +670,7 @@ public:
         float nyq=header.sample_rate/2.0f/1e6f,eff=nyq*0.875f,rng=2*eff;
         float mx=(mouse_x-gx)/gw; mx=std::max(0.0f,std::min(1.0f,mx));
         float fmx=-eff+freq_pan*rng+mx*(rng/freq_zoom);
-        freq_zoom*=(1+wheel*0.1f); freq_zoom=std::max(1.0f,std::min(10.0f,freq_zoom));
+        freq_zoom*=(1+wheel*0.15f); freq_zoom=std::max(1.0f,std::min(200.0f,freq_zoom));
         float nw=rng/freq_zoom,ns=fmx-mx*nw;
         freq_pan=(ns+eff)/rng; freq_pan=std::max(0.0f,std::min(1-1/freq_zoom,freq_pan));
     }
@@ -926,7 +984,90 @@ void run_streaming_viewer(){
             ImGui::EndCombo();
         }
 
-        // Right-side status: demod mode + recording only
+        // ── Squelch slider (0=OFF, 1-10 auto levels) ─────────────────────
+        ImGui::SameLine();
+        ImGui::Text("SQL:"); ImGui::SameLine();
+        {
+            int sql   = v.squelch_level.load(std::memory_order_relaxed);
+            float sig = v.squelch_signal.load(std::memory_order_relaxed);
+            float nf  = v.squelch_noise.load(std::memory_order_relaxed);
+            bool gopen= v.squelch_open.load(std::memory_order_relaxed);
+            bool dem_active = v.dem_on.load();
+
+            const float SLIDER_W=180.0f, SLIDER_H=16.0f;
+            ImVec2 sp=ImGui::GetCursorScreenPos();
+            sp.y = ImGui::GetWindowPos().y + (TOPBAR_H-SLIDER_H)/2.0f;
+
+            ImDrawList* bdl=ImGui::GetWindowDrawList();
+
+            // Track
+            bdl->AddRectFilled(ImVec2(sp.x,sp.y),ImVec2(sp.x+SLIDER_W,sp.y+SLIDER_H),
+                               IM_COL32(40,40,40,255),3);
+
+            // Signal level bar (normalised to 4× noise floor = full bar)
+            if(dem_active && nf>1e-6f){
+                float ref=nf*4.0f;
+                float sig_w=std::min(1.0f,sig/ref)*SLIDER_W;
+                // Colour: green when gate open, dark green when closed
+                ImU32 sc=gopen?IM_COL32(60,220,60,200):IM_COL32(40,110,40,160);
+                bdl->AddRectFilled(ImVec2(sp.x,sp.y),ImVec2(sp.x+sig_w,sp.y+SLIDER_H),sc,3);
+                // Noise floor marker
+                float nf_x=sp.x+std::min(1.0f,nf/ref)*SLIDER_W;
+                bdl->AddLine(ImVec2(nf_x,sp.y),ImVec2(nf_x,sp.y+SLIDER_H),
+                             IM_COL32(80,180,255,180),1.5f);
+            }
+
+            // 11 tick marks (0..10)
+            for(int i=0;i<=10;i++){
+                float x=sp.x+(float)i/10.0f*SLIDER_W;
+                bool cur=(i==sql);
+                float th=cur?SLIDER_H:SLIDER_H*0.4f;
+                bdl->AddLine(ImVec2(x,sp.y+SLIDER_H-th),ImVec2(x,sp.y+SLIDER_H),
+                             cur?IM_COL32(255,220,60,255):IM_COL32(120,120,120,200),
+                             cur?2.5f:1.0f);
+            }
+
+            // Thumb circle at current level
+            float thumb_x=sp.x+(float)sql/10.0f*SLIDER_W;
+            ImU32 tc=(sql==0)?IM_COL32(130,130,130,255):
+                     (gopen&&dem_active)?IM_COL32(60,220,60,255):IM_COL32(255,200,50,255);
+            bdl->AddCircleFilled(ImVec2(thumb_x,sp.y+SLIDER_H/2),7,tc);
+            bdl->AddCircle      (ImVec2(thumb_x,sp.y+SLIDER_H/2),7,IM_COL32(210,210,210,220),12,1.5f);
+
+            // Label
+            char lbl[16]; if(sql==0) snprintf(lbl,sizeof(lbl),"OFF");
+            else snprintf(lbl,sizeof(lbl),"Lv %d",sql);
+            ImVec2 lsz=ImGui::CalcTextSize(lbl);
+            bdl->AddText(ImVec2(sp.x+SLIDER_W/2-lsz.x/2,sp.y+(SLIDER_H-lsz.y)/2),
+                         IM_COL32(230,230,230,255),lbl);
+
+            // Interaction
+            ImGui::SetCursorScreenPos(sp);
+            ImGui::InvisibleButton("##sql",ImVec2(SLIDER_W,SLIDER_H));
+
+            static bool sql_drag=false;
+            if(ImGui::IsItemActivated()) sql_drag=true;
+            if(!ImGui::IsMouseDown(ImGuiMouseButton_Left)) sql_drag=false;
+            if(sql_drag){
+                float mx=ImGui::GetIO().MousePos.x;
+                int nv=(int)roundf((mx-sp.x)/SLIDER_W*10.0f);
+                nv=std::max(0,std::min(10,nv));
+                v.squelch_level.store(nv,std::memory_order_relaxed);
+            }
+            if(ImGui::IsItemHovered()){
+                float wheel=ImGui::GetIO().MouseWheel;
+                if(wheel!=0.0f){
+                    int nv=sql+(wheel>0?1:-1);
+                    nv=std::max(0,std::min(10,nv));
+                    v.squelch_level.store(nv,std::memory_order_relaxed);
+                }
+                ImGui::SetTooltip("Squelch Lv%d  sig=%.4f  nf=%.4f  gate=%s",
+                                  sql,sig,nf,gopen?"OPEN":"CLOSED");
+            }
+
+            // Advance cursor
+            ImGui::SetCursorScreenPos(ImVec2(sp.x+SLIDER_W+6, ImGui::GetCursorScreenPos().y));
+        }
         {
             char dem_buf[32]="";
             if(v.dem_on.load()){
