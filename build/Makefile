@@ -57,10 +57,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /home/dsa/BE_WE/SDR_Recorder
+CMAKE_SOURCE_DIR = /home/dsa/BE_WE
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /home/dsa/BE_WE/SDR_Recorder/build
+CMAKE_BINARY_DIR = /home/dsa/BE_WE/build
 
 #=============================================================================
 # Targets provided globally by CMake.
@@ -87,9 +87,9 @@ rebuild_cache/fast: rebuild_cache
 
 # The main all target
 all: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/dsa/BE_WE/SDR_Recorder/build/CMakeFiles /home/dsa/BE_WE/SDR_Recorder/build//CMakeFiles/progress.marks
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/dsa/BE_WE/build/CMakeFiles /home/dsa/BE_WE/build//CMakeFiles/progress.marks
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 all
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/dsa/BE_WE/SDR_Recorder/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/dsa/BE_WE/build/CMakeFiles 0
 .PHONY : all
 
 # The main clean target
@@ -117,24 +117,24 @@ depend:
 .PHONY : depend
 
 #=============================================================================
-# Target rules for targets named fft_analyzer
+# Target rules for targets named BE_WE
 
 # Build rule for target.
-fft_analyzer: cmake_check_build_system
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 fft_analyzer
-.PHONY : fft_analyzer
+BE_WE: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 BE_WE
+.PHONY : BE_WE
 
 # fast build rule for target.
-fft_analyzer/fast:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/build
-.PHONY : fft_analyzer/fast
+BE_WE/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/build
+.PHONY : BE_WE/fast
 
 src/streaming_viewer.o: src/streaming_viewer.cpp.o
 .PHONY : src/streaming_viewer.o
 
 # target to build an object file
 src/streaming_viewer.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.o
 .PHONY : src/streaming_viewer.cpp.o
 
 src/streaming_viewer.i: src/streaming_viewer.cpp.i
@@ -142,7 +142,7 @@ src/streaming_viewer.i: src/streaming_viewer.cpp.i
 
 # target to preprocess a source file
 src/streaming_viewer.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.i
 .PHONY : src/streaming_viewer.cpp.i
 
 src/streaming_viewer.s: src/streaming_viewer.cpp.s
@@ -150,7 +150,7 @@ src/streaming_viewer.s: src/streaming_viewer.cpp.s
 
 # target to generate assembly for a file
 src/streaming_viewer.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.s
 .PHONY : src/streaming_viewer.cpp.s
 
 usr/include/imgui/backends/imgui_impl_glfw.o: usr/include/imgui/backends/imgui_impl_glfw.cpp.o
@@ -158,7 +158,7 @@ usr/include/imgui/backends/imgui_impl_glfw.o: usr/include/imgui/backends/imgui_i
 
 # target to build an object file
 usr/include/imgui/backends/imgui_impl_glfw.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o
 .PHONY : usr/include/imgui/backends/imgui_impl_glfw.cpp.o
 
 usr/include/imgui/backends/imgui_impl_glfw.i: usr/include/imgui/backends/imgui_impl_glfw.cpp.i
@@ -166,7 +166,7 @@ usr/include/imgui/backends/imgui_impl_glfw.i: usr/include/imgui/backends/imgui_i
 
 # target to preprocess a source file
 usr/include/imgui/backends/imgui_impl_glfw.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.i
 .PHONY : usr/include/imgui/backends/imgui_impl_glfw.cpp.i
 
 usr/include/imgui/backends/imgui_impl_glfw.s: usr/include/imgui/backends/imgui_impl_glfw.cpp.s
@@ -174,7 +174,7 @@ usr/include/imgui/backends/imgui_impl_glfw.s: usr/include/imgui/backends/imgui_i
 
 # target to generate assembly for a file
 usr/include/imgui/backends/imgui_impl_glfw.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.s
 .PHONY : usr/include/imgui/backends/imgui_impl_glfw.cpp.s
 
 usr/include/imgui/backends/imgui_impl_opengl3.o: usr/include/imgui/backends/imgui_impl_opengl3.cpp.o
@@ -182,7 +182,7 @@ usr/include/imgui/backends/imgui_impl_opengl3.o: usr/include/imgui/backends/imgu
 
 # target to build an object file
 usr/include/imgui/backends/imgui_impl_opengl3.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o
 .PHONY : usr/include/imgui/backends/imgui_impl_opengl3.cpp.o
 
 usr/include/imgui/backends/imgui_impl_opengl3.i: usr/include/imgui/backends/imgui_impl_opengl3.cpp.i
@@ -190,7 +190,7 @@ usr/include/imgui/backends/imgui_impl_opengl3.i: usr/include/imgui/backends/imgu
 
 # target to preprocess a source file
 usr/include/imgui/backends/imgui_impl_opengl3.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.i
 .PHONY : usr/include/imgui/backends/imgui_impl_opengl3.cpp.i
 
 usr/include/imgui/backends/imgui_impl_opengl3.s: usr/include/imgui/backends/imgui_impl_opengl3.cpp.s
@@ -198,7 +198,7 @@ usr/include/imgui/backends/imgui_impl_opengl3.s: usr/include/imgui/backends/imgu
 
 # target to generate assembly for a file
 usr/include/imgui/backends/imgui_impl_opengl3.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.s
 .PHONY : usr/include/imgui/backends/imgui_impl_opengl3.cpp.s
 
 usr/include/imgui/imgui.o: usr/include/imgui/imgui.cpp.o
@@ -206,7 +206,7 @@ usr/include/imgui/imgui.o: usr/include/imgui/imgui.cpp.o
 
 # target to build an object file
 usr/include/imgui/imgui.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui.cpp.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/imgui.cpp.o
 .PHONY : usr/include/imgui/imgui.cpp.o
 
 usr/include/imgui/imgui.i: usr/include/imgui/imgui.cpp.i
@@ -214,7 +214,7 @@ usr/include/imgui/imgui.i: usr/include/imgui/imgui.cpp.i
 
 # target to preprocess a source file
 usr/include/imgui/imgui.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui.cpp.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/imgui.cpp.i
 .PHONY : usr/include/imgui/imgui.cpp.i
 
 usr/include/imgui/imgui.s: usr/include/imgui/imgui.cpp.s
@@ -222,7 +222,7 @@ usr/include/imgui/imgui.s: usr/include/imgui/imgui.cpp.s
 
 # target to generate assembly for a file
 usr/include/imgui/imgui.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui.cpp.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/imgui.cpp.s
 .PHONY : usr/include/imgui/imgui.cpp.s
 
 usr/include/imgui/imgui_demo.o: usr/include/imgui/imgui_demo.cpp.o
@@ -230,7 +230,7 @@ usr/include/imgui/imgui_demo.o: usr/include/imgui/imgui_demo.cpp.o
 
 # target to build an object file
 usr/include/imgui/imgui_demo.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_demo.cpp.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_demo.cpp.o
 .PHONY : usr/include/imgui/imgui_demo.cpp.o
 
 usr/include/imgui/imgui_demo.i: usr/include/imgui/imgui_demo.cpp.i
@@ -238,7 +238,7 @@ usr/include/imgui/imgui_demo.i: usr/include/imgui/imgui_demo.cpp.i
 
 # target to preprocess a source file
 usr/include/imgui/imgui_demo.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_demo.cpp.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_demo.cpp.i
 .PHONY : usr/include/imgui/imgui_demo.cpp.i
 
 usr/include/imgui/imgui_demo.s: usr/include/imgui/imgui_demo.cpp.s
@@ -246,7 +246,7 @@ usr/include/imgui/imgui_demo.s: usr/include/imgui/imgui_demo.cpp.s
 
 # target to generate assembly for a file
 usr/include/imgui/imgui_demo.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_demo.cpp.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_demo.cpp.s
 .PHONY : usr/include/imgui/imgui_demo.cpp.s
 
 usr/include/imgui/imgui_draw.o: usr/include/imgui/imgui_draw.cpp.o
@@ -254,7 +254,7 @@ usr/include/imgui/imgui_draw.o: usr/include/imgui/imgui_draw.cpp.o
 
 # target to build an object file
 usr/include/imgui/imgui_draw.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_draw.cpp.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_draw.cpp.o
 .PHONY : usr/include/imgui/imgui_draw.cpp.o
 
 usr/include/imgui/imgui_draw.i: usr/include/imgui/imgui_draw.cpp.i
@@ -262,7 +262,7 @@ usr/include/imgui/imgui_draw.i: usr/include/imgui/imgui_draw.cpp.i
 
 # target to preprocess a source file
 usr/include/imgui/imgui_draw.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_draw.cpp.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_draw.cpp.i
 .PHONY : usr/include/imgui/imgui_draw.cpp.i
 
 usr/include/imgui/imgui_draw.s: usr/include/imgui/imgui_draw.cpp.s
@@ -270,7 +270,7 @@ usr/include/imgui/imgui_draw.s: usr/include/imgui/imgui_draw.cpp.s
 
 # target to generate assembly for a file
 usr/include/imgui/imgui_draw.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_draw.cpp.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_draw.cpp.s
 .PHONY : usr/include/imgui/imgui_draw.cpp.s
 
 usr/include/imgui/imgui_tables.o: usr/include/imgui/imgui_tables.cpp.o
@@ -278,7 +278,7 @@ usr/include/imgui/imgui_tables.o: usr/include/imgui/imgui_tables.cpp.o
 
 # target to build an object file
 usr/include/imgui/imgui_tables.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_tables.cpp.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_tables.cpp.o
 .PHONY : usr/include/imgui/imgui_tables.cpp.o
 
 usr/include/imgui/imgui_tables.i: usr/include/imgui/imgui_tables.cpp.i
@@ -286,7 +286,7 @@ usr/include/imgui/imgui_tables.i: usr/include/imgui/imgui_tables.cpp.i
 
 # target to preprocess a source file
 usr/include/imgui/imgui_tables.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_tables.cpp.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_tables.cpp.i
 .PHONY : usr/include/imgui/imgui_tables.cpp.i
 
 usr/include/imgui/imgui_tables.s: usr/include/imgui/imgui_tables.cpp.s
@@ -294,7 +294,7 @@ usr/include/imgui/imgui_tables.s: usr/include/imgui/imgui_tables.cpp.s
 
 # target to generate assembly for a file
 usr/include/imgui/imgui_tables.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_tables.cpp.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_tables.cpp.s
 .PHONY : usr/include/imgui/imgui_tables.cpp.s
 
 usr/include/imgui/imgui_widgets.o: usr/include/imgui/imgui_widgets.cpp.o
@@ -302,7 +302,7 @@ usr/include/imgui/imgui_widgets.o: usr/include/imgui/imgui_widgets.cpp.o
 
 # target to build an object file
 usr/include/imgui/imgui_widgets.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_widgets.cpp.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_widgets.cpp.o
 .PHONY : usr/include/imgui/imgui_widgets.cpp.o
 
 usr/include/imgui/imgui_widgets.i: usr/include/imgui/imgui_widgets.cpp.i
@@ -310,7 +310,7 @@ usr/include/imgui/imgui_widgets.i: usr/include/imgui/imgui_widgets.cpp.i
 
 # target to preprocess a source file
 usr/include/imgui/imgui_widgets.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_widgets.cpp.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_widgets.cpp.i
 .PHONY : usr/include/imgui/imgui_widgets.cpp.i
 
 usr/include/imgui/imgui_widgets.s: usr/include/imgui/imgui_widgets.cpp.s
@@ -318,7 +318,7 @@ usr/include/imgui/imgui_widgets.s: usr/include/imgui/imgui_widgets.cpp.s
 
 # target to generate assembly for a file
 usr/include/imgui/imgui_widgets.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/fft_analyzer.dir/build.make CMakeFiles/fft_analyzer.dir/usr/include/imgui/imgui_widgets.cpp.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_widgets.cpp.s
 .PHONY : usr/include/imgui/imgui_widgets.cpp.s
 
 # Help Target
@@ -329,7 +329,7 @@ help:
 	@echo "... depend"
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
-	@echo "... fft_analyzer"
+	@echo "... BE_WE"
 	@echo "... src/streaming_viewer.o"
 	@echo "... src/streaming_viewer.i"
 	@echo "... src/streaming_viewer.s"

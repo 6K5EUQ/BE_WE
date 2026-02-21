@@ -49,7 +49,7 @@ static const ImU32 CH_FILL[MAX_CHANNELS]={
 static const ImU32 CH_SFIL[MAX_CHANNELS]={
     IM_COL32(255,220, 50, 75), IM_COL32( 50,200,255, 75),
     IM_COL32(255, 90, 50, 75), IM_COL32(180, 60,255, 75),
-    IM_COL32( 50,255,110, 75)};
+    IM_COL32( 50,255,110, 75)}; 
 
 // ─────────────────────────────────────────────────────────────────────────────
 struct FFTHeader {
@@ -247,7 +247,7 @@ public:
     bool is_running=true; int total_ffts=0;
     // ── Detection alert sound ─────────────────────────────────────────────
     // ★ MP3 파일 경로를 여기서 변경하세요:
-    static constexpr const char* ALERT_MP3_PATH = "/path/to/alert.mp3";
+    static constexpr const char* ALERT_MP3_PATH = "/home/dsa/BE_WE/SDR_Recorder/lock_on.mp3";
     std::vector<float> alert_pcm; // decoded mono PCM at AUDIO_SR
     std::string window_title;
     std::mutex  data_mtx;

@@ -1,0 +1,25 @@
+file(REMOVE_RECURSE
+  "BE_WE"
+  "BE_WE.pdb"
+  "CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.o"
+  "CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.o.d"
+  "CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o"
+  "CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o.d"
+  "CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o"
+  "CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o.d"
+  "CMakeFiles/BE_WE.dir/usr/include/imgui/imgui.cpp.o"
+  "CMakeFiles/BE_WE.dir/usr/include/imgui/imgui.cpp.o.d"
+  "CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_demo.cpp.o"
+  "CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_demo.cpp.o.d"
+  "CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_draw.cpp.o"
+  "CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_draw.cpp.o.d"
+  "CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_tables.cpp.o"
+  "CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_tables.cpp.o.d"
+  "CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_widgets.cpp.o"
+  "CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_widgets.cpp.o.d"
+)
+
+# Per-language clean rules from dependency scanning.
+foreach(lang CXX)
+  include(CMakeFiles/BE_WE.dir/cmake_clean_${lang}.cmake OPTIONAL)
+endforeach()

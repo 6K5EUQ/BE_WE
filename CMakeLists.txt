@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(FFT_Analyzer)
+project(BE_WE)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,12 +27,12 @@ set(IMGUI_SOURCES
     ${IMGUI_BACKENDS_PATH}/imgui_impl_opengl3.cpp
 )
 
-add_executable(fft_analyzer
+add_executable(BE_WE
     src/streaming_viewer.cpp
     ${IMGUI_SOURCES}
 )
 
-target_include_directories(fft_analyzer PRIVATE
+target_include_directories(BE_WE PRIVATE
     ${BLADERF_INCLUDE_DIRS}
     ${FFTW_INCLUDE_DIRS}
     ${ALSA_INCLUDE_DIRS}
@@ -41,7 +41,7 @@ target_include_directories(fft_analyzer PRIVATE
     ${IMGUI_BACKENDS_PATH}
 )
 
-target_link_libraries(fft_analyzer PRIVATE
+target_link_libraries(BE_WE PRIVATE
     ${BLADERF_LIBRARIES}
     ${FFTW_LIBRARIES}
     ${ALSA_LIBRARIES}
@@ -52,4 +52,4 @@ target_link_libraries(fft_analyzer PRIVATE
     pthread
 )
 
-target_compile_options(fft_analyzer PRIVATE -O3 -march=native)
+target_compile_options(BE_WE PRIVATE -O3 -march=native)
