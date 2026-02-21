@@ -280,8 +280,10 @@ CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o
  /usr/include/x86_64-linux-gnu/c++/13/bits/gthr-default.h
  /usr/include/x86_64-linux-gnu/c++/13/bits/gthr.h
  /usr/include/x86_64-linux-gnu/c++/13/bits/os_defines.h
+ /usr/include/x86_64-linux-gnu/fmt123.h
  /usr/include/x86_64-linux-gnu/gnu/stubs-64.h
  /usr/include/x86_64-linux-gnu/gnu/stubs.h
+ /usr/include/x86_64-linux-gnu/mpg123.h
  /usr/include/x86_64-linux-gnu/sys/cdefs.h
  /usr/include/x86_64-linux-gnu/sys/poll.h
  /usr/include/x86_64-linux-gnu/sys/select.h

@@ -19,6 +19,7 @@
 #include <mutex>
 #include <atomic>
 #include <time.h>
+#include <mpg123.h>
 
 // ─────────────────────────────────────────────────────────────────────────────
 #define RX_GAIN                10
@@ -167,7 +168,7 @@ struct Channel {
     bool  selected=false;
 
     // Demod
-    enum DemodMode{DM_NONE=0,DM_AM,DM_FM} mode=DM_NONE;
+    enum DemodMode{DM_NONE=0,DM_AM,DM_FM,DM_DETECT} mode=DM_NONE;
     int  pan=0;   // -1=L  0=both  1=R
 
     // Demod thread
@@ -201,10 +202,10 @@ struct Channel {
     }
 
     // Squelch: 0=off, 1-10 (1=auto Lv1 default)
-    std::atomic<float> sq_threshold{-50.0f}; // dBFS threshold, default -50
-    // sq_sig = current signal dBFS (for UI bar), sq_gate = gate state
-    std::atomic<float> sq_sig{-120.0f}, sq_nf{0.0f}; // sq_nf unused now
+    std::atomic<float> sq_threshold{-50.0f};
+    std::atomic<float> sq_sig{-120.0f}, sq_nf{0.0f};
     std::atomic<bool>  sq_gate{false};
+    std::atomic<bool>  sq_calibrated{false}; // true after first auto-calibration
 
     // Filter move-drag state
     bool  move_drag=false;
@@ -238,11 +239,16 @@ public:
     std::vector<float> autoscale_accum;
     std::chrono::steady_clock::time_point autoscale_last;
     bool autoscale_init=false,autoscale_active=true;
+    std::atomic<bool> spectrum_pause{false};
 
     struct bladerf* dev=nullptr;
     fftwf_plan fft_plan=nullptr;
     fftwf_complex *fft_in=nullptr,*fft_out=nullptr;
     bool is_running=true; int total_ffts=0;
+    // ── Detection alert sound ─────────────────────────────────────────────
+    // ★ MP3 파일 경로를 여기서 변경하세요:
+    static constexpr const char* ALERT_MP3_PATH = "/path/to/alert.mp3";
+    std::vector<float> alert_pcm; // decoded mono PCM at AUDIO_SR
     std::string window_title;
     std::mutex  data_mtx;
 
@@ -275,6 +281,31 @@ public:
     std::thread       mix_thr;
 
     // ── initialize_bladerf ────────────────────────────────────────────────
+    void load_alert_mp3(){
+        mpg123_handle* mh=nullptr;
+        mpg123_init();
+        mh=mpg123_new(nullptr,nullptr);
+        if(!mh){fprintf(stderr,"Alert: mpg123_new failed\n");return;}
+        if(mpg123_open(mh,ALERT_MP3_PATH)!=MPG123_OK){
+            fprintf(stderr,"Alert: cannot open %s\n",ALERT_MP3_PATH);
+            mpg123_delete(mh);return;
+        }
+        long rate; int channels,enc;
+        mpg123_getformat(mh,&rate,&channels,&enc);
+        mpg123_format_none(mh);
+        mpg123_format(mh,AUDIO_SR,1,MPG123_ENC_FLOAT_32); // force mono float @48kHz
+        alert_pcm.clear();
+        unsigned char buf[4096]; size_t done;
+        while(mpg123_read(mh,(unsigned char*)buf,sizeof(buf),&done)==MPG123_OK||done>0){
+            float* fp=(float*)buf;
+            size_t n=done/sizeof(float);
+            for(size_t i=0;i<n;i++) alert_pcm.push_back(std::max(-1.0f,std::min(1.0f,fp[i])));
+            if(done==0) break;
+        }
+        mpg123_close(mh); mpg123_delete(mh);
+        printf("Alert MP3 loaded: %zu samples (%.2fs)\n",alert_pcm.size(),(float)alert_pcm.size()/AUDIO_SR);
+    }
+
     bool initialize_bladerf(float cf_mhz,float sr_msps){
         int s=bladerf_open(&dev,nullptr);
         if(s){fprintf(stderr,"bladerf_open: %s\n",bladerf_strerror(s));return false;}
@@ -298,6 +329,7 @@ public:
         header.time_average=TIME_AVERAGE; header.power_min=-80; header.power_max=-30; header.num_ffts=0;
         fft_data.resize(MAX_FFTS_MEMORY*fft_size);
         current_spectrum.resize(fft_size,-80.0f);
+        
         char title[256]; snprintf(title,256,"Real-time FFT Viewer - %.2f MHz",cf_mhz);
         window_title=title; display_power_min=-80; display_power_max=0;
         fft_in=fftwf_alloc_complex(fft_size); fft_out=fftwf_alloc_complex(fft_size);
@@ -398,6 +430,7 @@ public:
                 ring_wp.store((wp+n)&IQ_RING_MASK,std::memory_order_release);
             }
             for(int i=0;i<fft_size;i++){fft_in[i][0]=iq[i*2]/2048.0f;fft_in[i][1]=iq[i*2+1]/2048.0f;}
+            if(!spectrum_pause.load(std::memory_order_relaxed)){
             apply_hann(fft_in,fft_size); fftwf_execute(fft_plan);
             {
                 const float scale=HANN_WINDOW_CORRECTION/((float)fft_size*(float)fft_size);
@@ -416,6 +449,7 @@ public:
                      rowp[i]=(int8_t)(std::max(-1.0f,std::min(1.0f,nn))*127);
                      current_spectrum[i]=avg;
                  }
+                 
                  if(autoscale_active){
                      if(!autoscale_init){autoscale_accum.reserve(fft_size*200);autoscale_last=std::chrono::steady_clock::now();autoscale_init=true;}
                      for(int i=1;i<fft_size;i++) autoscale_accum.push_back(current_spectrum[i]);
@@ -431,6 +465,7 @@ public:
                  header.num_ffts=std::min(total_ffts,MAX_FFTS_MEMORY); cached_sp_idx=-1;}
                 std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
             }
+            } // end !spectrum_pause
         }
         delete[] iq;
     }
@@ -511,6 +546,7 @@ public:
         float prev_i=0,prev_q=0,am_dc=0;
         IIR1 alf; alf.set(8000.0/actual_inter);
         double aac=0; int acnt=0;
+        size_t aac_detect_pos=0; // alert PCM playback position for DM_DETECT
 
         // ── Squelch ───────────────────────────────────────────────────────
         // sql_avg: EMA-smoothed signal level (dBFS)
@@ -521,8 +557,9 @@ public:
         const int   CALIB_SAMP    = (int)(actual_inter * 0.500f);
         float sql_avg    = -120.0f;
         std::vector<float> calib_buf;
-        calib_buf.reserve(CALIB_SAMP);
-        bool  calibrated = false;
+        // Only calibrate if not yet calibrated for this channel (persists across restarts)
+        bool  calibrated = ch.sq_calibrated.load(std::memory_order_relaxed);
+        if(!calibrated) calib_buf.reserve(CALIB_SAMP);
         bool  gate_open  = false;
         int   gate_hold  = 0;
         int   sq_ui_tick = 0;
@@ -574,6 +611,7 @@ public:
                         float noise_floor=tmp[p20];
                         ch.sq_threshold.store(noise_floor + 10.0f, std::memory_order_relaxed);
                         calibrated = true;
+                        ch.sq_calibrated.store(true, std::memory_order_relaxed);
                         calib_buf.clear(); calib_buf.shrink_to_fit();
                     }
                 }
@@ -597,6 +635,21 @@ public:
                 }
 
                 // Demodulate — AM reuses p_inst (no extra sqrtf argument)
+                if(mode==Channel::DM_DETECT){
+                    // Detection: no demodulation, feed alert PCM when gate open
+                    acnt++;
+                    if(acnt>=(int)actual_ad){
+                        acnt=0;
+                        float out=0.0f;
+                        if(gate_open && !alert_pcm.empty()){
+                            out=alert_pcm[aac_detect_pos % alert_pcm.size()];
+                            aac_detect_pos++;
+                        } else if(!gate_open){
+                            aac_detect_pos=0; // reset to start when gate closes
+                        }
+                        ch.push_audio(out);
+                    }
+                } else {
                 float samp=0;
                 if(mode==Channel::DM_AM){
                     float env2=sqrtf(p_inst);
@@ -615,6 +668,7 @@ public:
                     aac=0; acnt=0;
                     ch.push_audio(out);
                 }
+                } // end !DM_DETECT
             }
             ch.dem_rp.store((rp+avail)&IQ_RING_MASK,std::memory_order_release);
         }
@@ -629,7 +683,7 @@ public:
         ch.dem_stop_req.store(false);
         ch.dem_run.store(true);
         ch.dem_thr=std::thread(&FFTViewer::dem_worker,this,ch_idx);
-        const char* n[]={"NONE","AM","FM"};
+        const char* n[]={"NONE","AM","FM","DETECT"};
         printf("DEM[%d] start: %s  %.4f-%.4f MHz\n",ch_idx,n[(int)mode],ch.s,ch.e);
     }
     void stop_dem(int ch_idx){
@@ -717,7 +771,12 @@ public:
         if(new_drag.active){
             if(ImGui::IsMouseDown(ImGuiMouseButton_Right)){
                 float f=x_to_abs(m.x,gx,gw);
-                new_drag.s=std::min(new_drag.anch,f); new_drag.e=std::max(new_drag.anch,f);
+                float s=std::min(new_drag.anch,f), e=std::max(new_drag.anch,f);
+                // Snap BW to 1kHz multiples
+                float cf=(s+e)/2.0f;
+                float bw_khz=roundf((e-s)*1000.0f);
+                bw_khz=std::max(1.0f,bw_khz);
+                new_drag.s=cf-bw_khz/2000.0f; new_drag.e=cf+bw_khz/2000.0f;
             }
             if(ImGui::IsMouseReleased(ImGuiMouseButton_Right)){
                 new_drag.active=false;
@@ -730,6 +789,7 @@ public:
                         channels[slot].s=new_drag.s; channels[slot].e=new_drag.e;
                         channels[slot].filter_active=true; channels[slot].mode=Channel::DM_NONE;
                         channels[slot].pan=0; channels[slot].selected=false;
+                        channels[slot].sq_calibrated.store(false);
                         // Reset audio ring
                         channels[slot].ar_wp.store(0); channels[slot].ar_rp.store(0);
                         // Select this new channel
@@ -765,11 +825,12 @@ public:
                     channels[i].s=new_cf-half_bw; channels[i].e=new_cf+half_bw;
                 }
             } else {
-                // Drag ended: restart demod with new center frequency
+                // Drag ended: restart demod only if position actually changed
                 for(int i=0;i<MAX_CHANNELS;i++){
                     if(!channels[i].move_drag) continue;
+                    bool moved=(channels[i].s!=channels[i].move_s0 || channels[i].e!=channels[i].move_e0);
                     channels[i].move_drag=false;
-                    if(channels[i].dem_run.load()){
+                    if(moved && channels[i].dem_run.load()){
                         Channel::DemodMode m=channels[i].mode;
                         stop_dem(i);
                         start_dem(i,m);
@@ -852,16 +913,9 @@ public:
 
             if(!show_label) continue;
 
-            // Label: channel index + mode + freq + BW
-            const char* mname[3]={"","AM","FM"};
-            const char* pname[]={" L"," L+R"," R"}; // pan -1,0,1
-            int pi=ch.pan+1; if(pi<0)pi=0; if(pi>2)pi=2;
-            char lb[128];
-            if(rec_on.load()&&i==rec_ch)
-                snprintf(lb,sizeof(lb),"[%d] REC %.3fMHz / %.1fkHz",i+1,(ss+se)/2.0f,(se-ss)*1000.0f);
-            else
-                snprintf(lb,sizeof(lb),"[%d]%s%s %.3fMHz / %.1fkHz",
-                         i+1,mname[(int)ch.mode],pname[pi],(ss+se)/2.0f,(se-ss)*1000.0f);
+            // Label: channel number only
+            char lb[16];
+            snprintf(lb,sizeof(lb),"[%d]",i+1);
 
             ImVec2 ts=ImGui::CalcTextSize(lb);
             float cx=std::max(gx,std::min(gx+gw-ts.x,(c0+c1)/2-ts.x/2));
@@ -932,6 +986,7 @@ public:
             cached_sp_idx=current_fft_idx;cached_pan=freq_pan;cached_zoom=freq_zoom;
             cached_px=np;cached_pmin=display_power_min;cached_pmax=display_power_max;
         }
+        // Resize max_hold to pixel space if needed
         float pr=display_power_max-display_power_min;
         for(int px=0;px<np-1;px++){
             if(px>=(int)current_spectrum.size()||px+1>=(int)current_spectrum.size()) break;
@@ -1032,6 +1087,7 @@ void run_streaming_viewer(){
     float cf=450.0f,sr=61.44f;
     FFTViewer v;
     if(!v.initialize_bladerf(cf,sr)){printf("BladeRF init failed\n");return;}
+    v.load_alert_mp3();
 
     std::thread cap(&FFTViewer::capture_and_process,&v);
     v.mix_stop.store(false);
@@ -1041,15 +1097,100 @@ void run_streaming_viewer(){
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);
     glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
-    GLFWwindow* win=glfwCreateWindow(1400,900,v.window_title.c_str(),nullptr,nullptr);
+    GLFWwindow* win=glfwCreateWindow(1400,900,"BEWE [CPU --%]",nullptr,nullptr);
     glfwMakeContextCurrent(win); glfwSwapInterval(0);
     glewExperimental=GL_TRUE; glewInit();
     ImGui::CreateContext(); ImGui::StyleColorsDark();
     ImGui_ImplGlfw_InitForOpenGL(win,true); ImGui_ImplOpenGL3_Init("#version 330");
     v.create_waterfall_texture();
 
+    // CPU usage tracking
+    auto cpu_last_time=std::chrono::steady_clock::now();
+    long long cpu_last_idle=0,cpu_last_total=0;
+    // IO: diskstats delta
+    long long io_last_ms=0; // total io_ticks across all disks
+    auto read_cpu=[&](long long& idle,long long& total){
+        FILE* f=fopen("/proc/stat","r");
+        if(!f){idle=total=0;return;}
+        long long u,n,s,i,iow,irq,sirq;
+        fscanf(f,"cpu %lld %lld %lld %lld %lld %lld %lld",&u,&n,&s,&i,&iow,&irq,&sirq);
+        fclose(f);
+        idle=i+iow; total=u+n+s+i+iow+irq+sirq;
+    };
+    auto read_ram=[&]()->float{
+        FILE* f=fopen("/proc/meminfo","r");
+        if(!f) return 0.0f;
+        long long total=0,avail=0;
+        char key[64]; long long val;
+        for(int i=0;i<10;i++){
+            if(fscanf(f,"%63s %lld kB",key,&val)!=2) break;
+            if(!strcmp(key,"MemTotal:"))     total=val;
+            else if(!strcmp(key,"MemAvailable:")) avail=val;
+        }
+        fclose(f);
+        if(total<=0) return 0.0f;
+        return (float)(total-avail)/total*100.0f;
+    };
+    auto read_ghz=[&]()->float{
+        // average scaling_cur_freq across all CPUs
+        double sum=0; int cnt=0;
+        for(int c=0;c<256;c++){
+            char path[128];
+            snprintf(path,sizeof(path),
+                "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq",c);
+            FILE* f=fopen(path,"r");
+            if(!f) break;
+            long long khz=0; fscanf(f,"%lld",&khz); fclose(f);
+            sum+=khz; cnt++;
+        }
+        return cnt>0?(float)(sum/cnt/1e6):0.0f;
+    };
+    auto read_io_ms=[&]()->long long{
+        // sum io_ticks (field 10, 0-indexed) across all block devices
+        FILE* f=fopen("/proc/diskstats","r");
+        if(!f) return 0;
+        long long sum=0; char dev[32];
+        unsigned int maj,min_;
+        long long f1,f2,f3,f4,f5,f6,f7,f8,f9,io_ticks;
+        while(fscanf(f,"%u %u %31s %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %*[^\n]",
+                     &maj,&min_,dev,&f1,&f2,&f3,&f4,&f5,&f6,&f7,&f8,&f9,&io_ticks)==13){
+            // only count whole disks (sda, nvme0n1, etc.), skip partitions
+            if(dev[0]=='s'&&dev[2]>='a'&&dev[2]<='z'&&dev[3]=='\0') sum+=io_ticks;
+            else if(dev[0]=='n'&&dev[1]=='v'&&strstr(dev,"p")==nullptr) sum+=io_ticks;
+            else if(dev[0]=='v'&&dev[1]=='d'&&dev[3]=='\0') sum+=io_ticks;
+        }
+        fclose(f);
+        return sum;
+    };
+    read_cpu(cpu_last_idle,cpu_last_total);
+    io_last_ms=read_io_ms();
+
     while(!glfwWindowShouldClose(win)){
         glfwPollEvents();
+
+        // Update window title every ~1s with CPU usage
+        {
+            auto now=std::chrono::steady_clock::now();
+            float dt=std::chrono::duration<float>(now-cpu_last_time).count();
+            if(dt>=1.0f){
+                long long idle,total;
+                read_cpu(idle,total);
+                long long d_idle=idle-cpu_last_idle, d_total=total-cpu_last_total;
+                float cpu_pct=(d_total>0)?(1.0f-(float)d_idle/d_total)*100.0f:0.0f;
+                cpu_last_idle=idle; cpu_last_total=total;
+                cpu_last_time=now;
+                // IO %util = io_ticks delta / (interval_ms) * 100
+                long long io_now=read_io_ms();
+                float io_pct=std::min(100.0f,(float)(io_now-io_last_ms)/10.0f); // /1000ms*100
+                io_last_ms=io_now;
+                float ghz=read_ghz();
+                float ram=read_ram();
+                char t[128];
+                snprintf(t,sizeof(t),"BEWE [CPU %.0f%% @ %.2fGHz | RAM %.0f%% | IO %.0f%%]",
+                         (double)cpu_pct,(double)ghz,(double)ram,(double)io_pct);
+                glfwSetWindowTitle(win,t);
+            }
+        }
         ImGui_ImplOpenGL3_NewFrame(); ImGui_ImplGlfw_NewFrame(); ImGui::NewFrame();
         v.topbar_sel_this_frame=false;
         if(v.texture_needs_recreate){v.texture_needs_recreate=false;v.create_waterfall_texture();}
@@ -1064,6 +1205,10 @@ void run_streaming_viewer(){
             if(ImGui::IsKeyPressed(ImGuiKey_R,false)){
                 if(v.rec_on.load()) v.stop_rec(); else v.start_rec();
             }
+            if(ImGui::IsKeyPressed(ImGuiKey_P,false)){
+                v.spectrum_pause.store(!v.spectrum_pause.load());
+            }
+            
             // A/F/W: set demod on selected channel
             if(sci>=0 && v.channels[sci].filter_active){
                 auto set_mode=[&](Channel::DemodMode m){
@@ -1073,6 +1218,7 @@ void run_streaming_viewer(){
                 };
                 if(ImGui::IsKeyPressed(ImGuiKey_A,false)) set_mode(Channel::DM_AM);
                 if(ImGui::IsKeyPressed(ImGuiKey_F,false)) set_mode(Channel::DM_FM);
+                if(ImGui::IsKeyPressed(ImGuiKey_D,false)) set_mode(Channel::DM_DETECT);
                 // Arrow keys: pan direction
                 if(ImGui::IsKeyPressed(ImGuiKey_LeftArrow,false))  v.channels[sci].pan=-1;
                 if(ImGui::IsKeyPressed(ImGuiKey_RightArrow,false)) v.channels[sci].pan= 1;
@@ -1123,8 +1269,16 @@ void run_streaming_viewer(){
         if(!editing&&(ImGui::IsKeyPressed(ImGuiKey_Enter,false)||ImGui::IsKeyPressed(ImGuiKey_KeypadEnter,false))) focus_freq=true;
         if(fdeact){fdeact=false;ImGui::SetWindowFocus(nullptr);}
         if(focus_freq){ImGui::SetKeyboardFocusHere();focus_freq=false;}
-        ImGui::SetNextItemWidth(120);
-        ImGui::InputFloat("##freq",&new_freq,0,0,"%.3f MHz");
+        {
+            char fbuf[32]; snprintf(fbuf,sizeof(fbuf),"%.3f MHz",new_freq);
+            float tw=ImGui::CalcTextSize(fbuf).x;
+            float box_w=96.0f;
+            float px=std::max(2.0f,(box_w-tw)*0.5f-1.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,ImVec2(px,ImGui::GetStyle().FramePadding.y));
+            ImGui::SetNextItemWidth(box_w);
+            ImGui::InputFloat("##freq",&new_freq,0,0,"%.3f MHz");
+            ImGui::PopStyleVar();
+        }
         if(ImGui::IsItemDeactivatedAfterEdit()){v.pending_cf=new_freq;v.freq_req=true;fdeact=true;}
         if(ImGui::IsItemHovered()) ImGui::SetTooltip("Center Frequency  [Enter] to edit");
         ImGui::SameLine();
@@ -1133,14 +1287,22 @@ void run_streaming_viewer(){
         static const int fft_sizes[]={512,1024,2048,4096,8192,16384,32768};
         static const char* fft_lbls[]={"512","1024","2048","4096","8192","16384","32768"};
         static int fft_si=4;
-        ImGui::Text("FFT:"); ImGui::SameLine(); ImGui::SetNextItemWidth(72);
-        if(ImGui::BeginCombo("##fftsize",fft_lbls[fft_si],ImGuiComboFlags_HeightSmall)){
-            for(int i=0;i<7;i++){
-                bool sel2=(fft_si==i);
-                if(ImGui::Selectable(fft_lbls[i],sel2)){fft_si=i;v.pending_fft_size=fft_sizes[i];v.fft_size_change_req=true;}
-                if(sel2)ImGui::SetItemDefaultFocus();
+        ImGui::Text("FFT:"); ImGui::SameLine();
+        {
+            float tw2=ImGui::CalcTextSize(fft_lbls[fft_si]).x;
+            float box_w2=72.0f;
+            float px2=std::max(2.0f,(box_w2-tw2)*0.5f-12.0f); // leave room for arrow
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,ImVec2(px2,ImGui::GetStyle().FramePadding.y));
+            ImGui::SetNextItemWidth(box_w2);
+            if(ImGui::BeginCombo("##fftsize",fft_lbls[fft_si],ImGuiComboFlags_HeightSmall)){
+                for(int i=0;i<7;i++){
+                    bool sel2=(fft_si==i);
+                    if(ImGui::Selectable(fft_lbls[i],sel2)){fft_si=i;v.pending_fft_size=fft_sizes[i];v.fft_size_change_req=true;}
+                    if(sel2)ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
             }
-            ImGui::EndCombo();
+            ImGui::PopStyleVar();
         }
         ImGui::SameLine();
 
@@ -1198,8 +1360,6 @@ void run_streaming_viewer(){
                     if(nthr>DB_MAX) nthr=DB_MAX;
                     sch.sq_threshold.store(nthr,std::memory_order_relaxed);
                 }
-                ImGui::SetTooltip("[%d] SQL thr=%.1fdBFS  sig=%.1fdBFS  gate=%s",
-                                  sci+1, thr_db, sig, gopen?"OPEN":"CLOSED");
             }
             // Drag to set threshold directly
             if(ImGui::IsItemActive()){
@@ -1225,18 +1385,29 @@ void run_streaming_viewer(){
                 ImVec2 rs=ImGui::CalcTextSize(rbuf); rx-=rs.x;
                 dl->AddText(ImVec2(rx,ty2),IM_COL32(255,80,80,255),rbuf);
             }
+            
+            if(v.spectrum_pause.load()){
+                const char* ps="PAUSED  "; ImVec2 psz=ImGui::CalcTextSize(ps); rx-=psz.x;
+                dl->AddText(ImVec2(rx,ty2),IM_COL32(255,180,0,255),ps);
+            }
 
             // Per-channel: right to left
             for(int i=MAX_CHANNELS-1;i>=0;i--){
                 Channel& ch=v.channels[i]; if(!ch.filter_active) continue;
-                float cf_mhz=(std::min(ch.s,ch.e)+std::max(ch.s,ch.e))/2.0f;
-                const char* mn3[3]={"","AM ","FM "};
+                float ss_mhz=std::min(ch.s,ch.e), se_mhz=std::max(ch.s,ch.e);
+                float cf_mhz=(ss_mhz+se_mhz)/2.0f;
+                float bw_khz=(se_mhz-ss_mhz)*1000.0f;
+                const char* mname[4]={"","AM","FM","DET"};
+                const char* pname[3]={" L"," L+R"," R"};
                 bool dem_active=ch.dem_run.load();
-                char cb[64];
-                snprintf(cb,sizeof(cb),"[%d] %s%.3f MHz  ",
-                         i+1,
-                         dem_active?mn3[(int)ch.mode]:"",
-                         cf_mhz);
+                int pi=ch.pan+1; if(pi<0)pi=0; if(pi>2)pi=2;
+                char cb[96];
+                if(dem_active)
+                    snprintf(cb,sizeof(cb),"[%d]%s%s %.3f MHz @ %.0f kHz  ",
+                             i+1,mname[(int)ch.mode],pname[pi],cf_mhz,bw_khz);
+                else
+                    snprintf(cb,sizeof(cb),"[%d] %.3f MHz @ %.0f kHz  ",
+                             i+1,cf_mhz,bw_khz);
                 ImVec2 cs2=ImGui::CalcTextSize(cb); rx-=cs2.x;
                 ImU32 tc=ch.sq_gate.load()?CH_BORD[i]:IM_COL32(160,160,160,255);
 
@@ -1245,7 +1416,6 @@ void run_streaming_viewer(){
                 bool hovered=(mpos.x>=rx && mpos.x<rx+cs2.x && mpos.y>=0 && mpos.y<TOPBAR_H);
                 if(hovered){
                     tc=IM_COL32(255,255,255,255);
-                    ImGui::SetTooltip("click to select  double-click to remove");
                     if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
                         v.stop_dem(i);
                         v.channels[i].filter_active=false;

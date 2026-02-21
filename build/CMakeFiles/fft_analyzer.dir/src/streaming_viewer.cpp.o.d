@@ -228,4 +228,6 @@ CMakeFiles/fft_analyzer.dir/src/streaming_viewer.cpp.o: \
  /usr/include/x86_64-linux-gnu/c++/13/bits/atomic_word.h \
  /usr/include/x86_64-linux-gnu/sys/single_threaded.h \
  /usr/include/c++/13/atomic /usr/include/c++/13/bits/atomic_base.h \
- /usr/include/c++/13/bits/atomic_lockfree_defines.h
+ /usr/include/c++/13/bits/atomic_lockfree_defines.h \
+ /usr/include/x86_64-linux-gnu/mpg123.h \
+ /usr/include/x86_64-linux-gnu/fmt123.h
