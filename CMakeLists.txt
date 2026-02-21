@@ -6,15 +6,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(BLADERF REQUIRED libbladeRF)
-pkg_check_modules(FFTW REQUIRED fftw3f)
-pkg_check_modules(ALSA REQUIRED alsa)
-pkg_check_modules(MPG123 REQUIRED libmpg123)
+pkg_check_modules(FFTW    REQUIRED fftw3f)
+pkg_check_modules(ALSA    REQUIRED alsa)
+pkg_check_modules(MPG123  REQUIRED libmpg123)
 
 find_package(OpenGL REQUIRED)
-find_package(GLEW REQUIRED)
-find_package(glfw3 REQUIRED)
+find_package(GLEW   REQUIRED)
+find_package(glfw3  REQUIRED)
 
-set(IMGUI_PATH /usr/include/imgui)
+set(IMGUI_PATH          /usr/include/imgui)
 set(IMGUI_BACKENDS_PATH ${IMGUI_PATH}/backends)
 
 set(IMGUI_SOURCES
@@ -28,11 +28,19 @@ set(IMGUI_SOURCES
 )
 
 add_executable(BE_WE
-    src/streaming_viewer.cpp
+    src/main.cpp
+    src/fft_viewer.cpp
+    src/bladerf_io.cpp
+    src/demod.cpp
+    src/iq_record.cpp
+    src/audio.cpp
+    src/alert.cpp
+    src/ui.cpp
     ${IMGUI_SOURCES}
 )
 
 target_include_directories(BE_WE PRIVATE
+    src
     ${BLADERF_INCLUDE_DIRS}
     ${FFTW_INCLUDE_DIRS}
     ${ALSA_INCLUDE_DIRS}

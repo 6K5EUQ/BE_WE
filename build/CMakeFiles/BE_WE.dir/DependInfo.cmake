@@ -8,7 +8,14 @@ set(CMAKE_DEPENDS_LANGUAGES
 
 # The set of dependency files which are needed:
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
-  "/home/dsa/BE_WE/src/streaming_viewer.cpp" "CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.o" "gcc" "CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.o.d"
+  "/home/dsa/BE_WE/src/alert.cpp" "CMakeFiles/BE_WE.dir/src/alert.cpp.o" "gcc" "CMakeFiles/BE_WE.dir/src/alert.cpp.o.d"
+  "/home/dsa/BE_WE/src/audio.cpp" "CMakeFiles/BE_WE.dir/src/audio.cpp.o" "gcc" "CMakeFiles/BE_WE.dir/src/audio.cpp.o.d"
+  "/home/dsa/BE_WE/src/bladerf_io.cpp" "CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.o" "gcc" "CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.o.d"
+  "/home/dsa/BE_WE/src/demod.cpp" "CMakeFiles/BE_WE.dir/src/demod.cpp.o" "gcc" "CMakeFiles/BE_WE.dir/src/demod.cpp.o.d"
+  "/home/dsa/BE_WE/src/fft_viewer.cpp" "CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.o" "gcc" "CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.o.d"
+  "/home/dsa/BE_WE/src/iq_record.cpp" "CMakeFiles/BE_WE.dir/src/iq_record.cpp.o" "gcc" "CMakeFiles/BE_WE.dir/src/iq_record.cpp.o.d"
+  "/home/dsa/BE_WE/src/main.cpp" "CMakeFiles/BE_WE.dir/src/main.cpp.o" "gcc" "CMakeFiles/BE_WE.dir/src/main.cpp.o.d"
+  "/home/dsa/BE_WE/src/ui.cpp" "CMakeFiles/BE_WE.dir/src/ui.cpp.o" "gcc" "CMakeFiles/BE_WE.dir/src/ui.cpp.o.d"
   "/usr/include/imgui/backends/imgui_impl_glfw.cpp" "CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o" "gcc" "CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o.d"
   "/usr/include/imgui/backends/imgui_impl_opengl3.cpp" "CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o" "gcc" "CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o.d"
   "/usr/include/imgui/imgui.cpp" "CMakeFiles/BE_WE.dir/usr/include/imgui/imgui.cpp.o" "gcc" "CMakeFiles/BE_WE.dir/usr/include/imgui/imgui.cpp.o.d"

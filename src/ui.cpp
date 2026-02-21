@@ -1,0 +1,692 @@
+#include "fft_viewer.hpp"
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_opengl3.h>
+#include <algorithm>
+#include <chrono>
+#include <cstring>
+#include <cstdio>
+
+// ── Channel overlays ──────────────────────────────────────────────────────
+void FFTViewer::handle_new_channel_drag(float gx, float gw){
+    ImVec2 m=ImGui::GetIO().MousePos;
+    bool in_graph=(m.x>=gx&&m.x<=gx+gw);
+
+    if(in_graph&&ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+        float af=x_to_abs(m.x,gx,gw);
+        new_drag.active=true; new_drag.anch=af; new_drag.s=af; new_drag.e=af;
+    }
+    if(new_drag.active){
+        if(ImGui::IsMouseDown(ImGuiMouseButton_Right)){
+            float f=x_to_abs(m.x,gx,gw);
+            float s=std::min(new_drag.anch,f), e=std::max(new_drag.anch,f);
+            float cf=(s+e)/2.0f;
+            float bw_khz=roundf((e-s)*1000.0f);
+            bw_khz=std::max(1.0f,bw_khz);
+            new_drag.s=cf-bw_khz/2000.0f; new_drag.e=cf+bw_khz/2000.0f;
+        }
+        if(ImGui::IsMouseReleased(ImGuiMouseButton_Right)){
+            new_drag.active=false;
+            float bw=fabsf(new_drag.e-new_drag.s);
+            if(bw>0.001f){
+                int slot=-1;
+                for(int i=0;i<MAX_CHANNELS;i++) if(!channels[i].filter_active){slot=i;break;}
+                if(slot>=0){
+                    channels[slot].s=new_drag.s; channels[slot].e=new_drag.e;
+                    channels[slot].filter_active=true; channels[slot].mode=Channel::DM_NONE;
+                    channels[slot].pan=0; channels[slot].selected=false;
+                    channels[slot].sq_calibrated.store(false);
+                    channels[slot].ar_wp.store(0); channels[slot].ar_rp.store(0);
+                    if(selected_ch>=0) channels[selected_ch].selected=false;
+                    selected_ch=slot; channels[slot].selected=true;
+                }
+            }
+        }
+    }
+}
+
+void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float gh){
+    ImVec2 m=ImGui::GetIO().MousePos;
+    if(m.x<gx||m.x>gx+gw) return;
+    bool in_graph=(m.y>=gy&&m.y<=gy+gh);
+
+    bool any_move=false;
+    for(int i=0;i<MAX_CHANNELS;i++) if(channels[i].move_drag){any_move=true;break;}
+
+    if(any_move){
+        if(ImGui::IsMouseDown(ImGuiMouseButton_Left)){
+            float cur_abs=x_to_abs(m.x,gx,gw);
+            for(int i=0;i<MAX_CHANNELS;i++){
+                if(!channels[i].move_drag) continue;
+                float delta_abs=cur_abs-channels[i].move_anchor;
+                float snapped=roundf(delta_abs*1000.0f)/1000.0f;
+                float half_bw=(channels[i].move_e0-channels[i].move_s0)/2.0f;
+                float new_cf=(channels[i].move_s0+channels[i].move_e0)/2.0f+snapped;
+                channels[i].s=new_cf-half_bw; channels[i].e=new_cf+half_bw;
+            }
+        } else {
+            for(int i=0;i<MAX_CHANNELS;i++){
+                if(!channels[i].move_drag) continue;
+                bool moved=(channels[i].s!=channels[i].move_s0||channels[i].e!=channels[i].move_e0);
+                channels[i].move_drag=false;
+                if(moved&&channels[i].dem_run.load()){
+                    Channel::DemodMode md=channels[i].mode;
+                    stop_dem(i); start_dem(i,md);
+                }
+            }
+        }
+        return;
+    }
+
+    if(in_graph&&ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
+        int ci=channel_at_x(m.x,gx,gw);
+        if(ci>=0){
+            stop_dem(ci);
+            channels[ci].filter_active=false;
+            channels[ci].selected=false;
+            channels[ci].mode=Channel::DM_NONE;
+            if(selected_ch==ci) selected_ch=-1;
+        }
+        return;
+    }
+
+    if(in_graph&&ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+        int ci=channel_at_x(m.x,gx,gw);
+        if(selected_ch>=0) channels[selected_ch].selected=false;
+        if(ci>=0){
+            selected_ch=ci; channels[ci].selected=true;
+            channels[ci].move_drag=true;
+            channels[ci].move_anchor=x_to_abs(m.x,gx,gw);
+            channels[ci].move_s0=std::min(channels[ci].s,channels[ci].e);
+            channels[ci].move_e0=std::max(channels[ci].s,channels[ci].e);
+        } else {
+            selected_ch=-1;
+        }
+    }
+}
+
+void FFTViewer::draw_all_channels(ImDrawList* dl, float gx, float gw, float gy, float gh, bool show_label){
+    float cf=header.center_frequency/1e6f;
+    float ds,de; get_disp(ds,de); float dw=de-ds;
+
+    if(new_drag.active){
+        float x0=gx+(new_drag.s-cf-ds)/dw*gw, x1=gx+(new_drag.e-cf-ds)/dw*gw;
+        float c0=std::max(gx,x0), c1=std::min(gx+gw,x1);
+        if(c1>c0){
+            dl->AddRectFilled(ImVec2(c0,gy),ImVec2(c1,gy+gh),IM_COL32(255,255,255,20));
+            dl->AddLine(ImVec2(x0,gy),ImVec2(x0,gy+gh),IM_COL32(200,200,200,160),1.5f);
+            dl->AddLine(ImVec2(x1,gy),ImVec2(x1,gy+gh),IM_COL32(200,200,200,160),1.5f);
+        }
+    }
+
+    for(int i=0;i<MAX_CHANNELS;i++){
+        Channel& ch=channels[i];
+        if(!ch.filter_active) continue;
+        float ss=std::min(ch.s,ch.e), se=std::max(ch.s,ch.e);
+        float x0=gx+(ss-cf-ds)/dw*gw, x1=gx+(se-cf-ds)/dw*gw;
+        float c0=std::max(gx,x0), c1=std::min(gx+gw,x1);
+        if(c1<=c0) continue;
+
+        ImU32 fill=ch.selected?CH_SFIL[i]:CH_FILL[i];
+        ImU32 bord=CH_BORD[i];
+        if(rec_on.load()&&i==rec_ch) fill=IM_COL32(255,60,60,60);
+
+        dl->AddRectFilled(ImVec2(c0,gy),ImVec2(c1,gy+gh),fill);
+        auto dash=[&](float x){
+            if(x<gx-1||x>gx+gw+1) return;
+            for(float y=gy;y<gy+gh;y+=10){
+                float ye=std::min(y+5.0f,gy+gh);
+                dl->AddLine(ImVec2(x,y),ImVec2(x,ye),bord,1.5f);
+            }
+        };
+        dash(x0); dash(x1);
+        if(ch.selected){
+            dl->AddLine(ImVec2(std::max(gx,x0),gy),ImVec2(std::max(gx,x0),gy+gh),bord,2.0f);
+            dl->AddLine(ImVec2(std::min(gx+gw,x1),gy),ImVec2(std::min(gx+gw,x1),gy+gh),bord,2.0f);
+        }
+        if(!show_label) continue;
+        char lb[16]; snprintf(lb,sizeof(lb),"[%d]",i+1);
+        ImVec2 ts=ImGui::CalcTextSize(lb);
+        float cx=std::max(gx,std::min(gx+gw-ts.x,(c0+c1)/2-ts.x/2));
+        float ly=gy+4;
+        dl->AddRectFilled(ImVec2(cx-2,ly),ImVec2(cx+ts.x+2,ly+ts.y+2),IM_COL32(0,0,0,190));
+        dl->AddText(ImVec2(cx,ly+1),ch.sq_gate.load()?bord:IM_COL32(160,160,160,200),lb);
+    }
+}
+
+void FFTViewer::draw_freq_axis(ImDrawList* dl, float gx, float gw, float gy, float gh, bool ticks_only){
+    float cf=header.center_frequency/1e6f;
+    float ds,de; get_disp(ds,de); float dr=de-ds;
+    if(freq_zoom<=1.0f){
+        float step=5, first=ceilf((ds+cf)/step)*step;
+        for(float af=first;af<=de+cf+1e-4f;af+=step){
+            float x=gx+(af-cf-ds)/dr*gw; if(x<gx||x>gx+gw) continue;
+            if(!ticks_only) dl->AddLine(ImVec2(x,gy),ImVec2(x,gy+gh),IM_COL32(60,60,60,100),1);
+            dl->AddLine(ImVec2(x,gy+gh-5),ImVec2(x,gy+gh),IM_COL32(100,100,100,200),1);
+            if(!ticks_only){
+                dl->AddLine(ImVec2(x,gy+gh),ImVec2(x,gy+gh+5),IM_COL32(100,100,100,200),1);
+                char lb[32]; snprintf(lb,32,"%.0f",af);
+                ImVec2 ts=ImGui::CalcTextSize(lb);
+                dl->AddText(ImVec2(x-ts.x/2,gy+gh+8),IM_COL32(0,255,0,255),lb);
+            }
+        }
+    } else {
+        for(int i=0;i<=10;i++){
+            float fn=(float)i/10, x=gx+fn*gw, af=cf+ds+fn*dr;
+            if(!ticks_only) dl->AddLine(ImVec2(x,gy),ImVec2(x,gy+gh),IM_COL32(60,60,60,100),1);
+            dl->AddLine(ImVec2(x,gy+gh-5),ImVec2(x,gy+gh),IM_COL32(100,100,100,200),1);
+            if(!ticks_only){
+                dl->AddLine(ImVec2(x,gy+gh),ImVec2(x,gy+gh+5),IM_COL32(100,100,100,200),1);
+                char lb[32]; snprintf(lb,32,"%.3f",af);
+                ImVec2 ts=ImGui::CalcTextSize(lb);
+                dl->AddText(ImVec2(x-ts.x/2,gy+gh+8),IM_COL32(0,255,0,255),lb);
+            }
+        }
+    }
+}
+
+void FFTViewer::handle_zoom_scroll(float gx, float gw, float mouse_x){
+    float wheel=ImGui::GetIO().MouseWheel;
+    if(wheel==0) return;
+    float nyq=header.sample_rate/2.0f/1e6f, eff=nyq*0.875f, rng=2*eff;
+    float mx=(mouse_x-gx)/gw; mx=std::max(0.0f,std::min(1.0f,mx));
+    float fmx=-eff+freq_pan*rng+mx*(rng/freq_zoom);
+    freq_zoom*=(1+wheel*0.15f); freq_zoom=std::max(1.0f,std::min(200.0f,freq_zoom));
+    float nw=rng/freq_zoom, ns=fmx-mx*nw;
+    freq_pan=(ns+eff)/rng; freq_pan=std::max(0.0f,std::min(1-1/freq_zoom,freq_pan));
+}
+
+void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, float total_w, float total_h){
+    float gx=full_x+AXIS_LABEL_WIDTH, gy=full_y;
+    float gw=total_w-AXIS_LABEL_WIDTH, gh=total_h-BOTTOM_LABEL_HEIGHT;
+    dl->AddRectFilled(ImVec2(full_x,full_y),ImVec2(full_x+total_w,full_y+total_h),IM_COL32(10,10,10,255));
+
+    float ds,de; get_disp(ds,de);
+    float sr_mhz=header.sample_rate/1e6f; int np=(int)gw;
+    bool cv=(cached_sp_idx==current_fft_idx&&cached_pan==freq_pan&&cached_zoom==freq_zoom&&
+             cached_px==np&&cached_pmin==display_power_min&&cached_pmax==display_power_max);
+    if(!cv){
+        current_spectrum.assign(np,-80.0f);
+        float nyq=sr_mhz/2.0f; int hf=header.fft_size/2;
+        int mi=current_fft_idx%MAX_FFTS_MEMORY;
+        for(int px=0;px<np;px++){
+            float fd=ds+(float)px/np*(de-ds);
+            int bin=(fd>=0)?(int)((fd/nyq)*hf):fft_size+(int)((fd/nyq)*hf);
+            if(bin>=0&&bin<fft_size)
+                current_spectrum[px]=(fft_data[mi*fft_size+bin]/127.0f)*(header.power_max-header.power_min)+header.power_min;
+        }
+        cached_sp_idx=current_fft_idx; cached_pan=freq_pan; cached_zoom=freq_zoom;
+        cached_px=np; cached_pmin=display_power_min; cached_pmax=display_power_max;
+    }
+    float pr=display_power_max-display_power_min;
+    for(int px=0;px<np-1;px++){
+        if(px>=(int)current_spectrum.size()||px+1>=(int)current_spectrum.size()) break;
+        float p1=std::max(0.0f,std::min(1.0f,(current_spectrum[px]-display_power_min)/pr));
+        float p2=std::max(0.0f,std::min(1.0f,(current_spectrum[px+1]-display_power_min)/pr));
+        dl->AddLine(ImVec2(gx+px,gy+(1-p1)*gh),ImVec2(gx+px+1,gy+(1-p2)*gh),IM_COL32(0,255,0,255),1.5f);
+    }
+    for(int i=1;i<=9;i++){
+        float y=gy+(float)i/10*gh;
+        dl->AddLine(ImVec2(gx,y),ImVec2(gx+gw,y),IM_COL32(60,60,60,100),1);
+        dl->AddLine(ImVec2(gx-5,y),ImVec2(gx,y),IM_COL32(100,100,100,200),1);
+        char lb[16]; snprintf(lb,16,"%.0f",-8.0f*i);
+        ImVec2 ts=ImGui::CalcTextSize(lb);
+        dl->AddText(ImVec2(gx-10-ts.x,y-7),IM_COL32(200,200,200,255),lb);
+    }
+    draw_freq_axis(dl,gx,gw,gy,gh,false);
+    draw_all_channels(dl,gx,gw,gy,gh,true);
+
+    ImGui::SetCursorScreenPos(ImVec2(gx,gy));
+    ImGui::InvisibleButton("sp_graph",ImVec2(gw,gh));
+    bool hov=ImGui::IsItemHovered();
+    handle_new_channel_drag(gx,gw);
+    handle_channel_interactions(gx,gw,gy,gh);
+    if(hov){
+        ImVec2 mm=ImGui::GetIO().MousePos;
+        float af=x_to_abs(mm.x,gx,gw);
+        char info[48]; snprintf(info,48,"%.3f MHz",af);
+        ImVec2 ts=ImGui::CalcTextSize(info);
+        float tx=gx+gw-ts.x-4, ty=gy+2;
+        dl->AddRectFilled(ImVec2(tx-2,ty),ImVec2(tx+ts.x+2,ty+ts.y+4),IM_COL32(20,20,20,220));
+        dl->AddRect(ImVec2(tx-2,ty),ImVec2(tx+ts.x+2,ty+ts.y+4),IM_COL32(100,100,100,255));
+        dl->AddText(ImVec2(tx,ty+2),IM_COL32(0,255,0,255),info);
+        handle_zoom_scroll(gx,gw,mm.x);
+    }
+    // Power axis drag
+    ImGui::SetCursorScreenPos(ImVec2(full_x,gy));
+    ImGui::InvisibleButton("pax",ImVec2(AXIS_LABEL_WIDTH,gh));
+    static float dsy=0,dsmin=0,dsmax=0; static bool dl_lo=false;
+    if(ImGui::IsItemActive()){
+        if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+            ImVec2 m2=ImGui::GetMousePos();
+            float mid=(display_power_min+display_power_max)/2;
+            float midy=gy+gh*(1-(mid-display_power_min)/(display_power_max-display_power_min));
+            dsy=m2.y; dsmin=display_power_min; dsmax=display_power_max; dl_lo=(m2.y>midy);
+        }
+        if(ImGui::IsMouseDragging(ImGuiMouseButton_Left)){
+            ImVec2 m2=ImGui::GetMousePos(); float dy=m2.y-dsy;
+            float midp=(dsmin+dsmax)/2, midyy=gy+gh*(1-(midp-dsmin)/(dsmax-dsmin));
+            if(dl_lo){ float n=dy/(gy+gh-midyy); n=std::max(-1.0f,std::min(1.0f,n)); display_power_min=midp-n*50; }
+            else      { float n=-dy/midyy;        n=std::max(-1.0f,std::min(1.0f,n)); display_power_max=midp+n*50; }
+            if(display_power_max-display_power_min<5){
+                float md=(display_power_min+display_power_max)/2;
+                display_power_min=md-2.5f; display_power_max=md+2.5f;
+            }
+            cached_sp_idx=-1;
+        }
+    }
+}
+
+void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, float total_w, float total_h){
+    float gx=full_x+AXIS_LABEL_WIDTH, gy=full_y;
+    float gw=total_w-AXIS_LABEL_WIDTH, gh=total_h;
+    dl->AddRectFilled(ImVec2(full_x,full_y),ImVec2(full_x+total_w,full_y+total_h),IM_COL32(10,10,10,255));
+    if(!waterfall_texture) create_waterfall_texture();
+    if(total_ffts>0&&last_wf_update_idx!=current_fft_idx){
+        update_wf_row(current_fft_idx); last_wf_update_idx=current_fft_idx;
+    }
+    if(waterfall_texture){
+        float ds,de; get_disp(ds,de);
+        float nyq=header.sample_rate/2.0f/1e6f;
+        int dr2=std::min(total_ffts,MAX_FFTS_MEMORY);
+        float us=(ds+nyq)/(2*nyq), ue=(de+nyq)/(2*nyq);
+        float vn=(float)(current_fft_idx%MAX_FFTS_MEMORY)/MAX_FFTS_MEMORY;
+        float vt=vn+1.0f/MAX_FFTS_MEMORY;
+        float dh=(dr2>=(int)gh)?gh:(float)dr2;
+        float vb=vt-(float)dr2/MAX_FFTS_MEMORY;
+        ImTextureID tid=(ImTextureID)(intptr_t)waterfall_texture;
+        dl->AddImage(tid,ImVec2(gx,gy),ImVec2(gx+gw,gy+dh),ImVec2(us,vt),ImVec2(ue,vb),IM_COL32(255,255,255,255));
+    }
+    draw_freq_axis(dl,gx,gw,gy,gh,true);
+    draw_all_channels(dl,gx,gw,gy,gh,false);
+    ImGui::SetCursorScreenPos(ImVec2(gx,gy));
+    ImGui::InvisibleButton("wf_graph",ImVec2(gw,gh));
+    bool hov=ImGui::IsItemHovered();
+    handle_new_channel_drag(gx,gw);
+    handle_channel_interactions(gx,gw,gy,gh);
+    if(hov){
+        ImVec2 mm=ImGui::GetIO().MousePos;
+        float af=x_to_abs(mm.x,gx,gw);
+        char info[64]; snprintf(info,64,"%.3f MHz",af);
+        ImVec2 ts=ImGui::CalcTextSize(info);
+        float tx=gx+gw-ts.x, ty=gy;
+        dl->AddRectFilled(ImVec2(tx,ty),ImVec2(tx+ts.x,ty+ts.y+5),IM_COL32(20,20,20,220));
+        dl->AddRect(ImVec2(tx,ty),ImVec2(tx+ts.x,ty+ts.y+5),IM_COL32(100,100,100,255));
+        dl->AddText(ImVec2(tx,ty+2),IM_COL32(0,255,0,255),info);
+        handle_zoom_scroll(gx,gw,mm.x);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+void run_streaming_viewer(){
+    float cf=450.0f, sr=61.44f;
+    FFTViewer v;
+    if(!v.initialize_bladerf(cf,sr)){ printf("BladeRF init failed\n"); return; }
+    v.load_alert_mp3();
+
+    std::thread cap(&FFTViewer::capture_and_process,&v);
+    v.mix_stop.store(false);
+    v.mix_thr=std::thread(&FFTViewer::mix_worker,&v);
+
+    glfwInit();
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
+    GLFWwindow* win=glfwCreateWindow(1400,900,"BEWE [CPU --%]",nullptr,nullptr);
+    glfwMakeContextCurrent(win); glfwSwapInterval(0);
+    glewExperimental=GL_TRUE; glewInit();
+    ImGui::CreateContext(); ImGui::StyleColorsDark();
+    ImGui_ImplGlfw_InitForOpenGL(win,true);
+    ImGui_ImplOpenGL3_Init("#version 330");
+    v.create_waterfall_texture();
+
+    // ── System monitor state ──────────────────────────────────────────────
+    auto cpu_last_time=std::chrono::steady_clock::now();
+    long long cpu_last_idle=0, cpu_last_total=0, io_last_ms=0;
+
+    auto read_cpu=[&](long long& idle, long long& total){
+        FILE* f=fopen("/proc/stat","r"); if(!f){idle=total=0;return;}
+        long long u,n,s,i,iow,irq,sirq;
+        fscanf(f,"cpu %lld %lld %lld %lld %lld %lld %lld",&u,&n,&s,&i,&iow,&irq,&sirq);
+        fclose(f); idle=i+iow; total=u+n+s+i+iow+irq+sirq;
+    };
+    auto read_ram=[&]()->float{
+        FILE* f=fopen("/proc/meminfo","r"); if(!f) return 0.0f;
+        long long total=0,avail=0; char key[64]; long long val;
+        for(int i=0;i<10;i++){
+            if(fscanf(f,"%63s %lld kB",key,&val)!=2) break;
+            if(!strcmp(key,"MemTotal:"))      total=val;
+            else if(!strcmp(key,"MemAvailable:")) avail=val;
+        }
+        fclose(f);
+        return (total>0)?(float)(total-avail)/total*100.0f:0.0f;
+    };
+    auto read_ghz=[&]()->float{
+        double sum=0; int cnt=0;
+        for(int c=0;c<256;c++){
+            char path[128];
+            snprintf(path,sizeof(path),"/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq",c);
+            FILE* f=fopen(path,"r"); if(!f) break;
+            long long khz=0; fscanf(f,"%lld",&khz); fclose(f);
+            sum+=khz; cnt++;
+        }
+        return cnt>0?(float)(sum/cnt/1e6):0.0f;
+    };
+    auto read_io_ms=[&]()->long long{
+        FILE* f=fopen("/proc/diskstats","r"); if(!f) return 0;
+        long long sum=0; char dev[32]; unsigned int maj,min_;
+        long long f1,f2,f3,f4,f5,f6,f7,f8,f9,io_ticks;
+        while(fscanf(f,"%u %u %31s %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %*[^\n]",
+                     &maj,&min_,dev,&f1,&f2,&f3,&f4,&f5,&f6,&f7,&f8,&f9,&io_ticks)==13){
+            if(dev[0]=='s'&&dev[2]>='a'&&dev[2]<='z'&&dev[3]=='\0') sum+=io_ticks;
+            else if(dev[0]=='n'&&dev[1]=='v'&&strstr(dev,"p")==nullptr) sum+=io_ticks;
+            else if(dev[0]=='v'&&dev[1]=='d'&&dev[3]=='\0') sum+=io_ticks;
+        }
+        fclose(f); return sum;
+    };
+    read_cpu(cpu_last_idle,cpu_last_total);
+    io_last_ms=read_io_ms();
+
+    // ── Main loop ─────────────────────────────────────────────────────────
+    while(!glfwWindowShouldClose(win)){
+        glfwPollEvents();
+
+        // Window title: system monitor (1s interval)
+        {
+            auto now=std::chrono::steady_clock::now();
+            float dt=std::chrono::duration<float>(now-cpu_last_time).count();
+            if(dt>=1.0f){
+                long long idle,total; read_cpu(idle,total);
+                long long d_idle=idle-cpu_last_idle, d_total=total-cpu_last_total;
+                float cpu_pct=(d_total>0)?(1.0f-(float)d_idle/d_total)*100.0f:0.0f;
+                cpu_last_idle=idle; cpu_last_total=total; cpu_last_time=now;
+                long long io_now=read_io_ms();
+                float io_pct=std::min(100.0f,(float)(io_now-io_last_ms)/10.0f);
+                io_last_ms=io_now;
+                float ghz=read_ghz(), ram=read_ram();
+                char t[128];
+                snprintf(t,sizeof(t),"BEWE [CPU %.0f%% @ %.2fGHz | RAM %.0f%% | IO %.0f%%]",
+                         (double)cpu_pct,(double)ghz,(double)ram,(double)io_pct);
+                glfwSetWindowTitle(win,t);
+            }
+        }
+
+        ImGui_ImplOpenGL3_NewFrame(); ImGui_ImplGlfw_NewFrame(); ImGui::NewFrame();
+        v.topbar_sel_this_frame=false;
+        if(v.texture_needs_recreate){ v.texture_needs_recreate=false; v.create_waterfall_texture(); }
+
+        ImGuiIO& io=ImGui::GetIO();
+        bool editing=ImGui::IsAnyItemActive();
+        int sci=v.selected_ch;
+
+        // ── Keyboard shortcuts ────────────────────────────────────────────
+        if(!editing){
+            if(ImGui::IsKeyPressed(ImGuiKey_R,false)){
+                if(v.rec_on.load()) v.stop_rec(); else v.start_rec();
+            }
+            if(ImGui::IsKeyPressed(ImGuiKey_P,false)){
+                v.spectrum_pause.store(!v.spectrum_pause.load());
+            }
+            if(sci>=0&&v.channels[sci].filter_active){
+                auto set_mode=[&](Channel::DemodMode m){
+                    Channel& ch=v.channels[sci];
+                    if(ch.dem_run.load()&&ch.mode==m){ v.stop_dem(sci); }
+                    else { v.stop_dem(sci); v.start_dem(sci,m); }
+                };
+                if(ImGui::IsKeyPressed(ImGuiKey_A,false)) set_mode(Channel::DM_AM);
+                if(ImGui::IsKeyPressed(ImGuiKey_F,false)) set_mode(Channel::DM_FM);
+                if(ImGui::IsKeyPressed(ImGuiKey_D,false)) set_mode(Channel::DM_DETECT);
+                if(ImGui::IsKeyPressed(ImGuiKey_M,false)){
+                    Channel& ch=v.channels[sci];
+                    if(ch.dem_run.load()&&ch.mode==Channel::DM_MAGIC){ v.stop_dem(sci); }
+                    else {
+                        v.stop_dem(sci);
+                        ch.magic_det.store(0,std::memory_order_relaxed);
+                        v.start_dem(sci,Channel::DM_MAGIC);
+                    }
+                }
+                if(ImGui::IsKeyPressed(ImGuiKey_LeftArrow,false))  v.channels[sci].pan=-1;
+                if(ImGui::IsKeyPressed(ImGuiKey_RightArrow,false)) v.channels[sci].pan= 1;
+                if(ImGui::IsKeyPressed(ImGuiKey_UpArrow,false))    v.channels[sci].pan= 0;
+            }
+            if(ImGui::IsKeyPressed(ImGuiKey_Escape,false)){
+                if(sci>=0){ v.channels[sci].selected=false; v.selected_ch=-1; }
+            }
+            if(ImGui::IsKeyPressed(ImGuiKey_Delete,false)){
+                if(sci>=0&&v.channels[sci].filter_active){
+                    v.stop_dem(sci);
+                    v.channels[sci].filter_active=false;
+                    v.channels[sci].selected=false;
+                    v.channels[sci].mode=Channel::DM_NONE;
+                    v.selected_ch=-1;
+                }
+            }
+        }
+
+        // ── Main window ───────────────────────────────────────────────────
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,ImVec2(0,0));
+        ImGui::SetNextWindowPos(ImVec2(0,0));
+        ImGui::SetNextWindowSize(io.DisplaySize);
+        ImGui::Begin("##main",nullptr,
+                     ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoResize|
+                     ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoTitleBar|
+                     ImGuiWindowFlags_NoBringToFrontOnFocus);
+        ImGui::PopStyleVar();
+
+        ImDrawList* dl=ImGui::GetWindowDrawList();
+        float disp_w=io.DisplaySize.x, disp_h=io.DisplaySize.y;
+
+        dl->AddRectFilled(ImVec2(0,0),ImVec2(disp_w,TOPBAR_H),IM_COL32(30,30,30,255));
+        ImGui::SetCursorPos(ImVec2(6,6));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,ImVec2(8,4));
+
+        // ── Frequency input ───────────────────────────────────────────────
+        static float new_freq=450.0f; static bool fdeact=false, focus_freq=false;
+        if(!editing&&(ImGui::IsKeyPressed(ImGuiKey_Enter,false)||ImGui::IsKeyPressed(ImGuiKey_KeypadEnter,false)))
+            focus_freq=true;
+        if(fdeact){ fdeact=false; ImGui::SetWindowFocus(nullptr); }
+        if(focus_freq){ ImGui::SetKeyboardFocusHere(); focus_freq=false; }
+        {
+            char fbuf[32]; snprintf(fbuf,sizeof(fbuf),"%.3f MHz",new_freq);
+            float tw=ImGui::CalcTextSize(fbuf).x;
+            float box_w=96.0f;
+            float px=std::max(2.0f,(box_w-tw)*0.5f-1.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,ImVec2(px,ImGui::GetStyle().FramePadding.y));
+            ImGui::SetNextItemWidth(box_w);
+            ImGui::InputFloat("##freq",&new_freq,0,0,"%.3f MHz");
+            ImGui::PopStyleVar();
+        }
+        if(ImGui::IsItemDeactivatedAfterEdit()){ v.pending_cf=new_freq; v.freq_req=true; fdeact=true; }
+        if(ImGui::IsItemHovered()) ImGui::SetTooltip("Center Frequency  [Enter] to edit");
+        ImGui::SameLine();
+
+        // ── FFT size combo ────────────────────────────────────────────────
+        static const int fft_sizes[]={512,1024,2048,4096,8192,16384,32768};
+        static const char* fft_lbls[]={"512","1024","2048","4096","8192","16384","32768"};
+        static int fft_si=4;
+        ImGui::Text("FFT:"); ImGui::SameLine();
+        {
+            float tw2=ImGui::CalcTextSize(fft_lbls[fft_si]).x;
+            float box_w2=72.0f;
+            float px2=std::max(2.0f,(box_w2-tw2)*0.5f-12.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,ImVec2(px2,ImGui::GetStyle().FramePadding.y));
+            ImGui::SetNextItemWidth(box_w2);
+            if(ImGui::BeginCombo("##fftsize",fft_lbls[fft_si],ImGuiComboFlags_HeightSmall)){
+                for(int i=0;i<7;i++){
+                    bool sel2=(fft_si==i);
+                    if(ImGui::Selectable(fft_lbls[i],sel2)){
+                        fft_si=i; v.pending_fft_size=fft_sizes[i]; v.fft_size_change_req=true;
+                    }
+                    if(sel2) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::PopStyleVar();
+        }
+        ImGui::SameLine();
+
+        // ── Squelch slider (선택 채널만) ──────────────────────────────────
+        if(sci>=0&&v.channels[sci].filter_active){
+            Channel& sch=v.channels[sci];
+            float sig  =sch.sq_sig .load(std::memory_order_relaxed);
+            bool  gopen=sch.sq_gate.load(std::memory_order_relaxed);
+            ImGui::Text("SQL:"); ImGui::SameLine();
+            const float SLIDER_W=160.0f, SLIDER_H=14.0f;
+            ImVec2 sp=ImGui::GetCursorScreenPos();
+            sp.y=ImGui::GetWindowPos().y+(TOPBAR_H-SLIDER_H)/2.0f;
+            ImDrawList* bdl=ImGui::GetWindowDrawList();
+            const float DB_MIN=v.display_power_min, DB_MAX=v.display_power_max;
+            const float DB_RNG=std::max(1.0f,DB_MAX-DB_MIN);
+            float thr_db=sch.sq_threshold.load(std::memory_order_relaxed);
+            auto to_x=[&](float db)->float{
+                float t=(db-DB_MIN)/DB_RNG; t=t<0?0:t>1?1:t;
+                return sp.x+t*SLIDER_W;
+            };
+            bdl->AddRectFilled(ImVec2(sp.x,sp.y),ImVec2(sp.x+SLIDER_W,sp.y+SLIDER_H),IM_COL32(40,40,40,255),3);
+            float sw=to_x(sig)-sp.x;
+            if(sw>0){
+                ImU32 sc=gopen?IM_COL32(60,220,60,200):IM_COL32(40,110,40,150);
+                bdl->AddRectFilled(ImVec2(sp.x,sp.y),ImVec2(sp.x+sw,sp.y+SLIDER_H),sc,3);
+            }
+            float tx=to_x(thr_db);
+            bdl->AddLine(ImVec2(tx,sp.y),ImVec2(tx,sp.y+SLIDER_H),IM_COL32(255,220,0,230),2.5f);
+            char lbl[16]; snprintf(lbl,sizeof(lbl),"%.0fdB",thr_db);
+            ImVec2 lsz=ImGui::CalcTextSize(lbl);
+            bdl->AddText(ImVec2(sp.x+SLIDER_W/2-lsz.x/2,sp.y+(SLIDER_H-lsz.y)/2),IM_COL32(230,230,230,255),lbl);
+            ImGui::SetCursorScreenPos(sp);
+            ImGui::InvisibleButton("##sql",ImVec2(SLIDER_W,SLIDER_H));
+            if(ImGui::IsItemHovered()){
+                float wheel=ImGui::GetIO().MouseWheel;
+                if(wheel!=0.0f){
+                    float nthr=thr_db+(wheel>0?5.0f:-5.0f);
+                    nthr=nthr<DB_MIN?DB_MIN:nthr>DB_MAX?DB_MAX:nthr;
+                    sch.sq_threshold.store(nthr,std::memory_order_relaxed);
+                }
+            }
+            if(ImGui::IsItemActive()){
+                float mx=ImGui::GetIO().MousePos.x;
+                float nthr=DB_MIN+((mx-sp.x)/SLIDER_W)*DB_RNG;
+                nthr=nthr<DB_MIN?DB_MIN:nthr>DB_MAX?DB_MAX:nthr;
+                sch.sq_threshold.store(nthr,std::memory_order_relaxed);
+            }
+            ImGui::SetCursorScreenPos(ImVec2(sp.x+SLIDER_W+6,ImGui::GetCursorScreenPos().y));
+        }
+
+        // ── Right side: channel status + REC + PAUSED ────────────────────
+        {
+            float rx=disp_w-8.0f;
+            float ty2=(TOPBAR_H-ImGui::GetFontSize())/2;
+
+            if(v.rec_on.load()){
+                float el=std::chrono::duration<float>(std::chrono::steady_clock::now()-v.rec_t0).count();
+                uint64_t fr=v.rec_frames.load(); float mb=(float)(fr*4)/1048576.0f;
+                int mm2=(int)(el/60), ss2=(int)(el)%60;
+                char rbuf[80]; snprintf(rbuf,sizeof(rbuf),"REC %d:%02d %.1fMB  ",mm2,ss2,mb);
+                ImVec2 rs=ImGui::CalcTextSize(rbuf); rx-=rs.x;
+                dl->AddText(ImVec2(rx,ty2),IM_COL32(255,80,80,255),rbuf);
+            }
+            if(v.spectrum_pause.load()){
+                const char* ps="PAUSED  ";
+                ImVec2 psz=ImGui::CalcTextSize(ps); rx-=psz.x;
+                dl->AddText(ImVec2(rx,ty2),IM_COL32(255,180,0,255),ps);
+            }
+
+            // Per-channel labels (right to left)
+            for(int i=MAX_CHANNELS-1;i>=0;i--){
+                Channel& ch=v.channels[i]; if(!ch.filter_active) continue;
+                float ss_mhz=std::min(ch.s,ch.e), se_mhz=std::max(ch.s,ch.e);
+                float cf_mhz=(ss_mhz+se_mhz)/2.0f;
+                float bw_khz=(se_mhz-ss_mhz)*1000.0f;
+                const char* mname[5]={"","AM","FM","DET","M"};
+                const char* magic_names[]={"","AM","FM","DSB","SSB","CW"};
+                const char* pname[3]={" L"," L+R"," R"};
+                bool dem_active=ch.dem_run.load();
+                int pi=ch.pan+1; if(pi<0)pi=0; if(pi>2)pi=2;
+                char cb[96];
+                if(dem_active && ch.mode==Channel::DM_MAGIC){
+                    int mdet=ch.magic_det.load(std::memory_order_relaxed);
+                    if(mdet==0)
+                        snprintf(cb,sizeof(cb),"[%d] M %.3f MHz @ %.0f kHz  ",
+                                 i+1,cf_mhz,bw_khz);
+                    else
+                        snprintf(cb,sizeof(cb),"[%d] M:%s %.3f MHz @ %.0f kHz  ",
+                                 i+1,magic_names[mdet],cf_mhz,bw_khz);
+                } else if(dem_active){
+                    snprintf(cb,sizeof(cb),"[%d]%s%s %.3f MHz @ %.0f kHz  ",
+                             i+1,mname[(int)ch.mode],pname[pi],cf_mhz,bw_khz);
+                } else {
+                    snprintf(cb,sizeof(cb),"[%d] %.3f MHz @ %.0f kHz  ",
+                             i+1,cf_mhz,bw_khz);
+                }
+                ImVec2 cs2=ImGui::CalcTextSize(cb); rx-=cs2.x;
+                bool is_selected=(v.selected_ch==i);
+                bool gate_open=ch.sq_gate.load();
+                ImU32 tc;
+                if(is_selected)
+                    tc=gate_open?CH_BORD[i]:IM_COL32(255,255,255,255);
+                else
+                    tc=gate_open?CH_BORD[i]:IM_COL32(160,160,160,255);
+
+                ImVec2 mpos=ImGui::GetIO().MousePos;
+                bool hovered=(mpos.x>=rx&&mpos.x<rx+cs2.x&&mpos.y>=0&&mpos.y<TOPBAR_H);
+                if(hovered){
+                    tc=IM_COL32(255,255,255,255);
+                    if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
+                        v.stop_dem(i);
+                        v.channels[i].filter_active=false;
+                        v.channels[i].selected=false;
+                        v.channels[i].mode=Channel::DM_NONE;
+                        if(v.selected_ch==i) v.selected_ch=-1;
+                    } else if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                        if(v.selected_ch>=0) v.channels[v.selected_ch].selected=false;
+                        v.selected_ch=i; v.channels[i].selected=true;
+                        v.topbar_sel_this_frame=true;
+                    }
+                }
+                // 선택 채널: bold (1px offset 이중 렌더링)
+                if(is_selected){
+                    dl->AddText(ImVec2(rx+1,ty2),IM_COL32(0,0,0,100),cb);
+                    dl->AddText(ImVec2(rx+1,ty2),tc,cb);
+                }
+                dl->AddText(ImVec2(rx,ty2),tc,cb);
+            }
+        }
+        ImGui::PopStyleVar(); // ItemSpacing
+
+        // ── Spectrum + Waterfall ──────────────────────────────────────────
+        float content_y=TOPBAR_H, content_h=disp_h-content_y, div_h=14.0f;
+        float sp_h=(content_h-div_h)*v.spectrum_height_ratio;
+        float wf_h=content_h-div_h-sp_h;
+        v.draw_spectrum_area(dl,0,content_y,disp_w,sp_h);
+
+        float div_y=content_y+sp_h;
+        dl->AddRectFilled(ImVec2(0,div_y),ImVec2(disp_w,div_y+div_h),IM_COL32(50,50,50,255));
+        dl->AddLine(ImVec2(0,div_y+div_h/2),ImVec2(disp_w,div_y+div_h/2),IM_COL32(80,80,80,255),1);
+        ImGui::SetCursorScreenPos(ImVec2(0,div_y));
+        ImGui::InvisibleButton("div",ImVec2(disp_w,div_h));
+        if(ImGui::IsItemActive()&&ImGui::IsMouseDragging(ImGuiMouseButton_Left)){
+            float d=io.MouseDelta.y; v.spectrum_height_ratio+=d/content_h;
+            v.spectrum_height_ratio=std::max(0.1f,std::min(0.9f,v.spectrum_height_ratio));
+        }
+        if(ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+
+        v.draw_waterfall_area(dl,0,div_y+div_h,disp_w,wf_h);
+        ImGui::End();
+
+        ImGui::Render();
+        int dw2,dh2; glfwGetFramebufferSize(win,&dw2,&dh2);
+        glViewport(0,0,dw2,dh2);
+        glClearColor(0.1f,0.1f,0.1f,1); glClear(GL_COLOR_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        glfwSwapBuffers(win);
+    }
+
+    v.is_running=false;
+    v.stop_all_dem();
+    if(v.rec_on.load()) v.stop_rec();
+    v.mix_stop.store(true); if(v.mix_thr.joinable()) v.mix_thr.join();
+    cap.join();
+    if(v.waterfall_texture) glDeleteTextures(1,&v.waterfall_texture);
+    ImGui_ImplOpenGL3_Shutdown(); ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext(); glfwTerminate();
+    printf("Closed\n");
+}

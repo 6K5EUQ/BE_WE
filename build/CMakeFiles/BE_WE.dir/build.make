@@ -69,24 +69,122 @@ include CMakeFiles/BE_WE.dir/progress.make
 # Include the compile flags for this target's objects.
 include CMakeFiles/BE_WE.dir/flags.make
 
-CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.o: CMakeFiles/BE_WE.dir/flags.make
-CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.o: /home/dsa/BE_WE/src/streaming_viewer.cpp
-CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.o: CMakeFiles/BE_WE.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.o"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.o -MF CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.o.d -o CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.o -c /home/dsa/BE_WE/src/streaming_viewer.cpp
+CMakeFiles/BE_WE.dir/src/main.cpp.o: CMakeFiles/BE_WE.dir/flags.make
+CMakeFiles/BE_WE.dir/src/main.cpp.o: /home/dsa/BE_WE/src/main.cpp
+CMakeFiles/BE_WE.dir/src/main.cpp.o: CMakeFiles/BE_WE.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/BE_WE.dir/src/main.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/BE_WE.dir/src/main.cpp.o -MF CMakeFiles/BE_WE.dir/src/main.cpp.o.d -o CMakeFiles/BE_WE.dir/src/main.cpp.o -c /home/dsa/BE_WE/src/main.cpp
 
-CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.i"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/dsa/BE_WE/src/streaming_viewer.cpp > CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.i
+CMakeFiles/BE_WE.dir/src/main.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/BE_WE.dir/src/main.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/dsa/BE_WE/src/main.cpp > CMakeFiles/BE_WE.dir/src/main.cpp.i
 
-CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.s"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/dsa/BE_WE/src/streaming_viewer.cpp -o CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.s
+CMakeFiles/BE_WE.dir/src/main.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/BE_WE.dir/src/main.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/dsa/BE_WE/src/main.cpp -o CMakeFiles/BE_WE.dir/src/main.cpp.s
+
+CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.o: CMakeFiles/BE_WE.dir/flags.make
+CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.o: /home/dsa/BE_WE/src/fft_viewer.cpp
+CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.o: CMakeFiles/BE_WE.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.o -MF CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.o.d -o CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.o -c /home/dsa/BE_WE/src/fft_viewer.cpp
+
+CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/dsa/BE_WE/src/fft_viewer.cpp > CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.i
+
+CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/dsa/BE_WE/src/fft_viewer.cpp -o CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.s
+
+CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.o: CMakeFiles/BE_WE.dir/flags.make
+CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.o: /home/dsa/BE_WE/src/bladerf_io.cpp
+CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.o: CMakeFiles/BE_WE.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.o -MF CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.o.d -o CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.o -c /home/dsa/BE_WE/src/bladerf_io.cpp
+
+CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/dsa/BE_WE/src/bladerf_io.cpp > CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.i
+
+CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/dsa/BE_WE/src/bladerf_io.cpp -o CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.s
+
+CMakeFiles/BE_WE.dir/src/demod.cpp.o: CMakeFiles/BE_WE.dir/flags.make
+CMakeFiles/BE_WE.dir/src/demod.cpp.o: /home/dsa/BE_WE/src/demod.cpp
+CMakeFiles/BE_WE.dir/src/demod.cpp.o: CMakeFiles/BE_WE.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/BE_WE.dir/src/demod.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/BE_WE.dir/src/demod.cpp.o -MF CMakeFiles/BE_WE.dir/src/demod.cpp.o.d -o CMakeFiles/BE_WE.dir/src/demod.cpp.o -c /home/dsa/BE_WE/src/demod.cpp
+
+CMakeFiles/BE_WE.dir/src/demod.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/BE_WE.dir/src/demod.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/dsa/BE_WE/src/demod.cpp > CMakeFiles/BE_WE.dir/src/demod.cpp.i
+
+CMakeFiles/BE_WE.dir/src/demod.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/BE_WE.dir/src/demod.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/dsa/BE_WE/src/demod.cpp -o CMakeFiles/BE_WE.dir/src/demod.cpp.s
+
+CMakeFiles/BE_WE.dir/src/iq_record.cpp.o: CMakeFiles/BE_WE.dir/flags.make
+CMakeFiles/BE_WE.dir/src/iq_record.cpp.o: /home/dsa/BE_WE/src/iq_record.cpp
+CMakeFiles/BE_WE.dir/src/iq_record.cpp.o: CMakeFiles/BE_WE.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/BE_WE.dir/src/iq_record.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/BE_WE.dir/src/iq_record.cpp.o -MF CMakeFiles/BE_WE.dir/src/iq_record.cpp.o.d -o CMakeFiles/BE_WE.dir/src/iq_record.cpp.o -c /home/dsa/BE_WE/src/iq_record.cpp
+
+CMakeFiles/BE_WE.dir/src/iq_record.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/BE_WE.dir/src/iq_record.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/dsa/BE_WE/src/iq_record.cpp > CMakeFiles/BE_WE.dir/src/iq_record.cpp.i
+
+CMakeFiles/BE_WE.dir/src/iq_record.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/BE_WE.dir/src/iq_record.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/dsa/BE_WE/src/iq_record.cpp -o CMakeFiles/BE_WE.dir/src/iq_record.cpp.s
+
+CMakeFiles/BE_WE.dir/src/audio.cpp.o: CMakeFiles/BE_WE.dir/flags.make
+CMakeFiles/BE_WE.dir/src/audio.cpp.o: /home/dsa/BE_WE/src/audio.cpp
+CMakeFiles/BE_WE.dir/src/audio.cpp.o: CMakeFiles/BE_WE.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/BE_WE.dir/src/audio.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/BE_WE.dir/src/audio.cpp.o -MF CMakeFiles/BE_WE.dir/src/audio.cpp.o.d -o CMakeFiles/BE_WE.dir/src/audio.cpp.o -c /home/dsa/BE_WE/src/audio.cpp
+
+CMakeFiles/BE_WE.dir/src/audio.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/BE_WE.dir/src/audio.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/dsa/BE_WE/src/audio.cpp > CMakeFiles/BE_WE.dir/src/audio.cpp.i
+
+CMakeFiles/BE_WE.dir/src/audio.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/BE_WE.dir/src/audio.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/dsa/BE_WE/src/audio.cpp -o CMakeFiles/BE_WE.dir/src/audio.cpp.s
+
+CMakeFiles/BE_WE.dir/src/alert.cpp.o: CMakeFiles/BE_WE.dir/flags.make
+CMakeFiles/BE_WE.dir/src/alert.cpp.o: /home/dsa/BE_WE/src/alert.cpp
+CMakeFiles/BE_WE.dir/src/alert.cpp.o: CMakeFiles/BE_WE.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building CXX object CMakeFiles/BE_WE.dir/src/alert.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/BE_WE.dir/src/alert.cpp.o -MF CMakeFiles/BE_WE.dir/src/alert.cpp.o.d -o CMakeFiles/BE_WE.dir/src/alert.cpp.o -c /home/dsa/BE_WE/src/alert.cpp
+
+CMakeFiles/BE_WE.dir/src/alert.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/BE_WE.dir/src/alert.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/dsa/BE_WE/src/alert.cpp > CMakeFiles/BE_WE.dir/src/alert.cpp.i
+
+CMakeFiles/BE_WE.dir/src/alert.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/BE_WE.dir/src/alert.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/dsa/BE_WE/src/alert.cpp -o CMakeFiles/BE_WE.dir/src/alert.cpp.s
+
+CMakeFiles/BE_WE.dir/src/ui.cpp.o: CMakeFiles/BE_WE.dir/flags.make
+CMakeFiles/BE_WE.dir/src/ui.cpp.o: /home/dsa/BE_WE/src/ui.cpp
+CMakeFiles/BE_WE.dir/src/ui.cpp.o: CMakeFiles/BE_WE.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object CMakeFiles/BE_WE.dir/src/ui.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/BE_WE.dir/src/ui.cpp.o -MF CMakeFiles/BE_WE.dir/src/ui.cpp.o.d -o CMakeFiles/BE_WE.dir/src/ui.cpp.o -c /home/dsa/BE_WE/src/ui.cpp
+
+CMakeFiles/BE_WE.dir/src/ui.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/BE_WE.dir/src/ui.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/dsa/BE_WE/src/ui.cpp > CMakeFiles/BE_WE.dir/src/ui.cpp.i
+
+CMakeFiles/BE_WE.dir/src/ui.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/BE_WE.dir/src/ui.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/dsa/BE_WE/src/ui.cpp -o CMakeFiles/BE_WE.dir/src/ui.cpp.s
 
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui.cpp.o: CMakeFiles/BE_WE.dir/flags.make
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui.cpp.o: /usr/include/imgui/imgui.cpp
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui.cpp.o: CMakeFiles/BE_WE.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object CMakeFiles/BE_WE.dir/usr/include/imgui/imgui.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building CXX object CMakeFiles/BE_WE.dir/usr/include/imgui/imgui.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/BE_WE.dir/usr/include/imgui/imgui.cpp.o -MF CMakeFiles/BE_WE.dir/usr/include/imgui/imgui.cpp.o.d -o CMakeFiles/BE_WE.dir/usr/include/imgui/imgui.cpp.o -c /usr/include/imgui/imgui.cpp
 
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui.cpp.i: cmake_force
@@ -100,7 +198,7 @@ CMakeFiles/BE_WE.dir/usr/include/imgui/imgui.cpp.s: cmake_force
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_demo.cpp.o: CMakeFiles/BE_WE.dir/flags.make
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_demo.cpp.o: /usr/include/imgui/imgui_demo.cpp
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_demo.cpp.o: CMakeFiles/BE_WE.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_demo.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building CXX object CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_demo.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_demo.cpp.o -MF CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_demo.cpp.o.d -o CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_demo.cpp.o -c /usr/include/imgui/imgui_demo.cpp
 
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_demo.cpp.i: cmake_force
@@ -114,7 +212,7 @@ CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_demo.cpp.s: cmake_force
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_draw.cpp.o: CMakeFiles/BE_WE.dir/flags.make
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_draw.cpp.o: /usr/include/imgui/imgui_draw.cpp
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_draw.cpp.o: CMakeFiles/BE_WE.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_draw.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Building CXX object CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_draw.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_draw.cpp.o -MF CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_draw.cpp.o.d -o CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_draw.cpp.o -c /usr/include/imgui/imgui_draw.cpp
 
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_draw.cpp.i: cmake_force
@@ -128,7 +226,7 @@ CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_draw.cpp.s: cmake_force
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_tables.cpp.o: CMakeFiles/BE_WE.dir/flags.make
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_tables.cpp.o: /usr/include/imgui/imgui_tables.cpp
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_tables.cpp.o: CMakeFiles/BE_WE.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_tables.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_12) "Building CXX object CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_tables.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_tables.cpp.o -MF CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_tables.cpp.o.d -o CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_tables.cpp.o -c /usr/include/imgui/imgui_tables.cpp
 
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_tables.cpp.i: cmake_force
@@ -142,7 +240,7 @@ CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_tables.cpp.s: cmake_force
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_widgets.cpp.o: CMakeFiles/BE_WE.dir/flags.make
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_widgets.cpp.o: /usr/include/imgui/imgui_widgets.cpp
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_widgets.cpp.o: CMakeFiles/BE_WE.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_widgets.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_13) "Building CXX object CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_widgets.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_widgets.cpp.o -MF CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_widgets.cpp.o.d -o CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_widgets.cpp.o -c /usr/include/imgui/imgui_widgets.cpp
 
 CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_widgets.cpp.i: cmake_force
@@ -156,7 +254,7 @@ CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_widgets.cpp.s: cmake_force
 CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o: CMakeFiles/BE_WE.dir/flags.make
 CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o: /usr/include/imgui/backends/imgui_impl_glfw.cpp
 CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o: CMakeFiles/BE_WE.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building CXX object CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_14) "Building CXX object CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o -MF CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o.d -o CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.o -c /usr/include/imgui/backends/imgui_impl_glfw.cpp
 
 CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.i: cmake_force
@@ -170,7 +268,7 @@ CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_glfw.cpp.s: cmake_for
 CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o: CMakeFiles/BE_WE.dir/flags.make
 CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o: /usr/include/imgui/backends/imgui_impl_opengl3.cpp
 CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o: CMakeFiles/BE_WE.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_15) "Building CXX object CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o -MF CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o.d -o CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.o -c /usr/include/imgui/backends/imgui_impl_opengl3.cpp
 
 CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.i: cmake_force
@@ -183,7 +281,14 @@ CMakeFiles/BE_WE.dir/usr/include/imgui/backends/imgui_impl_opengl3.cpp.s: cmake_
 
 # Object files for target BE_WE
 BE_WE_OBJECTS = \
-"CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.o" \
+"CMakeFiles/BE_WE.dir/src/main.cpp.o" \
+"CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.o" \
+"CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.o" \
+"CMakeFiles/BE_WE.dir/src/demod.cpp.o" \
+"CMakeFiles/BE_WE.dir/src/iq_record.cpp.o" \
+"CMakeFiles/BE_WE.dir/src/audio.cpp.o" \
+"CMakeFiles/BE_WE.dir/src/alert.cpp.o" \
+"CMakeFiles/BE_WE.dir/src/ui.cpp.o" \
 "CMakeFiles/BE_WE.dir/usr/include/imgui/imgui.cpp.o" \
 "CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_demo.cpp.o" \
 "CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_draw.cpp.o" \
@@ -195,7 +300,14 @@ BE_WE_OBJECTS = \
 # External object files for target BE_WE
 BE_WE_EXTERNAL_OBJECTS =
 
-BE_WE: CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.o
+BE_WE: CMakeFiles/BE_WE.dir/src/main.cpp.o
+BE_WE: CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.o
+BE_WE: CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.o
+BE_WE: CMakeFiles/BE_WE.dir/src/demod.cpp.o
+BE_WE: CMakeFiles/BE_WE.dir/src/iq_record.cpp.o
+BE_WE: CMakeFiles/BE_WE.dir/src/audio.cpp.o
+BE_WE: CMakeFiles/BE_WE.dir/src/alert.cpp.o
+BE_WE: CMakeFiles/BE_WE.dir/src/ui.cpp.o
 BE_WE: CMakeFiles/BE_WE.dir/usr/include/imgui/imgui.cpp.o
 BE_WE: CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_demo.cpp.o
 BE_WE: CMakeFiles/BE_WE.dir/usr/include/imgui/imgui_draw.cpp.o
@@ -209,7 +321,7 @@ BE_WE: /usr/lib/x86_64-linux-gnu/libglfw.so.3.3
 BE_WE: /usr/lib/x86_64-linux-gnu/libGLX.so
 BE_WE: /usr/lib/x86_64-linux-gnu/libOpenGL.so
 BE_WE: CMakeFiles/BE_WE.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Linking CXX executable BE_WE"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/dsa/BE_WE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_16) "Linking CXX executable BE_WE"
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/BE_WE.dir/link.txt --verbose=$(VERBOSE)
 
 # Rule to build all files generated by this target.

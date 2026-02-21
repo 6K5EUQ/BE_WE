@@ -129,29 +129,197 @@ BE_WE/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/build
 .PHONY : BE_WE/fast
 
-src/streaming_viewer.o: src/streaming_viewer.cpp.o
-.PHONY : src/streaming_viewer.o
+src/alert.o: src/alert.cpp.o
+.PHONY : src/alert.o
 
 # target to build an object file
-src/streaming_viewer.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.o
-.PHONY : src/streaming_viewer.cpp.o
+src/alert.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/alert.cpp.o
+.PHONY : src/alert.cpp.o
 
-src/streaming_viewer.i: src/streaming_viewer.cpp.i
-.PHONY : src/streaming_viewer.i
+src/alert.i: src/alert.cpp.i
+.PHONY : src/alert.i
 
 # target to preprocess a source file
-src/streaming_viewer.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.i
-.PHONY : src/streaming_viewer.cpp.i
+src/alert.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/alert.cpp.i
+.PHONY : src/alert.cpp.i
 
-src/streaming_viewer.s: src/streaming_viewer.cpp.s
-.PHONY : src/streaming_viewer.s
+src/alert.s: src/alert.cpp.s
+.PHONY : src/alert.s
 
 # target to generate assembly for a file
-src/streaming_viewer.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/streaming_viewer.cpp.s
-.PHONY : src/streaming_viewer.cpp.s
+src/alert.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/alert.cpp.s
+.PHONY : src/alert.cpp.s
+
+src/audio.o: src/audio.cpp.o
+.PHONY : src/audio.o
+
+# target to build an object file
+src/audio.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/audio.cpp.o
+.PHONY : src/audio.cpp.o
+
+src/audio.i: src/audio.cpp.i
+.PHONY : src/audio.i
+
+# target to preprocess a source file
+src/audio.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/audio.cpp.i
+.PHONY : src/audio.cpp.i
+
+src/audio.s: src/audio.cpp.s
+.PHONY : src/audio.s
+
+# target to generate assembly for a file
+src/audio.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/audio.cpp.s
+.PHONY : src/audio.cpp.s
+
+src/bladerf_io.o: src/bladerf_io.cpp.o
+.PHONY : src/bladerf_io.o
+
+# target to build an object file
+src/bladerf_io.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.o
+.PHONY : src/bladerf_io.cpp.o
+
+src/bladerf_io.i: src/bladerf_io.cpp.i
+.PHONY : src/bladerf_io.i
+
+# target to preprocess a source file
+src/bladerf_io.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.i
+.PHONY : src/bladerf_io.cpp.i
+
+src/bladerf_io.s: src/bladerf_io.cpp.s
+.PHONY : src/bladerf_io.s
+
+# target to generate assembly for a file
+src/bladerf_io.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/bladerf_io.cpp.s
+.PHONY : src/bladerf_io.cpp.s
+
+src/demod.o: src/demod.cpp.o
+.PHONY : src/demod.o
+
+# target to build an object file
+src/demod.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/demod.cpp.o
+.PHONY : src/demod.cpp.o
+
+src/demod.i: src/demod.cpp.i
+.PHONY : src/demod.i
+
+# target to preprocess a source file
+src/demod.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/demod.cpp.i
+.PHONY : src/demod.cpp.i
+
+src/demod.s: src/demod.cpp.s
+.PHONY : src/demod.s
+
+# target to generate assembly for a file
+src/demod.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/demod.cpp.s
+.PHONY : src/demod.cpp.s
+
+src/fft_viewer.o: src/fft_viewer.cpp.o
+.PHONY : src/fft_viewer.o
+
+# target to build an object file
+src/fft_viewer.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.o
+.PHONY : src/fft_viewer.cpp.o
+
+src/fft_viewer.i: src/fft_viewer.cpp.i
+.PHONY : src/fft_viewer.i
+
+# target to preprocess a source file
+src/fft_viewer.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.i
+.PHONY : src/fft_viewer.cpp.i
+
+src/fft_viewer.s: src/fft_viewer.cpp.s
+.PHONY : src/fft_viewer.s
+
+# target to generate assembly for a file
+src/fft_viewer.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/fft_viewer.cpp.s
+.PHONY : src/fft_viewer.cpp.s
+
+src/iq_record.o: src/iq_record.cpp.o
+.PHONY : src/iq_record.o
+
+# target to build an object file
+src/iq_record.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/iq_record.cpp.o
+.PHONY : src/iq_record.cpp.o
+
+src/iq_record.i: src/iq_record.cpp.i
+.PHONY : src/iq_record.i
+
+# target to preprocess a source file
+src/iq_record.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/iq_record.cpp.i
+.PHONY : src/iq_record.cpp.i
+
+src/iq_record.s: src/iq_record.cpp.s
+.PHONY : src/iq_record.s
+
+# target to generate assembly for a file
+src/iq_record.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/iq_record.cpp.s
+.PHONY : src/iq_record.cpp.s
+
+src/main.o: src/main.cpp.o
+.PHONY : src/main.o
+
+# target to build an object file
+src/main.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/main.cpp.o
+.PHONY : src/main.cpp.o
+
+src/main.i: src/main.cpp.i
+.PHONY : src/main.i
+
+# target to preprocess a source file
+src/main.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/main.cpp.i
+.PHONY : src/main.cpp.i
+
+src/main.s: src/main.cpp.s
+.PHONY : src/main.s
+
+# target to generate assembly for a file
+src/main.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/main.cpp.s
+.PHONY : src/main.cpp.s
+
+src/ui.o: src/ui.cpp.o
+.PHONY : src/ui.o
+
+# target to build an object file
+src/ui.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/ui.cpp.o
+.PHONY : src/ui.cpp.o
+
+src/ui.i: src/ui.cpp.i
+.PHONY : src/ui.i
+
+# target to preprocess a source file
+src/ui.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/ui.cpp.i
+.PHONY : src/ui.cpp.i
+
+src/ui.s: src/ui.cpp.s
+.PHONY : src/ui.s
+
+# target to generate assembly for a file
+src/ui.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/BE_WE.dir/build.make CMakeFiles/BE_WE.dir/src/ui.cpp.s
+.PHONY : src/ui.cpp.s
 
 usr/include/imgui/backends/imgui_impl_glfw.o: usr/include/imgui/backends/imgui_impl_glfw.cpp.o
 .PHONY : usr/include/imgui/backends/imgui_impl_glfw.o
@@ -330,9 +498,30 @@ help:
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
 	@echo "... BE_WE"
-	@echo "... src/streaming_viewer.o"
-	@echo "... src/streaming_viewer.i"
-	@echo "... src/streaming_viewer.s"
+	@echo "... src/alert.o"
+	@echo "... src/alert.i"
+	@echo "... src/alert.s"
+	@echo "... src/audio.o"
+	@echo "... src/audio.i"
+	@echo "... src/audio.s"
+	@echo "... src/bladerf_io.o"
+	@echo "... src/bladerf_io.i"
+	@echo "... src/bladerf_io.s"
+	@echo "... src/demod.o"
+	@echo "... src/demod.i"
+	@echo "... src/demod.s"
+	@echo "... src/fft_viewer.o"
+	@echo "... src/fft_viewer.i"
+	@echo "... src/fft_viewer.s"
+	@echo "... src/iq_record.o"
+	@echo "... src/iq_record.i"
+	@echo "... src/iq_record.s"
+	@echo "... src/main.o"
+	@echo "... src/main.i"
+	@echo "... src/main.s"
+	@echo "... src/ui.o"
+	@echo "... src/ui.i"
+	@echo "... src/ui.s"
 	@echo "... usr/include/imgui/backends/imgui_impl_glfw.o"
 	@echo "... usr/include/imgui/backends/imgui_impl_glfw.i"
 	@echo "... usr/include/imgui/backends/imgui_impl_glfw.s"
