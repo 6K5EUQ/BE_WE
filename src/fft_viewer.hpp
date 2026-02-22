@@ -46,8 +46,9 @@ public:
     // IQ 롤링: T키로 활성화
     std::atomic<bool> tm_iq_on{false};     // T키: IQ SSD 롤링 활성
     std::atomic<bool> tm_active{false};    // 스페이스바: 타임머신 뷰 모드
-    std::atomic<bool> capture_pause{false};// 캡처 스레드 pause
-    bool tm_iq_was_stopped=false;          // Stop 후 재시작 전 상태
+    std::atomic<bool> capture_pause{false};// 캡처 스레드 pause (타임머신과 무관)
+    bool tm_iq_was_stopped=false;
+    int  tm_freeze_idx=0;                  // 스페이스바 누른 시점의 fft 인덱스
     float tm_offset=0.0f;                  // 현재 보는 과거 오프셋 (초)
     float tm_max_sec=0.0f;                     // 현재 사용 가능한 최대 과거 초
 
@@ -71,7 +72,11 @@ public:
     // IQ 롤링 파일 관리
     static constexpr const char* TM_IQ_DIR  = "/home/dsa/BE_WE/recordings/Time_temp";
     static constexpr size_t      TM_IQ_SECS = 60;     // 롤링 길이 (초)
-    int      tm_iq_fd=-1;   // unbuffered POSIX fd (fwrite stdio 버퍼 없음)
+    int      tm_iq_fd=-1;   // unbuffered POSIX fd
+    // IQ 배치 버퍼: 65536샘플 모아서 한 번에 pwrite (syscall 최소화)
+    static constexpr int TM_IQ_BATCH = 65536;
+    std::vector<int16_t> tm_iq_batch_buf;
+    int tm_iq_batch_cnt=0;
     int64_t  tm_iq_write_sample=0;         // 현재 파일 내 쓰기 샘플 위치
     int64_t  tm_iq_total_samples=0;        // 파일 전체 샘플 수 (미리 할당)
     // 초 단위 타임스탬프 배열 [0..TM_IQ_SECS-1]: 각 초 청크의 시작 시각
@@ -81,7 +86,12 @@ public:
     bool     tm_iq_file_ready=false;
 
     // REC N/A 표시 타이머
-    float    rec_na_timer=0.0f;
+    float    rec_na_timer=0.0f;  // (deprecated, kept for compat)
+    // 영역 녹음 진행 상태
+    enum RecState { REC_IDLE, REC_BUSY, REC_SUCCESS } rec_state=REC_IDLE;
+    float    rec_anim_timer=0.0f;   // 점 애니메이션용
+    float    rec_success_timer=0.0f;// 성공 메시지 표시 시간
+    std::atomic<bool> rec_busy_flag{false};
 
     // 디스플레이용 타임머신 오프셋 FFT 인덱스
     int tm_display_fft_idx=0;
@@ -89,6 +99,7 @@ public:
     void tm_iq_open();
     void tm_iq_close();
     void tm_iq_write(const int16_t* samples, int n_pairs);
+    void tm_iq_flush_batch();
     void tm_mark_rows(int fft_idx);
     void tm_update_display();
     bool tm_rec_start();
@@ -108,6 +119,7 @@ public:
     } region;
 
     void region_save();
+    void do_region_save_work();
 
     // tm_rec 내부 상태
     bool    tm_rec_active=false;

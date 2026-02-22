@@ -87,6 +87,8 @@ void FFTViewer::capture_and_process(){
                  header.center_frequency=(uint64_t)(pending_cf*1e6);}
                 printf("Freq → %.2f MHz\n",pending_cf);
                 autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
+                // 주파수 변경 직후 ADC 과도현상 제거: warmup 리셋
+                warmup_cnt=0;
             }
             freq_req=false; freq_prog=false;
         }

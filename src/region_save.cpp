@@ -6,6 +6,7 @@
 #include <ctime>
 #include <vector>
 #include <algorithm>
+#include <thread>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WAV 헤더 작성 (stereo int16: L=I, R=Q)
@@ -62,14 +63,28 @@ static void make_filename(char* out, size_t sz,
 //   5. WAV 저장
 // ─────────────────────────────────────────────────────────────────────────────
 void FFTViewer::region_save(){
-    if(!region.active){
-        fprintf(stderr,"region_save: no active region\n"); return;
-    }
+    if(!region.active){ return; }
+    if(rec_busy_flag.load()){ return; } // 이미 저장 중
     if(!tm_iq_file_ready||tm_iq_fd<0){
-        rec_na_timer=3.0f;
         region.active=false; return;
     }
 
+    // 저장에 필요한 모든 값을 캡처 (스레드 안전)
+    rec_busy_flag.store(true);
+    rec_state=REC_BUSY;
+    rec_anim_timer=0.0f;
+    region.active=false;
+
+    // 백그라운드 스레드에서 실행
+    std::thread([this](){
+        do_region_save_work();
+        rec_state=REC_SUCCESS;
+        rec_success_timer=3.0f;
+        rec_busy_flag.store(false);
+    }).detach();
+}
+
+void FFTViewer::do_region_save_work(){
     uint32_t sr=header.sample_rate;          // 61440000
     int64_t  max_total=tm_iq_total_samples;
 
@@ -101,10 +116,10 @@ void FFTViewer::region_save(){
 
     if(samp_end == 0 || samp_start == 0){
         fprintf(stderr,"region_save: row_write_pos not populated\n");
-        rec_na_timer=3.0f; region.active=false; return;
+        return;
     }
 
-    // ── IQ 데이터 존재 확인 (STOP 이후 영역 차단) ─────────────────────────
+    // IQ 데이터 없음
     {
         bool any_avail=false;
         int lo=region.fft_bot, hi=region.fft_top;
@@ -115,7 +130,7 @@ void FFTViewer::region_save(){
         }
         if(!any_avail){
             fprintf(stderr,"region_save: no IQ data (STOP 이후 영역)\n");
-            rec_na_timer=3.0f; region.active=false; return;
+            return;
         }
     }
 
@@ -132,12 +147,12 @@ void FFTViewer::region_save(){
 
     if(samp_end <= samp_start){
         fprintf(stderr,"region_save: no valid IQ data in range\n");
-        rec_na_timer=3.0f; region.active=false; return;
+        return;
     }
 
     int64_t n_in = samp_end - samp_start;
     int64_t n_out = n_in / decim;
-    if(n_out < 1){ rec_na_timer=3.0f; region.active=false; return; }
+    if(n_out < 1){ return; }
 
     // ── 출력 파일 열기 ─────────────────────────────────────────────────────
     char outpath[512];
@@ -147,7 +162,7 @@ void FFTViewer::region_save(){
     FILE* wf = fopen(outpath, "wb");
     if(!wf){
         fprintf(stderr,"region_save: fopen failed: %s\n", outpath);
-        rec_na_timer=3.0f; region.active=false; return;
+        return;
     }
     // WAV 헤더 자리 확보 (나중에 덮어쓸 것)
     write_wav_header(wf, out_sr, (uint32_t)n_out);
@@ -176,10 +191,11 @@ void FFTViewer::region_save(){
         int     r1 = (int)std::min((int64_t)to_read, avail);
         int     r2 = to_read - r1;
 
-        off_t off1 = file_pos*2*(off_t)sizeof(int16_t);
+        static constexpr off_t WAV_HDR_SIZE = 44;
+        off_t off1 = WAV_HDR_SIZE + file_pos*2*(off_t)sizeof(int16_t);
         pread(tm_iq_fd, in_buf.data(),        (size_t)r1*2*sizeof(int16_t), off1);
         if(r2 > 0)
-            pread(tm_iq_fd, in_buf.data()+r1*2, (size_t)r2*2*sizeof(int16_t), 0);
+            pread(tm_iq_fd, in_buf.data()+r1*2, (size_t)r2*2*sizeof(int16_t), WAV_HDR_SIZE);
 
         out_buf.clear();
         for(int i=0; i<to_read; i++){
