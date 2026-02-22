@@ -13,4 +13,7 @@
 *.vscode
 
 # 백업 폴더
-/BackUp
+/BackUpgit p
+
+
+.gitignore
