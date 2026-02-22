@@ -48,6 +48,9 @@ bool FFTViewer::initialize_bladerf(float cf_mhz, float sr_msps){
 void FFTViewer::capture_and_process(){
     int16_t* iq=new int16_t[fft_size*2];
     std::vector<float> pacc(fft_size,0.0f); int fcnt=0;
+    // 초기 안정화: 처음 N번 FFT 결과 버림
+    static constexpr int WARMUP_FFTS = 30;
+    int warmup_cnt = 0;
 
     while(is_running){
         // ── Pause (타임머신 모드) ─────────────────────────────────────────
@@ -95,7 +98,7 @@ void FFTViewer::capture_and_process(){
         // ── IQ Ring write ─────────────────────────────────────────────────
         bool need_ring=rec_on.load(std::memory_order_relaxed);
         if(!need_ring) for(int i=0;i<MAX_CHANNELS;i++) if(channels[i].dem_run.load()){need_ring=true;break;}
-        bool need_tm=tm_iq_on.load(std::memory_order_relaxed);
+        bool need_tm=tm_iq_on.load(std::memory_order_relaxed)&&(warmup_cnt>=WARMUP_FFTS);
         if(need_ring||need_tm){
             size_t wp=ring_wp.load(std::memory_order_relaxed);
             size_t n=(size_t)fft_size, cap=IQ_RING_CAPACITY;
@@ -106,7 +109,7 @@ void FFTViewer::capture_and_process(){
                 memcpy(&ring[0],iq+p1*2,p2*2*sizeof(int16_t));
             }
             ring_wp.store((wp+n)&IQ_RING_MASK,std::memory_order_release);
-            // TM IQ 롤링 저장
+            // TM IQ 롤링 저장 (워밍업 이후만)
             if(need_tm) tm_iq_write(iq,(int)n);
         }
 
@@ -127,6 +130,12 @@ void FFTViewer::capture_and_process(){
             }
             pacc[0]=(pacc[1]+pacc[fft_size-1])*0.5f; fcnt++;
             if(fcnt>=time_average){
+                // 초기 워밍업 버리기
+                if(warmup_cnt < WARMUP_FFTS){
+                    warmup_cnt++;
+                    std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
+                    continue;
+                }
                 int fi=total_ffts%MAX_FFTS_MEMORY;
                 int8_t* rowp=fft_data.data()+fi*fft_size;
                 {std::lock_guard<std::mutex> lk(data_mtx);
@@ -153,15 +162,17 @@ void FFTViewer::capture_and_process(){
                  }
                  total_ffts++; current_fft_idx=total_ffts-1;
                  header.num_ffts=std::min(total_ffts,MAX_FFTS_MEMORY); cached_sp_idx=-1;
-                 // IQ 롤링 활성화 시 행 플래그 세팅
+                 // 이 행의 IQ 끝 위치 기록 (캡처 스레드 내에서 atomic하게)
+                 row_write_pos[current_fft_idx%MAX_FFTS_MEMORY]=tm_iq_write_sample;
                  if(tm_iq_on.load(std::memory_order_relaxed))
                      tm_mark_rows(current_fft_idx%MAX_FFTS_MEMORY);
                  else
                      iq_row_avail[current_fft_idx%MAX_FFTS_MEMORY]=false;
+                 tm_add_time_tag(current_fft_idx);
                 }
                 std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
             }
         } // end !spectrum_pause
     }
     delete[] iq;
-}   
+}

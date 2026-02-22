@@ -10,6 +10,8 @@
 void FFTViewer::handle_new_channel_drag(float gx, float gw){
     ImVec2 m=ImGui::GetIO().MousePos;
     bool in_graph=(m.x>=gx&&m.x<=gx+gw);
+    // Ctrl 누른 상태에서는 채널 필터 생성 차단 (영역 녹음 모드)
+    if(ImGui::GetIO().KeyCtrl) return;
 
     if(in_graph&&ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
         float af=x_to_abs(m.x,gx,gw);
@@ -298,7 +300,7 @@ void FFTViewer::handle_zoom_scroll(float gx, float gw, float mouse_x){
     if(ImGui::GetIO().KeyCtrl){
         if(!tm_active.load()) return;
         // 위 = 최신(-), 아래 = 과거(+)  ← 반대 방향
-        float delta=(wheel>0)?-0.1f:0.1f;
+        float delta=(wheel>0)?-0.3f:0.3f;
         tm_offset=std::max(0.0f,std::min(tm_max_sec, tm_offset+delta));
         return;
     }
@@ -416,25 +418,149 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
         float vb=vt-dh/MAX_FFTS_MEMORY;
         ImTextureID tid=(ImTextureID)(intptr_t)waterfall_texture;
         dl->AddImage(tid,ImVec2(gx,gy),ImVec2(gx+gw,gy+dh),ImVec2(us,vt),ImVec2(ue,vb),IM_COL32(255,255,255,255));
-        // IQ 가용 오버레이: T 활성 구간 연한 흰색
-        if(tm_iq_file_ready){
-            int visible_rows=(int)dh;
-            for(int r=0;r<visible_rows&&r<MAX_FFTS_MEMORY;r++){
-                int row_idx=(disp_idx - r + MAX_FFTS_MEMORY*4) % MAX_FFTS_MEMORY;
-                if(iq_row_avail[row_idx]){
-                    float y0=gy+(float)r, y1=y0+1.0f;
-                    dl->AddRectFilled(ImVec2(gx,y0),ImVec2(gx+gw,y1),IM_COL32(255,255,255,30));
-                }
-            }
-        }
+        // IQ 가용 오버레이 제거됨 — 좌측 태그로 대체
     }
     draw_freq_axis(dl,gx,gw,gy,gh,true);
     draw_all_channels(dl,gx,gw,gy,gh,false);
+
+    // ── 좌측 시간/이벤트 태그 렌더링 ─────────────────────────────────────
+    {
+        float rps=(float)header.sample_rate/(float)fft_size/(float)time_average;
+        if(rps<=0) rps=37.5f;
+        int disp_idx=tm_active.load() ? tm_display_fft_idx : current_fft_idx;
+        float label_x=full_x; // AXIS_LABEL_WIDTH 영역 내
+        float label_w=gx-full_x;
+
+        std::lock_guard<std::mutex> lk(wf_events_mtx);
+        for(auto& ev : wf_events){
+            // 현재 뷰 기준 몇 행 위인지
+            int row=disp_idx - ev.fft_idx;
+            if(row<0||row>=(int)gh) continue; // 화면 밖
+
+            float ey=gy+(float)row;
+
+            if(ev.type==0){
+                // 5초 단위 시간 태그: 텍스트만
+                ImVec2 tsz=ImGui::CalcTextSize(ev.label);
+                float tx=label_x+(label_w-tsz.x)/2.0f;
+                dl->AddText(ImVec2(tx,ey-ImGui::GetFontSize()/2),
+                            IM_COL32(180,180,180,200), ev.label);
+            } else {
+                // TM_IQ Start(1) / Stop(2): 가로 선 + 텍스트
+                ImU32 col=(ev.type==1)?IM_COL32(80,200,255,200):IM_COL32(255,100,100,200);
+                // 가로 선: 좌측 태그 영역부터 워터폴 전체 폭까지
+                dl->AddLine(ImVec2(label_x,ey),ImVec2(gx+gw,ey),col,1.0f);
+                ImVec2 tsz=ImGui::CalcTextSize(ev.label);
+                float tx=label_x+1;
+                // 텍스트가 레이블 영역 넘치면 잘라서 표시
+                dl->AddText(ImVec2(tx,ey-ImGui::GetFontSize()),col,ev.label);
+            }
+        }
+    }
     ImGui::SetCursorScreenPos(ImVec2(gx,gy));
     ImGui::InvisibleButton("wf_graph",ImVec2(gw,gh));
     bool hov=ImGui::IsItemHovered();
     handle_new_channel_drag(gx,gw);
     handle_channel_interactions(gx,gw,gy,gh);
+
+    // ── Ctrl+우클릭 드래그: 영역 IQ 녹음 선택 ────────────────────────────
+    {
+        ImGuiIO& mio=ImGui::GetIO();
+        ImVec2 mp=mio.MousePos;
+        bool ctrl=mio.KeyCtrl;
+        bool in_wf=(mp.x>=gx&&mp.x<=gx+gw&&mp.y>=gy&&mp.y<=gy+gh);
+
+        // 드래그 시작 (타임머신 모드 + T키 롤링 ON 일때만 가능)
+        if(ctrl&&ImGui::IsMouseClicked(ImGuiMouseButton_Right)&&in_wf){
+            if(!tm_active.load()||!tm_iq_file_ready){
+                // 실시간 모드거나 롤링 IQ 없으면 차단
+                rec_na_timer=3.0f;
+            } else {
+                region.selecting=true; region.active=false;
+                region.drag_x0=mp.x; region.drag_y0=mp.y;
+                region.drag_x1=mp.x; region.drag_y1=mp.y;
+            }
+        }
+        // 드래그 중
+        if(region.selecting&&ImGui::IsMouseDown(ImGuiMouseButton_Right)){
+            region.drag_x1=mp.x; region.drag_y1=mp.y;
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+        }
+        // 드래그 끝
+        if(region.selecting&&ImGui::IsMouseReleased(ImGuiMouseButton_Right)){
+            region.selecting=false;
+            // 좌표 정규화
+            float rx0=std::min(region.drag_x0,region.drag_x1);
+            float rx1=std::max(region.drag_x0,region.drag_x1);
+            float ry0=std::min(region.drag_y0,region.drag_y1); // 화면 위쪽 = 최신
+            float ry1=std::max(region.drag_y0,region.drag_y1); // 화면 아래쪽 = 오래됨
+            if(rx1-rx0>4&&ry1-ry0>4){
+                // 주파수 범위
+                region.freq_lo=x_to_abs(rx0,gx,gw);
+                region.freq_hi=x_to_abs(rx1,gx,gw);
+                // fft 인덱스 (y픽셀 → disp_idx 기준 row)
+                int disp_idx=tm_active.load()?tm_display_fft_idx:current_fft_idx;
+                int row_top=(int)(ry0-gy);
+                int row_bot=(int)(ry1-gy);
+                region.fft_top=disp_idx-row_top;
+                region.fft_bot=disp_idx-row_bot;
+                float rps=(float)header.sample_rate/(float)fft_size/(float)time_average;
+                if(rps<=0) rps=37.5f;
+                time_t now=time(nullptr);
+                int64_t rows_ago_top=(int64_t)(current_fft_idx-region.fft_top);
+                int64_t rows_ago_bot=(int64_t)(current_fft_idx-region.fft_bot);
+                region.time_end  =now-(time_t)(rows_ago_top/rps);
+                region.time_start=now-(time_t)(rows_ago_bot/rps);
+                region.active=true;
+                region.lclick_count=0; region.lclick_timer=0;
+            }
+        }
+
+        // 영역 렌더링
+        if(region.selecting){
+            float rx0=std::min(region.drag_x0,region.drag_x1);
+            float rx1=std::max(region.drag_x0,region.drag_x1);
+            float ry0=std::min(region.drag_y0,region.drag_y1);
+            float ry1=std::max(region.drag_y0,region.drag_y1);
+            dl->AddRectFilled(ImVec2(rx0,ry0),ImVec2(rx1,ry1),IM_COL32(255,40,40,50));
+            dl->AddRect(ImVec2(rx0,ry0),ImVec2(rx1,ry1),IM_COL32(255,60,60,220),0,0,1.5f);
+        }
+        if(region.active){
+            // fft 인덱스 → 화면 y 좌표
+            int disp_idx=tm_active.load()?tm_display_fft_idx:current_fft_idx;
+            float ry0=gy+(float)(disp_idx-region.fft_top);
+            float ry1=gy+(float)(disp_idx-region.fft_bot);
+            float rx0=abs_to_x(region.freq_lo,gx,gw);
+            float rx1=abs_to_x(region.freq_hi,gx,gw);
+            // 화면 클램프
+            ry0=std::max(gy,std::min(gy+gh,ry0));
+            ry1=std::max(gy,std::min(gy+gh,ry1));
+            rx0=std::max(gx,std::min(gx+gw,rx0));
+            rx1=std::max(gx,std::min(gx+gw,rx1));
+            dl->AddRectFilled(ImVec2(rx0,ry0),ImVec2(rx1,ry1),IM_COL32(255,40,40,50));
+            dl->AddRect(ImVec2(rx0,ry0),ImVec2(rx1,ry1),IM_COL32(255,60,60,220),0,0,1.5f);
+            // 안내 텍스트
+            char hint[64];
+            float cf=(region.freq_lo+region.freq_hi)*0.5f;
+            float bw=(region.freq_hi-region.freq_lo)*1000.0f;
+            snprintf(hint,sizeof(hint),"%.3f MHz  BW %.0f kHz  [R]Save",cf,bw);
+            dl->AddText(ImVec2(rx0+2,ry0+2),IM_COL32(255,180,180,255),hint);
+
+            // 좌클릭 두 번으로 영역 해제
+            region.lclick_timer-=ImGui::GetIO().DeltaTime;
+            if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)&&in_wf&&!ctrl){
+                region.lclick_count++;
+                region.lclick_timer=0.4f;
+            }
+            if(region.lclick_count>=2||(region.lclick_count==1&&region.lclick_timer<=0))
+                if(region.lclick_count>=2){ region.active=false; region.lclick_count=0; }
+            if(region.lclick_timer<=0) region.lclick_count=0;
+            // 더블클릭으로도 해제
+            if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)&&in_wf)
+                region.active=false;
+        }
+    }
+
     if(hov){
         ImVec2 mm=ImGui::GetIO().MousePos;
         float af=x_to_abs(mm.x,gx,gw);
@@ -544,8 +670,9 @@ void run_streaming_viewer(){
 
         ImGui_ImplOpenGL3_NewFrame(); ImGui_ImplGlfw_NewFrame(); ImGui::NewFrame();
         v.topbar_sel_this_frame=false;
-        // 타임머신 디스플레이 인덱스 매 프레임 갱신
-        if(v.tm_active.load()) v.tm_update_display();
+        // 타임머신: Ctrl+휠 입력 있을 때만 display 인덱스 갱신
+        if(v.tm_active.load() && ImGui::GetIO().KeyCtrl && ImGui::GetIO().MouseWheel!=0)
+            v.tm_update_display();
         if(v.texture_needs_recreate){ v.texture_needs_recreate=false; v.create_waterfall_texture(); }
 
         ImGuiIO& io=ImGui::GetIO();
@@ -555,14 +682,14 @@ void run_streaming_viewer(){
         // ── Keyboard shortcuts ────────────────────────────────────────────
         if(!editing){
             if(ImGui::IsKeyPressed(ImGuiKey_R,false)){
-                if(v.rec_on.load()) v.stop_rec();
-                else {
-                    if(v.tm_active.load()){
-                        // 타임머신 모드: IQ 파일에서 녹음
-                        v.tm_rec_start();
-                    } else {
-                        v.start_rec();
-                    }
+                if(v.region.active){
+                    // 영역 IQ 녹음 저장
+                    v.region_save();
+                } else if(v.rec_on.load()){
+                    v.stop_rec();
+                } else {
+                    if(v.tm_active.load()) v.tm_rec_start();
+                    else v.start_rec();
                 }
             }
             if(ImGui::IsKeyPressed(ImGuiKey_P,false)){
@@ -572,11 +699,22 @@ void run_streaming_viewer(){
             if(ImGui::IsKeyPressed(ImGuiKey_T,false)){
                 bool cur=v.tm_iq_on.load();
                 if(cur){
+                    // Stop
                     v.tm_iq_on.store(false);
-                    v.tm_iq_close();
+                    // fd 기반 unbuffered: flush 불필요
+                    v.tm_add_event_tag(2); // TM_IQ Stop
+                    v.tm_iq_was_stopped=true;
                 } else {
+                    if(v.tm_iq_was_stopped){
+                        // Stop 후 재시작: 기존 파일 삭제 후 새로 시작
+                        v.tm_iq_close();
+                        v.tm_iq_was_stopped=false;
+                    }
                     v.tm_iq_open();
-                    if(v.tm_iq_file_ready) v.tm_iq_on.store(true);
+                    if(v.tm_iq_file_ready){
+                        v.tm_iq_on.store(true);
+                        v.tm_add_event_tag(1); // TM_IQ Start
+                    }
                 }
             }
             // 스페이스바: 타임머신 뷰 모드 토글
@@ -896,11 +1034,47 @@ void run_streaming_viewer(){
                 dl->AddText(ImVec2(iq_x,ty_b),IM_COL32(80,200,255,255),"IQ REC ON");
             }
 
-            // REC N/A 타이머 표시 (우측 상단)
+            // 우측: IQ STREAMING / FFT 수신 상태 표시
+            {
+                bool iq_active = !v.capture_pause.load();
+                bool fft_active = iq_active && !v.spectrum_pause.load();
+
+                // "FFT" 먼저 오른쪽 끝에서 배치
+                const char* fft_txt = "FFT";
+                ImVec2 fft_sz = ImGui::CalcTextSize(fft_txt);
+                float fft_x = disp_w - fft_sz.x - 8;
+                ImU32 fft_col = fft_active
+                    ? IM_COL32(255,255,255,255)   // 활성: 흰색
+                    : IM_COL32(100,100,100,120);   // 비활성: 회색 연하게
+                if(fft_active){
+                    // 두껍게: 1px 오프셋으로 겹쳐 그리기
+                    dl->AddText(ImVec2(fft_x+1,ty_b), fft_col, fft_txt);
+                }
+                dl->AddText(ImVec2(fft_x,ty_b), fft_col, fft_txt);
+
+                // "IQ STREAMING" FFT 왼쪽에
+                const char* iqs_txt = "IQ STREAMING";
+                ImVec2 iqs_sz = ImGui::CalcTextSize(iqs_txt);
+                float iqs_x = fft_x - iqs_sz.x - 12;
+                ImU32 iqs_col = iq_active
+                    ? IM_COL32(255,255,255,255)
+                    : IM_COL32(100,100,100,120);
+                if(iq_active){
+                    dl->AddText(ImVec2(iqs_x+1,ty_b), iqs_col, iqs_txt);
+                }
+                dl->AddText(ImVec2(iqs_x,ty_b), iqs_col, iqs_txt);
+            }
+
+            // REC N/A 타이머 표시 (IQ STREAMING 왼쪽)
             if(v.rec_na_timer>0){
                 v.rec_na_timer-=io.DeltaTime;
                 ImVec2 nasiz=ImGui::CalcTextSize("REC N/A");
-                dl->AddText(ImVec2(disp_w-nasiz.x-8,ty_b),IM_COL32(255,60,60,255),"REC N/A");
+                // IQ STREAMING 기준 왼쪽
+                const char* iqs_tmp="IQ STREAMING";
+                ImVec2 iqs_sz2=ImGui::CalcTextSize(iqs_tmp);
+                ImVec2 fft_sz2=ImGui::CalcTextSize("FFT");
+                float ref_x=disp_w-fft_sz2.x-12-iqs_sz2.x-12-nasiz.x-8;
+                dl->AddText(ImVec2(ref_x,ty_b),IM_COL32(255,60,60,255),"REC N/A");
             }
         }
         ImGui::End();

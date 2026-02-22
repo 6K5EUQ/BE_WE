@@ -37,6 +37,7 @@ add_executable(BE_WE
     src/alert.cpp
     src/ui.cpp
     src/timemachine.cpp
+    src/region_save.cpp
     ${IMGUI_SOURCES}
 )
 

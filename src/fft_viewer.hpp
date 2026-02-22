@@ -47,16 +47,31 @@ public:
     std::atomic<bool> tm_iq_on{false};     // T키: IQ SSD 롤링 활성
     std::atomic<bool> tm_active{false};    // 스페이스바: 타임머신 뷰 모드
     std::atomic<bool> capture_pause{false};// 캡처 스레드 pause
+    bool tm_iq_was_stopped=false;          // Stop 후 재시작 전 상태
     float tm_offset=0.0f;                  // 현재 보는 과거 오프셋 (초)
     float tm_max_sec=0.0f;                     // 현재 사용 가능한 최대 과거 초
 
     // 행별 IQ 데이터 존재 플래그 (MAX_FFTS_MEMORY 크기)
     bool iq_row_avail[MAX_FFTS_MEMORY]={};
+    // 각 FFT 행 커밋 시점의 tm_iq_write_sample 기록
+    // row_write_pos[fi % MAX_FFTS_MEMORY] = 그 행의 IQ 데이터가 끝나는 파일 위치
+    int64_t row_write_pos[MAX_FFTS_MEMORY]={};
+
+    // ── 워터폴 좌측 이벤트 태그 ───────────────────────────────────────────
+    struct WfEvent {
+        int   fft_idx;   // 이벤트 발생 시점의 fft 인덱스
+        time_t wall_time;// 실제 시각
+        int   type;      // 0=시간태그(5초단위), 1=TM_IQ Start, 2=TM_IQ Stop
+        char  label[32];
+    };
+    std::vector<WfEvent> wf_events;
+    std::mutex           wf_events_mtx;
+    int                  last_tagged_sec=-1; // 마지막으로 5초태그 붙인 초
 
     // IQ 롤링 파일 관리
     static constexpr const char* TM_IQ_DIR  = "/home/dsa/BE_WE/recordings/Time_temp";
     static constexpr size_t      TM_IQ_SECS = 60;     // 롤링 길이 (초)
-    FILE*    tm_iq_file=nullptr;
+    int      tm_iq_fd=-1;   // unbuffered POSIX fd (fwrite stdio 버퍼 없음)
     int64_t  tm_iq_write_sample=0;         // 현재 파일 내 쓰기 샘플 위치
     int64_t  tm_iq_total_samples=0;        // 파일 전체 샘플 수 (미리 할당)
     // 초 단위 타임스탬프 배열 [0..TM_IQ_SECS-1]: 각 초 청크의 시작 시각
@@ -77,10 +92,26 @@ public:
     void tm_mark_rows(int fft_idx);
     void tm_update_display();
     bool tm_rec_start();
+    void tm_add_time_tag(int fft_idx);
+    void tm_add_event_tag(int type); // 1=Start, 2=Stop
+
+    // ── 영역 IQ 녹음 (Ctrl+우클릭 드래그) ───────────────────────────────
+    struct RegionSel {
+        bool   selecting=false;
+        bool   active=false;
+        float  drag_x0=0, drag_y0=0, drag_x1=0, drag_y1=0;
+        float  freq_lo=0, freq_hi=0;
+        int    fft_top=0, fft_bot=0;
+        time_t time_start=0, time_end=0;
+        int    lclick_count=0;
+        float  lclick_timer=0;
+    } region;
+
+    void region_save();
 
     // tm_rec 내부 상태
     bool    tm_rec_active=false;
-    int64_t tm_rec_read_pos=0;
+    int64_t tm_rec_read_pos=0; // R키 실행 시 파일 추출
     std::vector<float> current_spectrum;
     int   cached_sp_idx=-1; float cached_pan=-999, cached_zoom=-999;
     int   cached_px=-1;     float cached_pmin=-999, cached_pmax=-999;
