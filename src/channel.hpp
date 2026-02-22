@@ -117,6 +117,10 @@ struct Channel {
     float move_anchor=0;
     float move_s0=0, move_e0=0;
 
+    // Filter resize-drag state
+    bool  resize_drag=false;
+    int   resize_side=0;  // -1=left edge, +1=right edge
+
     Channel()=default;
     Channel(const Channel&)=delete;
     Channel& operator=(const Channel&)=delete;

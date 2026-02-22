@@ -36,6 +36,7 @@ add_executable(BE_WE
     src/audio.cpp
     src/alert.cpp
     src/ui.cpp
+    src/timemachine.cpp
     ${IMGUI_SOURCES}
 )
 

@@ -37,6 +37,50 @@ public:
     float freq_zoom=1, freq_pan=0;
     float display_power_min=-80, display_power_max=0;
     float spectrum_height_ratio=0.2f;
+
+    // ── System monitor (bottom bar) ───────────────────────────────────────
+    float sysmon_cpu=0, sysmon_ghz=0, sysmon_ram=0, sysmon_io=0;
+
+    // ── Timemachine ───────────────────────────────────────────────────────
+    // 워터폴/스펙트럼: 항상 2500행 메모리 유지 (위 MAX_FFTS_MEMORY)
+    // IQ 롤링: T키로 활성화
+    std::atomic<bool> tm_iq_on{false};     // T키: IQ SSD 롤링 활성
+    std::atomic<bool> tm_active{false};    // 스페이스바: 타임머신 뷰 모드
+    std::atomic<bool> capture_pause{false};// 캡처 스레드 pause
+    float tm_offset=0.0f;                  // 현재 보는 과거 오프셋 (초)
+    float tm_max_sec=0.0f;                     // 현재 사용 가능한 최대 과거 초
+
+    // 행별 IQ 데이터 존재 플래그 (MAX_FFTS_MEMORY 크기)
+    bool iq_row_avail[MAX_FFTS_MEMORY]={};
+
+    // IQ 롤링 파일 관리
+    static constexpr const char* TM_IQ_DIR  = "/home/dsa/BE_WE/recordings/Time_temp";
+    static constexpr size_t      TM_IQ_SECS = 60;     // 롤링 길이 (초)
+    FILE*    tm_iq_file=nullptr;
+    int64_t  tm_iq_write_sample=0;         // 현재 파일 내 쓰기 샘플 위치
+    int64_t  tm_iq_total_samples=0;        // 파일 전체 샘플 수 (미리 할당)
+    // 초 단위 타임스탬프 배열 [0..TM_IQ_SECS-1]: 각 초 청크의 시작 시각
+    time_t   tm_iq_chunk_time[TM_IQ_SECS]={};
+    int      tm_iq_chunk_write=0;          // 현재 쓰고 있는 청크 인덱스
+    int64_t  tm_iq_chunk_sample_start=0;   // 현재 청크 샘플 시작
+    bool     tm_iq_file_ready=false;
+
+    // REC N/A 표시 타이머
+    float    rec_na_timer=0.0f;
+
+    // 디스플레이용 타임머신 오프셋 FFT 인덱스
+    int tm_display_fft_idx=0;
+
+    void tm_iq_open();
+    void tm_iq_close();
+    void tm_iq_write(const int16_t* samples, int n_pairs);
+    void tm_mark_rows(int fft_idx);
+    void tm_update_display();
+    bool tm_rec_start();
+
+    // tm_rec 내부 상태
+    bool    tm_rec_active=false;
+    int64_t tm_rec_read_pos=0;
     std::vector<float> current_spectrum;
     int   cached_sp_idx=-1; float cached_pan=-999, cached_zoom=-999;
     int   cached_px=-1;     float cached_pmin=-999, cached_pmax=-999;

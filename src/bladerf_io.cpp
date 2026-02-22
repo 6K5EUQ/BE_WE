@@ -50,6 +50,12 @@ void FFTViewer::capture_and_process(){
     std::vector<float> pacc(fft_size,0.0f); int fcnt=0;
 
     while(is_running){
+        // ── Pause (타임머신 모드) ─────────────────────────────────────────
+        if(capture_pause.load(std::memory_order_relaxed)){
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
+        }
+
         // ── FFT size change ───────────────────────────────────────────────
         if(fft_size_change_req){
             fft_size_change_req=false; int ns=pending_fft_size;
@@ -89,7 +95,8 @@ void FFTViewer::capture_and_process(){
         // ── IQ Ring write ─────────────────────────────────────────────────
         bool need_ring=rec_on.load(std::memory_order_relaxed);
         if(!need_ring) for(int i=0;i<MAX_CHANNELS;i++) if(channels[i].dem_run.load()){need_ring=true;break;}
-        if(need_ring){
+        bool need_tm=tm_iq_on.load(std::memory_order_relaxed);
+        if(need_ring||need_tm){
             size_t wp=ring_wp.load(std::memory_order_relaxed);
             size_t n=(size_t)fft_size, cap=IQ_RING_CAPACITY;
             if(wp+n<=cap) memcpy(&ring[wp*2],iq,n*2*sizeof(int16_t));
@@ -99,6 +106,8 @@ void FFTViewer::capture_and_process(){
                 memcpy(&ring[0],iq+p1*2,p2*2*sizeof(int16_t));
             }
             ring_wp.store((wp+n)&IQ_RING_MASK,std::memory_order_release);
+            // TM IQ 롤링 저장
+            if(need_tm) tm_iq_write(iq,(int)n);
         }
 
         // ── FFT ───────────────────────────────────────────────────────────
@@ -143,10 +152,16 @@ void FFTViewer::capture_and_process(){
                      }
                  }
                  total_ffts++; current_fft_idx=total_ffts-1;
-                 header.num_ffts=std::min(total_ffts,MAX_FFTS_MEMORY); cached_sp_idx=-1;}
+                 header.num_ffts=std::min(total_ffts,MAX_FFTS_MEMORY); cached_sp_idx=-1;
+                 // IQ 롤링 활성화 시 행 플래그 세팅
+                 if(tm_iq_on.load(std::memory_order_relaxed))
+                     tm_mark_rows(current_fft_idx%MAX_FFTS_MEMORY);
+                 else
+                     iq_row_avail[current_fft_idx%MAX_FFTS_MEMORY]=false;
+                }
                 std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
             }
         } // end !spectrum_pause
     }
     delete[] iq;
-}
+}   

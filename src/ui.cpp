@@ -46,9 +46,50 @@ void FFTViewer::handle_new_channel_drag(float gx, float gw){
 
 void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float gh){
     ImVec2 m=ImGui::GetIO().MousePos;
-    if(m.x<gx||m.x>gx+gw) return;
+    if(m.x<gx-8||m.x>gx+gw+8) return;
     bool in_graph=(m.y>=gy&&m.y<=gy+gh);
+    const float EDGE_GRAB=6.0f; // px
 
+    // ── Active resize drag ────────────────────────────────────────────────
+    bool any_resize=false;
+    for(int i=0;i<MAX_CHANNELS;i++) if(channels[i].resize_drag){any_resize=true;break;}
+
+    if(any_resize){
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        if(ImGui::IsMouseDown(ImGuiMouseButton_Left)){
+            float cur_abs=x_to_abs(m.x,gx,gw);
+            for(int i=0;i<MAX_CHANNELS;i++){
+                if(!channels[i].resize_drag) continue;
+                float ss=std::min(channels[i].s,channels[i].e);
+                float se=std::max(channels[i].s,channels[i].e);
+                // snap to 1kHz
+                float snapped=roundf(cur_abs*1000.0f)/1000.0f;
+                const float MIN_BW=0.001f; // 1kHz min
+                if(channels[i].resize_side==-1){
+                    // left edge
+                    channels[i].s=std::min(snapped, se-MIN_BW);
+                    channels[i].e=se;
+                } else {
+                    // right edge
+                    channels[i].s=ss;
+                    channels[i].e=std::max(snapped, ss+MIN_BW);
+                }
+            }
+        } else {
+            // drag ended → restart demod if active
+            for(int i=0;i<MAX_CHANNELS;i++){
+                if(!channels[i].resize_drag) continue;
+                channels[i].resize_drag=false;
+                if(channels[i].dem_run.load()){
+                    Channel::DemodMode md=channels[i].mode;
+                    stop_dem(i); start_dem(i,md);
+                }
+            }
+        }
+        return;
+    }
+
+    // ── Active move drag ──────────────────────────────────────────────────
     bool any_move=false;
     for(int i=0;i<MAX_CHANNELS;i++) if(channels[i].move_drag){any_move=true;break;}
 
@@ -77,6 +118,21 @@ void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float 
         return;
     }
 
+    // ── Hover: edge detection for cursor change ───────────────────────────
+    if(in_graph){
+        bool near_edge=false;
+        for(int i=0;i<MAX_CHANNELS;i++){
+            if(!channels[i].filter_active) continue;
+            float x0=abs_to_x(std::min(channels[i].s,channels[i].e),gx,gw);
+            float x1=abs_to_x(std::max(channels[i].s,channels[i].e),gx,gw);
+            if(fabsf(m.x-x0)<EDGE_GRAB||fabsf(m.x-x1)<EDGE_GRAB){
+                near_edge=true; break;
+            }
+        }
+        if(near_edge) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    }
+
+    // ── Double-click: delete channel ──────────────────────────────────────
     if(in_graph&&ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
         int ci=channel_at_x(m.x,gx,gw);
         if(ci>=0){
@@ -89,17 +145,36 @@ void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float 
         return;
     }
 
+    // ── Single click: resize edge or move ────────────────────────────────
     if(in_graph&&ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
-        int ci=channel_at_x(m.x,gx,gw);
-        if(selected_ch>=0) channels[selected_ch].selected=false;
-        if(ci>=0){
-            selected_ch=ci; channels[ci].selected=true;
-            channels[ci].move_drag=true;
-            channels[ci].move_anchor=x_to_abs(m.x,gx,gw);
-            channels[ci].move_s0=std::min(channels[ci].s,channels[ci].e);
-            channels[ci].move_e0=std::max(channels[ci].s,channels[ci].e);
+        // Check edge first
+        int edge_ch=-1; int edge_side=0;
+        for(int i=0;i<MAX_CHANNELS;i++){
+            if(!channels[i].filter_active) continue;
+            float x0=abs_to_x(std::min(channels[i].s,channels[i].e),gx,gw);
+            float x1=abs_to_x(std::max(channels[i].s,channels[i].e),gx,gw);
+            if(fabsf(m.x-x0)<EDGE_GRAB){ edge_ch=i; edge_side=-1; break; }
+            if(fabsf(m.x-x1)<EDGE_GRAB){ edge_ch=i; edge_side= 1; break; }
+        }
+        if(edge_ch>=0){
+            // Select + start resize
+            if(selected_ch>=0) channels[selected_ch].selected=false;
+            selected_ch=edge_ch; channels[edge_ch].selected=true;
+            channels[edge_ch].resize_drag=true;
+            channels[edge_ch].resize_side=edge_side;
         } else {
-            selected_ch=-1;
+            // Normal move
+            int ci=channel_at_x(m.x,gx,gw);
+            if(selected_ch>=0) channels[selected_ch].selected=false;
+            if(ci>=0){
+                selected_ch=ci; channels[ci].selected=true;
+                channels[ci].move_drag=true;
+                channels[ci].move_anchor=x_to_abs(m.x,gx,gw);
+                channels[ci].move_s0=std::min(channels[ci].s,channels[ci].e);
+                channels[ci].move_e0=std::max(channels[ci].s,channels[ci].e);
+            } else {
+                selected_ch=-1;
+            }
         }
     }
 }
@@ -126,9 +201,40 @@ void FFTViewer::draw_all_channels(ImDrawList* dl, float gx, float gw, float gy, 
         float c0=std::max(gx,x0), c1=std::min(gx+gw,x1);
         if(c1<=c0) continue;
 
-        ImU32 fill=ch.selected?CH_SFIL[i]:CH_FILL[i];
-        ImU32 bord=CH_BORD[i];
-        if(rec_on.load()&&i==rec_ch) fill=IM_COL32(255,60,60,60);
+        // ── Mode-based colors ─────────────────────────────────────────────
+        // fill alpha: normal=25, selected=60
+        ImU32 fill, bord;
+        bool is_rec=(rec_on.load()&&i==rec_ch);
+        bool dem=ch.dem_run.load();
+
+        if(is_rec){
+            // 녹음 중: 빨간색
+            bord=IM_COL32(255, 60, 60,220);
+            fill=IM_COL32(255, 60, 60, ch.selected?70:30);
+        } else if(!dem || ch.mode==Channel::DM_NONE){
+            // 복조 없음: 회색 투명
+            bord=IM_COL32(160,160,160,160);
+            fill=IM_COL32(160,160,160, ch.selected?40:15);
+        } else if(ch.mode==Channel::DM_AM){
+            // AM: 하늘색
+            bord=IM_COL32( 80,200,255,220);
+            fill=IM_COL32( 80,200,255, ch.selected?70:25);
+        } else if(ch.mode==Channel::DM_FM){
+            // FM: 노란색
+            bord=IM_COL32(255,220, 50,220);
+            fill=IM_COL32(255,220, 50, ch.selected?70:25);
+        } else if(ch.mode==Channel::DM_MAGIC){
+            // 매직: 보라색
+            bord=IM_COL32(180, 80,255,220);
+            fill=IM_COL32(180, 80,255, ch.selected?70:25);
+        } else if(ch.mode==Channel::DM_DETECT){
+            // 디텍션: 보라색
+            bord=IM_COL32(180, 80,255,220);
+            fill=IM_COL32(180, 80,255, ch.selected?70:25);
+        } else {
+            bord=CH_BORD[i];
+            fill=ch.selected?CH_SFIL[i]:CH_FILL[i];
+        }
 
         dl->AddRectFilled(ImVec2(c0,gy),ImVec2(c1,gy+gh),fill);
         auto dash=[&](float x){
@@ -187,6 +293,16 @@ void FFTViewer::draw_freq_axis(ImDrawList* dl, float gx, float gw, float gy, flo
 void FFTViewer::handle_zoom_scroll(float gx, float gw, float mouse_x){
     float wheel=ImGui::GetIO().MouseWheel;
     if(wheel==0) return;
+
+    // Ctrl+휠: 타임머신 오프셋 조작
+    if(ImGui::GetIO().KeyCtrl){
+        if(!tm_active.load()) return;
+        // 위 = 최신(-), 아래 = 과거(+)  ← 반대 방향
+        float delta=(wheel>0)?-0.1f:0.1f;
+        tm_offset=std::max(0.0f,std::min(tm_max_sec, tm_offset+delta));
+        return;
+    }
+
     float nyq=header.sample_rate/2.0f/1e6f, eff=nyq*0.875f, rng=2*eff;
     float mx=(mouse_x-gx)/gw; mx=std::max(0.0f,std::min(1.0f,mx));
     float fmx=-eff+freq_pan*rng+mx*(rng/freq_zoom);
@@ -202,19 +318,21 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
 
     float ds,de; get_disp(ds,de);
     float sr_mhz=header.sample_rate/1e6f; int np=(int)gw;
-    bool cv=(cached_sp_idx==current_fft_idx&&cached_pan==freq_pan&&cached_zoom==freq_zoom&&
+    // 타임머신 모드: tm_display_fft_idx 기준, 아니면 current_fft_idx
+    int sp_idx=tm_active.load() ? tm_display_fft_idx : current_fft_idx;
+    bool cv=(cached_sp_idx==sp_idx&&cached_pan==freq_pan&&cached_zoom==freq_zoom&&
              cached_px==np&&cached_pmin==display_power_min&&cached_pmax==display_power_max);
     if(!cv){
         current_spectrum.assign(np,-80.0f);
         float nyq=sr_mhz/2.0f; int hf=header.fft_size/2;
-        int mi=current_fft_idx%MAX_FFTS_MEMORY;
+        int mi=sp_idx%MAX_FFTS_MEMORY;
         for(int px=0;px<np;px++){
             float fd=ds+(float)px/np*(de-ds);
             int bin=(fd>=0)?(int)((fd/nyq)*hf):fft_size+(int)((fd/nyq)*hf);
             if(bin>=0&&bin<fft_size)
                 current_spectrum[px]=(fft_data[mi*fft_size+bin]/127.0f)*(header.power_max-header.power_min)+header.power_min;
         }
-        cached_sp_idx=current_fft_idx; cached_pan=freq_pan; cached_zoom=freq_zoom;
+        cached_sp_idx=sp_idx; cached_pan=freq_pan; cached_zoom=freq_zoom;
         cached_px=np; cached_pmin=display_power_min; cached_pmax=display_power_max;
     }
     float pr=display_power_max-display_power_min;
@@ -281,7 +399,8 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
     float gw=total_w-AXIS_LABEL_WIDTH, gh=total_h;
     dl->AddRectFilled(ImVec2(full_x,full_y),ImVec2(full_x+total_w,full_y+total_h),IM_COL32(10,10,10,255));
     if(!waterfall_texture) create_waterfall_texture();
-    if(total_ffts>0&&last_wf_update_idx!=current_fft_idx){
+    // 타임머신 모드 아닐 때만 텍스처 업데이트
+    if(!tm_active.load()&&total_ffts>0&&last_wf_update_idx!=current_fft_idx){
         update_wf_row(current_fft_idx); last_wf_update_idx=current_fft_idx;
     }
     if(waterfall_texture){
@@ -289,12 +408,25 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
         float nyq=header.sample_rate/2.0f/1e6f;
         int dr2=std::min(total_ffts,MAX_FFTS_MEMORY);
         float us=(ds+nyq)/(2*nyq), ue=(de+nyq)/(2*nyq);
-        float vn=(float)(current_fft_idx%MAX_FFTS_MEMORY)/MAX_FFTS_MEMORY;
-        float vt=vn+1.0f/MAX_FFTS_MEMORY;
         float dh=(dr2>=(int)gh)?gh:(float)dr2;
-        float vb=vt-(float)dr2/MAX_FFTS_MEMORY;
+        // 타임머신: tm_display_fft_idx 기준, 일반: current_fft_idx 기준
+        int disp_idx=tm_active.load() ? tm_display_fft_idx : current_fft_idx;
+        float vn=(float)(disp_idx%MAX_FFTS_MEMORY)/MAX_FFTS_MEMORY;
+        float vt=vn+1.0f/MAX_FFTS_MEMORY;
+        float vb=vt-dh/MAX_FFTS_MEMORY;
         ImTextureID tid=(ImTextureID)(intptr_t)waterfall_texture;
         dl->AddImage(tid,ImVec2(gx,gy),ImVec2(gx+gw,gy+dh),ImVec2(us,vt),ImVec2(ue,vb),IM_COL32(255,255,255,255));
+        // IQ 가용 오버레이: T 활성 구간 연한 흰색
+        if(tm_iq_file_ready){
+            int visible_rows=(int)dh;
+            for(int r=0;r<visible_rows&&r<MAX_FFTS_MEMORY;r++){
+                int row_idx=(disp_idx - r + MAX_FFTS_MEMORY*4) % MAX_FFTS_MEMORY;
+                if(iq_row_avail[row_idx]){
+                    float y0=gy+(float)r, y1=y0+1.0f;
+                    dl->AddRectFilled(ImVec2(gx,y0),ImVec2(gx+gw,y1),IM_COL32(255,255,255,30));
+                }
+            }
+        }
     }
     draw_freq_axis(dl,gx,gw,gy,gh,true);
     draw_all_channels(dl,gx,gw,gy,gh,false);
@@ -331,7 +463,7 @@ void run_streaming_viewer(){
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);
     glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
-    GLFWwindow* win=glfwCreateWindow(1400,900,"BEWE [CPU --%]",nullptr,nullptr);
+    GLFWwindow* win=glfwCreateWindow(1400,900,"BEWE",nullptr,nullptr);
     glfwMakeContextCurrent(win); glfwSwapInterval(0);
     glewExperimental=GL_TRUE; glewInit();
     ImGui::CreateContext(); ImGui::StyleColorsDark();
@@ -402,16 +534,18 @@ void run_streaming_viewer(){
                 long long io_now=read_io_ms();
                 float io_pct=std::min(100.0f,(float)(io_now-io_last_ms)/10.0f);
                 io_last_ms=io_now;
-                float ghz=read_ghz(), ram=read_ram();
-                char t[128];
-                snprintf(t,sizeof(t),"BEWE [CPU %.0f%% @ %.2fGHz | RAM %.0f%% | IO %.0f%%]",
-                         (double)cpu_pct,(double)ghz,(double)ram,(double)io_pct);
-                glfwSetWindowTitle(win,t);
+                v.sysmon_cpu=cpu_pct;
+                v.sysmon_ghz=read_ghz();
+                v.sysmon_ram=read_ram();
+                v.sysmon_io =io_pct;
+                glfwSetWindowTitle(win,"BEWE");
             }
         }
 
         ImGui_ImplOpenGL3_NewFrame(); ImGui_ImplGlfw_NewFrame(); ImGui::NewFrame();
         v.topbar_sel_this_frame=false;
+        // 타임머신 디스플레이 인덱스 매 프레임 갱신
+        if(v.tm_active.load()) v.tm_update_display();
         if(v.texture_needs_recreate){ v.texture_needs_recreate=false; v.create_waterfall_texture(); }
 
         ImGuiIO& io=ImGui::GetIO();
@@ -421,10 +555,44 @@ void run_streaming_viewer(){
         // ── Keyboard shortcuts ────────────────────────────────────────────
         if(!editing){
             if(ImGui::IsKeyPressed(ImGuiKey_R,false)){
-                if(v.rec_on.load()) v.stop_rec(); else v.start_rec();
+                if(v.rec_on.load()) v.stop_rec();
+                else {
+                    if(v.tm_active.load()){
+                        // 타임머신 모드: IQ 파일에서 녹음
+                        v.tm_rec_start();
+                    } else {
+                        v.start_rec();
+                    }
+                }
             }
             if(ImGui::IsKeyPressed(ImGuiKey_P,false)){
                 v.spectrum_pause.store(!v.spectrum_pause.load());
+            }
+            // T키: IQ 롤링 버퍼 활성/비활성
+            if(ImGui::IsKeyPressed(ImGuiKey_T,false)){
+                bool cur=v.tm_iq_on.load();
+                if(cur){
+                    v.tm_iq_on.store(false);
+                    v.tm_iq_close();
+                } else {
+                    v.tm_iq_open();
+                    if(v.tm_iq_file_ready) v.tm_iq_on.store(true);
+                }
+            }
+            // 스페이스바: 타임머신 뷰 모드 토글
+            if(ImGui::IsKeyPressed(ImGuiKey_Space,false)){
+                bool cur=v.tm_active.load();
+                if(cur){
+                    // 해제: 최신 데이터로 복귀, 캡처 재개
+                    v.tm_offset=0;
+                    v.tm_active.store(false);
+                    v.capture_pause.store(false);
+                } else {
+                    // 진입: 캡처 정지
+                    v.capture_pause.store(true);
+                    v.tm_offset=0;
+                    v.tm_active.store(true);
+                }
             }
             if(sci>=0&&v.channels[sci].filter_active){
                 auto set_mode=[&](Channel::DemodMode m){
@@ -500,8 +668,8 @@ void run_streaming_viewer(){
         ImGui::SameLine();
 
         // ── FFT size combo ────────────────────────────────────────────────
-        static const int fft_sizes[]={512,1024,2048,4096,8192,16384,32768};
-        static const char* fft_lbls[]={"512","1024","2048","4096","8192","16384","32768"};
+        static const int fft_sizes[]={512,1024,2048,4096,8192,16384};
+        static const char* fft_lbls[]={"512","1024","2048","4096","8192","16384"};
         static int fft_si=4;
         ImGui::Text("FFT:"); ImGui::SameLine();
         {
@@ -511,7 +679,7 @@ void run_streaming_viewer(){
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,ImVec2(px2,ImGui::GetStyle().FramePadding.y));
             ImGui::SetNextItemWidth(box_w2);
             if(ImGui::BeginCombo("##fftsize",fft_lbls[fft_si],ImGuiComboFlags_HeightSmall)){
-                for(int i=0;i<7;i++){
+                for(int i=0;i<6;i++){
                     bool sel2=(fft_si==i);
                     if(ImGui::Selectable(fft_lbls[i],sel2)){
                         fft_si=i; v.pending_fft_size=fft_sizes[i]; v.fft_size_change_req=true;
@@ -557,7 +725,7 @@ void run_streaming_viewer(){
             if(ImGui::IsItemHovered()){
                 float wheel=ImGui::GetIO().MouseWheel;
                 if(wheel!=0.0f){
-                    float nthr=thr_db+(wheel>0?5.0f:-5.0f);
+                    float nthr=thr_db+(wheel>0?3.0f:-3.0f);
                     nthr=nthr<DB_MIN?DB_MIN:nthr>DB_MAX?DB_MAX:nthr;
                     sch.sq_threshold.store(nthr,std::memory_order_relaxed);
                 }
@@ -620,11 +788,35 @@ void run_streaming_viewer(){
                 ImVec2 cs2=ImGui::CalcTextSize(cb); rx-=cs2.x;
                 bool is_selected=(v.selected_ch==i);
                 bool gate_open=ch.sq_gate.load();
+                bool tb_dem=ch.dem_run.load();
+                bool tb_rec=(v.rec_on.load()&&v.rec_ch==i);
+
+                // 모드별 기본 색상 (필터 오버레이와 동일 계열)
+                ImU32 mode_col;
+                if(tb_rec)
+                    mode_col=IM_COL32(255, 60, 60,255);
+                else if(!tb_dem || ch.mode==Channel::DM_NONE)
+                    mode_col=IM_COL32(160,160,160,255);
+                else if(ch.mode==Channel::DM_AM)
+                    mode_col=IM_COL32( 80,200,255,255);
+                else if(ch.mode==Channel::DM_FM)
+                    mode_col=IM_COL32(255,220, 50,255);
+                else if(ch.mode==Channel::DM_MAGIC||ch.mode==Channel::DM_DETECT)
+                    mode_col=IM_COL32(180, 80,255,255);
+                else
+                    mode_col=IM_COL32(160,160,160,255);
+
                 ImU32 tc;
                 if(is_selected)
-                    tc=gate_open?CH_BORD[i]:IM_COL32(255,255,255,255);
+                    // 선택: 신호 있으면 모드색, 없으면 흰색
+                    tc=gate_open ? mode_col : IM_COL32(255,255,255,255);
                 else
-                    tc=gate_open?CH_BORD[i]:IM_COL32(160,160,160,255);
+                    // 비선택: 신호 있으면 모드색, 없으면 어두운 모드색
+                    tc=gate_open ? mode_col : IM_COL32(
+                        (uint8_t)(((mode_col>>IM_COL32_R_SHIFT)&0xFF)*0.5f),
+                        (uint8_t)(((mode_col>>IM_COL32_G_SHIFT)&0xFF)*0.5f),
+                        (uint8_t)(((mode_col>>IM_COL32_B_SHIFT)&0xFF)*0.5f),
+                        200);
 
                 ImVec2 mpos=ImGui::GetIO().MousePos;
                 bool hovered=(mpos.x>=rx&&mpos.x<rx+cs2.x&&mpos.y>=0&&mpos.y<TOPBAR_H);
@@ -653,7 +845,7 @@ void run_streaming_viewer(){
         ImGui::PopStyleVar(); // ItemSpacing
 
         // ── Spectrum + Waterfall ──────────────────────────────────────────
-        float content_y=TOPBAR_H, content_h=disp_h-content_y, div_h=14.0f;
+        float content_y=TOPBAR_H, content_h=disp_h-content_y-TOPBAR_H, div_h=14.0f;
         float sp_h=(content_h-div_h)*v.spectrum_height_ratio;
         float wf_h=content_h-div_h-sp_h;
         v.draw_spectrum_area(dl,0,content_y,disp_w,sp_h);
@@ -670,6 +862,47 @@ void run_streaming_viewer(){
         if(ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
 
         v.draw_waterfall_area(dl,0,div_y+div_h,disp_w,wf_h);
+
+        // ── Bottom bar ────────────────────────────────────────────────────
+        float bot_y=disp_h-TOPBAR_H;
+        dl->AddRectFilled(ImVec2(0,bot_y),ImVec2(disp_w,disp_h),IM_COL32(30,30,30,255));
+        dl->AddLine(ImVec2(0,bot_y),ImVec2(disp_w,bot_y),IM_COL32(60,60,60,255),1);
+        {
+            float ty_b=bot_y+(TOPBAR_H-ImGui::GetFontSize())/2;
+
+            // 중앙: 시스템 모니터
+            char stats[128];
+            snprintf(stats,sizeof(stats),
+                     "CPU %.0f%%  @  %.2f GHz     RAM %.0f%%     IO %.0f%%",
+                     (double)v.sysmon_cpu,(double)v.sysmon_ghz,
+                     (double)v.sysmon_ram,(double)v.sysmon_io);
+            ImVec2 ssz=ImGui::CalcTextSize(stats);
+            dl->AddText(ImVec2((disp_w-ssz.x)/2,ty_b),IM_COL32(160,160,160,255),stats);
+
+            // 좌측: 타임머신 상태
+            if(v.tm_active.load()){
+                char tm_txt[64];
+                if(v.tm_offset<=0.0f)
+                    snprintf(tm_txt,sizeof(tm_txt),"TIMEMACHINE  LIVE");
+                else
+                    snprintf(tm_txt,sizeof(tm_txt),"TIMEMACHINE  -%.1f sec",v.tm_offset);
+                dl->AddText(ImVec2(8,ty_b),IM_COL32(255,200,50,255),tm_txt);
+            }
+
+            // 좌측: IQ 롤링 상태
+            float iq_x=8;
+            if(v.tm_active.load()) iq_x+=180;
+            if(v.tm_iq_on.load()){
+                dl->AddText(ImVec2(iq_x,ty_b),IM_COL32(80,200,255,255),"IQ REC ON");
+            }
+
+            // REC N/A 타이머 표시 (우측 상단)
+            if(v.rec_na_timer>0){
+                v.rec_na_timer-=io.DeltaTime;
+                ImVec2 nasiz=ImGui::CalcTextSize("REC N/A");
+                dl->AddText(ImVec2(disp_w-nasiz.x-8,ty_b),IM_COL32(255,60,60,255),"REC N/A");
+            }
+        }
         ImGui::End();
 
         ImGui::Render();

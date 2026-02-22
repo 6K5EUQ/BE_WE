@@ -244,7 +244,7 @@ void FFTViewer::start_dem(int ch_idx, Channel::DemodMode mode){
     ch.dem_stop_req.store(false);
     ch.dem_run.store(true);
     ch.dem_thr=std::thread(&FFTViewer::dem_worker,this,ch_idx);
-    const char* n[]={"NONE","AM","FM","DETECT"};
+    const char* n[]={"NONE","AM","FM","DETECT","MAGIC"};
     printf("DEM[%d] start: %s  %.4f-%.4f MHz\n",ch_idx,n[(int)mode],ch.s,ch.e);
 }
 

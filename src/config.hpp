@@ -9,7 +9,7 @@
 // ── FFT / Display ─────────────────────────────────────────────────────────
 #define DEFAULT_FFT_SIZE       8192
 #define TIME_AVERAGE           200
-#define MAX_FFTS_MEMORY        1000
+#define MAX_FFTS_MEMORY        2500   // ~1분 (37.5행/초 × 60초 + 여유)
 #define HANN_WINDOW_CORRECTION 2.67f
 #define AXIS_LABEL_WIDTH       50
 #define BOTTOM_LABEL_HEIGHT    30
