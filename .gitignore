@@ -10,4 +10,7 @@
 
 # OS / IDE 관련
 *.DS_Store
-*.vscode/
+*.vscode
+
+# 백업 폴더
+/BackUp
