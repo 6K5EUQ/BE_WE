@@ -37,6 +37,8 @@ public:
     float freq_zoom=1, freq_pan=0;
     float display_power_min=-80, display_power_max=0;
     float spectrum_height_ratio=0.2f;
+    float right_panel_ratio=0.0f;
+    std::atomic<bool> render_visible{true}; // false=좌측 패널 완전 숨김 → FFT/WF 연산 중단
 
     // ── System monitor (bottom bar) ───────────────────────────────────────
     float sysmon_cpu=0, sysmon_ghz=0, sysmon_ram=0, sysmon_io=0;

@@ -351,6 +351,7 @@ void FFTViewer::handle_zoom_scroll(float gx, float gw, float mouse_x){
 }
 
 void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, float total_w, float total_h){
+    if(total_w < AXIS_LABEL_WIDTH + 2.0f || total_h < 4.0f) return;
     float gx=full_x+AXIS_LABEL_WIDTH, gy=full_y;
     float gw=total_w-AXIS_LABEL_WIDTH, gh=total_h-BOTTOM_LABEL_HEIGHT;
     dl->AddRectFilled(ImVec2(full_x,full_y),ImVec2(full_x+total_w,full_y+total_h),IM_COL32(10,10,10,255));
@@ -434,6 +435,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
 }
 
 void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, float total_w, float total_h){
+    if(total_w < AXIS_LABEL_WIDTH + 2.0f || total_h < 4.0f) return;
     float gx=full_x+AXIS_LABEL_WIDTH, gy=full_y;
     float gw=total_w-AXIS_LABEL_WIDTH, gh=total_h;
     dl->AddRectFilled(ImVec2(full_x,full_y),ImVec2(full_x+total_w,full_y+total_h),IM_COL32(10,10,10,255));
@@ -578,20 +580,23 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
                 else if(inside_box)               ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
             }
 
-            // 편집 시작
+            // 편집 시작: 엣지는 클릭 즉시, 내부 이동은 드래그 시작 시점에
             if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)&&in_wf&&!ctrl&&
                region.edit_mode==RegionSel::EDIT_NONE){
-                if(on_edge_l||on_edge_r||on_edge_t||on_edge_b||inside_box){
-                    // 좌클릭 카운트 초기화 (이동/리사이즈 시작이면 해제 방지)
-                    region.lclick_count=0; region.lclick_timer=0;
+                if(on_edge_l||on_edge_r||on_edge_t||on_edge_b){
                     region.edit_mx0=mp.x; region.edit_my0=mp.y;
                     region.edit_flo0=region.freq_lo; region.edit_fhi0=region.freq_hi;
                     region.edit_ftop0=region.fft_top; region.edit_fbot0=region.fft_bot;
-                    if(on_edge_l)        region.edit_mode=RegionSel::EDIT_RESIZE_L;
-                    else if(on_edge_r)   region.edit_mode=RegionSel::EDIT_RESIZE_R;
-                    else if(on_edge_t)   region.edit_mode=RegionSel::EDIT_RESIZE_T;
-                    else if(on_edge_b)   region.edit_mode=RegionSel::EDIT_RESIZE_B;
-                    else if(inside_box)  region.edit_mode=RegionSel::EDIT_MOVE;
+                    if(on_edge_l)      region.edit_mode=RegionSel::EDIT_RESIZE_L;
+                    else if(on_edge_r) region.edit_mode=RegionSel::EDIT_RESIZE_R;
+                    else if(on_edge_t) region.edit_mode=RegionSel::EDIT_RESIZE_T;
+                    else               region.edit_mode=RegionSel::EDIT_RESIZE_B;
+                } else if(inside_box){
+                    // 내부 클릭: 일단 이동 준비만 (드래그 시작 전까지 lclick 카운트 유지)
+                    region.edit_mx0=mp.x; region.edit_my0=mp.y;
+                    region.edit_flo0=region.freq_lo; region.edit_fhi0=region.freq_hi;
+                    region.edit_ftop0=region.fft_top; region.edit_fbot0=region.fft_bot;
+                    region.edit_mode=RegionSel::EDIT_MOVE; // 드래그 없으면 released에서 취소
                 }
             }
 
@@ -637,6 +642,13 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
             if(region.edit_mode!=RegionSel::EDIT_NONE&&ImGui::IsMouseReleased(ImGuiMouseButton_Left)){
                 region.edit_mode=RegionSel::EDIT_NONE;
             }
+            // 내부 클릭 카운트 (드래그 없이 release된 경우만)
+            if(ImGui::IsMouseReleased(ImGuiMouseButton_Left)&&in_wf&&!ctrl&&inside_box){
+                float dmx=mp.x-region.edit_mx0, dmy=mp.y-region.edit_my0;
+                if(fabsf(dmx)<4&&fabsf(dmy)<4){ // 드래그 없음 = 실제 클릭
+                    region.lclick_count++; region.lclick_timer=0.4f;
+                }
+            }
 
             // ── 렌더링 ────────────────────────────────────────────────────
             dl->AddRectFilled(ImVec2(drx0,dry0),ImVec2(drx1,dry1),IM_COL32(255,40,40,50));
@@ -654,16 +666,13 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
             snprintf(hint,sizeof(hint),"%.3f MHz  BW %.0f kHz  [R]Save",cf,bw);
             dl->AddText(ImVec2(drx0+2,dry0+2),IM_COL32(255,180,180,255),hint);
 
-            // 영역 해제: 더블클릭 (편집 중 아닐때만)
-            if(region.edit_mode==RegionSel::EDIT_NONE){
+            // 영역 해제: 영역 안 클릭 2회 또는 더블클릭
+            // lclick 카운트 처리 (편집 중 아닐때)
+            {
                 region.lclick_timer-=ImGui::GetIO().DeltaTime;
-                if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)&&in_wf&&!ctrl&&!inside_box&&
-                   !on_edge_l&&!on_edge_r&&!on_edge_t&&!on_edge_b){
-                    region.lclick_count++; region.lclick_timer=0.4f;
-                }
                 if(region.lclick_count>=2){ region.active=false; region.lclick_count=0; }
                 if(region.lclick_timer<=0)  region.lclick_count=0;
-                if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)&&in_wf)
+                if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)&&in_wf&&inside_box)
                     region.active=false;
             }
         }
@@ -1090,23 +1099,91 @@ void run_streaming_viewer(){
         ImGui::PopStyleVar(); // ItemSpacing
 
         // ── Spectrum + Waterfall ──────────────────────────────────────────
-        float content_y=TOPBAR_H, content_h=disp_h-content_y-TOPBAR_H, div_h=14.0f;
-        float sp_h=(content_h-div_h)*v.spectrum_height_ratio;
-        float wf_h=content_h-div_h-sp_h;
-        v.draw_spectrum_area(dl,0,content_y,disp_w,sp_h);
+        // ── 레이아웃 계산 ─────────────────────────────────────────────────
+        float content_y=TOPBAR_H, content_h=disp_h-content_y-TOPBAR_H;
+        const float div_h=14.0f, vdiv_w=8.0f;
 
-        float div_y=content_y+sp_h;
-        dl->AddRectFilled(ImVec2(0,div_y),ImVec2(disp_w,div_y+div_h),IM_COL32(50,50,50,255));
-        dl->AddLine(ImVec2(0,div_y+div_h/2),ImVec2(disp_w,div_y+div_h/2),IM_COL32(80,80,80,255),1);
-        ImGui::SetCursorScreenPos(ImVec2(0,div_y));
-        ImGui::InvisibleButton("div",ImVec2(disp_w,div_h));
-        if(ImGui::IsItemActive()&&ImGui::IsMouseDragging(ImGuiMouseButton_Left)){
-            float d=io.MouseDelta.y; v.spectrum_height_ratio+=d/content_h;
-            v.spectrum_height_ratio=std::max(0.1f,std::min(0.9f,v.spectrum_height_ratio));
+        // ── 우측 패널 계산 ────────────────────────────────────────────────
+        // right_panel_ratio: 0=완전 닫힘(우측벽에 붙음), 1=전체폭
+        // right_w: 우측 패널 실제 픽셀 폭
+        float right_w = disp_w * v.right_panel_ratio;
+        right_w = std::max(0.0f, std::min(disp_w - vdiv_w, right_w));
+        bool right_visible = right_w > 2.0f;
+
+        // 세로 구분선은 항상 표시: 우측 패널 왼쪽 경계
+        float vdiv_x = disp_w - vdiv_w - right_w;
+        vdiv_x = std::max(0.0f, vdiv_x);
+
+        // 좌측 영역 폭
+        float left_w = vdiv_x;
+        bool left_visible = left_w > 2.0f;
+        v.render_visible.store(left_visible);
+
+        // ── 가로 분할: 끝까지 허용 (0~1 풀레인지) ───────────────────────
+        float sp_h = (content_h - div_h) * v.spectrum_height_ratio;
+        float wf_h = content_h - div_h - sp_h;
+        sp_h = std::max(0.0f, sp_h);
+        wf_h = std::max(0.0f, wf_h);
+        bool wf_visible = left_visible && wf_h > 1.0f;
+
+        // ── 파워스펙트럼 ──────────────────────────────────────────────────
+        if(left_visible && sp_h > 1.0f)
+            v.draw_spectrum_area(dl, 0, content_y, left_w, sp_h);
+
+        // ── 가로 구분선 (항상 드래그 가능하도록 클램프) ──────────────────
+        // div_y를 content_y+1 ~ content_y+content_h-div_h-1 사이로 클램프
+        float div_y = content_y + sp_h;
+        div_y = std::max(content_y + 1.0f, std::min(content_y + content_h - div_h - 1.0f, div_y));
+        if(left_visible){
+            dl->AddRectFilled(ImVec2(0,div_y),ImVec2(left_w,div_y+div_h),IM_COL32(50,50,50,255));
+            dl->AddLine(ImVec2(0,div_y+div_h/2),ImVec2(left_w,div_y+div_h/2),IM_COL32(80,80,80,255),1);
         }
-        if(ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        // 가로 구분선 드래그: InvisibleButton 대신 수동 마우스 감지
+        // (ratio=0 시 TopBar 경계 겹침 버그 방지)
+        {
+            ImVec2 mpos = ImGui::GetIO().MousePos;
+            bool hdiv_hov = (mpos.x >= 0 && mpos.x <= left_w &&
+                             mpos.y >= div_y && mpos.y <= div_y + div_h);
+            static bool hdiv_dragging = false;
+            if(hdiv_hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                hdiv_dragging = true;
+            if(!ImGui::IsMouseDown(ImGuiMouseButton_Left))
+                hdiv_dragging = false;
+            if(hdiv_dragging){
+                v.spectrum_height_ratio += io.MouseDelta.y / content_h;
+                v.spectrum_height_ratio = std::max(0.0f, std::min(1.0f, v.spectrum_height_ratio));
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+            } else if(hdiv_hov){
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+            }
+            // 더미 버튼 (ImGui 레이아웃 커서 유지용)
+            ImGui::SetCursorScreenPos(ImVec2(0, div_y));
+            ImGui::InvisibleButton("hdiv", ImVec2(std::max(left_w,1.0f), div_h));
+        }
 
-        v.draw_waterfall_area(dl,0,div_y+div_h,disp_w,wf_h);
+        // ── 워터폴 ───────────────────────────────────────────────────────
+        if(wf_visible)
+            v.draw_waterfall_area(dl, 0, div_y+div_h, left_w, wf_h);
+        else if(left_visible && wf_h > 0)
+            dl->AddRectFilled(ImVec2(0,div_y+div_h),ImVec2(left_w,div_y+div_h+wf_h),IM_COL32(10,10,10,255));
+
+        // ── 세로 구분선 (항상 표시) ───────────────────────────────────────
+        dl->AddRectFilled(ImVec2(vdiv_x,content_y),ImVec2(vdiv_x+vdiv_w,content_y+content_h),IM_COL32(50,50,50,255));
+        dl->AddLine(ImVec2(vdiv_x+vdiv_w/2,content_y),ImVec2(vdiv_x+vdiv_w/2,content_y+content_h),IM_COL32(80,80,80,255),1);
+        ImGui::SetCursorScreenPos(ImVec2(vdiv_x, content_y));
+        ImGui::InvisibleButton("vdiv", ImVec2(vdiv_w, content_h));
+        if(ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)){
+            // 오른쪽으로 드래그 → 우측 패널 줄어듦, 왼쪽으로 → 우측 패널 커짐
+            v.right_panel_ratio -= io.MouseDelta.x / disp_w;
+            v.right_panel_ratio = std::max(0.0f, std::min(1.0f, v.right_panel_ratio));
+        }
+        if(ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+
+        // ── 우측 패널 (빈 공간, 추후 콘텐츠) ────────────────────────────
+        if(right_visible){
+            float rpx = vdiv_x + vdiv_w;
+            dl->AddRectFilled(ImVec2(rpx,content_y),ImVec2(disp_w,content_y+content_h),IM_COL32(15,15,15,255));
+        }
 
         // ── Bottom bar ────────────────────────────────────────────────────
         float bot_y=disp_h-TOPBAR_H;
@@ -1135,7 +1212,7 @@ void run_streaming_viewer(){
             // ── 우측: 상태 인디케이터 (오른쪽→왼쪽) ─────────────────────
             // 활성=흰색두껍게, 비활성=회색연하게
             bool streaming_on = !v.capture_pause.load();
-            bool fft_on       = streaming_on && !v.spectrum_pause.load();
+            bool fft_on       = streaming_on && !v.spectrum_pause.load() && v.render_visible.load();
             bool tm_on        = v.tm_active.load();
             bool iq_on        = v.tm_iq_on.load();
 
@@ -1176,6 +1253,7 @@ void run_streaming_viewer(){
             // TM IQ FFT LINK (오른쪽→왼쪽)
             rx=draw_ind(rx,"TM",  tm_on);
             rx=draw_ind(rx,"IQ",  iq_on);
+            rx=draw_ind(rx,"WF",  wf_visible && fft_on);
             rx=draw_ind(rx,"FFT", fft_on);
             rx=draw_ind(rx,"LINK",streaming_on);
 

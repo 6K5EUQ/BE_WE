@@ -116,6 +116,12 @@ void FFTViewer::capture_and_process(){
         }
 
         // ── FFT ───────────────────────────────────────────────────────────
+        // render_visible=false(좌측 패널 완전 숨김)이면 FFT 연산 스킵
+        // 스트리밍/채널복조/롤링IQ는 위에서 이미 처리됨
+        if(!render_visible.load(std::memory_order_relaxed)){
+            std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
+            continue;
+        }
         for(int i=0;i<fft_size;i++){
             fft_in[i][0]=iq[i*2]/2048.0f;
             fft_in[i][1]=iq[i*2+1]/2048.0f;
