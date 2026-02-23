@@ -131,6 +131,29 @@ public:
     void region_save();
     void do_region_save_work();
 
+    // ── SA (Signal Analyzer) 패널 ─────────────────────────────────────────
+    bool              sa_panel_open  = false;
+    int               sa_fft_size    = 8192;
+    GLuint            sa_texture     = 0;
+    int               sa_tex_w       = 0;
+    int               sa_tex_h       = 0;
+    std::atomic<bool> sa_computing   {false};
+    std::thread       sa_thread;
+    std::string       sa_temp_path;
+    bool              sa_mode        = false;
+    float             sa_anim_timer  = 0.0f;  // 로딩 점 애니메이션
+    bool              sa_drag_active = false;
+    float right_panel_x   = 0.0f;
+
+    // SA 픽셀 버퍼 (스레드 → 메인 스레드 전달)
+    std::vector<uint32_t> sa_pixel_buf;
+    std::mutex            sa_pixel_mtx;
+    std::atomic<bool>     sa_pixel_ready{false};
+
+    void sa_start(const std::string& wav_path);  // 비동기 FFT 계산 시작
+    void sa_cleanup();                            // 임시파일 삭제 + 텍스처 해제
+    void sa_upload_texture();                     // 메인스레드에서 GL 업로드
+
     // tm_rec 내부 상태
     bool    tm_rec_active=false;
     int64_t tm_rec_read_pos=0; // R키 실행 시 파일 추출

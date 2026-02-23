@@ -1,5 +1,6 @@
 #include "fft_viewer.hpp"
 #include <unistd.h>
+#include <sys/stat.h>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -78,8 +79,10 @@ void FFTViewer::region_save(){
     // 백그라운드 스레드에서 실행
     std::thread([this](){
         do_region_save_work();
-        rec_state=REC_SUCCESS;
-        rec_success_timer=3.0f;
+        if(!sa_mode){  // SA 모드면 rec_state는 do_region_save_work 내에서 처리
+            rec_state=REC_SUCCESS;
+            rec_success_timer=3.0f;
+        }
         rec_busy_flag.store(false);
     }).detach();
 }
@@ -156,9 +159,21 @@ void FFTViewer::do_region_save_work(){
 
     // ── 출력 파일 열기 ─────────────────────────────────────────────────────
     char outpath[512];
-    make_filename(outpath, sizeof(outpath),
-                  cf_abs_mhz, bw_khz,
-                  region.time_start, region.time_end);
+    if(sa_mode){
+        // SA 전용 임시 경로
+        const char* sa_dir = "/home/dsa/BE_WE/recordings/SA_Temp";
+        struct stat sd{}; if(stat(sa_dir,&sd)!=0) mkdir(sa_dir,0755);
+        struct tm *ts=localtime(&region.time_start);
+        char date[16],s_start[8];
+        strftime(date,sizeof(date),"%Y%m%d",ts);
+        strftime(s_start,sizeof(s_start),"%H%M%S",ts);
+        snprintf(outpath,sizeof(outpath),"%s/sa_%.4fMHz_BW%.0fkHz_%s_%s.wav",
+                 sa_dir,(double)cf_abs_mhz,(double)bw_khz,date,s_start);
+    } else {
+        make_filename(outpath, sizeof(outpath),
+                      cf_abs_mhz, bw_khz,
+                      region.time_start, region.time_end);
+    }
     FILE* wf = fopen(outpath, "wb");
     if(!wf){
         fprintf(stderr,"region_save: fopen failed: %s\n", outpath);
@@ -239,5 +254,12 @@ void FFTViewer::do_region_save_work(){
     printf("Region IQ saved: %s  (%.1f sec  %.0f kHz SR)\n",
            outpath, (double)actual_out/out_sr, (double)out_sr/1000.0);
 
-    region.active = false;
+    // SA 모드: 저장 완료 후 SA 워터폴 계산 시작
+    if(sa_mode){
+        sa_mode = false;
+        sa_temp_path = outpath;
+        sa_start(outpath);
+    } else {
+        region.active = false;
+    }
 }

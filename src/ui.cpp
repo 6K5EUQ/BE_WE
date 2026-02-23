@@ -382,7 +382,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
     ImGui::SetCursorScreenPos(ImVec2(gx,gy));
     ImGui::InvisibleButton("sp_graph",ImVec2(gw,gh));
     bool hov=ImGui::IsItemHovered();
-    handle_new_channel_drag(gx,gw);
+    if(!tm_active.load()) handle_new_channel_drag(gx,gw);
     handle_channel_interactions(gx,gw,gy,gh);
     if(hov){
         ImVec2 mm=ImGui::GetIO().MousePos;
@@ -486,7 +486,7 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
     ImGui::SetCursorScreenPos(ImVec2(gx,gy));
     ImGui::InvisibleButton("wf_graph",ImVec2(gw,gh));
     bool hov=ImGui::IsItemHovered();
-    handle_new_channel_drag(gx,gw);
+    if(!tm_active.load()) handle_new_channel_drag(gx,gw);
     handle_channel_interactions(gx,gw,gy,gh);
 
     // ── Ctrl+우클릭 드래그: 영역 IQ 녹음 선택 ────────────────────────────
@@ -497,15 +497,11 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
         bool in_wf=(mp.x>=gx&&mp.x<=gx+gw&&mp.y>=gy&&mp.y<=gy+gh);
 
         // ── 신규 선택: Ctrl+우클릭 드래그 ──────────────────────────────
-        if(ctrl&&ImGui::IsMouseClicked(ImGuiMouseButton_Right)&&in_wf){
-            if(!tm_active.load()||!tm_iq_file_ready){
-                // 조건 불충족: 무시
-            } else {
-                region.selecting=true; region.active=false;
-                region.edit_mode=RegionSel::EDIT_NONE;
-                region.drag_x0=mp.x; region.drag_y0=mp.y;
-                region.drag_x1=mp.x; region.drag_y1=mp.y;
-            }
+        if(ctrl&&ImGui::IsMouseClicked(ImGuiMouseButton_Right)&&in_wf&&tm_iq_file_ready){
+            region.selecting=true; region.active=false;
+            region.edit_mode=RegionSel::EDIT_NONE;
+            region.drag_x0=mp.x; region.drag_y0=mp.y;
+            region.drag_x1=mp.x; region.drag_y1=mp.y;
         }
         if(region.selecting&&ImGui::IsMouseDown(ImGuiMouseButton_Right)){
             region.drag_x1=mp.x; region.drag_y1=mp.y;
@@ -566,6 +562,14 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
                 else if(inside_box)               ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
             }
 
+            // Ctrl+좌클릭: SA 드래그 시작
+            if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)&&in_wf&&ctrl&&
+               region.edit_mode==RegionSel::EDIT_NONE&&inside_box&&
+               sa_panel_open){
+                sa_drag_active = true;
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            }
+
             // 편집 시작: 엣지는 클릭 즉시, 내부 이동은 드래그 시작 시점에
             if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)&&in_wf&&!ctrl&&
                region.edit_mode==RegionSel::EDIT_NONE){
@@ -586,12 +590,16 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
                 }
             }
 
+            // SA 드래그 커서 추적 (Ctrl+좌클릭, edit_mode 없이 독립)
+            if(sa_drag_active && ImGui::IsMouseDown(ImGuiMouseButton_Left))
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+
             // 편집 중 (마우스 드래그)
             if(region.edit_mode!=RegionSel::EDIT_NONE&&ImGui::IsMouseDown(ImGuiMouseButton_Left)){
                 float dx=mp.x-region.edit_mx0;
                 float dy=mp.y-region.edit_my0;
-                float df=dx*mhz_per_px; // MHz 단위 주파수 델타
-                int   dr=(int)dy;       // row 단위 시간 델타 (양수=아래=과거)
+                float df=dx*mhz_per_px;
+                int   dr=(int)dy;
 
                 switch(region.edit_mode){
                 case RegionSel::EDIT_MOVE:
@@ -611,7 +619,6 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
                     break;
                 case RegionSel::EDIT_RESIZE_T:
                     region.fft_top=region.edit_ftop0-dr;
-                    // top이 bot보다 아래로 내려가지 않도록
                     if(region.fft_top<=region.fft_bot) region.fft_top=region.fft_bot+1;
                     ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
                     break;
@@ -624,6 +631,17 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
                 }
             }
 
+            // SA 드롭: Ctrl+좌클릭 release
+            if(sa_drag_active && ImGui::IsMouseReleased(ImGuiMouseButton_Left)){
+                sa_drag_active = false;
+                // 우측 패널 위에서 놓으면 SA 계산
+                if(mp.x >= right_panel_x && right_panel_x > 0 && sa_panel_open){
+                    sa_cleanup();
+                    sa_mode = true;
+                    region_save();
+                }
+            }
+
             // 편집 종료
             if(region.edit_mode!=RegionSel::EDIT_NONE&&ImGui::IsMouseReleased(ImGuiMouseButton_Left)){
                 region.edit_mode=RegionSel::EDIT_NONE;
@@ -631,7 +649,7 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
             // 내부 클릭 카운트 (드래그 없이 release된 경우만)
             if(ImGui::IsMouseReleased(ImGuiMouseButton_Left)&&in_wf&&!ctrl&&inside_box){
                 float dmx=mp.x-region.edit_mx0, dmy=mp.y-region.edit_my0;
-                if(fabsf(dmx)<4&&fabsf(dmy)<4){ // 드래그 없음 = 실제 클릭
+                if(fabsf(dmx)<4&&fabsf(dmy)<4){
                     region.lclick_count++; region.lclick_timer=0.4f;
                 }
             }
@@ -807,6 +825,7 @@ void run_streaming_viewer(){
                     else v.start_rec();
                 }
             }
+
             if(ImGui::IsKeyPressed(ImGuiKey_P,false)){
                 v.spectrum_pause.store(!v.spectrum_pause.load());
             }
@@ -1165,6 +1184,16 @@ void run_streaming_viewer(){
         else if(left_visible && wf_h > 0)
             dl->AddRectFilled(ImVec2(0,div_y+div_h),ImVec2(left_w,div_y+div_h+wf_h),IM_COL32(10,10,10,255));
 
+        // SA 드래그 중 드롭 존 하이라이트
+        if(v.sa_drag_active && v.sa_panel_open && right_visible){
+            float rpx2=vdiv_x+vdiv_w;
+            float rp_cy=content_y+TOPBAR_H*0.5f;
+            dl->AddRectFilled(ImVec2(rpx2,rp_cy),ImVec2(disp_w,content_y+content_h),
+                              IM_COL32(80,180,255,30));
+            dl->AddRect(ImVec2(rpx2,rp_cy),ImVec2(disp_w,content_y+content_h),
+                        IM_COL32(80,180,255,200),0,0,2.0f);
+        }
+
         // ── 세로 구분선 (항상 표시) ───────────────────────────────────────
         dl->AddRectFilled(ImVec2(vdiv_x,content_y),ImVec2(vdiv_x+vdiv_w,content_y+content_h),IM_COL32(50,50,50,255));
         dl->AddLine(ImVec2(vdiv_x+vdiv_w/2,content_y),ImVec2(vdiv_x+vdiv_w/2,content_y+content_h),IM_COL32(80,80,80,255),1);
@@ -1177,10 +1206,98 @@ void run_streaming_viewer(){
         }
         if(ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
 
-        // ── 우측 패널 (빈 공간, 추후 콘텐츠) ────────────────────────────
+        // ── 우측 패널 ─────────────────────────────────────────────────────
         if(right_visible){
-            float rpx = vdiv_x + vdiv_w;
-            dl->AddRectFilled(ImVec2(rpx,content_y),ImVec2(disp_w,content_y+content_h),IM_COL32(15,15,15,255));
+            float rpx  = vdiv_x + vdiv_w;
+            float rp_w = disp_w - rpx;
+            const float SUBBAR_H = TOPBAR_H * 0.5f;
+            float rp_content_y = content_y + SUBBAR_H;
+            float rp_content_h = content_h - SUBBAR_H;
+
+            // right_panel_x 갱신
+            v.right_panel_x = rpx;
+
+            // ── SA 픽셀 준비되면 GL 업로드 ──────────────────────────────
+            if(v.sa_pixel_ready.load()){ v.sa_upload_texture(); v.sa_anim_timer=0.0f; }
+
+            // ── 서브바 배경 ──────────────────────────────────────────────
+            dl->AddRectFilled(ImVec2(rpx,content_y),ImVec2(disp_w,rp_content_y),IM_COL32(35,35,40,255));
+            dl->AddLine(ImVec2(rpx,rp_content_y-1),ImVec2(disp_w,rp_content_y-1),IM_COL32(60,60,70,255),1);
+
+            // ── SA 버튼 ──────────────────────────────────────────────────
+            float btn_x = rpx + 6;
+            float btn_y = content_y + (SUBBAR_H - ImGui::GetFontSize())/2;
+            bool sa_hov = io.MousePos.x>=btn_x && io.MousePos.x<=btn_x+24 &&
+                          io.MousePos.y>=content_y && io.MousePos.y<rp_content_y;
+            ImU32 sa_btn_col = v.sa_panel_open
+                ? IM_COL32(80,180,255,255)
+                : (sa_hov ? IM_COL32(160,160,180,255) : IM_COL32(110,110,130,255));
+            dl->AddText(ImVec2(btn_x, btn_y), sa_btn_col, "SA");
+            if(sa_hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                v.sa_panel_open = !v.sa_panel_open;
+
+            // ── FFT size 선택 (우측정렬) ─────────────────────────────────
+            {
+                static const int fft_sizes[] = {256,512,1024,2048,4096,8192};
+                static const char* fft_labels[] = {"256","512","1024","2048","4096","8192"};
+                const int n_sizes = 6;
+                char cur_label[16]; snprintf(cur_label,16,"%d",v.sa_fft_size);
+                float combo_w = 62;
+                float combo_x = disp_w - combo_w - 6;
+                float combo_y = content_y + (SUBBAR_H - ImGui::GetFontSize() - 4)/2;
+                ImGui::SetCursorScreenPos(ImVec2(combo_x, combo_y));
+                ImGui::SetNextItemWidth(combo_w);
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4,2));
+                if(ImGui::BeginCombo("##sa_fft", cur_label)){
+                    for(int i=0;i<n_sizes;i++){
+                        bool sel = (v.sa_fft_size == fft_sizes[i]);
+                        if(ImGui::Selectable(fft_labels[i], sel)){
+                            if(v.sa_fft_size != fft_sizes[i]){
+                                v.sa_fft_size = fft_sizes[i];
+                                // 이미 로드된 파일 있으면 새 FFT size로 재계산
+                                if(!v.sa_temp_path.empty() && !v.sa_computing.load()){
+                                    v.sa_start(v.sa_temp_path);
+                                }
+                            }
+                        }
+                        if(sel) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::PopStyleVar();
+                // 레이블
+                float lbl_x = combo_x - ImGui::CalcTextSize("FFT").x - 4;
+                dl->AddText(ImVec2(lbl_x, combo_y+1), IM_COL32(130,130,150,255), "FFT");
+            }
+
+            // ── 패널 콘텐츠 영역 ─────────────────────────────────────────
+            dl->AddRectFilled(ImVec2(rpx,rp_content_y),ImVec2(disp_w,content_y+content_h),IM_COL32(12,12,15,255));
+
+            if(v.sa_panel_open){
+                if(v.sa_mode || v.sa_computing.load()){
+                    // 로딩 애니메이션: "Loading ." → "Loading .." → "Loading ..."
+                    v.sa_anim_timer += io.DeltaTime;
+                    int dots = ((int)(v.sa_anim_timer / 0.5f) % 3) + 1;
+                    char msg[32];
+                    snprintf(msg, sizeof(msg), "Loading %.*s", dots, "...");
+                    ImVec2 msz = ImGui::CalcTextSize(msg);
+                    dl->AddText(ImVec2(rpx+(rp_w-msz.x)/2, rp_content_y+(rp_content_h-msz.y)/2),
+                                IM_COL32(180,180,100,255), msg);
+                } else if(v.sa_texture){
+                    // SA 워터폴 텍스처 표시 (패널 꽉 채움)
+                    ImTextureID tid = (ImTextureID)(intptr_t)v.sa_texture;
+                    dl->AddImage(tid, ImVec2(rpx,rp_content_y), ImVec2(disp_w,content_y+content_h),
+                                 ImVec2(0,0), ImVec2(1,1), IM_COL32(255,255,255,255));
+                } else {
+                    // 안내
+                    const char* msg = "Drag region here";
+                    ImVec2 msz = ImGui::CalcTextSize(msg);
+                    dl->AddText(ImVec2(rpx+(rp_w-msz.x)/2, rp_content_y+(rp_content_h-msz.y)/2),
+                                IM_COL32(100,100,120,255), msg);
+                }
+
+
+            }
         }
 
         // ── Bottom bar ────────────────────────────────────────────────────
@@ -1279,5 +1396,6 @@ void run_streaming_viewer(){
     if(v.waterfall_texture) glDeleteTextures(1,&v.waterfall_texture);
     ImGui_ImplOpenGL3_Shutdown(); ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext(); glfwTerminate();
+    v.sa_cleanup();
     printf("Closed\n");
 }
