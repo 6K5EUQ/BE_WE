@@ -1,3 +1,3 @@
 # BE_WE
 
-![](img/Monitor.png)
+![](img/Screen.png)
