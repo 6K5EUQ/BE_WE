@@ -94,7 +94,13 @@ void FFTViewer::tm_iq_write(const int16_t* buf, int n_pairs){
     while(src<n_pairs){
         int space=TM_IQ_BATCH-tm_iq_batch_cnt;
         int copy=std::min(n_pairs-src, space);
-        memcpy(tm_iq_batch_buf.data()+tm_iq_batch_cnt*2, buf+src*2, copy*2*sizeof(int16_t));
+        // SC16_Q11 → ×16 스케일링: ±2048 → ±32768 (URH 풀스케일 정규화)
+        const int16_t* src_ptr = buf + src*2;
+        int16_t* dst_ptr = tm_iq_batch_buf.data() + tm_iq_batch_cnt*2;
+        for(int i=0; i<copy*2; i++){
+            int32_t v = (int32_t)src_ptr[i] * 16;
+            dst_ptr[i] = (int16_t)std::max(-32768, std::min(32767, v));
+        }
         tm_iq_batch_cnt+=copy; src+=copy;
         if(tm_iq_batch_cnt>=TM_IQ_BATCH) tm_iq_flush_batch();
     }

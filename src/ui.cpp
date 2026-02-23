@@ -508,53 +508,167 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
         bool ctrl=mio.KeyCtrl;
         bool in_wf=(mp.x>=gx&&mp.x<=gx+gw&&mp.y>=gy&&mp.y<=gy+gh);
 
-        // 드래그 시작 (타임머신 모드 + T키 롤링 ON 일때만 가능)
+        // ── 신규 선택: Ctrl+우클릭 드래그 ──────────────────────────────
         if(ctrl&&ImGui::IsMouseClicked(ImGuiMouseButton_Right)&&in_wf){
             if(!tm_active.load()||!tm_iq_file_ready){
-                // 실시간 모드거나 롤링 IQ 없으면 차단
-                rec_na_timer=3.0f;
+                // 조건 불충족: 무시
             } else {
                 region.selecting=true; region.active=false;
+                region.edit_mode=RegionSel::EDIT_NONE;
                 region.drag_x0=mp.x; region.drag_y0=mp.y;
                 region.drag_x1=mp.x; region.drag_y1=mp.y;
             }
         }
-        // 드래그 중
         if(region.selecting&&ImGui::IsMouseDown(ImGuiMouseButton_Right)){
             region.drag_x1=mp.x; region.drag_y1=mp.y;
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
         }
-        // 드래그 끝
         if(region.selecting&&ImGui::IsMouseReleased(ImGuiMouseButton_Right)){
             region.selecting=false;
-            // 좌표 정규화
             float rx0=std::min(region.drag_x0,region.drag_x1);
             float rx1=std::max(region.drag_x0,region.drag_x1);
-            float ry0=std::min(region.drag_y0,region.drag_y1); // 화면 위쪽 = 최신
-            float ry1=std::max(region.drag_y0,region.drag_y1); // 화면 아래쪽 = 오래됨
+            float ry0=std::min(region.drag_y0,region.drag_y1);
+            float ry1=std::max(region.drag_y0,region.drag_y1);
             if(rx1-rx0>4&&ry1-ry0>4){
-                // 주파수 범위
                 region.freq_lo=x_to_abs(rx0,gx,gw);
                 region.freq_hi=x_to_abs(rx1,gx,gw);
-                // fft 인덱스 (y픽셀 → disp_idx 기준 row)
                 int disp_idx=tm_active.load()?tm_display_fft_idx:current_fft_idx;
-                int row_top=(int)(ry0-gy);
-                int row_bot=(int)(ry1-gy);
-                region.fft_top=disp_idx-row_top;
-                region.fft_bot=disp_idx-row_bot;
+                region.fft_top=disp_idx-(int)(ry0-gy);
+                region.fft_bot=disp_idx-(int)(ry1-gy);
                 float rps=(float)header.sample_rate/(float)fft_size/(float)time_average;
                 if(rps<=0) rps=37.5f;
                 time_t now=time(nullptr);
-                int64_t rows_ago_top=(int64_t)(current_fft_idx-region.fft_top);
-                int64_t rows_ago_bot=(int64_t)(current_fft_idx-region.fft_bot);
-                region.time_end  =now-(time_t)(rows_ago_top/rps);
-                region.time_start=now-(time_t)(rows_ago_bot/rps);
+                region.time_end  =now-(time_t)((current_fft_idx-region.fft_top)/rps);
+                region.time_start=now-(time_t)((current_fft_idx-region.fft_bot)/rps);
                 region.active=true;
                 region.lclick_count=0; region.lclick_timer=0;
             }
         }
 
-        // 영역 렌더링
+        // ── 활성 영역 이동/리사이즈 ─────────────────────────────────────
+        if(region.active&&!region.selecting){
+            int disp_idx=tm_active.load()?tm_display_fft_idx:current_fft_idx;
+            float ry0=gy+(float)(disp_idx-region.fft_top);
+            float ry1=gy+(float)(disp_idx-region.fft_bot);
+            float rx0=abs_to_x(region.freq_lo,gx,gw);
+            float rx1=abs_to_x(region.freq_hi,gx,gw);
+            // 화면 클램프 (렌더용)
+            float dry0=std::max(gy,std::min(gy+gh,ry0));
+            float dry1=std::max(gy,std::min(gy+gh,ry1));
+            float drx0=std::max(gx,std::min(gx+gw,rx0));
+            float drx1=std::max(gx,std::min(gx+gw,rx1));
+
+            const float E=6.0f; // 엣지 감지 픽셀
+            // 픽셀 → 주파수 변환 배율 (MHz/px)
+            float mhz_per_px=(region.freq_hi-region.freq_lo)/(rx1-rx0+1e-5f);
+            // 주파수 최소 폭: 0.001MHz(1kHz)
+            const float MIN_BW=0.001f;
+
+            // 마우스가 어느 엣지에 있는지 판단 (편집 시작 전)
+            bool on_edge_l=fabsf(mp.x-rx0)<E&&mp.y>=ry0&&mp.y<=ry1;
+            bool on_edge_r=fabsf(mp.x-rx1)<E&&mp.y>=ry0&&mp.y<=ry1;
+            bool on_edge_t=fabsf(mp.y-ry0)<E&&mp.x>=rx0&&mp.x<=rx1;
+            bool on_edge_b=fabsf(mp.y-ry1)<E&&mp.x>=rx0&&mp.x<=rx1;
+            bool inside_box=(mp.x>rx0+E&&mp.x<rx1-E&&mp.y>ry0+E&&mp.y<ry1-E);
+
+            // 커서 모양
+            if(region.edit_mode==RegionSel::EDIT_NONE&&in_wf&&!ctrl){
+                if(on_edge_l||on_edge_r)         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+                else if(on_edge_t||on_edge_b)     ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+                else if(inside_box)               ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+            }
+
+            // 편집 시작
+            if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)&&in_wf&&!ctrl&&
+               region.edit_mode==RegionSel::EDIT_NONE){
+                if(on_edge_l||on_edge_r||on_edge_t||on_edge_b||inside_box){
+                    // 좌클릭 카운트 초기화 (이동/리사이즈 시작이면 해제 방지)
+                    region.lclick_count=0; region.lclick_timer=0;
+                    region.edit_mx0=mp.x; region.edit_my0=mp.y;
+                    region.edit_flo0=region.freq_lo; region.edit_fhi0=region.freq_hi;
+                    region.edit_ftop0=region.fft_top; region.edit_fbot0=region.fft_bot;
+                    if(on_edge_l)        region.edit_mode=RegionSel::EDIT_RESIZE_L;
+                    else if(on_edge_r)   region.edit_mode=RegionSel::EDIT_RESIZE_R;
+                    else if(on_edge_t)   region.edit_mode=RegionSel::EDIT_RESIZE_T;
+                    else if(on_edge_b)   region.edit_mode=RegionSel::EDIT_RESIZE_B;
+                    else if(inside_box)  region.edit_mode=RegionSel::EDIT_MOVE;
+                }
+            }
+
+            // 편집 중 (마우스 드래그)
+            if(region.edit_mode!=RegionSel::EDIT_NONE&&ImGui::IsMouseDown(ImGuiMouseButton_Left)){
+                float dx=mp.x-region.edit_mx0;
+                float dy=mp.y-region.edit_my0;
+                float df=dx*mhz_per_px; // MHz 단위 주파수 델타
+                int   dr=(int)dy;       // row 단위 시간 델타 (양수=아래=과거)
+
+                switch(region.edit_mode){
+                case RegionSel::EDIT_MOVE:
+                    region.freq_lo=region.edit_flo0+df;
+                    region.freq_hi=region.edit_fhi0+df;
+                    region.fft_top=region.edit_ftop0-dr;
+                    region.fft_bot=region.edit_fbot0-dr;
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+                    break;
+                case RegionSel::EDIT_RESIZE_L:
+                    region.freq_lo=std::min(region.edit_flo0+df, region.freq_hi-MIN_BW);
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+                    break;
+                case RegionSel::EDIT_RESIZE_R:
+                    region.freq_hi=std::max(region.edit_fhi0+df, region.freq_lo+MIN_BW);
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+                    break;
+                case RegionSel::EDIT_RESIZE_T:
+                    region.fft_top=region.edit_ftop0-dr;
+                    // top이 bot보다 아래로 내려가지 않도록
+                    if(region.fft_top<=region.fft_bot) region.fft_top=region.fft_bot+1;
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+                    break;
+                case RegionSel::EDIT_RESIZE_B:
+                    region.fft_bot=region.edit_fbot0-dr;
+                    if(region.fft_bot>=region.fft_top) region.fft_bot=region.fft_top-1;
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+                    break;
+                default: break;
+                }
+            }
+
+            // 편집 종료
+            if(region.edit_mode!=RegionSel::EDIT_NONE&&ImGui::IsMouseReleased(ImGuiMouseButton_Left)){
+                region.edit_mode=RegionSel::EDIT_NONE;
+            }
+
+            // ── 렌더링 ────────────────────────────────────────────────────
+            dl->AddRectFilled(ImVec2(drx0,dry0),ImVec2(drx1,dry1),IM_COL32(255,40,40,50));
+            dl->AddRect(ImVec2(drx0,dry0),ImVec2(drx1,dry1),IM_COL32(255,60,60,220),0,0,1.5f);
+            // 엣지 하이라이트
+            if(in_wf&&!ctrl&&region.edit_mode==RegionSel::EDIT_NONE){
+                if(on_edge_l) dl->AddLine(ImVec2(rx0,dry0),ImVec2(rx0,dry1),IM_COL32(255,150,150,255),2.5f);
+                if(on_edge_r) dl->AddLine(ImVec2(rx1,dry0),ImVec2(rx1,dry1),IM_COL32(255,150,150,255),2.5f);
+                if(on_edge_t) dl->AddLine(ImVec2(drx0,ry0),ImVec2(drx1,ry0),IM_COL32(255,150,150,255),2.5f);
+                if(on_edge_b) dl->AddLine(ImVec2(drx0,ry1),ImVec2(drx1,ry1),IM_COL32(255,150,150,255),2.5f);
+            }
+            char hint[64];
+            float cf=(region.freq_lo+region.freq_hi)*0.5f;
+            float bw=(region.freq_hi-region.freq_lo)*1000.0f;
+            snprintf(hint,sizeof(hint),"%.3f MHz  BW %.0f kHz  [R]Save",cf,bw);
+            dl->AddText(ImVec2(drx0+2,dry0+2),IM_COL32(255,180,180,255),hint);
+
+            // 영역 해제: 더블클릭 (편집 중 아닐때만)
+            if(region.edit_mode==RegionSel::EDIT_NONE){
+                region.lclick_timer-=ImGui::GetIO().DeltaTime;
+                if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)&&in_wf&&!ctrl&&!inside_box&&
+                   !on_edge_l&&!on_edge_r&&!on_edge_t&&!on_edge_b){
+                    region.lclick_count++; region.lclick_timer=0.4f;
+                }
+                if(region.lclick_count>=2){ region.active=false; region.lclick_count=0; }
+                if(region.lclick_timer<=0)  region.lclick_count=0;
+                if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)&&in_wf)
+                    region.active=false;
+            }
+        }
+
+        // ── 선택 중 미리보기 렌더링 ──────────────────────────────────────
         if(region.selecting){
             float rx0=std::min(region.drag_x0,region.drag_x1);
             float rx1=std::max(region.drag_x0,region.drag_x1);
@@ -562,40 +676,6 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
             float ry1=std::max(region.drag_y0,region.drag_y1);
             dl->AddRectFilled(ImVec2(rx0,ry0),ImVec2(rx1,ry1),IM_COL32(255,40,40,50));
             dl->AddRect(ImVec2(rx0,ry0),ImVec2(rx1,ry1),IM_COL32(255,60,60,220),0,0,1.5f);
-        }
-        if(region.active){
-            // fft 인덱스 → 화면 y 좌표
-            int disp_idx=tm_active.load()?tm_display_fft_idx:current_fft_idx;
-            float ry0=gy+(float)(disp_idx-region.fft_top);
-            float ry1=gy+(float)(disp_idx-region.fft_bot);
-            float rx0=abs_to_x(region.freq_lo,gx,gw);
-            float rx1=abs_to_x(region.freq_hi,gx,gw);
-            // 화면 클램프
-            ry0=std::max(gy,std::min(gy+gh,ry0));
-            ry1=std::max(gy,std::min(gy+gh,ry1));
-            rx0=std::max(gx,std::min(gx+gw,rx0));
-            rx1=std::max(gx,std::min(gx+gw,rx1));
-            dl->AddRectFilled(ImVec2(rx0,ry0),ImVec2(rx1,ry1),IM_COL32(255,40,40,50));
-            dl->AddRect(ImVec2(rx0,ry0),ImVec2(rx1,ry1),IM_COL32(255,60,60,220),0,0,1.5f);
-            // 안내 텍스트
-            char hint[64];
-            float cf=(region.freq_lo+region.freq_hi)*0.5f;
-            float bw=(region.freq_hi-region.freq_lo)*1000.0f;
-            snprintf(hint,sizeof(hint),"%.3f MHz  BW %.0f kHz  [R]Save",cf,bw);
-            dl->AddText(ImVec2(rx0+2,ry0+2),IM_COL32(255,180,180,255),hint);
-
-            // 좌클릭 두 번으로 영역 해제
-            region.lclick_timer-=ImGui::GetIO().DeltaTime;
-            if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)&&in_wf&&!ctrl){
-                region.lclick_count++;
-                region.lclick_timer=0.4f;
-            }
-            if(region.lclick_count>=2||(region.lclick_count==1&&region.lclick_timer<=0))
-                if(region.lclick_count>=2){ region.active=false; region.lclick_count=0; }
-            if(region.lclick_timer<=0) region.lclick_count=0;
-            // 더블클릭으로도 해제
-            if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)&&in_wf)
-                region.active=false;
         }
     }
 

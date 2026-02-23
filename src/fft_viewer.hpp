@@ -116,6 +116,14 @@ public:
         time_t time_start=0, time_end=0;
         int    lclick_count=0;
         float  lclick_timer=0;
+
+        // 이동/리사이즈 상태
+        enum EditMode { EDIT_NONE, EDIT_MOVE,
+                        EDIT_RESIZE_L, EDIT_RESIZE_R,
+                        EDIT_RESIZE_T, EDIT_RESIZE_B } edit_mode=EDIT_NONE;
+        float  edit_mx0=0, edit_my0=0;   // 드래그 시작 마우스 위치
+        float  edit_flo0=0, edit_fhi0=0; // 드래그 시작 주파수
+        int    edit_ftop0=0, edit_fbot0=0; // 드래그 시작 fft 인덱스
     } region;
 
     void region_save();
