@@ -318,26 +318,12 @@ void FFTViewer::handle_zoom_scroll(float gx, float gw, float mouse_x){
     float wheel=ImGui::GetIO().MouseWheel;
     if(wheel==0) return;
 
-    // Ctrl+휠: 타임머신 오프셋 조작
+    // Ctrl+휠: TM 모드일 때만 오프셋 조작 (자동 진입/해제 없음)
     if(ImGui::GetIO().KeyCtrl){
-        // 아래 = 과거(+), 위 = 최신(-)  / 1틱 = 1초
+        if(!tm_active.load()) return;
         float delta=(wheel>0)?-1.0f:1.0f;
-        float new_offset=tm_offset+delta;
-
-        if(new_offset<=0.0f){
-            // 라이브로 복귀
-            tm_offset=0.0f;
-            tm_active.store(false);
-        } else {
-            // 타임머신 진입 (처음 진입 시 freeze_idx 기록)
-            if(!tm_active.load()){
-                tm_freeze_idx=current_fft_idx;
-                tm_display_fft_idx=current_fft_idx;
-                tm_active.store(true);
-            }
-            tm_offset=new_offset;
-            tm_update_display();
-        }
+        tm_offset=std::max(0.0f, tm_offset+delta);
+        tm_update_display();
         return;
     }
 
@@ -797,8 +783,11 @@ void run_streaming_viewer(){
 
         ImGui_ImplOpenGL3_NewFrame(); ImGui_ImplGlfw_NewFrame(); ImGui::NewFrame();
         v.topbar_sel_this_frame=false;
-        // 타임머신: 화면 고정 상태 유지 (Ctrl+휠로만 수동 이동)
-        // display_fft_idx는 Ctrl+휠 처리 시에만 갱신됨
+        // TM 모드: freeze_idx만 최신으로 추적 (버퍼 범위 파악용)
+        // tm_display_fft_idx는 Ctrl+휠 시에만 갱신 → 화면 freeze 유지
+        if(v.tm_active.load()){
+            v.tm_freeze_idx=v.current_fft_idx;
+        }
         if(v.texture_needs_recreate){ v.texture_needs_recreate=false; v.create_waterfall_texture(); }
 
         ImGuiIO& io=ImGui::GetIO();
@@ -843,10 +832,19 @@ void run_streaming_viewer(){
                     }
                 }
             }
-            // 스페이스바: 즉시 라이브로 복귀
+            // 스페이스바: TM 토글 (진입/해제)
             if(ImGui::IsKeyPressed(ImGuiKey_Space,false)){
-                v.tm_offset=0.0f;
-                v.tm_active.store(false);
+                if(v.tm_active.load()){
+                    // 해제: 라이브 복귀
+                    v.tm_offset=0.0f;
+                    v.tm_active.store(false);
+                } else {
+                    // 진입: 현재 시점을 freeze 기준으로
+                    v.tm_freeze_idx=v.current_fft_idx;
+                    v.tm_display_fft_idx=v.current_fft_idx;
+                    v.tm_offset=0.0f;
+                    v.tm_active.store(true);
+                }
             }
             if(sci>=0&&v.channels[sci].filter_active){
                 auto set_mode=[&](Channel::DemodMode m){

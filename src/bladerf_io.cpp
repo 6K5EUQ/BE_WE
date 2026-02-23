@@ -24,7 +24,7 @@ bool FFTViewer::initialize_bladerf(float cf_mhz, float sr_msps){
     s=bladerf_enable_module(dev,CHANNEL,true);
     if(s){ fprintf(stderr,"enable: %s\n",bladerf_strerror(s)); bladerf_close(dev); return false; }
 
-    s=bladerf_sync_config(dev,BLADERF_RX_X1,BLADERF_FORMAT_SC16_Q11,512,16384,128,10000);
+    s=bladerf_sync_config(dev,BLADERF_RX_X1,BLADERF_FORMAT_SC16_Q11,512,16384,16,10000);
     if(s){ fprintf(stderr,"sync: %s\n",bladerf_strerror(s)); bladerf_close(dev); return false; }
 
     printf("BladeRF: %.2f MHz  %.2f MSPS  BW %.2f MHz\n",cf_mhz,actual/1e6f,actual_bw/1e6f);
