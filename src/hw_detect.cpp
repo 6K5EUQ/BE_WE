@@ -30,3 +30,18 @@ bool FFTViewer::initialize(float cf_mhz){
     printf("HW: RTL-SDR detected (no BladeRF)\n");
     return initialize_rtlsdr(cf_mhz);
 }
+
+// ── 게인 설정 (공통) ──────────────────────────────────────────────────────
+void FFTViewer::set_gain(float db){
+    // 범위 클램프
+    if(db < hw.gain_min) db = hw.gain_min;
+    if(db > hw.gain_max) db = hw.gain_max;
+
+    if(hw.type == HWType::BLADERF){
+        int gain_int = (int)(db + 0.5f);
+        bladerf_set_gain(dev_blade, BLADERF_CHANNEL_RX(0), gain_int);
+    } else if(hw.type == HWType::RTLSDR){
+        int snapped = HWConfig::rtl_snap_gain(db);
+        rtlsdr_set_tuner_gain(dev_rtl, snapped);
+    }
+}

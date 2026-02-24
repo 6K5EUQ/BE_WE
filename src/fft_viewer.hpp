@@ -217,9 +217,11 @@ public:
     bool initialize(float cf_mhz);          // HW 자동 감지 후 초기화
     bool initialize_bladerf(float cf_mhz, float sr_msps);
     bool initialize_rtlsdr(float cf_mhz);
-    void capture_and_process();             // BladeRF 스트리밍 루프
-    void capture_and_process_rtl();         // RTL-SDR 스트리밍 루프
-    void set_frequency(float cf_mhz);       // 공통 주파수 변경
+    void capture_and_process();
+    void capture_and_process_rtl();
+    void set_frequency(float cf_mhz);
+    void set_gain(float db);
+    float gain_db = 0.0f;
 
     // ── demod.cpp ─────────────────────────────────────────────────────────
     void dem_worker(int ch_idx);

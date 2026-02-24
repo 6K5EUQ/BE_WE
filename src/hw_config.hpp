@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <cstdlib>  // abs(int)
 
 // ── 하드웨어 타입 ──────────────────────────────────────────────────────────
 enum class HWType { NONE, BLADERF, RTLSDR };
@@ -26,7 +27,30 @@ struct HWConfig {
     // 표시용 이름
     const char* name         = "Unknown";
 
-    // ── 파생 계산값 (init 후 채워짐) ──────────────────────────────────────
+    // ── 게인 범위 ──────────────────────────────────────────────────────────
+    float    gain_min        = 0.0f;    // dB
+    float    gain_max        = 49.6f;   // dB
+    float    gain_default    = 0.0f;    // dB (초기값)
+
+    // RTL-SDR R828D 이산 게인값 (0.1dB 단위 → /10 = dB)
+    // librtlsdr에서 0.1dB 단위 정수 배열로 반환
+    static constexpr int RTL_GAIN_STEPS = 29;
+    static constexpr int RTL_GAINS_TENTHS[RTL_GAIN_STEPS] = {
+        0, 9, 14, 27, 37, 77, 87, 125, 144, 157, 166,
+        197, 207, 229, 254, 280, 297, 328, 338, 364,
+        372, 386, 402, 421, 434, 439, 445, 480, 496
+    };
+
+    // 연속 dB 값 → RTL-SDR 가장 가까운 이산값(0.1dB 단위 정수) 반환
+    static int rtl_snap_gain(float db){
+        int tenths = (int)(db * 10.0f + 0.5f);
+        int best = RTL_GAINS_TENTHS[0], best_diff = abs(tenths - best);
+        for(int i=1;i<RTL_GAIN_STEPS;i++){
+            int d = abs(tenths - RTL_GAINS_TENTHS[i]);
+            if(d < best_diff){ best_diff=d; best=RTL_GAINS_TENTHS[i]; }
+        }
+        return best;
+    }
     // 워터폴 행 속도를 HW에 관계없이 동일하게 유지 (37.5 rows/sec 기준)
     static constexpr float TARGET_ROWS_PER_SEC = 37.5f;
 
@@ -52,6 +76,9 @@ inline HWConfig make_bladerf_config(uint32_t actual_sr){
     c.iq_offset       = 0.0f;
     c.eff_bw_ratio    = 0.875f;
     c.name            = "BladeRF";
+    c.gain_min        = 0.0f;
+    c.gain_max        = 60.0f;
+    c.gain_default    = (float)BLADERF_RX_GAIN;
     return c;
 }
 
@@ -63,9 +90,12 @@ inline HWConfig make_rtlsdr_config(uint32_t actual_sr){
     c.sample_rate_mhz = actual_sr / 1e6f;
     c.freq_min_hz     = 500e3;
     c.freq_max_hz     = 1766e6;
-    c.iq_scale        = 127.5f;   // uint8 → float: (x-127.5)/127.5
+    c.iq_scale        = 127.5f;
     c.iq_offset       = 127.5f;
     c.eff_bw_ratio    = 0.875f;
     c.name            = "RTL-SDR";
+    c.gain_min        = 0.0f;
+    c.gain_max        = 49.6f;
+    c.gain_default    = (float)RTLSDR_RX_GAIN_TENTHS / 10.0f;
     return c;
 }

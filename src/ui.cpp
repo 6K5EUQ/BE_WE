@@ -264,52 +264,21 @@ void FFTViewer::draw_all_channels(ImDrawList* dl, float gx, float gw, float gy, 
 void FFTViewer::draw_freq_axis(ImDrawList* dl, float gx, float gw, float gy, float gh, bool ticks_only){
     float cf=header.center_frequency/1e6f;
     float ds,de; get_disp(ds,de); float dr=de-ds;
-    if(freq_zoom<=1.0f){
-        // 광대역: 1MHz 또는 5MHz 단위
-        float step=5, first=ceilf((ds+cf)/step)*step;
-        for(float af=first;af<=de+cf+1e-4f;af+=step){
-            float x=gx+(af-cf-ds)/dr*gw; if(x<gx||x>gx+gw) continue;
-            if(!ticks_only) dl->AddLine(ImVec2(x,gy),ImVec2(x,gy+gh),IM_COL32(60,60,60,100),1);
-            dl->AddLine(ImVec2(x,gy+gh-5),ImVec2(x,gy+gh),IM_COL32(100,100,100,200),1);
-            if(!ticks_only){
-                dl->AddLine(ImVec2(x,gy+gh),ImVec2(x,gy+gh+5),IM_COL32(100,100,100,200),1);
-                char lb[32]; snprintf(lb,32,"%.0f",af);
-                ImVec2 ts=ImGui::CalcTextSize(lb);
-                dl->AddText(ImVec2(x-ts.x/2,gy+gh+8),IM_COL32(0,255,0,255),lb);
-            }
-        }
-    } else {
-        // 줌 상태: 100kHz 그리드 스냅
-        // 화면 폭에 표시할 적정 눈금 수 기준으로 step 선택
-        // dr(MHz) 기준: 틱 간격을 0.1MHz(100kHz) 단위 배수로 선택
-        float step_mhz=0.1f; // 100kHz
-        // 화면에 너무 많으면 배수로 늘림
-        float max_ticks=gw/60.0f; // 60px당 1눈금
-        while((dr/step_mhz)>max_ticks) step_mhz*=2.0f;
-        // 100kHz 배수 중 가장 작은 것으로 스냅
-        // step_mhz를 0.1 단위로 반올림
-        step_mhz=roundf(step_mhz*10.0f)/10.0f;
-        if(step_mhz<0.1f) step_mhz=0.1f;
 
-        float abs_start=cf+ds;
-        float first=ceilf(abs_start/step_mhz)*step_mhz;
-        for(float af=first; af<=cf+de+1e-5f; af+=step_mhz){
-            float x=gx+(af-cf-ds)/dr*gw;
-            if(x<gx||x>gx+gw) continue;
-            if(!ticks_only) dl->AddLine(ImVec2(x,gy),ImVec2(x,gy+gh),IM_COL32(60,60,60,100),1);
-            dl->AddLine(ImVec2(x,gy+gh-5),ImVec2(x,gy+gh),IM_COL32(100,100,100,200),1);
-            if(!ticks_only){
-                dl->AddLine(ImVec2(x,gy+gh),ImVec2(x,gy+gh+5),IM_COL32(100,100,100,200),1);
-                // 100kHz 단위로 표시: 예) 414.100, 414.200
-                int khz=std::lround(af*1000.0f); // 반올림해서 정수 kHz
-                int mhz_int=khz/1000;
-                int khz_frac=khz%1000;
-                char lb[32];
-                if(khz_frac==0) snprintf(lb,sizeof(lb),"%d",mhz_int);
-                else            snprintf(lb,sizeof(lb),"%d.%03d",mhz_int,khz_frac);
-                ImVec2 ts=ImGui::CalcTextSize(lb);
-                dl->AddText(ImVec2(x-ts.x/2,gy+gh+8),IM_COL32(0,255,0,255),lb);
-            }
+    // 항상 1MHz 단위 고정
+    const float step_mhz = 1.0f;
+    float abs_start = cf+ds;
+    float first = ceilf(abs_start/step_mhz)*step_mhz;
+    for(float af=first; af<=cf+de+1e-5f; af+=step_mhz){
+        float x=gx+(af-cf-ds)/dr*gw;
+        if(x<gx||x>gx+gw) continue;
+        if(!ticks_only) dl->AddLine(ImVec2(x,gy),ImVec2(x,gy+gh),IM_COL32(60,60,60,100),1);
+        dl->AddLine(ImVec2(x,gy+gh-5),ImVec2(x,gy+gh),IM_COL32(100,100,100,200),1);
+        if(!ticks_only){
+            dl->AddLine(ImVec2(x,gy+gh),ImVec2(x,gy+gh+5),IM_COL32(100,100,100,200),1);
+            char lb[16]; snprintf(lb,sizeof(lb),"%.0f",af);
+            ImVec2 ts=ImGui::CalcTextSize(lb);
+            dl->AddText(ImVec2(x-ts.x/2,gy+gh+8),IM_COL32(0,255,0,255),lb);
         }
     }
 }
@@ -947,7 +916,6 @@ void run_streaming_viewer(){
         static const int fft_sizes[]={512,1024,2048,4096,8192,16384};
         static const char* fft_lbls[]={"512","1024","2048","4096","8192","16384"};
         static int fft_si=4;
-        ImGui::Text("FFT:"); ImGui::SameLine();
         {
             float tw2=ImGui::CalcTextSize(fft_lbls[fft_si]).x;
             float box_w2=72.0f;
@@ -968,12 +936,51 @@ void run_streaming_viewer(){
         }
         ImGui::SameLine();
 
+        // ── Gain Control 슬라이더 ─────────────────────────────────────────
+        {
+            const float GW=140.0f, GH=14.0f;
+            ImVec2 gsp=ImGui::GetCursorScreenPos();
+            gsp.y=ImGui::GetWindowPos().y+(TOPBAR_H-GH)/2.0f;
+            ImDrawList* gdl=ImGui::GetWindowDrawList();
+            const float GMIN=v.hw.gain_min, GMAX=v.hw.gain_max;
+            const float GRNG=std::max(0.1f,GMAX-GMIN);
+            float gdb=v.gain_db;
+            float gt=(gdb-GMIN)/GRNG; gt=gt<0?0:gt>1?1:gt;
+            // 트랙
+            gdl->AddRectFilled(ImVec2(gsp.x,gsp.y),ImVec2(gsp.x+GW,gsp.y+GH),IM_COL32(40,40,40,255),3);
+            // 채워진 부분
+            gdl->AddRectFilled(ImVec2(gsp.x,gsp.y),ImVec2(gsp.x+gt*GW,gsp.y+GH),IM_COL32(50,140,255,180),3);
+            // 레이블 중앙정렬
+            char glbl[20]; snprintf(glbl,sizeof(glbl),"Gain:%.1fdB",gdb);
+            ImVec2 gsz=ImGui::CalcTextSize(glbl);
+            gdl->AddText(ImVec2(gsp.x+GW/2-gsz.x/2,gsp.y+(GH-gsz.y)/2),IM_COL32(230,230,230,255),glbl);
+            ImGui::SetCursorScreenPos(gsp);
+            ImGui::InvisibleButton("##gain",ImVec2(GW,GH));
+            if(ImGui::IsItemHovered()){
+                float wheel=ImGui::GetIO().MouseWheel;
+                if(wheel!=0.0f){
+                    float step=(v.hw.type==HWType::RTLSDR)?0.5f:1.0f;
+                    float ng=v.gain_db+(wheel>0?step:-step);
+                    ng=ng<GMIN?GMIN:ng>GMAX?GMAX:ng;
+                    v.gain_db=ng; v.set_gain(ng);
+                }
+                ImGui::SetTooltip("Gain Control  Scroll or drag");
+            }
+            if(ImGui::IsItemActive()){
+                float mx=ImGui::GetIO().MousePos.x;
+                float ng=GMIN+((mx-gsp.x)/GW)*GRNG;
+                ng=ng<GMIN?GMIN:ng>GMAX?GMAX:ng;
+                v.gain_db=ng; v.set_gain(ng);
+            }
+            ImGui::SetCursorScreenPos(ImVec2(gsp.x+GW+6,ImGui::GetCursorScreenPos().y));
+        }
+        ImGui::SameLine();
+
         // ── Squelch slider (선택 채널만) ──────────────────────────────────
         if(sci>=0&&v.channels[sci].filter_active){
             Channel& sch=v.channels[sci];
             float sig  =sch.sq_sig .load(std::memory_order_relaxed);
             bool  gopen=sch.sq_gate.load(std::memory_order_relaxed);
-            ImGui::Text("SQL:"); ImGui::SameLine();
             const float SLIDER_W=160.0f, SLIDER_H=14.0f;
             ImVec2 sp=ImGui::GetCursorScreenPos();
             sp.y=ImGui::GetWindowPos().y+(TOPBAR_H-SLIDER_H)/2.0f;
@@ -993,7 +1000,7 @@ void run_streaming_viewer(){
             }
             float tx=to_x(thr_db);
             bdl->AddLine(ImVec2(tx,sp.y),ImVec2(tx,sp.y+SLIDER_H),IM_COL32(255,220,0,230),2.5f);
-            char lbl[16]; snprintf(lbl,sizeof(lbl),"%.0fdB",thr_db);
+            char lbl[20]; snprintf(lbl,sizeof(lbl),"SQL:%.0fdB",thr_db);
             ImVec2 lsz=ImGui::CalcTextSize(lbl);
             bdl->AddText(ImVec2(sp.x+SLIDER_W/2-lsz.x/2,sp.y+(SLIDER_H-lsz.y)/2),IM_COL32(230,230,230,255),lbl);
             ImGui::SetCursorScreenPos(sp);

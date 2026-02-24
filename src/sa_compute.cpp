@@ -85,53 +85,67 @@ void FFTViewer::sa_start(const std::string& wav_path){
         FILE* f = fopen(wav_path.c_str(),"rb");
         if(!f){ sa_computing.store(false); return; }
 
-        // WAV 헤더 44바이트 skip
+        // 헤더 44바이트 skip
         uint8_t hdr[44]; fread(hdr,1,44,f);
-        uint32_t data_bytes=0;
-        memcpy(&data_bytes, hdr+40, 4);
-        int64_t n_samples = data_bytes / (2*sizeof(int16_t)); // IQ 쌍 수
 
-        if(n_samples < fft_n){ fclose(f); sa_computing.store(false); return; }
+        // data_bytes를 실제 파일 크기로 계산 (헤더 불일치 대비)
+        fseek(f, 0, SEEK_END);
+        long file_sz = ftell(f);
+        fseek(f, 44, SEEK_SET);
+        long data_bytes_actual = file_sz - 44;
+        if(data_bytes_actual <= 0){ fclose(f); sa_computing.store(false); return; }
+        int64_t n_samples = data_bytes_actual / (int64_t)(2*sizeof(int16_t));
+
+        // FFT size 자동 축소: n_samples에 맞는 가장 큰 2의 거듭제곱
+        int actual_fft_n = fft_n;
+        while(actual_fft_n > 64 && n_samples < (int64_t)actual_fft_n)
+            actual_fft_n >>= 1;
+        if(n_samples < (int64_t)actual_fft_n){ fclose(f); sa_computing.store(false); return; }
 
         // 전체 IQ 로드
         std::vector<int16_t> raw(n_samples*2);
-        fread(raw.data(), sizeof(int16_t), n_samples*2, f);
+        fread(raw.data(), sizeof(int16_t), (size_t)(n_samples*2), f);
         fclose(f);
 
         // ── FFTW 플랜 ─────────────────────────────────────────────────────
-        std::vector<float> in_f(fft_n*2);
-        fftwf_complex* out = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex)*fft_n);
-        fftwf_plan plan = fftwf_plan_dft_1d(fft_n,
+        std::vector<float> in_f(actual_fft_n*2);
+        fftwf_complex* out = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex)*actual_fft_n);
+        fftwf_plan plan = fftwf_plan_dft_1d(actual_fft_n,
                               (fftwf_complex*)in_f.data(), out,
                               FFTW_FORWARD, FFTW_ESTIMATE);
 
-        int64_t hop = fft_n;        // 오버랩 없음
+        int64_t hop  = actual_fft_n;
         int64_t rows = n_samples / hop;
+        // rows 부족 시 50% 오버랩으로 보완
+        if(rows < 8 && actual_fft_n > 1){
+            hop  = std::max((int64_t)1, hop / 2);
+            rows = (n_samples - actual_fft_n) / hop + 1;
+        }
         if(rows < 1){ fftwf_destroy_plan(plan); fftwf_free(out); sa_computing.store(false); return; }
 
         // ── power 누산 → normalize 범위 파악 ─────────────────────────────
         // 첫 패스: min/max dB 파악
-        std::vector<float> all_db(rows * fft_n);
-        const float scale = 1.0f / (32768.0f * fft_n);
+        std::vector<float> all_db(rows * actual_fft_n);
+        const float scale = 1.0f / (32768.0f * actual_fft_n);
 
         for(int64_t r=0; r<rows; r++){
-            for(int i=0;i<fft_n;i++){
+            for(int i=0;i<actual_fft_n;i++){
                 in_f[i*2  ] = raw[(r*hop+i)*2  ] * scale;
                 in_f[i*2+1] = raw[(r*hop+i)*2+1] * scale;
             }
-            sa_hann(in_f.data(), fft_n);
+            sa_hann(in_f.data(), actual_fft_n);
             fftwf_execute(plan);
 
-            int half = fft_n/2;
+            int half = actual_fft_n/2;
             // FFT shift: 음수 주파수 → 양수
-            for(int i=0;i<fft_n;i++){
-                int bin = (i + half) % fft_n;
+            for(int i=0;i<actual_fft_n;i++){
+                int bin = (i + half) % actual_fft_n;
                 float re=out[bin][0], im=out[bin][1];
                 float ms = re*re+im*im+1e-12f;
-                all_db[r*fft_n+i] = 10.0f*log10f(ms);
+                all_db[r*actual_fft_n+i] = 10.0f*log10f(ms);
             }
             // DC bin 억제
-            all_db[r*fft_n + half] = all_db[r*fft_n + half - 1];
+            all_db[r*actual_fft_n + half] = all_db[r*actual_fft_n + half - 1];
         }
 
         fftwf_destroy_plan(plan); fftwf_free(out);
@@ -164,12 +178,35 @@ void FFTViewer::sa_start(const std::string& wav_path){
         for(int i=0;i<BINS;i++) lut[i] = (cdf[i]-cdf_min)/cdf_rng;
 
         // ── 픽셀 버퍼 생성 (히스토그램 이퀄라이제이션 LUT 적용) ──────────
-        std::vector<uint32_t> pixels(rows * fft_n);
-        for(int64_t r=0; r<rows; r++){
-            for(int i=0;i<fft_n;i++){
-                int b = (int)((all_db[r*fft_n+i] - db_lo) * db_rng_inv * (BINS-1));
+        // OpenGL 최대 텍스처 크기 쿼리 (일반적으로 16384)
+        GLint max_tex = 16384;
+        glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_tex);
+
+        // rows가 최대 텍스처 높이 초과 시 행 병합 (시간축 다운샘플)
+        int64_t out_rows = rows;
+        int merge = 1;
+        while(out_rows > (int64_t)max_tex){
+            merge++;
+            out_rows = rows / merge;
+        }
+        if(out_rows < 1) out_rows = 1;
+
+        std::vector<uint32_t> pixels(out_rows * actual_fft_n);
+        for(int64_t r=0; r<out_rows; r++){
+            for(int i=0;i<actual_fft_n;i++){
+                // merge행 평균 dB → LUT
+                float db_avg = 0.0f;
+                int cnt = 0;
+                for(int m=0; m<merge; m++){
+                    int64_t src_r = r*merge + m;
+                    if(src_r >= rows) break;
+                    db_avg += all_db[src_r*actual_fft_n+i];
+                    cnt++;
+                }
+                if(cnt > 0) db_avg /= cnt;
+                int b = (int)((db_avg - db_lo) * db_rng_inv * (BINS-1));
                 b = b<0?0:b>=BINS?BINS-1:b;
-                pixels[r*fft_n+i] = sa_jet(lut[b]);
+                pixels[r*actual_fft_n+i] = sa_jet(lut[b]);
             }
         }
 
@@ -177,8 +214,8 @@ void FFTViewer::sa_start(const std::string& wav_path){
         {
             std::lock_guard<std::mutex> lk(sa_pixel_mtx);
             sa_pixel_buf = std::move(pixels);
-            sa_tex_w = fft_n;
-            sa_tex_h = (int)rows;
+            sa_tex_w = actual_fft_n;
+            sa_tex_h = (int)out_rows;
         }
         sa_pixel_ready.store(true);
         sa_computing.store(false);

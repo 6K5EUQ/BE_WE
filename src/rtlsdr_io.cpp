@@ -40,6 +40,7 @@ bool FFTViewer::initialize_rtlsdr(float cf_mhz){
     rtlsdr_reset_buffer(dev_rtl);
 
     hw = make_rtlsdr_config(actual_sr);
+    gain_db = hw.gain_default;
 
     printf("RTL-SDR: %.2f MHz  %.3f MSPS  gain %.1f dB\n",
            cf_mhz, actual_sr/1e6, RTLSDR_RX_GAIN_TENTHS/10.0);

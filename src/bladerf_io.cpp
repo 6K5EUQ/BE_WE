@@ -30,6 +30,7 @@ bool FFTViewer::initialize_bladerf(float cf_mhz, float sr_msps){
     printf("BladeRF: %.2f MHz  %.2f MSPS  BW %.2f MHz\n",cf_mhz,actual/1e6f,actual_bw/1e6f);
 
     hw = make_bladerf_config(actual);
+    gain_db = hw.gain_default;
     std::memcpy(header.magic,"FFTD",4);
     header.version=1; header.fft_size=fft_size; header.sample_rate=actual;
     header.center_frequency=(uint64_t)(cf_mhz*1e6);
