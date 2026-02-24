@@ -3,7 +3,7 @@
 #include <imgui.h>
 
 // ── Hardware ───────────────────────────────────────────────────────────────
-#define RX_GAIN                30
+#define RX_GAIN                10
 #define CHANNEL                BLADERF_CHANNEL_RX(0)
 
 // ── FFT / Display ─────────────────────────────────────────────────────────

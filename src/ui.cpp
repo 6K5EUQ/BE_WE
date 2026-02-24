@@ -383,7 +383,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
     ImGui::InvisibleButton("sp_graph",ImVec2(gw,gh));
     bool hov=ImGui::IsItemHovered();
     if(!tm_active.load()) handle_new_channel_drag(gx,gw);
-    handle_channel_interactions(gx,gw,gy,gh);
+    if(!region.active) handle_channel_interactions(gx,gw,gy,gh);
     if(hov){
         ImVec2 mm=ImGui::GetIO().MousePos;
         float af=x_to_abs(mm.x,gx,gw);
@@ -487,7 +487,7 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
     ImGui::InvisibleButton("wf_graph",ImVec2(gw,gh));
     bool hov=ImGui::IsItemHovered();
     if(!tm_active.load()) handle_new_channel_drag(gx,gw);
-    handle_channel_interactions(gx,gw,gy,gh);
+    if(!region.active) handle_channel_interactions(gx,gw,gy,gh);
 
     // ── Ctrl+우클릭 드래그: 영역 IQ 녹음 선택 ────────────────────────────
     {
