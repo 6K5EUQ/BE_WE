@@ -1,4 +1,5 @@
 #include "fft_viewer.hpp"
+#include "login.hpp"
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <algorithm>
@@ -678,28 +679,63 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
 void run_streaming_viewer(){
     float cf=450.0f;
     FFTViewer v;
-    if(!v.initialize(cf)){ printf("SDR init failed\n"); return; }
-
-    // HW 타입에 따라 캡처 스레드 분기
-    std::thread cap;
-    if(v.hw.type == HWType::BLADERF)
-        cap = std::thread(&FFTViewer::capture_and_process, &v);
-    else
-        cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
-    v.mix_stop.store(false);
-    v.mix_thr=std::thread(&FFTViewer::mix_worker,&v);
+    std::thread cap; // 로그인 후 시작
 
     glfwInit();
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);
     glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
-    GLFWwindow* win=glfwCreateWindow(1400,900,"BEWE",nullptr,nullptr);
+    glfwWindowHint(GLFW_DECORATED,GLFW_FALSE);
+    GLFWmonitor* primary=glfwGetPrimaryMonitor();
+    const GLFWvidmode* vmode=glfwGetVideoMode(primary);
+    glfwWindowHint(GLFW_RED_BITS,  vmode->redBits);
+    glfwWindowHint(GLFW_GREEN_BITS,vmode->greenBits);
+    glfwWindowHint(GLFW_BLUE_BITS, vmode->blueBits);
+    glfwWindowHint(GLFW_REFRESH_RATE,vmode->refreshRate);
+    GLFWwindow* win=glfwCreateWindow(vmode->width,vmode->height,"BEWE",primary,nullptr);
     glfwMakeContextCurrent(win); glfwSwapInterval(0);
     glewExperimental=GL_TRUE; glewInit();
     ImGui::CreateContext(); ImGui::StyleColorsDark();
     ImGui_ImplGlfw_InitForOpenGL(win,true);
     ImGui_ImplOpenGL3_Init("#version 330");
     v.create_waterfall_texture();
+
+    // ── Login screen loop ─────────────────────────────────────────────────
+    {
+        bool logged_in = false;
+        while(!logged_in && !glfwWindowShouldClose(win)){
+            glfwPollEvents();
+            int fw,fh; glfwGetFramebufferSize(win,&fw,&fh);
+            glViewport(0,0,fw,fh);
+            glClearColor(0.047f,0.071f,0.137f,1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            ImGui_ImplOpenGL3_NewFrame(); ImGui_ImplGlfw_NewFrame(); ImGui::NewFrame();
+            logged_in = draw_login_screen(fw,fh);
+            ImGui::Render();
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+            glfwSwapBuffers(win);
+        }
+        if(glfwWindowShouldClose(win)){
+            // 로그인 전 창 닫힘: HW 미초기화 상태이므로 ImGui/GLFW만 정리
+            ImGui_ImplOpenGL3_Shutdown(); ImGui_ImplGlfw_Shutdown();
+            ImGui::DestroyContext(); glfwDestroyWindow(win); glfwTerminate();
+            return;
+        }
+    }
+
+    // ── 로그인 완료 후 HW 초기화 및 스레드 시작 ─────────────────────────
+    if(!v.initialize(cf)){
+        printf("SDR init failed\n");
+        ImGui_ImplOpenGL3_Shutdown(); ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext(); glfwDestroyWindow(win); glfwTerminate();
+        return;
+    }
+    if(v.hw.type == HWType::BLADERF)
+        cap = std::thread(&FFTViewer::capture_and_process, &v);
+    else
+        cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
+    v.mix_stop.store(false);
+    v.mix_thr=std::thread(&FFTViewer::mix_worker,&v);
 
     // ── System monitor state ──────────────────────────────────────────────
     auto cpu_last_time=std::chrono::steady_clock::now();
@@ -890,6 +926,34 @@ void run_streaming_viewer(){
         dl->AddRectFilled(ImVec2(0,0),ImVec2(disp_w,TOPBAR_H),IM_COL32(30,30,30,255));
         ImGui::SetCursorPos(ImVec2(6,6));
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,ImVec2(8,4));
+
+        // ── OFF 버튼 (더블클릭 → 안전 종료) ─────────────────────────────
+        {
+            static float off_hover_t = 0.0f;
+            ImVec2 off_sp = ImGui::GetCursorScreenPos();
+            const float OFF_W = 36.0f, OFF_H = 20.0f;
+            float off_cy = off_sp.y + (TOPBAR_H - 6.0f - OFF_H) / 2.0f;
+            ImVec2 off_min = ImVec2(off_sp.x, off_cy);
+            ImVec2 off_max = ImVec2(off_sp.x + OFF_W, off_cy + OFF_H);
+            ImVec2 mp = io.MousePos;
+            bool off_hov = (mp.x >= off_min.x && mp.x <= off_max.x &&
+                            mp.y >= off_min.y && mp.y <= off_max.y);
+            off_hover_t = off_hov ? off_hover_t + io.DeltaTime : 0.0f;
+            uint8_t rb = off_hov ? 220 : 160;
+            dl->AddRectFilled(off_min, off_max, IM_COL32(rb,20,20,240), 3.0f);
+            dl->AddRect(off_min, off_max, IM_COL32(255,60,60,200), 3.0f, 0, 1.2f);
+            ImVec2 tsz = ImGui::CalcTextSize("OFF");
+            dl->AddText(ImVec2(off_min.x+(OFF_W-tsz.x)/2, off_min.y+(OFF_H-tsz.y)/2),
+                        IM_COL32(255,80,80,255), "OFF");
+            ImGui::SetCursorScreenPos(off_min);
+            ImGui::InvisibleButton("##off_btn", ImVec2(OFF_W, OFF_H));
+            if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                glfwSetWindowShouldClose(win, GLFW_TRUE);
+            if(off_hov)
+                ImGui::SetTooltip("Double-click to exit");
+            ImGui::SetCursorScreenPos(ImVec2(off_sp.x + OFF_W + 8, off_sp.y));
+        }
+        ImGui::SameLine();
 
         // ── Frequency input ───────────────────────────────────────────────
         static float new_freq=450.0f; static bool fdeact=false, focus_freq=false;
