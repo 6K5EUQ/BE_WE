@@ -81,6 +81,8 @@ struct Channel {
     std::atomic<bool>   dem_stop_req{false};
     std::thread         dem_thr;
     std::atomic<size_t> dem_rp{0};
+    bool                dem_paused=false;         // 주파수 범위 벗어나 자동 pause됨
+    DemodMode           dem_paused_mode=DM_NONE;  // pause 직전 mode 보존
 
     // Per-channel audio ring (float mono)
     static constexpr size_t AR_SZ   = 16384;

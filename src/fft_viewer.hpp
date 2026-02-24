@@ -1,11 +1,13 @@
 #pragma once
 #include "config.hpp"
+#include "hw_config.hpp"
 #include "channel.hpp"
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 #include <imgui.h>
 #include <libbladeRF.h>
+#include <rtl-sdr.h>
 #include <fftw3.h>
 #include <mpg123.h>
 
@@ -165,8 +167,10 @@ public:
     bool  autoscale_init=false, autoscale_active=true;
     std::atomic<bool> spectrum_pause{false};
 
-    // ── BladeRF ───────────────────────────────────────────────────────────
-    struct bladerf* dev=nullptr;
+    // ── Hardware (공통) ───────────────────────────────────────────────────
+    HWConfig hw;                          // 런타임 HW 파라미터
+    struct bladerf*  dev_blade = nullptr; // BladeRF 디바이스
+    rtlsdr_dev_t*    dev_rtl   = nullptr; // RTL-SDR 디바이스
     fftwf_plan      fft_plan=nullptr;
     fftwf_complex  *fft_in=nullptr, *fft_out=nullptr;
     bool  is_running=true;
@@ -209,15 +213,20 @@ public:
     // ── alert.cpp ─────────────────────────────────────────────────────────
     void load_alert_mp3();
 
-    // ── bladerf_io.cpp ────────────────────────────────────────────────────
+    // ── hw_detect / bladerf_io / rtlsdr_io ───────────────────────────────
+    bool initialize(float cf_mhz);          // HW 자동 감지 후 초기화
     bool initialize_bladerf(float cf_mhz, float sr_msps);
-    void capture_and_process();
+    bool initialize_rtlsdr(float cf_mhz);
+    void capture_and_process();             // BladeRF 스트리밍 루프
+    void capture_and_process_rtl();         // RTL-SDR 스트리밍 루프
+    void set_frequency(float cf_mhz);       // 공통 주파수 변경
 
     // ── demod.cpp ─────────────────────────────────────────────────────────
     void dem_worker(int ch_idx);
     void start_dem(int ch_idx, Channel::DemodMode mode);
     void stop_dem(int ch_idx);
     void stop_all_dem();
+    void update_dem_by_freq(float new_cf_mhz); // 주파수 변경 시 복조 pause/resume
 
     // ── iq_record.cpp ─────────────────────────────────────────────────────
     void rec_worker();

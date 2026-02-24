@@ -334,3 +334,35 @@ static int magic_classify(
     else
         return 3; // DSB (suppressed carrier)
 }
+
+// ── 주파수 변경 시 채널 복조 pause / resume ──────────────────────────────
+// 호출 시점: 주파수 변경 직후 (캡처 스레드 내)
+// new_cf_mhz: 새 center frequency
+void FFTViewer::update_dem_by_freq(float new_cf_mhz){
+    float eff_half = hw.sample_rate_mhz * hw.eff_bw_ratio * 0.5f;
+    float vis_lo   = new_cf_mhz - eff_half;
+    float vis_hi   = new_cf_mhz + eff_half;
+
+    for(int i=0;i<MAX_CHANNELS;i++){
+        Channel& ch = channels[i];
+        if(!ch.filter_active) continue;  // 필터 없으면 무시
+
+        // 채널 범위가 보이는 주파수 범위와 겹치는지 확인
+        bool visible = (ch.e > vis_lo) && (ch.s < vis_hi);
+
+        if(visible){
+            // 범위 안 → pause 상태였으면 재시작
+            if(ch.dem_paused && ch.dem_paused_mode != Channel::DM_NONE){
+                ch.dem_paused = false;
+                start_dem(i, ch.dem_paused_mode);
+            }
+        } else {
+            // 범위 밖 → 복조 중이면 pause
+            if(ch.dem_run.load() && !ch.dem_paused){
+                ch.dem_paused      = true;
+                ch.dem_paused_mode = ch.mode;  // mode 보존
+                stop_dem(i);                   // stop_dem이 mode=NONE으로 지움
+            }
+        }
+    }
+}

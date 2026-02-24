@@ -707,12 +707,17 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
 
 // ─────────────────────────────────────────────────────────────────────────────
 void run_streaming_viewer(){
-    float cf=450.0f, sr=61.44f;
+    float cf=450.0f;
     FFTViewer v;
-    if(!v.initialize_bladerf(cf,sr)){ printf("BladeRF init failed\n"); return; }
+    if(!v.initialize(cf)){ printf("SDR init failed\n"); return; }
     v.load_alert_mp3();
 
-    std::thread cap(&FFTViewer::capture_and_process,&v);
+    // HW 타입에 따라 캡처 스레드 분기
+    std::thread cap;
+    if(v.hw.type == HWType::BLADERF)
+        cap = std::thread(&FFTViewer::capture_and_process, &v);
+    else
+        cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
     v.mix_stop.store(false);
     v.mix_thr=std::thread(&FFTViewer::mix_worker,&v);
 

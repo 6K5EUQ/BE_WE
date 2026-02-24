@@ -2,14 +2,15 @@
 #include <cstdint>
 #include <imgui.h>
 
-// ── Hardware ───────────────────────────────────────────────────────────────
-#define RX_GAIN                10
-#define CHANNEL                BLADERF_CHANNEL_RX(0)
+// ── Hardware (hw_config.hpp 참조) ─────────────────────────────────────────
+// RX_GAIN: BladeRF=10, RTL-SDR=396 (39.6dB, 0.1dB 단위)
+#define BLADERF_RX_GAIN        10
+#define RTLSDR_RX_GAIN_TENTHS  396   // 39.6 dB
 
 // ── FFT / Display ─────────────────────────────────────────────────────────
 #define DEFAULT_FFT_SIZE       8192
 #define TIME_AVERAGE           200
-#define MAX_FFTS_MEMORY        2500   // ~1분 (37.5행/초 × 60초 + 여유)
+#define MAX_FFTS_MEMORY        2500   // ~1분
 #define HANN_WINDOW_CORRECTION 2.67f
 #define AXIS_LABEL_WIDTH       50
 #define BOTTOM_LABEL_HEIGHT    30
