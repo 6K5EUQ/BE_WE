@@ -229,8 +229,8 @@ void FFTViewer::draw_all_channels(ImDrawList* dl, float gx, float gw, float gy, 
             // 매직: 보라색
             bord=IM_COL32(180, 80,255,220);
             fill=IM_COL32(180, 80,255, ch.selected?70:25);
-        } else if(ch.mode==Channel::DM_DETECT){
-            // 디텍션: 보라색
+        } else if(ch.mode==Channel::DM_DMR){
+            // DMR: 보라색 (MAGIC과 동일 계열)
             bord=IM_COL32(180, 80,255,220);
             fill=IM_COL32(180, 80,255, ch.selected?70:25);
         } else {
@@ -679,7 +679,6 @@ void run_streaming_viewer(){
     float cf=450.0f;
     FFTViewer v;
     if(!v.initialize(cf)){ printf("SDR init failed\n"); return; }
-    v.load_alert_mp3();
 
     // HW 타입에 따라 캡처 스레드 분기
     std::thread cap;
@@ -847,7 +846,7 @@ void run_streaming_viewer(){
                 };
                 if(ImGui::IsKeyPressed(ImGuiKey_A,false)) set_mode(Channel::DM_AM);
                 if(ImGui::IsKeyPressed(ImGuiKey_F,false)) set_mode(Channel::DM_FM);
-                if(ImGui::IsKeyPressed(ImGuiKey_D,false)) set_mode(Channel::DM_DETECT);
+                if(ImGui::IsKeyPressed(ImGuiKey_D,false)) set_mode(Channel::DM_DMR);
                 if(ImGui::IsKeyPressed(ImGuiKey_M,false)){
                     Channel& ch=v.channels[sci];
                     if(ch.dem_run.load()&&ch.mode==Channel::DM_MAGIC){ v.stop_dem(sci); }
@@ -1047,7 +1046,7 @@ void run_streaming_viewer(){
                 float ss_mhz=std::min(ch.s,ch.e), se_mhz=std::max(ch.s,ch.e);
                 float cf_mhz=(ss_mhz+se_mhz)/2.0f;
                 float bw_khz=(se_mhz-ss_mhz)*1000.0f;
-                const char* mname[5]={"","AM","FM","DET","M"};
+                const char* mname[5]={"","AM","FM","M","DMR"};
                 const char* magic_names[]={"","AM","FM","DSB","SSB","CW"};
                 const char* pname[3]={" L"," L+R"," R"};
                 bool dem_active=ch.dem_run.load();
@@ -1084,7 +1083,9 @@ void run_streaming_viewer(){
                     mode_col=IM_COL32( 80,200,255,255);
                 else if(ch.mode==Channel::DM_FM)
                     mode_col=IM_COL32(255,220, 50,255);
-                else if(ch.mode==Channel::DM_MAGIC||ch.mode==Channel::DM_DETECT)
+                else if(ch.mode==Channel::DM_MAGIC)
+                    mode_col=IM_COL32(180, 80,255,255);
+                else if(ch.mode==Channel::DM_DMR)
                     mode_col=IM_COL32(180, 80,255,255);
                 else
                     mode_col=IM_COL32(160,160,160,255);

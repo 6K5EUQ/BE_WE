@@ -10,6 +10,7 @@ pkg_check_modules(FFTW    REQUIRED fftw3f)
 pkg_check_modules(ALSA    REQUIRED alsa)
 pkg_check_modules(MPG123  REQUIRED libmpg123)
 pkg_check_modules(RTLSDR  REQUIRED librtlsdr)
+pkg_check_modules(LIBMBE  REQUIRED IMPORTED_TARGET libmbe)
 
 find_package(OpenGL REQUIRED)
 find_package(GLEW   REQUIRED)
@@ -35,13 +36,13 @@ add_executable(BE_WE
     src/demod.cpp
     src/iq_record.cpp
     src/audio.cpp
-    src/alert.cpp
     src/ui.cpp
     src/timemachine.cpp
     src/region_save.cpp
     src/sa_compute.cpp
     src/rtlsdr_io.cpp
     src/hw_detect.cpp
+    src/dmr.cpp
     ${IMGUI_SOURCES}
 )
 
@@ -52,6 +53,7 @@ target_include_directories(BE_WE PRIVATE
     ${ALSA_INCLUDE_DIRS}
     ${MPG123_INCLUDE_DIRS}
     ${RTLSDR_INCLUDE_DIRS}
+    ${LIBMBE_INCLUDE_DIRS}
     ${IMGUI_PATH}
     ${IMGUI_BACKENDS_PATH}
 )
@@ -62,6 +64,7 @@ target_link_libraries(BE_WE PRIVATE
     ${ALSA_LIBRARIES}
     ${MPG123_LIBRARIES}
     ${RTLSDR_LIBRARIES}
+    mbe   # 👈 이거 추가
     OpenGL::GL
     GLEW::GLEW
     glfw

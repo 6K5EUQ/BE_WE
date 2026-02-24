@@ -70,7 +70,7 @@ struct Channel {
     bool  selected=false;
 
     // Demodulation mode
-    enum DemodMode{ DM_NONE=0, DM_AM, DM_FM, DM_DETECT, DM_MAGIC } mode=DM_NONE;
+    enum DemodMode{ DM_NONE=0, DM_AM, DM_FM, DM_MAGIC, DM_DMR } mode=DM_NONE;
 
     // Magic mode: detected modulation (0=analyzing, 1=AM, 2=FM, 3=DSB, 4=SSB, 5=CW)
     std::atomic<int> magic_det{0};

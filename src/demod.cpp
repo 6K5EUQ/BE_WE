@@ -131,20 +131,7 @@ void FFTViewer::dem_worker(int ch_idx){
             }
 
             // ── Demodulate ────────────────────────────────────────────────
-            if(mode==Channel::DM_DETECT){
-                acnt++;
-                if(acnt>=(int)actual_ad){
-                    acnt=0;
-                    float out=0.0f;
-                    if(gate_open&&!alert_pcm.empty()){
-                        out=alert_pcm[aac_detect_pos%alert_pcm.size()];
-                        aac_detect_pos++;
-                    } else if(!gate_open){
-                        aac_detect_pos=0;
-                    }
-                    ch.push_audio(out);
-                }
-            } else if(mode==Channel::DM_MAGIC){
+            if(mode==Channel::DM_MAGIC){
                 // ── Phase 1: analysis ─────────────────────────────────────
                 if(!magic_analyzed){
                     float env=sqrtf(p_inst);
@@ -243,8 +230,11 @@ void FFTViewer::start_dem(int ch_idx, Channel::DemodMode mode){
     ch.dem_rp.store(ring_wp.load());
     ch.dem_stop_req.store(false);
     ch.dem_run.store(true);
-    ch.dem_thr=std::thread(&FFTViewer::dem_worker,this,ch_idx);
-    const char* n[]={"NONE","AM","FM","DETECT","MAGIC"};
+    if(mode == Channel::DM_DMR)
+        ch.dem_thr=std::thread(&FFTViewer::dmr_worker,this,ch_idx);
+    else
+        ch.dem_thr=std::thread(&FFTViewer::dem_worker,this,ch_idx);
+    const char* n[]={"NONE","AM","FM","MAGIC","DMR"};
     printf("DEM[%d] start: %s  %.4f-%.4f MHz\n",ch_idx,n[(int)mode],ch.s,ch.e);
 }
 

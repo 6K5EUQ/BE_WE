@@ -8,8 +8,8 @@
 #include <imgui.h>
 #include <libbladeRF.h>
 #include <rtl-sdr.h>
+#include <mbelib.h>
 #include <fftw3.h>
-#include <mpg123.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -205,14 +205,6 @@ public:
     std::atomic<bool> mix_stop{false};
     std::thread       mix_thr;
 
-    // ── Detection alert ───────────────────────────────────────────────────
-    // ★ MP3 경로를 여기서 변경하세요:
-    static constexpr const char* ALERT_MP3_PATH = "/home/dsa/BE_WE/lock_on.mp3";
-    std::vector<float> alert_pcm;
-
-    // ── alert.cpp ─────────────────────────────────────────────────────────
-    void load_alert_mp3();
-
     // ── hw_detect / bladerf_io / rtlsdr_io ───────────────────────────────
     bool initialize(float cf_mhz);          // HW 자동 감지 후 초기화
     bool initialize_bladerf(float cf_mhz, float sr_msps);
@@ -225,6 +217,7 @@ public:
 
     // ── demod.cpp ─────────────────────────────────────────────────────────
     void dem_worker(int ch_idx);
+    void dmr_worker(int ch_idx);
     void start_dem(int ch_idx, Channel::DemodMode mode);
     void stop_dem(int ch_idx);
     void stop_all_dem();

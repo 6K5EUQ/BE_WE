@@ -65,6 +65,13 @@ void FFTViewer::capture_and_process(){
         // ── FFT size change ───────────────────────────────────────────────
         if(fft_size_change_req){
             fft_size_change_req=false; int ns=pending_fft_size;
+            // demod 스레드 일시 정지: ring 접근 충돌 방지
+            // dem_rp를 ring_wp로 당겨서 워커가 lag==0 → sleep 상태로 만듦
+            size_t cur_wp = ring_wp.load(std::memory_order_relaxed);
+            for(int ci=0;ci<MAX_CHANNELS;ci++)
+                channels[ci].dem_rp.store(cur_wp, std::memory_order_release);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10)); // 워커 sleep 대기
+
             fftwf_destroy_plan(fft_plan); fftwf_free(fft_in); fftwf_free(fft_out);
             fft_size=ns; time_average=hw.compute_time_average(ns);
             fft_in =fftwf_alloc_complex(fft_size);
