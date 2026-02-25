@@ -53,7 +53,8 @@ void FFTViewer::start_rec(){
 
     time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
     char fn[256];
-    snprintf(fn,256,"/home/dsa/BE_WE/recordings/iq_%.4fMHz_BW%.0fkHz_%04d%02d%02d_%02d%02d%02d.wav",
+    std::string rec_dir=BEWEPaths::recordings_dir();
+    snprintf(fn,256,"%s/iq_%.4fMHz_BW%.0fkHz_%04d%02d%02d_%02d%02d%02d.wav",rec_dir.c_str(),
              rec_cf_mhz,bw_hz/1000.0f,
              tm2.tm_year+1900,tm2.tm_mon+1,tm2.tm_mday,
              tm2.tm_hour,tm2.tm_min,tm2.tm_sec);

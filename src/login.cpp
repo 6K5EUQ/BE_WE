@@ -1,4 +1,5 @@
 #include "login.hpp"
+#include "bewe_paths.hpp"
 #include <GL/glew.h>
 #include <imgui.h>
 #include <cstring>
@@ -9,11 +10,16 @@
 static GLuint bg_tex[3] = {0, 0, 0};
 static int    bg_w  [3] = {0, 0, 0};
 static int    bg_h  [3] = {0, 0, 0};
-static const char* BG_PATHS[3] = {
-    "/home/dsa/BE_WE/assets/login_bg_Tier_1.png",
-    "/home/dsa/BE_WE/assets/login_bg_Tier_2.png",
-    "/home/dsa/BE_WE/assets/login_bg_Tier_3.png"
-};
+static std::string BG_PATH_STRS[3];
+static const char*  BG_PATHS[3] = {nullptr,nullptr,nullptr};
+static void init_bg_paths(){
+    static bool done=false; if(done) return; done=true;
+    std::string a=BEWEPaths::assets_dir();
+    BG_PATH_STRS[0]=a+"/login_bg_Tier_1.png";
+    BG_PATH_STRS[1]=a+"/login_bg_Tier_2.png";
+    BG_PATH_STRS[2]=a+"/login_bg_Tier_3.png";
+    for(int i=0;i<3;i++) BG_PATHS[i]=BG_PATH_STRS[i].c_str();
+}
 
 static bool load_png(const char* path, GLuint& tex, int& w, int& h){
     FILE* fp = fopen(path,"rb");
@@ -63,6 +69,7 @@ bool draw_login_screen(int win_w, int win_h){
     static int  tier        =1;
     static bool failed      =false;
     static float fail_timer =0.0f;
+    init_bg_paths();
     static bool bg_tried[3] ={false,false,false};
 
     // ── 이미지 페이드 전환 ────────────────────────────────────────────────
@@ -137,7 +144,7 @@ bool draw_login_screen(int win_w, int win_h){
     ImGui::PopStyleVar(2);
 
     // ── 로그인 패널 ──────────────────────────────────────────────────────
-    const float PW_=330.0f, PH_=183.0f, PAD=28.0f;
+    const float PW_=330.0f, PH_=208.0f, PAD=28.0f;
     ImGui::SetNextWindowPos(ImVec2((float)win_w-PW_-PAD,(float)win_h-PH_-PAD));
     ImGui::SetNextWindowSize(ImVec2(PW_,PH_));
     ImGui::SetNextWindowBgAlpha(0.88f);
@@ -162,9 +169,9 @@ bool draw_login_screen(int win_w, int win_h){
 
     // ── 티어별 타이틀 ────────────────────────────────────────────────────
     static const char* TIER_TITLES[3]={
-        "SHADE",
-        "BLACK",
-        "LIGHT"
+        "Behind Everyone We Hear Everything",
+        "BlackWave",
+        "SHADE"
     };
     { // 타이틀 영역: 1줄 고정
       ImGui::SetWindowFontScale(1.3f);

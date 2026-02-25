@@ -1,5 +1,6 @@
 #pragma once
 #include "config.hpp"
+#include "bewe_paths.hpp"
 #include "hw_config.hpp"
 #include "channel.hpp"
 
@@ -74,7 +75,7 @@ public:
     int                  last_tagged_sec=-1; // 마지막으로 5초태그 붙인 초
 
     // IQ 롤링 파일 관리
-    static constexpr const char* TM_IQ_DIR  = "/home/dsa/BE_WE/recordings/Time_temp";
+    // TM_IQ_DIR: BEWEPaths::time_temp_dir() 로 런타임 결정
     static constexpr size_t      TM_IQ_SECS = 60;     // 롤링 길이 (초)
     int      tm_iq_fd=-1;   // unbuffered POSIX fd
     // IQ 배치 버퍼: 65536샘플 모아서 한 번에 pwrite (syscall 최소화)

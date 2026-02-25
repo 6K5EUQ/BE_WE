@@ -1,4 +1,5 @@
 #include "fft_viewer.hpp"
+#include "bewe_paths.hpp"
 #include <fftw3.h>
 #include <dirent.h>
 #include <cstdio>
@@ -37,7 +38,8 @@ void FFTViewer::sa_cleanup(){
     }
     // SA_Temp 폴더 내 모든 파일 삭제
     {
-        const char* sa_dir="/home/dsa/BE_WE/recordings/SA_Temp";
+        std::string sa_dir_s=BEWEPaths::sa_temp_dir();
+        const char* sa_dir=sa_dir_s.c_str();
         DIR* d=opendir(sa_dir);
         if(d){
             struct dirent* e;

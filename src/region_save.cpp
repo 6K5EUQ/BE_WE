@@ -1,4 +1,5 @@
 #include "fft_viewer.hpp"
+#include "bewe_paths.hpp"
 #include <unistd.h>
 #include <sys/stat.h>
 #include <cmath>
@@ -48,8 +49,8 @@ static void make_filename(char* out, size_t sz,
     strftime(s_end,  sizeof(s_end), "%H%M%S",  te);
 
     snprintf(out, sz,
-             "/home/dsa/BE_WE/recordings/"
-             "iq_%.4fMHz_BW%.0fkHz_%s_%s-%s.wav",
+             "%s/iq_%.4fMHz_BW%.0fkHz_%s_%s-%s.wav",
+             BEWEPaths::recordings_dir().c_str(),
              (double)cf_mhz, (double)bw_khz, date, s_start, s_end);
 }
 
@@ -161,7 +162,8 @@ void FFTViewer::do_region_save_work(){
     char outpath[512];
     if(sa_mode){
         // SA 전용 임시 경로
-        const char* sa_dir = "/home/dsa/BE_WE/recordings/SA_Temp";
+        std::string sa_dir_s = BEWEPaths::sa_temp_dir();
+        const char* sa_dir = sa_dir_s.c_str();
         struct stat sd{}; if(stat(sa_dir,&sd)!=0) mkdir(sa_dir,0755);
         struct tm *ts=localtime(&region.time_start);
         char date[16],s_start[8];

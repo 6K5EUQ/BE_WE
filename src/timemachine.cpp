@@ -1,4 +1,5 @@
 #include "fft_viewer.hpp"
+#include "bewe_paths.hpp"
 #include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -31,6 +32,8 @@ static void write_rolling_wav_header(int fd, uint32_t sample_rate, uint32_t n_fr
 void FFTViewer::tm_iq_open(){
     if(tm_iq_file_ready) return;
     struct stat st{};
+    std::string tm_dir=BEWEPaths::time_temp_dir();
+    const char* TM_IQ_DIR=tm_dir.c_str();
     if(stat(TM_IQ_DIR,&st)!=0) mkdir(TM_IQ_DIR,0755);
     uint32_t sr=header.sample_rate;
     if(sr==0){ fprintf(stderr,"TM: sample_rate 0\n"); return; }
