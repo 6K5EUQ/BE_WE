@@ -1,4 +1,6 @@
 #include "fft_viewer.hpp"
+#include <thread>
+#include "net_server.hpp"
 #include <cstring>
 #include <algorithm>
 #include <chrono>
@@ -24,7 +26,8 @@ bool FFTViewer::initialize_bladerf(float cf_mhz, float sr_msps){
     s=bladerf_enable_module(dev_blade,BLADERF_CHANNEL_RX(0),true);
     if(s){ fprintf(stderr,"enable: %s\n",bladerf_strerror(s)); bladerf_close(dev_blade); return false; }
 
-    s=bladerf_sync_config(dev_blade,BLADERF_RX_X1,BLADERF_FORMAT_SC16_Q11,512,16384,16,10000);
+    // num_transfers=128: USB DMA 큐 깊이 확보 (네트워크 부하 시 버퍼 여유)
+    s=bladerf_sync_config(dev_blade,BLADERF_RX_X1,BLADERF_FORMAT_SC16_Q11,512,16384,128,5000);
     if(s){ fprintf(stderr,"sync: %s\n",bladerf_strerror(s)); bladerf_close(dev_blade); return false; }
 
     printf("BladeRF: %.2f MHz  %.2f MSPS  BW %.2f MHz\n",cf_mhz,actual/1e6f,actual_bw/1e6f);
@@ -104,8 +107,24 @@ void FFTViewer::capture_and_process(){
         }
 
         // ── RX ────────────────────────────────────────────────────────────
-        int status=bladerf_sync_rx(dev_blade,iq,fft_size,nullptr,10000);
-        if(status){ fprintf(stderr,"RX: %s\n",bladerf_strerror(status)); continue; }
+        int status=bladerf_sync_rx(dev_blade,iq,fft_size,nullptr,3000);
+        if(status){
+            if(status==BLADERF_ERR_TIMEOUT){
+                // 타임아웃: USB 과부하. 잠시 대기 후 재시도
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
+            }
+            fprintf(stderr,"RX: %s\n",bladerf_strerror(status));
+            if(status==BLADERF_ERR_IO || status==BLADERF_ERR_UNEXPECTED){
+                // IO 에러: 스트림 재시작 시도
+                bladerf_enable_module(dev_blade,BLADERF_CHANNEL_RX(0),false);
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                bladerf_enable_module(dev_blade,BLADERF_CHANNEL_RX(0),true);
+                bladerf_sync_config(dev_blade,BLADERF_RX_X1,BLADERF_FORMAT_SC16_Q11,
+                                    512,16384,128,5000);
+            }
+            continue;
+        }
 
         // ── IQ Ring write ─────────────────────────────────────────────────
         bool need_ring=rec_on.load(std::memory_order_relaxed);
@@ -187,6 +206,9 @@ void FFTViewer::capture_and_process(){
                  else
                      iq_row_avail[current_fft_idx%MAX_FFTS_MEMORY]=false;
                  tm_add_time_tag(current_fft_idx);
+                 // 브로드캐스트 스레드에 알림 (캡처 스레드에서 TCP 직접 호출 금지)
+                 net_bcast_seq.fetch_add(1, std::memory_order_release);
+                 net_bcast_cv.notify_one();
                 }
                 std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
             }

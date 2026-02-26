@@ -1,6 +1,8 @@
 #pragma once
 #include "config.hpp"
 #include "bewe_paths.hpp"
+#include "net_server.hpp"
+#include "net_client.hpp"
 #include "hw_config.hpp"
 #include "channel.hpp"
 
@@ -23,6 +25,7 @@
 #include <atomic>
 #include <chrono>
 #include <algorithm>
+#include <condition_variable>
 
 // ── FFTViewer ─────────────────────────────────────────────────────────────
 class FFTViewer {
@@ -167,6 +170,39 @@ public:
     std::chrono::steady_clock::time_point autoscale_last;
     bool  autoscale_init=false, autoscale_active=true;
     std::atomic<bool> spectrum_pause{false};
+
+    // ── Network ──────────────────────────────────────────────────────────
+    NetServer*  net_srv   = nullptr;  // HOST 모드
+    NetClient*  net_cli   = nullptr;  // CONNECT 모드
+    bool        remote_mode = false;  // true = CONNECT 모드 (하드웨어 없음)
+    char        host_name[32] = {};   // 접속한 유저 ID (표시용)
+    uint8_t     my_op_index   = 0;
+
+    // 로컬 오디오 출력 선택 (각 PC 독립): 0=L, 1=L+R, 2=R, 3=M(mute)
+    // JOIN에서 M이면 cmd_toggle_recv(ch, false) 전송
+    int  local_ch_out[5] = {1,1,1,1,1}; // 기본: L+R
+
+    // 파일 전송 진행상태 (HOST: 전송 중, JOIN: 수신 중)
+    struct FileXfer {
+        std::string filename;
+        uint64_t    total_bytes = 0;
+        uint64_t    done_bytes  = 0;
+        bool        finished    = false;
+        bool        is_sa       = false;   // SA로 열 수 있는 파일
+        std::string local_path;
+    };
+    std::vector<FileXfer> file_xfers;
+    std::mutex            file_xfer_mtx;
+    std::atomic<uint8_t>  next_transfer_id{1};
+
+    // ── 브로드캐스트 전용 스레드 (캡처 스레드와 분리) ──────────────────
+    std::atomic<int>        net_bcast_seq{0};   // 캡처 스레드가 올림
+    std::mutex              net_bcast_mtx;
+    std::condition_variable net_bcast_cv;
+    std::atomic<bool>       net_bcast_stop{false};
+    std::thread             net_bcast_thr;
+
+    void net_bcast_worker();  // 선언
 
     // ── Hardware (공통) ───────────────────────────────────────────────────
     HWConfig hw;                          // 런타임 HW 파라미터

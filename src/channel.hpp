@@ -75,6 +75,8 @@ struct Channel {
     // Magic mode: detected modulation (0=analyzing, 1=AM, 2=FM, 3=DSB, 4=SSB, 5=CW)
     std::atomic<int> magic_det{0};
     int   pan=0;   // -1=L  0=both  1=R
+    // audio_mask: bit0=host local, bit_i=operator_i gets audio
+    std::atomic<uint32_t> audio_mask{0x1};  // default: host only
 
     // Demod thread
     std::atomic<bool>   dem_run{false};

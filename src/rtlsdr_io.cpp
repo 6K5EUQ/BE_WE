@@ -1,4 +1,5 @@
 #include "fft_viewer.hpp"
+#include "net_server.hpp"
 #include <cstring>
 #include <algorithm>
 #include <chrono>
@@ -224,6 +225,8 @@ void FFTViewer::capture_and_process_rtl(){
                  else
                      iq_row_avail[current_fft_idx%MAX_FFTS_MEMORY]=false;
                  tm_add_time_tag(current_fft_idx);
+                 net_bcast_seq.fetch_add(1, std::memory_order_release);
+                 net_bcast_cv.notify_one();
                 }
                 std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
             }

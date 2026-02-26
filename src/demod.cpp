@@ -1,4 +1,5 @@
 #include "fft_viewer.hpp"
+#include "net_server.hpp"
 #include <cmath>
 #include <algorithm>
 #include <vector>
@@ -12,6 +13,10 @@ static int magic_classify(const std::vector<float>&, const std::vector<float>&,
 void FFTViewer::dem_worker(int ch_idx){
     Channel& ch=channels[ch_idx];
     Channel::DemodMode mode=ch.mode;
+    // 네트워크 오디오 배치 버퍼 (256샘플 단위로 서버에 전송)
+    static constexpr int NET_AUDIO_BATCH = 256;
+    std::vector<float> net_audio_buf;
+    net_audio_buf.reserve(NET_AUDIO_BATCH);
     uint32_t msr=header.sample_rate;
     float off_hz=(((ch.s+ch.e)/2.0f)-(float)(header.center_frequency/1e6f))*1e6f;
     float bw_hz=fabsf(ch.e-ch.s)*1e6f;
@@ -187,6 +192,16 @@ void FFTViewer::dem_worker(int ch_idx){
                                   :0.0f;
                         aac=0; acnt=0;
                         ch.push_audio(out);
+                        // ── 네트워크 오디오 전송 ────────────────────
+                        if(net_srv && (ch.audio_mask.load() & ~0x1u)){
+                            net_audio_buf.push_back(out);
+                            if((int)net_audio_buf.size()>=NET_AUDIO_BATCH){
+                                uint32_t mask=(ch.audio_mask.load()>>1);
+                                net_srv->send_audio(mask,(uint8_t)ch_idx,(int8_t)ch.pan,
+                                    net_audio_buf.data(),(uint32_t)net_audio_buf.size());
+                                net_audio_buf.clear();
+                            }
+                        }
                     }
                 }
             } else {
@@ -215,6 +230,16 @@ void FFTViewer::dem_worker(int ch_idx){
                               :0.0f;
                     aac=0; acnt=0;
                     ch.push_audio(out);
+                    // ── 네트워크 오디오 전송 ────────────────────────
+                    if(net_srv && (ch.audio_mask.load() & ~0x1u)){
+                        net_audio_buf.push_back(out);
+                        if((int)net_audio_buf.size()>=NET_AUDIO_BATCH){
+                            uint32_t mask=(ch.audio_mask.load()>>1);
+                            net_srv->send_audio(mask,(uint8_t)ch_idx,(int8_t)ch.pan,
+                                net_audio_buf.data(),(uint32_t)net_audio_buf.size());
+                            net_audio_buf.clear();
+                        }
+                    }
                 }
             }
         }

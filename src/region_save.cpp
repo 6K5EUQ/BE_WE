@@ -256,6 +256,30 @@ void FFTViewer::do_region_save_work(){
     printf("Region IQ saved: %s  (%.1f sec  %.0f kHz SR)\n",
            outpath, (double)actual_out/out_sr, (double)out_sr/1000.0);
 
+    // file_xfers에 추가 (HOST: 전송 예약됨 / LOCAL: SA 직접)
+    {
+        std::lock_guard<std::mutex> lk(file_xfer_mtx);
+        // 미완료 항목 업데이트
+        bool updated=false;
+        for(auto& xf : file_xfers){
+            if(!xf.finished){
+                xf.filename  = (strrchr(outpath,'/')?strrchr(outpath,'/')+1:outpath);
+                xf.local_path= outpath;
+                xf.finished  = true;
+                xf.is_sa     = true;
+                updated=true; break;
+            }
+        }
+        if(!updated){
+            FileXfer xf{};
+            xf.filename   = (strrchr(outpath,'/')?strrchr(outpath,'/')+1:outpath);
+            xf.local_path = outpath;
+            xf.finished   = true;
+            xf.is_sa      = true;
+            file_xfers.push_back(xf);
+        }
+    }
+
     // SA 모드: 저장 완료 후 SA 워터폴 계산 시작
     if(sa_mode){
         sa_mode = false;
