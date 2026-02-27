@@ -1,5 +1,5 @@
 # BE_WE
 
-![](img/Screen.png)
+![](assets/Screen.png)
 
-![](img/Login.png)
+![](assets/Login.png)
