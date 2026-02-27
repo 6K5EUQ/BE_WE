@@ -110,6 +110,33 @@ struct Channel {
         return ar_wp.load(std::memory_order_acquire)-ar_rp.load(std::memory_order_relaxed);
     }
 
+    // ── Audio recording (demod 스레드 내에서만 접근) ──────────────────────
+    std::atomic<bool> audio_rec_on{false};
+    FILE*             audio_rec_fp      = nullptr;
+    uint64_t          audio_rec_frames  = 0;
+    uint32_t          audio_rec_sr      = 0;
+    std::string       audio_rec_path;
+
+    // mono int16 WAV 헤더 기록 (open / close 시 호출)
+    void audio_rec_write_wav_hdr(FILE* fp, uint32_t sr, uint64_t frames){
+        auto w32=[&](uint32_t v){ fwrite(&v,4,1,fp); };
+        auto w16=[&](uint16_t v){ fwrite(&v,2,1,fp); };
+        uint32_t db=(uint32_t)(frames*2);
+        fwrite("RIFF",1,4,fp); w32(36+db); fwrite("WAVE",1,4,fp);
+        fwrite("fmt ",1,4,fp); w32(16); w16(1); w16(1); // PCM, mono
+        w32(sr); w32(sr*2); w16(2); w16(16);
+        fwrite("data",1,4,fp); w32(db);
+    }
+
+    // demod worker에서 호출: out 샘플을 녹음 파일에 기록
+    inline void maybe_rec_audio(float out){
+        if(!audio_rec_on.load(std::memory_order_relaxed)) return;
+        if(!audio_rec_fp) return;
+        int16_t s16=(int16_t)(out<-1.f?-32767:out>1.f?32767:(int)(out*32767.f));
+        fwrite(&s16,2,1,audio_rec_fp);
+        audio_rec_frames++;
+    }
+
     // Squelch
     std::atomic<float> sq_threshold{-50.0f};
     std::atomic<float> sq_sig{-120.0f}, sq_nf{0.0f};

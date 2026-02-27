@@ -26,7 +26,7 @@ void FFTViewer::dem_worker(int ch_idx){
     uint32_t actual_inter=msr/cap_decim;
     uint32_t actual_ad=std::max(1u,(uint32_t)round((double)actual_inter/AUDIO_SR));
     uint32_t actual_asr=actual_inter/actual_ad;
-    printf("DEM[%d]: mode=%d  cf=%.4fMHz  off=%.0fHz  cap_dec=%u  asr=%u\n",
+    bewe_log("DEM[%d]: mode=%d  cf=%.4fMHz  off=%.0fHz  cap_dec=%u  asr=%u\n",
            ch_idx,(int)mode,(ch.s+ch.e)/2.0f,off_hz,cap_decim,actual_asr);
 
     // ── Magic mode state ──────────────────────────────────────────────────
@@ -162,7 +162,7 @@ void FFTViewer::dem_worker(int ch_idx){
                         // Reset DSP state for clean demod start
                         lpi.s=lpq.s=alf.s=0; prev_i=prev_q=0; am_dc=0;
                         aac=0; acnt=0; agc_rms=0.01f;
-                        printf("MAGIC[%d]: detected=%d\n",ch_idx,magic_det_mode);
+                        bewe_log("MAGIC[%d]: detected=%d\n",ch_idx,magic_det_mode);
                     }
                     // During analysis: silence
                     acnt++;
@@ -191,6 +191,7 @@ void FFTViewer::dem_worker(int ch_idx){
                                   ?std::max(-1.0f,std::min(1.0f,(float)(aac/acnt)))
                                   :0.0f;
                         aac=0; acnt=0;
+                        ch.maybe_rec_audio(out);
                         ch.push_audio(out);
                         // ── 네트워크 오디오 전송 ────────────────────
                         if(net_srv && (ch.audio_mask.load() & ~0x1u)){
@@ -229,6 +230,7 @@ void FFTViewer::dem_worker(int ch_idx){
                               ?std::max(-1.0f,std::min(1.0f,(float)(aac/acnt)))
                               :0.0f;
                     aac=0; acnt=0;
+                    ch.maybe_rec_audio(out);
                     ch.push_audio(out);
                     // ── 네트워크 오디오 전송 ────────────────────────
                     if(net_srv && (ch.audio_mask.load() & ~0x1u)){
@@ -245,7 +247,7 @@ void FFTViewer::dem_worker(int ch_idx){
         }
         ch.dem_rp.store((rp+avail)&IQ_RING_MASK,std::memory_order_release);
     }
-    printf("DEM[%d] worker exited\n",ch_idx);
+    bewe_log("DEM[%d] worker exited\n",ch_idx);
 }
 
 void FFTViewer::start_dem(int ch_idx, Channel::DemodMode mode){
@@ -260,7 +262,7 @@ void FFTViewer::start_dem(int ch_idx, Channel::DemodMode mode){
     else
         ch.dem_thr=std::thread(&FFTViewer::dem_worker,this,ch_idx);
     const char* n[]={"NONE","AM","FM","MAGIC","DMR"};
-    printf("DEM[%d] start: %s  %.4f-%.4f MHz\n",ch_idx,n[(int)mode],ch.s,ch.e);
+    bewe_log("DEM[%d] start: %s  %.4f-%.4f MHz\n",ch_idx,n[(int)mode],ch.s,ch.e);
 }
 
 void FFTViewer::stop_dem(int ch_idx){

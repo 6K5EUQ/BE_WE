@@ -7,30 +7,30 @@
 
 bool FFTViewer::initialize_bladerf(float cf_mhz, float sr_msps){
     int s=bladerf_open(&dev_blade,nullptr);
-    if(s){ fprintf(stderr,"bladerf_open: %s\n",bladerf_strerror(s)); return false; }
+    if(s){ bewe_log("bladerf_open: %s\n",bladerf_strerror(s)); return false; }
 
     s=bladerf_set_frequency(dev_blade,BLADERF_CHANNEL_RX(0),(uint64_t)(cf_mhz*1e6));
-    if(s){ fprintf(stderr,"set_freq: %s\n",bladerf_strerror(s)); bladerf_close(dev_blade); return false; }
+    if(s){ bewe_log("set_freq: %s\n",bladerf_strerror(s)); bladerf_close(dev_blade); return false; }
 
     uint32_t actual=0;
     s=bladerf_set_sample_rate(dev_blade,BLADERF_CHANNEL_RX(0),(uint32_t)(sr_msps*1e6),&actual);
-    if(s){ fprintf(stderr,"set_sr: %s\n",bladerf_strerror(s)); bladerf_close(dev_blade); return false; }
+    if(s){ bewe_log("set_sr: %s\n",bladerf_strerror(s)); bladerf_close(dev_blade); return false; }
 
     uint32_t actual_bw=0;
     s=bladerf_set_bandwidth(dev_blade,BLADERF_CHANNEL_RX(0),(uint32_t)(sr_msps*1e6*0.8f),&actual_bw);
-    if(s){ fprintf(stderr,"set_bw: %s\n",bladerf_strerror(s)); bladerf_close(dev_blade); return false; }
+    if(s){ bewe_log("set_bw: %s\n",bladerf_strerror(s)); bladerf_close(dev_blade); return false; }
 
     s=bladerf_set_gain(dev_blade,BLADERF_CHANNEL_RX(0),BLADERF_RX_GAIN);
-    if(s){ fprintf(stderr,"set_gain: %s\n",bladerf_strerror(s)); bladerf_close(dev_blade); return false; }
+    if(s){ bewe_log("set_gain: %s\n",bladerf_strerror(s)); bladerf_close(dev_blade); return false; }
 
     s=bladerf_enable_module(dev_blade,BLADERF_CHANNEL_RX(0),true);
-    if(s){ fprintf(stderr,"enable: %s\n",bladerf_strerror(s)); bladerf_close(dev_blade); return false; }
+    if(s){ bewe_log("enable: %s\n",bladerf_strerror(s)); bladerf_close(dev_blade); return false; }
 
     // num_transfers=128: USB DMA 큐 깊이 확보 (네트워크 부하 시 버퍼 여유)
     s=bladerf_sync_config(dev_blade,BLADERF_RX_X1,BLADERF_FORMAT_SC16_Q11,512,16384,128,5000);
-    if(s){ fprintf(stderr,"sync: %s\n",bladerf_strerror(s)); bladerf_close(dev_blade); return false; }
+    if(s){ bewe_log("sync: %s\n",bladerf_strerror(s)); bladerf_close(dev_blade); return false; }
 
-    printf("BladeRF: %.2f MHz  %.2f MSPS  BW %.2f MHz\n",cf_mhz,actual/1e6f,actual_bw/1e6f);
+    bewe_log("BladeRF: %.2f MHz  %.2f MSPS  BW %.2f MHz\n",cf_mhz,actual/1e6f,actual_bw/1e6f);
 
     hw = make_bladerf_config(actual);
     gain_db = hw.gain_default;
@@ -69,11 +69,10 @@ void FFTViewer::capture_and_process(){
         if(fft_size_change_req){
             fft_size_change_req=false; int ns=pending_fft_size;
             // demod 스레드 일시 정지: ring 접근 충돌 방지
-            // dem_rp를 ring_wp로 당겨서 워커가 lag==0 → sleep 상태로 만듦
             size_t cur_wp = ring_wp.load(std::memory_order_relaxed);
             for(int ci=0;ci<MAX_CHANNELS;ci++)
                 channels[ci].dem_rp.store(cur_wp, std::memory_order_release);
-            std::this_thread::sleep_for(std::chrono::milliseconds(10)); // 워커 sleep 대기
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
             fftwf_destroy_plan(fft_plan); fftwf_free(fft_in); fftwf_free(fft_out);
             fft_size=ns; time_average=hw.compute_time_average(ns);
@@ -98,7 +97,7 @@ void FFTViewer::capture_and_process(){
             if(!s){
                 {std::lock_guard<std::mutex> lk(data_mtx);
                  header.center_frequency=(uint64_t)(pending_cf*1e6);}
-                printf("Freq → %.2f MHz\n",pending_cf);
+                bewe_log("Freq → %.2f MHz\n",pending_cf);
                 autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
                 warmup_cnt=0;
                 update_dem_by_freq(pending_cf);
@@ -110,13 +109,11 @@ void FFTViewer::capture_and_process(){
         int status=bladerf_sync_rx(dev_blade,iq,fft_size,nullptr,3000);
         if(status){
             if(status==BLADERF_ERR_TIMEOUT){
-                // 타임아웃: USB 과부하. 잠시 대기 후 재시도
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 continue;
             }
-            fprintf(stderr,"RX: %s\n",bladerf_strerror(status));
+            bewe_log("RX error: %s\n",bladerf_strerror(status));
             if(status==BLADERF_ERR_IO || status==BLADERF_ERR_UNEXPECTED){
-                // IO 에러: 스트림 재시작 시도
                 bladerf_enable_module(dev_blade,BLADERF_CHANNEL_RX(0),false);
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 bladerf_enable_module(dev_blade,BLADERF_CHANNEL_RX(0),true);
@@ -140,13 +137,10 @@ void FFTViewer::capture_and_process(){
                 memcpy(&ring[0],iq+p1*2,p2*2*sizeof(int16_t));
             }
             ring_wp.store((wp+n)&IQ_RING_MASK,std::memory_order_release);
-            // TM IQ 롤링 저장 (워밍업 이후만)
             if(need_tm) tm_iq_write(iq,(int)n);
         }
 
         // ── FFT ───────────────────────────────────────────────────────────
-        // render_visible=false(좌측 패널 완전 숨김)이면 FFT 연산 스킵
-        // 스트리밍/채널복조/롤링IQ는 위에서 이미 처리됨
         if(!render_visible.load(std::memory_order_relaxed)){
             std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
             continue;
@@ -167,7 +161,6 @@ void FFTViewer::capture_and_process(){
             }
             pacc[0]=(pacc[1]+pacc[fft_size-1])*0.5f; fcnt++;
             if(fcnt>=time_average){
-                // 초기 워밍업 버리기
                 if(warmup_cnt < WARMUP_FFTS){
                     warmup_cnt++;
                     std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
@@ -199,14 +192,12 @@ void FFTViewer::capture_and_process(){
                  }
                  total_ffts++; current_fft_idx=total_ffts-1;
                  header.num_ffts=std::min(total_ffts,MAX_FFTS_MEMORY); cached_sp_idx=-1;
-                 // 이 행의 IQ 끝 위치 기록 (캡처 스레드 내에서 atomic하게)
                  row_write_pos[current_fft_idx%MAX_FFTS_MEMORY]=tm_iq_write_sample;
                  if(tm_iq_on.load(std::memory_order_relaxed))
                      tm_mark_rows(current_fft_idx%MAX_FFTS_MEMORY);
                  else
                      iq_row_avail[current_fft_idx%MAX_FFTS_MEMORY]=false;
                  tm_add_time_tag(current_fft_idx);
-                 // 브로드캐스트 스레드에 알림 (캡처 스레드에서 TCP 직접 호출 금지)
                  net_bcast_seq.fetch_add(1, std::memory_order_release);
                  net_bcast_cv.notify_one();
                 }

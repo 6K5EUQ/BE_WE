@@ -12,6 +12,42 @@
 #include <ctime>
 #include <thread>
 #include <mutex>
+#include <cstdarg>
+#include <dirent.h>
+#include <sys/stat.h>
+
+// ── Global log ring buffer ────────────────────────────────────────────────
+struct BeweLogBuf {
+    static constexpr int CAP = 512;
+    struct Entry { char msg[256]; };
+    Entry   entries[CAP];
+    int     head = 0;   // 다음 쓸 위치
+    int     count = 0;
+    std::mutex mtx;
+    void push(const char* s){
+        std::lock_guard<std::mutex> lk(mtx);
+        snprintf(entries[head].msg, sizeof(entries[0].msg), "%s", s);
+        head = (head+1) % CAP;
+        if(count < CAP) count++;
+    }
+    // idx 0 = 가장 오래된 것
+    const char* get(int idx) const {
+        int total = count < CAP ? count : CAP;
+        int start = (head - total + CAP*2) % CAP;
+        return entries[(start + idx) % CAP].msg;
+    }
+    int size() const { return count < CAP ? count : CAP; }
+};
+static BeweLogBuf g_log;
+
+void bewe_log(const char* fmt, ...){
+    char buf[256];
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    fputs(buf, stdout);
+    g_log.push(buf);
+}
 
 // ── Channel overlays ──────────────────────────────────────────────────────
 void FFTViewer::handle_new_channel_drag(float gx, float gw){
@@ -1475,11 +1511,21 @@ void run_streaming_viewer(){
                     }
                 } else if(v.region.active){
                     v.region_save();
-                } else if(v.rec_on.load()){
-                    v.stop_rec();
                 } else {
-                    if(v.tm_active.load()) v.tm_rec_start();
-                    else v.start_rec();
+                    // 선택된 채널이 복조 중이면 Audio REC, 아니면 IQ REC
+                    int sci = v.selected_ch;
+                    bool ch_demod = (sci>=0 && v.channels[sci].dem_run.load());
+                    if(ch_demod){
+                        if(v.channels[sci].audio_rec_on.load())
+                            v.stop_audio_rec(sci);
+                        else
+                            v.start_audio_rec(sci);
+                    } else if(v.rec_on.load()){
+                        v.stop_rec();
+                    } else {
+                        if(v.tm_active.load()) v.tm_rec_start();
+                        else v.start_rec();
+                    }
                 }
             }
 
@@ -2152,154 +2198,343 @@ void run_streaming_viewer(){
                     ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar|
                     ImGuiWindowFlags_NoDecoration);
 
-                // ── 접속자 목록 ──────────────────────────────────────────
-                ImGui::TextColored(ImVec4(0.4f,0.8f,1.f,1.f), "Operators");
-                ImGui::Separator();
-                if(v.net_srv){
-                    auto ops = v.net_srv->get_operators();
-                    if(ops.empty()){
-                        ImGui::TextDisabled("  (none)");
-                    } else {
-                        for(auto& op : ops){
-                            ImGui::TextColored(ImVec4(0.7f,0.9f,0.7f,1.f),
-                                "  [%d] %s  T%d", op.index, op.name, op.tier);
+                // ── 공유 파일 목록 (프로세스 수명 동안 유지) ──────────────
+                static std::vector<std::string> shared_files;
+                static bool arch_priv_open = true;
+                static bool arch_share_open = true;
+
+                // ── Archive Private 폴더 파일 스캔 (1초 주기) ─────────────
+                static std::vector<std::string> priv_files;
+                static float arch_scan_timer = 0.0f;
+                arch_scan_timer += io.DeltaTime;
+                if(arch_scan_timer >= 1.0f){
+                    arch_scan_timer = 0.0f;
+                    priv_files.clear();
+                    std::string rdir = BEWEPaths::recordings_dir();
+                    DIR* d = opendir(rdir.c_str());
+                    if(d){
+                        struct dirent* ent;
+                        while((ent=readdir(d))!=nullptr){
+                            const char* n = ent->d_name;
+                            size_t nl = strlen(n);
+                            if(nl>4 && (strcmp(n+nl-4,".wav")==0||strcmp(n+nl-6,".sigmf")==0||
+                               (nl>7&&strcmp(n+nl-7,".sigmf")==0)))
+                                priv_files.push_back(n);
                         }
+                        closedir(d);
+                        std::sort(priv_files.begin(),priv_files.end());
                     }
-                } else if(v.net_cli){
-                    // JOIN 모드: op_list 표시
-                    std::lock_guard<std::mutex> lk(v.net_cli->op_mtx);
-                    if(v.net_cli->op_list.count==0){
-                        ImGui::TextDisabled("  (none)");
-                    } else {
-                        for(int oi=0;oi<(int)v.net_cli->op_list.count;oi++){
-                            auto& op=v.net_cli->op_list.ops[oi];
-                            ImGui::TextColored(ImVec4(0.7f,0.9f,0.7f,1.f),
-                                "  [%d] %s  T%d", op.index, op.name, op.tier);
-                        }
-                    }
-                } else {
-                    ImGui::TextDisabled("  LOCAL");
                 }
 
-                ImGui::Spacing();
-                ImGui::Separator();
-                ImGui::TextColored(ImVec4(0.4f,0.8f,1.f,1.f), "Active Channels");
-                ImGui::Separator();
+                // ── 탭 바 ─────────────────────────────────────────────────
+                ImGui::PushStyleColor(ImGuiCol_Tab,            ImVec4(0.12f,0.12f,0.16f,1.f));
+                ImGui::PushStyleColor(ImGuiCol_TabHovered,     ImVec4(0.20f,0.30f,0.45f,1.f));
+                ImGui::PushStyleColor(ImGuiCol_TabActive,      ImVec4(0.15f,0.40f,0.65f,1.f));
+                if(ImGui::BeginTabBar("##stat_tabs")){
 
-                // ── 활성 채널 목록: L/LR/R/M 버튼 + 오퍼레이터 마스크 ───
-                // L/LR/R/M: 각 PC 독립. M=mute(오디오 수신 안 함)
-                auto set_local_out = [&](int ci, int lco){
-                    int prev = v.local_ch_out[ci];
-                    v.local_ch_out[ci] = lco;
-                    // JOIN: M↔비M 전환 시 cmd_toggle_recv 전송
-                    if(v.net_cli){
-                        bool now_mute  = (lco  == 3);
-                        bool was_mute  = (prev == 3);
-                        if(now_mute && !was_mute)
-                            v.net_cli->cmd_toggle_recv(ci, false);
-                        else if(!now_mute && was_mute)
-                            v.net_cli->cmd_toggle_recv(ci, true);
+                // ══════════════════════════════════════════════════════════
+                // ── LINK 탭 ───────────────────────────────────────────────
+                // ══════════════════════════════════════════════════════════
+                if(ImGui::BeginTabItem("LINK")){
+                    ImGui::BeginChild("##link_scroll", ImVec2(0,0), false,
+                        ImGuiWindowFlags_HorizontalScrollbar);
+
+                    // ── Hardware ─────────────────────────────────────────
+                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                    if(ImGui::CollapsingHeader("Hardware")){
+                        ImGui::Indent(8.f);
+                        const char* hw_role = v.net_cli ? "[JOIN]" : (v.net_srv ? "[HOST]" : "[LOCAL]");
+                        const char* hw_name = "Unknown";
+                        if(v.dev_blade)       hw_name = "BladeRF 2.0 micro xA9";
+                        else if(v.dev_rtl)    hw_name = "RTL-SDR";
+                        else if(v.remote_mode) hw_name = "REMOTE (no local HW)";
+                        ImGui::TextColored(ImVec4(0.4f,0.85f,1.f,1.f), "%s", hw_role);
+                        ImGui::SameLine(0,6);
+                        ImGui::TextUnformatted(hw_name);
+                        // 현재 주파수 / SR 표시
+                        if(!v.remote_mode && (v.dev_blade||v.dev_rtl)){
+                            ImGui::TextDisabled("  %.4f MHz  /  %.3f MSPS",
+                                (double)(v.header.center_frequency/1e6),
+                                (double)(v.header.sample_rate/1e6));
+                        }
+                        ImGui::Unindent(8.f);
                     }
-                    // HOST: bit0 토글
-                    if(v.net_srv){
-                        uint32_t mask = v.channels[ci].audio_mask.load();
-                        bool now_mute = (lco == 3);
-                        if(now_mute) mask &= ~0x1u; else mask |= 0x1u;
-                        v.channels[ci].audio_mask.store(mask);
-                        v.net_srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+                    ImGui::Spacing();
+
+                    // ── Operators ────────────────────────────────────────
+                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                    if(ImGui::CollapsingHeader("Operators")){
+                        ImGui::Indent(8.f);
+                        if(!v.net_srv && !v.net_cli){
+                            // LOCAL 단독 — host_name이 로그인 ID
+                            const char* nm = v.host_name[0] ? v.host_name : "(no login)";
+                            ImGui::TextColored(ImVec4(0.55f,0.9f,0.55f,1.f),
+                                "[LOCAL]  %s", nm);
+                        } else if(v.net_srv){
+                            // HOST: 자신
+                            const char* nm = v.host_name[0] ? v.host_name : "Host";
+                            ImGui::TextColored(ImVec4(0.4f,0.85f,1.f,1.f),
+                                "[HOST]   %s", nm);
+                            // 접속한 JOIN 목록
+                            auto ops = v.net_srv->get_operators();
+                            for(auto& op : ops){
+                                ImGui::TextColored(ImVec4(0.7f,0.92f,0.7f,1.f),
+                                    "[JOIN]   %s  (T%d)", op.name, op.tier);
+                            }
+                            if(ops.empty())
+                                ImGui::TextDisabled("  (no clients connected)");
+                        } else if(v.net_cli){
+                            // JOIN: op_list에서 표시
+                            std::lock_guard<std::mutex> lk(v.net_cli->op_mtx);
+                            if(v.net_cli->op_list.count==0){
+                                ImGui::TextDisabled("  (none)");
+                            } else {
+                                for(int oi=0;oi<(int)v.net_cli->op_list.count;oi++){
+                                    auto& op = v.net_cli->op_list.ops[oi];
+                                    bool is_me = (op.index == (int)v.net_cli->my_op_index);
+                                    // index==0 을 HOST로 간주 (서버 측 인덱스 0)
+                                    bool is_host = (op.index == 0 && !is_me);
+                                    const char* badge = is_me ? "[JOIN]" : (is_host ? "[HOST]" : "[JOIN]");
+                                    ImVec4 col = is_host ? ImVec4(0.4f,0.85f,1.f,1.f)
+                                                         : ImVec4(0.7f,0.92f,0.7f,1.f);
+                                    if(is_me) col = ImVec4(0.55f,1.f,0.55f,1.f);
+                                    ImGui::TextColored(col, "%s  %s%s",
+                                        badge, op.name, is_me?" (me)":"");
+                                }
+                            }
+                        }
+                        ImGui::Unindent(8.f);
                     }
-                };
+                    ImGui::Spacing();
 
-                for(int ci=0; ci<MAX_CHANNELS; ci++){
-                    Channel& ch = v.channels[ci];
-                    if(!ch.filter_active) continue;
-
-                    float cf_mhz=(ch.s+ch.e)/2.0f;
-                    float bw_khz=(ch.e-ch.s)*1000.0f;
-                    const char* mnames[]={"--","AM","FM","MAG","DMR"};
-                    int mi=(int)ch.mode; if(mi<0||mi>4) mi=0;
-                    ImGui::Text("  [%d] %s  %.3f MHz  %.0f kHz",
-                        ci+1, mnames[mi], cf_mhz, bw_khz);
-
-                    // ── L / L+R / R / M 버튼 ─────────────────────────────
-                    ImGui::SameLine(0,10);
-                    ImGui::PushID(ci*1000+500);
-                    int lco = v.local_ch_out[ci];
-                    const char* lbl_out[4]={"L","L+R","R","M"};
-                    for(int bi=0;bi<4;bi++){
-                        bool active=(lco==bi);
-                        if(active) ImGui::PushStyleColor(ImGuiCol_Button,
-                            bi==3 ? ImVec4(0.6f,0.1f,0.1f,1.f) : ImVec4(0.15f,0.45f,0.75f,1.f));
-                        if(ImGui::SmallButton(lbl_out[bi])) set_local_out(ci, bi);
-                        if(active) ImGui::PopStyleColor();
-                        if(bi<3) ImGui::SameLine(0,2);
-                    }
-                    ImGui::PopID();
-
-                    // ── HOST: 오퍼레이터별 수신 마스크 토글 ──────────────
-                    if(v.net_srv){
-                        auto ops2 = v.net_srv->get_operators();
-                        uint32_t mask = ch.audio_mask.load();
-                        ImGui::SameLine(0,12);
-                        for(auto& op : ops2){
-                            uint32_t bit = 1u << op.index;
-                            bool on = (mask & bit) != 0;
-                            char lbl[24];
-                            snprintf(lbl,sizeof(lbl),"%s:%s",op.name,on?"ON":"OFF");
-                            ImGui::PushID(ci*100+(int)op.index);
-                            if(ImGui::SmallButton(lbl)){
-                                if(on) mask &= ~bit; else mask |= bit;
-                                ch.audio_mask.store(mask);
+                    // ── Active Channels ──────────────────────────────────
+                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                    if(ImGui::CollapsingHeader("Active Channels")){
+                        ImGui::Indent(8.f);
+                        auto set_local_out = [&](int ci, int lco){
+                            int prev = v.local_ch_out[ci];
+                            v.local_ch_out[ci] = lco;
+                            if(v.net_cli){
+                                bool now_mute=(lco==3), was_mute=(prev==3);
+                                if(now_mute&&!was_mute) v.net_cli->cmd_toggle_recv(ci,false);
+                                else if(!now_mute&&was_mute) v.net_cli->cmd_toggle_recv(ci,true);
+                            }
+                            if(v.net_srv){
+                                uint32_t mask=v.channels[ci].audio_mask.load();
+                                if(lco==3) mask&=~0x1u; else mask|=0x1u;
+                                v.channels[ci].audio_mask.store(mask);
                                 v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
                             }
+                        };
+                        bool any_ch = false;
+                        for(int ci=0;ci<MAX_CHANNELS;ci++){
+                            Channel& ch=v.channels[ci];
+                            if(!ch.filter_active) continue;
+                            any_ch = true;
+                            float cf_mhz=(ch.s+ch.e)/2.0f;
+                            float bw_khz=(ch.e-ch.s)*1000.0f;
+                            const char* mnames[]={"--","AM","FM","MAG","DMR"};
+                            int mi=(int)ch.mode; if(mi<0||mi>4) mi=0;
+                            ImGui::Text("[%d] %s  %.3f MHz  %.0fkHz",
+                                ci+1,mnames[mi],cf_mhz,bw_khz);
+                            ImGui::SameLine(0,8);
+                            ImGui::PushID(ci*1000+500);
+                            int lco=v.local_ch_out[ci];
+                            const char* lbl_out[4]={"L","L+R","R","M"};
+                            for(int bi=0;bi<4;bi++){
+                                bool active=(lco==bi);
+                                if(active) ImGui::PushStyleColor(ImGuiCol_Button,
+                                    bi==3?ImVec4(0.6f,0.1f,0.1f,1.f):ImVec4(0.15f,0.45f,0.75f,1.f));
+                                if(ImGui::SmallButton(lbl_out[bi])) set_local_out(ci,bi);
+                                if(active) ImGui::PopStyleColor();
+                                if(bi<3) ImGui::SameLine(0,2);
+                            }
                             ImGui::PopID();
-                            ImGui::SameLine(0,4);
-                        }
-                    }
-                }
-
-                // ── 파일 전송 상태 ─────────────────────────────────────
-                {
-                    std::lock_guard<std::mutex> lk(v.file_xfer_mtx);
-                    if(!v.file_xfers.empty()){
-                        ImGui::Spacing(); ImGui::Separator();
-                        ImGui::TextColored(ImVec4(0.4f,0.8f,1.f,1.f),"File Transfers");
-                        ImGui::Separator();
-                        for(int fi=0;fi<(int)v.file_xfers.size();fi++){
-                            auto& xf = v.file_xfers[fi];
-                            if(xf.finished){
-                                ImGui::TextColored(ImVec4(0.4f,1.f,0.4f,1.f),
-                                    "[Done] %s", xf.filename.c_str());
-                                if(xf.is_sa && !xf.local_path.empty()){
-                                    ImGui::SameLine(0,8);
-                                    ImGui::PushID(fi+9000);
-                                    if(ImGui::SmallButton("SA")){
-                                        v.sa_panel_open = true;
-                                        stat_open = false;
-                                        v.sa_temp_path = xf.local_path;
-                                        v.sa_mode = false;
-                                        v.sa_computing.store(false);
-                                        v.sa_start(xf.local_path);
+                            if(v.net_srv){
+                                auto ops2=v.net_srv->get_operators();
+                                uint32_t mask=ch.audio_mask.load();
+                                ImGui::SameLine(0,10);
+                                for(auto& op:ops2){
+                                    uint32_t bit=1u<<op.index;
+                                    bool on=(mask&bit)!=0;
+                                    char lbl[24];
+                                    snprintf(lbl,sizeof(lbl),"%s:%s",op.name,on?"ON":"OFF");
+                                    ImGui::PushID(ci*100+(int)op.index);
+                                    if(ImGui::SmallButton(lbl)){
+                                        if(on) mask&=~bit; else mask|=bit;
+                                        ch.audio_mask.store(mask);
+                                        v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
                                     }
                                     ImGui::PopID();
+                                    ImGui::SameLine(0,4);
                                 }
-                            } else {
-                                float pct = xf.total_bytes>0
-                                    ? (float)xf.done_bytes/(float)xf.total_bytes : 0.f;
-                                char bar[48]; snprintf(bar,sizeof(bar),
-                                    "[%.0f%%] %s  %llu/%llu B",
-                                    pct*100.f, xf.filename.c_str(),
-                                    (unsigned long long)xf.done_bytes,
-                                    (unsigned long long)xf.total_bytes);
-                                ImGui::TextUnformatted(bar);
-                                ImGui::SameLine(0,6);
-                                ImGui::PushID(fi+9000);
-                                ImGui::ProgressBar(pct, ImVec2(80,8));
-                                ImGui::PopID();
                             }
                         }
+                        if(!any_ch) ImGui::TextDisabled("  (none)");
+                        ImGui::Unindent(8.f);
                     }
-                }
+                    ImGui::Spacing();
+
+                    // ── Archive ──────────────────────────────────────────
+                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                    if(ImGui::CollapsingHeader("Archive")){
+                        ImGui::Indent(8.f);
+                        std::string rdir = BEWEPaths::recordings_dir();
+
+                        // ── Private ──────────────────────────────────────
+                        ImGui::SetNextItemOpen(arch_priv_open, ImGuiCond_Always);
+                        if(ImGui::TreeNodeEx("##priv_node", ImGuiTreeNodeFlags_None, "Private  (%d)", (int)priv_files.size())){
+                            arch_priv_open = true;
+                            ImGui::BeginChild("##priv_list",
+                                ImVec2(0, std::min((float)priv_files.size()*18.f+4.f, 140.f)),
+                                true);
+                            for(int fi=0;fi<(int)priv_files.size();fi++){
+                                ImGui::PushID(fi+20000);
+                                bool already_shared = false;
+                                for(auto& sf:shared_files) if(sf==priv_files[fi]){already_shared=true;break;}
+                                if(already_shared)
+                                    ImGui::TextDisabled("  %s  [shared]", priv_files[fi].c_str());
+                                else
+                                    ImGui::TextUnformatted(priv_files[fi].c_str());
+                                // 드래그 소스 (Share로 드래그)
+                                if(ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)){
+                                    ImGui::SetDragDropPayload("BEWE_PRIV_FILE",
+                                        priv_files[fi].c_str(), priv_files[fi].size()+1);
+                                    ImGui::TextUnformatted(priv_files[fi].c_str());
+                                    ImGui::EndDragDropSource();
+                                }
+                                ImGui::PopID();
+                            }
+                            if(priv_files.empty()) ImGui::TextDisabled("  (empty)");
+                            ImGui::EndChild();
+                            ImGui::TreePop();
+                        } else { arch_priv_open = false; }
+
+                        ImGui::Spacing();
+
+                        // ── Share ─────────────────────────────────────────
+                        ImGui::SetNextItemOpen(arch_share_open, ImGuiCond_Always);
+                        if(ImGui::TreeNodeEx("##share_node", ImGuiTreeNodeFlags_None,
+                                "Share  (%d)  [drag files here]", (int)shared_files.size())){
+                            arch_share_open = true;
+                            float sh = std::min((float)shared_files.size()*18.f+8.f, 120.f);
+                            if(sh < 36.f) sh = 36.f;
+                            ImGui::BeginChild("##share_list", ImVec2(0, sh), true);
+                            // 드롭 타겟
+                            if(ImGui::BeginDragDropTarget()){
+                                if(const ImGuiPayload* pl =
+                                        ImGui::AcceptDragDropPayload("BEWE_PRIV_FILE")){
+                                    std::string fname((const char*)pl->Data);
+                                    bool dup=false;
+                                    for(auto& sf:shared_files) if(sf==fname){dup=true;break;}
+                                    if(!dup) shared_files.push_back(fname);
+                                }
+                                ImGui::EndDragDropTarget();
+                            }
+                            for(int si=0;si<(int)shared_files.size();si++){
+                                ImGui::PushID(si+21000);
+                                ImGui::TextUnformatted(shared_files[si].c_str());
+                                // HOST: 접속자에게 전송 버튼
+                                if(v.net_srv){
+                                    ImGui::SameLine(0,8);
+                                    if(ImGui::SmallButton("Send All")){
+                                        std::string path = rdir+"/"+shared_files[si];
+                                        auto ops_s = v.net_srv->get_operators();
+                                        for(auto& op_s : ops_s){
+                                            uint8_t tid=v.next_transfer_id.fetch_add(1);
+                                            v.net_srv->send_file_to((int)op_s.index, path.c_str(), tid);
+                                        }
+                                    }
+                                }
+                                ImGui::SameLine(0,4);
+                                if(ImGui::SmallButton("X")){
+                                    shared_files.erase(shared_files.begin()+si);
+                                    ImGui::PopID(); break;
+                                }
+                                ImGui::PopID();
+                            }
+                            if(shared_files.empty())
+                                ImGui::TextDisabled("  (drop files from Private)");
+                            ImGui::EndChild();
+                            ImGui::TreePop();
+                        } else { arch_share_open = false; }
+
+                        ImGui::Unindent(8.f);
+                    }
+                    ImGui::Spacing();
+
+                    // ── Record ───────────────────────────────────────────
+                    {
+                        std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                        // 진행 중 IQ rec_on 이 있으면 RecEntry 동적 표시 보정
+                        // (이미 start_rec에서 push됨, 여기서는 표시만)
+                        bool any = !v.rec_entries.empty();
+                        // 채널별 audio_rec_on도 확인
+                        for(int ci=0;ci<MAX_CHANNELS&&!any;ci++)
+                            if(v.channels[ci].audio_rec_on.load()) any=true;
+                        if(any){
+                            ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                            if(ImGui::CollapsingHeader("Record")){
+                                ImGui::Indent(8.f);
+                                for(int ri=0;ri<(int)v.rec_entries.size();ri++){
+                                    auto& re=v.rec_entries[ri];
+                                    if(re.finished){
+                                        ImGui::TextColored(ImVec4(0.4f,1.f,0.4f,1.f),
+                                            "[Done]  %s", re.filename.c_str());
+                                    } else {
+                                        // 깜빡임
+                                        float t2=(float)ImGui::GetTime();
+                                        bool blink=(fmodf(t2,0.8f)<0.4f);
+                                        ImU32 col=blink?IM_COL32(255,80,80,255):IM_COL32(200,60,60,255);
+                                        ImGui::PushStyleColor(ImGuiCol_Text,col);
+                                        ImGui::Text("[REC]   %s", re.filename.c_str());
+                                        ImGui::PopStyleColor();
+                                    }
+                                }
+                                ImGui::Unindent(8.f);
+                            }
+                            ImGui::Spacing();
+                        }
+                    }
+
+                    // ── Log ──────────────────────────────────────────────
+                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                    if(ImGui::CollapsingHeader("Log")){
+                        ImGui::Indent(8.f);
+                        float log_h = ImGui::GetContentRegionAvail().y - 8.f;
+                        if(log_h < 60.f) log_h = 60.f;
+                        ImGui::BeginChild("##log_scroll", ImVec2(0, log_h), true);
+                        {
+                            int n = g_log.size();
+                            for(int li=0;li<n;li++){
+                                const char* msg = g_log.get(li);
+                                if(strncmp(msg,"ERR",3)==0||strncmp(msg,"err",3)==0||
+                                   strstr(msg,"Error")!=nullptr||strstr(msg,"error")!=nullptr||
+                                   strstr(msg,"FAIL")!=nullptr)
+                                    ImGui::TextColored(ImVec4(1.f,0.4f,0.4f,1.f),"%s",msg);
+                                else if(strncmp(msg,"WARN",4)==0||strstr(msg,"warn")!=nullptr)
+                                    ImGui::TextColored(ImVec4(1.f,0.85f,0.3f,1.f),"%s",msg);
+                                else if(strncmp(msg,"REC",3)==0||strncmp(msg,"Audio",5)==0)
+                                    ImGui::TextColored(ImVec4(0.4f,1.f,0.6f,1.f),"%s",msg);
+                                else if(strncmp(msg,"Freq",4)==0||strncmp(msg,"BladeRF",7)==0)
+                                    ImGui::TextColored(ImVec4(0.5f,0.8f,1.f,1.f),"%s",msg);
+                                else
+                                    ImGui::TextDisabled("%s",msg);
+                            }
+                            if(ImGui::GetScrollY()>=ImGui::GetScrollMaxY()-4.f)
+                                ImGui::SetScrollHereY(1.0f);
+                        }
+                        ImGui::EndChild();
+                        ImGui::Unindent(8.f);
+                    }
+
+                    ImGui::EndChild(); // ##link_scroll
+                    ImGui::EndTabItem();
+                } // LINK tab
+
+                ImGui::EndTabBar();
+                } // BeginTabBar
+                ImGui::PopStyleColor(3); // Tab colors
 
                 ImGui::End();
                 ImGui::PopStyleColor();

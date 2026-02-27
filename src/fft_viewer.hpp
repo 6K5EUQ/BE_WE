@@ -27,6 +27,9 @@
 #include <algorithm>
 #include <condition_variable>
 
+// ── Global log helper (ui.cpp에서 정의, 모든 .cpp에서 사용 가능) ─────────
+extern void bewe_log(const char* fmt, ...);
+
 // ── FFTViewer ─────────────────────────────────────────────────────────────
 class FFTViewer {
 public:
@@ -227,6 +230,16 @@ public:
 
     struct NewDrag{ bool active=false; float anch=0,s=0,e=0; } new_drag;
 
+    // ── Record 탭 표시용 항목 ─────────────────────────────────────────────
+    struct RecEntry {
+        std::string path;       // 전체 경로
+        std::string filename;   // 표시용 파일명
+        bool        finished = false;
+        bool        is_audio = false; // false=IQ, true=복조오디오
+    };
+    std::vector<RecEntry> rec_entries;
+    std::mutex            rec_entries_mtx;
+
     // ── IQ Recording ──────────────────────────────────────────────────────
     std::atomic<bool>     rec_on{false}, rec_stop{false};
     std::thread           rec_thr;
@@ -264,6 +277,8 @@ public:
     void rec_worker();
     void start_rec();
     void stop_rec();
+    void start_audio_rec(int ch_idx);
+    void stop_audio_rec(int ch_idx);
 
     // ── audio.cpp ─────────────────────────────────────────────────────────
     void mix_worker();
