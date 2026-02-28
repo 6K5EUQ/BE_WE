@@ -9,6 +9,7 @@
 #include <vector>
 #include <algorithm>
 #include <thread>
+#include <chrono>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WAV 헤더 작성 (stereo int16: L=I, R=Q)
@@ -42,16 +43,15 @@ static void make_filename(char* out, size_t sz,
                           time_t t_start, time_t t_end)
 {
     struct tm *ts=localtime(&t_start);
-    char date[16], s_start[8], s_end[8];
-    strftime(date,   sizeof(date),  "%Y%m%d",  ts);
-    strftime(s_start,sizeof(s_start),"%H%M%S", ts);
+    char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",ts);
     struct tm *te=localtime(&t_end);
-    strftime(s_end,  sizeof(s_end), "%H%M%S",  te);
+    char s_end[8]; strftime(s_end,sizeof(s_end),"%H%M%S",te);
+    (void)bw_khz;
 
     snprintf(out, sz,
-             "%s/iq_%.4fMHz_BW%.0fkHz_%s_%s-%s.wav",
+             "%s/IQ_%.3fMHz_%s-%s.wav",
              BEWEPaths::recordings_dir().c_str(),
-             (double)cf_mhz, (double)bw_khz, date, s_start, s_end);
+             (double)cf_mhz, dts, s_end);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -256,10 +256,9 @@ void FFTViewer::do_region_save_work(){
     printf("Region IQ saved: %s  (%.1f sec  %.0f kHz SR)\n",
            outpath, (double)actual_out/out_sr, (double)out_sr/1000.0);
 
-    // file_xfers에 추가 (HOST: 전송 예약됨 / LOCAL: SA 직접)
+    // file_xfers에 추가
     {
         std::lock_guard<std::mutex> lk(file_xfer_mtx);
-        // 미완료 항목 업데이트
         bool updated=false;
         for(auto& xf : file_xfers){
             if(!xf.finished){
@@ -278,6 +277,19 @@ void FFTViewer::do_region_save_work(){
             xf.is_sa      = true;
             file_xfers.push_back(xf);
         }
+    }
+    // rec_entries에 완료 항목 추가 (SA 모드 아닌 경우만)
+    if(!sa_mode){
+        std::lock_guard<std::mutex> lk(rec_entries_mtx);
+        const char* bn = strrchr(outpath,'/');
+        RecEntry e{};
+        e.path     = outpath;
+        e.filename = bn ? bn+1 : outpath;
+        e.finished = true;
+        e.is_audio = false;
+        e.is_region= true;
+        e.t_start  = std::chrono::steady_clock::now();
+        rec_entries.push_back(e);
     }
 
     // SA 모드: 저장 완료 후 SA 워터폴 계산 시작

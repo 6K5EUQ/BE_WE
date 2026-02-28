@@ -76,11 +76,11 @@ static bool load_png(const char* path, GLuint& tex, int& w, int& h){
 bool draw_login_screen(int win_w, int win_h){
     static char id_buf[64]  ={};
     static char pw_buf[64]  ={};
-    static int  tier        =1;
+    static int  tier        =3;
     static bool failed      =false;
     static float fail_timer =0.0f;
     static bool bg_tried[3] ={false,false,false};
-    static int  prev_ti     =0;
+    static int  prev_ti     =2;
     static float fade_alpha =1.0f;
     static bool fading      =false;
     init_bg_paths();

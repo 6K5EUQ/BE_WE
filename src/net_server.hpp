@@ -34,7 +34,7 @@ struct ServerCallbacks {
 
     std::function<void(float cf_mhz)>               on_set_freq;
     std::function<void(float db)>                    on_set_gain;
-    std::function<void(int idx, float s, float e)>   on_create_ch;
+    std::function<void(int idx, float s, float e, const char* creator)> on_create_ch;
     std::function<void(int idx)>                     on_delete_ch;
     std::function<void(int idx, int mode)>           on_set_ch_mode;
     std::function<void(int idx, uint32_t mask)>      on_set_ch_audio;
@@ -48,7 +48,8 @@ struct ServerCallbacks {
     std::function<void()>                            on_toggle_tm_iq;
     std::function<void(bool pause)>                  on_set_capture_pause;
     std::function<void(bool pause)>                  on_set_spectrum_pause;
-    std::function<void(uint8_t op_idx, int32_t fft_top, int32_t fft_bot,
+    std::function<void(uint8_t op_idx, const char* op_name,
+                       int32_t fft_top, int32_t fft_bot,
                        float freq_lo, float freq_hi)> on_request_region;
     std::function<void(const char* from, const char* msg)> on_chat;
 };
@@ -77,7 +78,8 @@ public:
 
     void broadcast_wf_event(int32_t fft_offset, int64_t wall_time,
                             uint8_t type, const char* label);
-    void send_file_to(int op_index, const char* path, uint8_t transfer_id);
+    void send_file_to(int op_index, const char* path, uint8_t transfer_id,
+                      std::function<void(uint64_t done, uint64_t total)> progress_cb = nullptr);
 
     // Channel state → all clients
     void broadcast_channel_sync(const Channel* chs, int n);
@@ -92,9 +94,17 @@ public:
     // Operator list → all clients
     void broadcast_operator_list();
 
+    // HOST 본인 정보 설정 (op_list index=0 으로 브로드캐스트)
+    void set_host_info(const char* name, uint8_t tier){
+        strncpy(host_name_, name, 31); host_name_[31]='\0';
+        host_tier_ = tier;
+    }
+
     // Get current operator list (for UI)
     
 private:
+    char    host_name_[32] = {};
+    uint8_t host_tier_     = 1;
     int  server_fd_ = -1;
     std::atomic<bool> running_{false};
     std::thread accept_thr_;

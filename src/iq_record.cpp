@@ -62,10 +62,9 @@ void FFTViewer::start_rec(){
     time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
     char fn[256];
     std::string rec_dir=BEWEPaths::recordings_dir();
-    snprintf(fn,256,"%s/IQ_%.4fMHz_BW%.0fkHz_%04d%02d%02d_%02d%02d%02d.wav",rec_dir.c_str(),
-             rec_cf_mhz,bw_hz/1000.0f,
-             tm2.tm_year+1900,tm2.tm_mon+1,tm2.tm_mday,
-             tm2.tm_hour,tm2.tm_min,tm2.tm_sec);
+    char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
+    snprintf(fn,256,"%s/IQ_%.3fMHz_%s.wav",rec_dir.c_str(),
+             rec_cf_mhz, dts);
     rec_filename=fn;
     rec_frames.store(0);
     rec_rp.store(ring_wp.load());
@@ -78,11 +77,11 @@ void FFTViewer::start_rec(){
         std::lock_guard<std::mutex> lk(rec_entries_mtx);
         RecEntry e;
         e.path=fn;
-        // 파일명만 추출
         std::string s(fn);
         auto pos=s.rfind('/');
         e.filename = (pos==std::string::npos)?s:s.substr(pos+1);
-        e.finished=false; e.is_audio=false;
+        e.finished=false; e.is_audio=false; e.is_region=false;
+        e.t_start=std::chrono::steady_clock::now();
         rec_entries.push_back(e);
     }
 
@@ -118,10 +117,9 @@ void FFTViewer::start_audio_rec(int ch_idx){
     std::string rec_dir=BEWEPaths::recordings_dir();
     float cf_mhz=(ch.s+ch.e)/2.0f;
     float bw_khz=bw_hz/1000.0f;
-    snprintf(fn,256,"%s/Audio_%.4fMHz_BW%.0fkHz_%04d%02d%02d_%02d%02d%02d.wav",
-             rec_dir.c_str(), cf_mhz, bw_khz,
-             tm2.tm_year+1900,tm2.tm_mon+1,tm2.tm_mday,
-             tm2.tm_hour,tm2.tm_min,tm2.tm_sec);
+    char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
+    snprintf(fn,256,"%s/Audio_%.3fMHz_%s.wav",
+             rec_dir.c_str(), cf_mhz, dts);
 
     FILE* fp=fopen(fn,"wb");
     if(!fp){ bewe_log("Audio REC: cannot open %s\n",fn); return; }
@@ -139,7 +137,8 @@ void FFTViewer::start_audio_rec(int ch_idx){
         std::string s(fn);
         auto pos=s.rfind('/');
         e.filename=(pos==std::string::npos)?s:s.substr(pos+1);
-        e.finished=false; e.is_audio=true;
+        e.finished=false; e.is_audio=true; e.is_region=false;
+        e.t_start=std::chrono::steady_clock::now();
         rec_entries.push_back(e);
     }
 
@@ -167,6 +166,68 @@ void FFTViewer::stop_audio_rec(int ch_idx){
              (unsigned long long)ch.audio_rec_frames, ch.audio_rec_path.c_str());
 
     // RecEntry 완료 표시
+    {
+        std::lock_guard<std::mutex> lk(rec_entries_mtx);
+        for(auto& e : rec_entries)
+            if(e.path==ch.audio_rec_path){ e.finished=true; break; }
+    }
+    ch.audio_rec_path.clear();
+}
+
+// ── JOIN 모드 로컬 오디오 녹음 (mix_worker에서 채널 오디오를 WAV에 씀) ──────
+void FFTViewer::start_join_audio_rec(int ch_idx){
+    if(ch_idx<0||ch_idx>=MAX_CHANNELS) return;
+    Channel& ch=channels[ch_idx];
+    if(ch.audio_rec_on.load()) return;
+
+    uint32_t asr = AUDIO_SR;
+    ch.audio_rec_sr = asr;
+
+    time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
+    char fn[256];
+    std::string rec_dir=BEWEPaths::recordings_dir();
+    float cf_mhz=(ch.s+ch.e)/2.0f;
+    char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
+    snprintf(fn,256,"%s/Audio_%.3fMHz_%s.wav",rec_dir.c_str(),cf_mhz,dts);
+
+    FILE* fp=fopen(fn,"wb");
+    if(!fp){ bewe_log("JOIN Audio REC: cannot open %s\n",fn); return; }
+    ch.audio_rec_frames=0;
+    ch.audio_rec_write_wav_hdr(fp,asr,0);
+    ch.audio_rec_fp=fp;
+    ch.audio_rec_path=fn;
+    ch.audio_rec_on.store(true,std::memory_order_release);
+
+    {
+        std::lock_guard<std::mutex> lk(rec_entries_mtx);
+        RecEntry e;
+        e.path=fn;
+        std::string s(fn); auto pos=s.rfind('/');
+        e.filename=(pos==std::string::npos)?s:s.substr(pos+1);
+        e.finished=false; e.is_audio=true; e.is_region=false;
+        e.t_start=std::chrono::steady_clock::now();
+        rec_entries.push_back(e);
+    }
+    bewe_log("JOIN Audio REC start ch%d → %s  SR=%u\n",ch_idx,fn,asr);
+}
+
+void FFTViewer::stop_join_audio_rec(int ch_idx){
+    if(ch_idx<0||ch_idx>=MAX_CHANNELS) return;
+    Channel& ch=channels[ch_idx];
+    if(!ch.audio_rec_on.load()) return;
+
+    ch.audio_rec_on.store(false,std::memory_order_release);
+    std::this_thread::sleep_for(std::chrono::milliseconds(10)); // mix_worker 완료 대기
+
+    FILE* fp=ch.audio_rec_fp;
+    ch.audio_rec_fp=nullptr;
+    if(fp){
+        fseek(fp,0,SEEK_SET);
+        ch.audio_rec_write_wav_hdr(fp,ch.audio_rec_sr,ch.audio_rec_frames);
+        fclose(fp);
+    }
+    bewe_log("JOIN Audio REC done: %llu frames → %s\n",
+             (unsigned long long)ch.audio_rec_frames, ch.audio_rec_path.c_str());
     {
         std::lock_guard<std::mutex> lk(rec_entries_mtx);
         for(auto& e : rec_entries)

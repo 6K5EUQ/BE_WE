@@ -150,7 +150,7 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
                 break;
             case CmdType::CREATE_CH:
                 if(cb.on_create_ch)
-                    cb.on_create_ch(cmd->create_ch.idx, cmd->create_ch.s, cmd->create_ch.e);
+                    cb.on_create_ch(cmd->create_ch.idx, cmd->create_ch.s, cmd->create_ch.e, c->name);
                 break;
             case CmdType::DELETE_CH:
                 if(cb.on_delete_ch) cb.on_delete_ch(cmd->delete_ch.idx);
@@ -204,7 +204,7 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
                 break;
             case CmdType::REQUEST_REGION:
                 if(cb.on_request_region)
-                    cb.on_request_region(c->op_index,
+                    cb.on_request_region(c->op_index, c->name,
                         cmd->request_region.fft_top, cmd->request_region.fft_bot,
                         cmd->request_region.freq_lo, cmd->request_region.freq_hi);
                 break;
@@ -335,6 +335,7 @@ void NetServer::broadcast_channel_sync(const Channel* chs, int n){
         sync.ch[i].sq_threshold  = chs[i].sq_threshold.load(std::memory_order_relaxed);
         sync.ch[i].sq_sig        = chs[i].sq_sig.load(std::memory_order_relaxed);
         sync.ch[i].sq_gate       = chs[i].sq_gate.load(std::memory_order_relaxed) ? 1 : 0;
+        strncpy(sync.ch[i].owner_name, chs[i].owner, 31);
     }
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
@@ -373,6 +374,13 @@ void NetServer::broadcast_operator_list(){
     {
         std::lock_guard<std::mutex> lk(clients_mtx_);
         int cnt = 0;
+        // index=0: HOST 본인
+        if(cnt < MAX_OPERATORS){
+            ol.ops[cnt].index = 0;
+            ol.ops[cnt].tier  = host_tier_;
+            strncpy(ol.ops[cnt].name, host_name_, 31);
+            ++cnt;
+        }
         for(auto& c : clients_){
             if(!c->authed || !c->alive.load()) continue;
             if(cnt >= MAX_OPERATORS) break;
@@ -406,7 +414,8 @@ void NetServer::broadcast_wf_event(int32_t fft_offset, int64_t wall_time,
     }
 }
 
-void NetServer::send_file_to(int op_index, const char* path, uint8_t transfer_id){
+void NetServer::send_file_to(int op_index, const char* path, uint8_t transfer_id,
+                              std::function<void(uint64_t,uint64_t)> progress_cb){
     FILE* fp = fopen(path, "rb");
     if(!fp){ fprintf(stderr,"send_file_to: open failed %s\n",path); return; }
     fseek(fp,0,SEEK_END); uint64_t total=(uint64_t)ftell(fp); fseek(fp,0,SEEK_SET);
@@ -448,8 +457,11 @@ void NetServer::send_file_to(int op_index, const char* path, uint8_t transfer_id
         offset += n;
         uint32_t total_payload = (uint32_t)(sizeof(PktFileData)+n);
         auto pkt = make_packet(PacketType::FILE_DATA, buf.data(), total_payload);
-        std::lock_guard<std::mutex> slk(target->send_mtx);
-        send_all(target->fd, pkt.data(), pkt.size());
+        {
+            std::lock_guard<std::mutex> slk(target->send_mtx);
+            send_all(target->fd, pkt.data(), pkt.size());
+        }
+        if(progress_cb) progress_cb(offset, total);
     }
     fclose(fp);
 }

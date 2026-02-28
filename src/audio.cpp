@@ -15,12 +15,22 @@ void FFTViewer::mix_worker(){
             if(net_cli && remote_mode){
                 // ── CONNECT 모드: 네트워크 오디오 링에서 읽기 ─────────────
                 for(int c=0;c<MAX_CHANNELS;c++){
-                    if(local_ch_out[c]==3) { // M(mute): drain
+                    bool is_muted = (local_ch_out[c]==3);
+                    bool rec_on = channels[c].audio_rec_on.load(std::memory_order_relaxed);
+                    if(is_muted && !rec_on){
                         float dummy; int8_t p2;
                         net_cli->audio[c].pop(dummy,p2); continue;
                     }
                     float smp=0; int8_t pan=0;
-                    if(!net_cli->audio[c].pop(smp, pan)) continue;
+                    if(!net_cli->audio[c].pop(smp, pan)){
+                        // 녹음 중 뮤트 상태면 0으로 기록
+                        if(rec_on && channels[c].audio_rec_fp)
+                            channels[c].maybe_rec_audio(0.f);
+                        continue;
+                    }
+                    // JOIN 오디오 녹음
+                    if(rec_on) channels[c].maybe_rec_audio(smp);
+                    if(is_muted) continue; // 뮤트: 스피커 출력 안 함
                     int lco = local_ch_out[c]; // 0=L,1=LR,2=R
                     if(lco==0)      { L+=smp; }
                     else if(lco==2) { R+=smp; }

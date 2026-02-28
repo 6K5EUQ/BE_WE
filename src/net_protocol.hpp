@@ -166,6 +166,7 @@ struct __attribute__((packed)) ChSyncEntry {
     float    sq_sig;       // current signal level dB (for sq meter UI)
     uint8_t  sq_gate;      // squelch gate open (1=open)
     uint8_t  _pad2[3];
+    char     owner_name[32]; // channel creator ID
 };
 
 struct __attribute__((packed)) PktChannelSync {

@@ -68,6 +68,7 @@ bool NetClient::connect(const char* host, int port,
     printf("[NetClient] connected as op %d '%s' (Tier%d)\n",
            my_op_index, my_name, my_tier);
 
+    if(recv_thr_.joinable()) recv_thr_.join();
     recv_thr_ = std::thread(&NetClient::recv_loop, this);
     return true;
 }

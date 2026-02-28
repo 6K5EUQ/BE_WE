@@ -68,6 +68,7 @@ struct Channel {
     float s=0, e=0;
     bool  filter_active=false;
     bool  selected=false;
+    char  owner[32]={};   // creator ID (empty = unknown)
 
     // Demodulation mode
     enum DemodMode{ DM_NONE=0, DM_AM, DM_FM, DM_MAGIC, DM_DMR } mode=DM_NONE;

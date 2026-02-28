@@ -184,6 +184,11 @@ public:
     // 로컬 오디오 출력 선택 (각 PC 독립): 0=L, 1=L+R, 2=R, 3=M(mute)
     // JOIN에서 M이면 cmd_toggle_recv(ch, false) 전송
     int  local_ch_out[5] = {1,1,1,1,1}; // 기본: L+R
+    bool ch_created_by_me[MAX_CHANNELS] = {}; // JOIN: 내가 생성한 채널 여부
+    // JOIN: 서버에서 수신한 전체 audio_mask (리스너 표시용)
+    uint32_t srv_audio_mask[MAX_CHANNELS] = {};
+    // JOIN: 오디오 녹음 시작 전 뮤트 상태 저장 (녹음 후 복원용)
+    bool join_rec_was_muted[MAX_CHANNELS] = {};
 
     // 파일 전송 진행상태 (HOST: 전송 중, JOIN: 수신 중)
     struct FileXfer {
@@ -236,6 +241,17 @@ public:
         std::string filename;   // 표시용 파일명
         bool        finished = false;
         bool        is_audio = false; // false=IQ, true=복조오디오
+        bool        is_region = false; // true=선택영역 IQ
+        // 요청 상태 (JOIN 측 region IQ 요청 및 HOST 측 표시용)
+        enum ReqState { REQ_NONE=0, REQ_PENDING, REQ_CONFIRMED, REQ_DENIED, REQ_TRANSFERRING } req_state = REQ_NONE;
+        float       req_deny_timer = 30.f; // DENY 후 자동 제거 카운트다운
+        uint64_t    xfer_done = 0, xfer_total = 0; // 전송 진행
+        uint8_t     req_op_idx = 0;  // HOST: 요청한 op_idx
+        char        req_op_name[32] = {}; // HOST: 요청한 op 이름
+        int32_t     req_fft_top = 0, req_fft_bot = 0;
+        float       req_freq_lo = 0, req_freq_hi = 0;
+        std::string local_path_to_delete; // HOST: 전송 후 삭제할 파일 경로
+        std::chrono::steady_clock::time_point t_start; // 시작 시각
     };
     std::vector<RecEntry> rec_entries;
     std::mutex            rec_entries_mtx;
@@ -279,6 +295,8 @@ public:
     void stop_rec();
     void start_audio_rec(int ch_idx);
     void stop_audio_rec(int ch_idx);
+    void start_join_audio_rec(int ch_idx); // JOIN 모드 로컬 오디오 녹음
+    void stop_join_audio_rec(int ch_idx);
 
     // ── audio.cpp ─────────────────────────────────────────────────────────
     void mix_worker();
