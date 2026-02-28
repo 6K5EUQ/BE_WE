@@ -233,4 +233,4 @@ inline bool recv_all(int fd, void* buf, size_t len){
 inline bool send_packet(int fd, PacketType type, const void* payload, uint32_t len){
     auto pkt = make_packet(type, payload, len);
     return send_all(fd, pkt.data(), pkt.size());
-}
+} 
