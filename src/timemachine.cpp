@@ -138,12 +138,65 @@ void FFTViewer::tm_add_event_tag(int type){
     wf_events.push_back(ev);
 }
 
-void FFTViewer::tm_update_display(){
-    float rps=(float)header.sample_rate/(float)fft_size/(float)time_average;
-    if(rps<=0) rps=37.5f;
+time_t FFTViewer::fft_idx_to_wall_time(int fft_idx) const {
+    std::lock_guard<std::mutex> lk(wf_events_mtx);
+    if(wf_events.empty()) return 0;
 
-    // freeze_idx는 항상 current_fft_idx로 갱신되므로
-    // 최대 오프셋 = 버퍼 용량 기준
+    // fft_idx 기준으로 가장 가까운 두 이벤트 찾기 (앞뒤)
+    // wf_events는 fft_idx 오름차순이라고 가정
+    const WfEvent* prev = nullptr;
+    const WfEvent* next = nullptr;
+    for(const auto& ev : wf_events){
+        if(ev.fft_idx <= fft_idx) prev = &ev;
+        if(ev.fft_idx >= fft_idx && !next) next = &ev;
+    }
+
+    if(prev && next && prev != next){
+        // 두 이벤트 사이 보간: 실제 wall_time 차이로 rps 추정
+        int64_t fi_diff = next->fft_idx - prev->fft_idx;
+        int64_t wt_diff = (int64_t)next->wall_time - (int64_t)prev->wall_time;
+        if(fi_diff > 0 && wt_diff > 0){
+            int64_t offset = fft_idx - prev->fft_idx;
+            return (time_t)(prev->wall_time + offset * wt_diff / fi_diff);
+        }
+    }
+    if(prev){
+        // prev만 있으면 rps로 외삽
+        float rps = (float)header.sample_rate / (float)fft_size / (float)time_average;
+        if(rps <= 0) rps = 37.5f;
+        int64_t offset = fft_idx - prev->fft_idx;
+        return (time_t)(prev->wall_time + (int64_t)(offset / rps));
+    }
+    if(next){
+        float rps = (float)header.sample_rate / (float)fft_size / (float)time_average;
+        if(rps <= 0) rps = 37.5f;
+        int64_t offset = fft_idx - next->fft_idx; // 음수
+        return (time_t)(next->wall_time + (int64_t)(offset / rps));
+    }
+    return 0;
+}
+
+void FFTViewer::tm_update_display(){
+    // wf_events 기반 실제 rps 계산 (JOIN/HOST 모두 정확)
+    float rps = 0.0f;
+    {
+        std::lock_guard<std::mutex> lk(wf_events_mtx);
+        // 가장 멀리 떨어진 두 이벤트로 실제 rps 추정
+        if(wf_events.size() >= 2){
+            const WfEvent& first = wf_events.front();
+            const WfEvent& last  = wf_events.back();
+            int64_t fi_diff = last.fft_idx - first.fft_idx;
+            int64_t wt_diff = (int64_t)last.wall_time - (int64_t)first.wall_time;
+            if(fi_diff > 0 && wt_diff > 0)
+                rps = (float)fi_diff / (float)wt_diff;
+        }
+    }
+    if(rps <= 0){
+        rps = (float)header.sample_rate / (float)fft_size / (float)time_average;
+        if(rps <= 0) rps = 37.5f;
+    }
+
+    // 최대 오프셋 = freeze 시점 기준 버퍼 용량 (최대 MAX_FFTS_MEMORY-1 행)
     int max_rows=std::min(tm_freeze_idx, MAX_FFTS_MEMORY-1);
     tm_max_sec=(float)max_rows/rps;
 

@@ -50,7 +50,7 @@ static void make_filename(char* out, size_t sz,
 
     snprintf(out, sz,
              "%s/IQ_%.3fMHz_%s-%s.wav",
-             BEWEPaths::recordings_dir().c_str(),
+             BEWEPaths::record_iq_dir().c_str(),
              (double)cf_mhz, dts, s_end);
 }
 
@@ -105,52 +105,49 @@ void FFTViewer::do_region_save_work(){
     int decim = std::max(1, (int)((float)sr / (float)bw_hz));
     uint32_t out_sr = sr / decim;
 
-    // ── fft 행 → 샘플 오프셋 변환 (row_write_pos 기준) ───────────────────
-    // row_write_pos[fi % MAX] = 해당 행 IQ 데이터가 끝나는 파일 위치
-    // 행 fi 의 IQ 구간: [row_write_pos[fi-1], row_write_pos[fi])
-    // fft_top = 최신(작은 y), fft_bot = 오래됨(큰 y)
+    // ── 타임스탬프 기반 샘플 오프셋 계산 ─────────────────────────────────
+    // tm_iq_chunk_time[ci] = 청크 ci가 완료된 시점의 wall_time
+    // 청크 ci 는 rolling 파일에서 샘플 위치 (ci * sr) 부터 ((ci+1) * sr) 까지
+    // time_start/time_end (Unix timestamp) → 샘플 위치로 변환
+    //
+    // 알고리즘:
+    //  - 각 청크의 wall_time 을 순회하여 요청 시각에 가장 가까운 청크를 찾음
+    //  - 해당 청크의 시작 샘플 위치에서 초단위 내삽으로 정밀 위치 계산
+    //  - tm_iq_write_sample 이 기준 샘플 위치를 알려줌 (현재 쓰기 위치)
 
-    int ri_top = region.fft_top % MAX_FFTS_MEMORY;
-    int ri_bot = region.fft_bot % MAX_FFTS_MEMORY;
-    // 이전 행의 write_pos = 시작 위치
-    int ri_bot_prev = (region.fft_bot - 1 + MAX_FFTS_MEMORY*4) % MAX_FFTS_MEMORY;
-
-    int64_t samp_end   = row_write_pos[ri_top];  // fft_top 행 끝
-    int64_t samp_start = row_write_pos[ri_bot_prev]; // fft_bot 행 시작 (= fft_bot-1 행 끝)
-
-    if(samp_end == 0 || samp_start == 0){
-        fprintf(stderr,"region_save: row_write_pos not populated\n");
+    // IQ 데이터 없음 체크: 롤링 파일에 데이터가 있는지 확인
+    if(tm_iq_write_sample <= 0){
+        fprintf(stderr,"region_save: no IQ data (tm not started)\n");
         return;
     }
 
-    // IQ 데이터 없음
-    {
-        bool any_avail=false;
-        int lo=region.fft_bot, hi=region.fft_top;
-        if(lo>hi) std::swap(lo,hi);
-        int cnt=std::min(hi-lo+1, MAX_FFTS_MEMORY);
-        for(int i=0;i<cnt;i++){
-            if(iq_row_avail[(lo+i)%MAX_FFTS_MEMORY]){ any_avail=true; break; }
-        }
-        if(!any_avail){
-            fprintf(stderr,"region_save: no IQ data (STOP 이후 영역)\n");
-            return;
-        }
-    }
+    // timestamp → 롤링 파일 샘플 위치 변환 함수
+    // tm_iq_chunk_time[ci] 가 유효한 경우 해당 청크 완료 시각을 기준으로 역산
+    // 없으면 현재 시각(now) → tm_iq_write_sample 기준으로 역산
+    int64_t snap_write = tm_iq_write_sample; // 스냅샷 (함수 실행 중 변하지 않도록)
+    time_t  snap_now   = time(nullptr);       // snap_write와 같은 시점의 wall_time
+    auto timestamp_to_sample = [&](time_t ts) -> int64_t {
+        // snap_now 시점에 snap_write 샘플이 쓰였으므로
+        // ts 시점의 샘플 = snap_write - (snap_now - ts) * sr
+        int64_t delta_samp = ((int64_t)snap_now - (int64_t)ts) * (int64_t)sr;
+        return snap_write - delta_samp;
+    };
 
-    if(samp_start < 0) samp_start = 0;
-    if(samp_end   < 0) samp_end   = 0;
+    int64_t samp_start = timestamp_to_sample(region.time_start);
+    int64_t samp_end   = timestamp_to_sample(region.time_end);
+
     if(samp_start > samp_end) std::swap(samp_start, samp_end);
 
-    // 롤링 파일 범위 클램프
-    // 파일이 아직 max_total 미만이면 [0, tm_iq_write_sample)
-    int64_t valid_start = (tm_iq_write_sample >= max_total)
-                          ? tm_iq_write_sample - max_total : 0;
+    // 롤링 파일 범위 클램프 (snap_write 기준으로 일관성 유지)
+    int64_t valid_start = (snap_write >= max_total) ? snap_write - max_total : 0;
     samp_start = std::max(samp_start, valid_start);
-    samp_end   = std::min(samp_end,   tm_iq_write_sample);
+    samp_end   = std::min(samp_end,   snap_write);
 
     if(samp_end <= samp_start){
-        fprintf(stderr,"region_save: no valid IQ data in range\n");
+        fprintf(stderr,"region_save: no valid IQ data in range"
+                       " (samp_start=%lld samp_end=%lld snap_write=%lld valid_start=%lld)\n",
+                       (long long)samp_start,(long long)samp_end,
+                       (long long)snap_write,(long long)valid_start);
         return;
     }
 

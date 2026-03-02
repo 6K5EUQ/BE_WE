@@ -8,6 +8,20 @@
 // ── BE_WE 런타임 경로 ─────────────────────────────────────────────────────
 // assets : 실행 파일 옆 (AppImage 내부 or 설치 경로)
 // data   : $HOME/.local/share/BE_WE/ (녹음, 임시파일)
+//
+// 폴더 구조:
+//   recordings/
+//     record/iq/       ← 세션 중 실시간 녹음 (IQ)
+//     record/audio/    ← 세션 중 실시간 녹음 (Audio)
+//     private/iq/      ← 이전 세션 녹음 (프로그램 종료 시 record에서 이동)
+//     private/audio/
+//     public/iq/       ← Public으로 올린 파일 (서버 공유)
+//     public/audio/
+//     share/iq/        ← Public에서 다운받은 파일 (JOIN)
+//     share/audio/
+//     Time_temp/       ← TM IQ rolling (기존 유지)
+//     SA_Temp/         ← SA temp (기존 유지)
+
 namespace BEWEPaths {
 
 // 실행 파일의 절대 경로 디렉터리 반환
@@ -27,18 +41,16 @@ static inline std::string assets_dir(){
     if(appdir){
         return std::string(appdir)+"/usr/share/BE_WE/assets";
     }
-    // 후보 경로 순서대로 탐색
     std::string candidates[]={
-        exe_dir()+"/assets",          // 실행파일 옆
-        exe_dir()+"/../assets",       // build/ 한 단계 위 (cmake 빌드)
-        exe_dir()+"/../../assets",    // 두 단계 위
+        exe_dir()+"/assets",
+        exe_dir()+"/../assets",
+        exe_dir()+"/../../assets",
     };
     for(auto& p : candidates){
         struct stat st{};
         if(stat(p.c_str(),&st)==0 && S_ISDIR(st.st_mode))
             return p;
     }
-    // 최후 폴백: ~/BE_WE/assets
     const char* home=getenv("HOME");
     if(home) return std::string(home)+"/BE_WE/assets";
     return exe_dir()+"/assets";
@@ -56,6 +68,27 @@ static inline std::string recordings_dir(){
     return data_dir()+"/recordings";
 }
 
+// ── 세션 중 실시간 녹음 폴더 ─────────────────────────────────────────────
+static inline std::string record_dir()       { return recordings_dir()+"/record"; }
+static inline std::string record_iq_dir()    { return record_dir()+"/iq"; }
+static inline std::string record_audio_dir() { return record_dir()+"/audio"; }
+
+// ── 이전 세션 녹음 폴더 (프로그램 종료 시 record에서 이동) ──────────────
+static inline std::string private_dir()       { return recordings_dir()+"/private"; }
+static inline std::string private_iq_dir()    { return private_dir()+"/iq"; }
+static inline std::string private_audio_dir() { return private_dir()+"/audio"; }
+
+// ── Public 공유 폴더 (서버 업로드) ───────────────────────────────────────
+static inline std::string public_dir()       { return recordings_dir()+"/public"; }
+static inline std::string public_iq_dir()    { return public_dir()+"/iq"; }
+static inline std::string public_audio_dir() { return public_dir()+"/audio"; }
+
+// ── 다운로드된 Public 파일 (JOIN 수신) ───────────────────────────────────
+static inline std::string share_dir()       { return recordings_dir()+"/share"; }
+static inline std::string share_iq_dir()    { return share_dir()+"/iq"; }
+static inline std::string share_audio_dir() { return share_dir()+"/audio"; }
+
+// ── 기존 임시 폴더 (로직 유지) ───────────────────────────────────────────
 static inline std::string time_temp_dir(){
     return recordings_dir()+"/Time_temp";
 }
@@ -66,11 +99,13 @@ static inline std::string sa_temp_dir(){
 
 // 디렉터리 없으면 자동 생성
 static inline void ensure_dirs(){
-    auto mk=[](const std::string& p){
-        mkdir(p.c_str(),0755);
-    };
+    auto mk=[](const std::string& p){ mkdir(p.c_str(),0755); };
     mk(data_dir());
     mk(recordings_dir());
+    mk(record_dir());    mk(record_iq_dir());    mk(record_audio_dir());
+    mk(private_dir());   mk(private_iq_dir());   mk(private_audio_dir());
+    mk(public_dir());    mk(public_iq_dir());    mk(public_audio_dir());
+    mk(share_dir());     mk(share_iq_dir());     mk(share_audio_dir());
     mk(time_temp_dir());
     mk(sa_temp_dir());
 }

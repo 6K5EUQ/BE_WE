@@ -4,6 +4,7 @@
 #include <imgui.h>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 #include <png.h>
 
@@ -83,7 +84,23 @@ bool draw_login_screen(int win_w, int win_h){
     static int  prev_ti     =2;
     static float fade_alpha =1.0f;
     static bool fading      =false;
+    static bool auto_checked =false;
     init_bg_paths();
+
+    // /restart로 재실행된 경우: 환경변수로 자동 로그인
+    if(!auto_checked){
+        auto_checked = true;
+        const char* a_id   = getenv("BEWE_AUTO_ID");
+        const char* a_pw   = getenv("BEWE_AUTO_PW");
+        const char* a_tier = getenv("BEWE_AUTO_TIER");
+        if(a_id && a_id[0]){
+            strncpy(g_login_id, a_id, 63);
+            strncpy(g_login_pw, a_pw ? a_pw : "", 63);
+            g_login_tier = a_tier ? atoi(a_tier) : 3;
+            unsetenv("BEWE_AUTO_ID"); unsetenv("BEWE_AUTO_PW"); unsetenv("BEWE_AUTO_TIER");
+            return true; // 로그인 화면 건너뜀
+        }
+    }
 
     int ti=tier-1;
     if(!bg_tried[ti]){
@@ -127,7 +144,8 @@ bool draw_login_screen(int win_w, int win_h){
     ImGui::PopStyleVar(2);
 
     // ── 로그인 패널 ──────────────────────────────────────────────────────
-    const float PW_=290.0f,PH_=262.0f,PAD=28.0f;
+    bool is_t3 = (tier == 3);
+    const float PW_=290.0f,PH_=(is_t3?220.0f:262.0f),PAD=28.0f;
     ImGui::SetNextWindowPos(ImVec2((float)win_w-PW_-PAD,(float)win_h-PH_-PAD));
     ImGui::SetNextWindowSize(ImVec2(PW_,PH_));
     ImGui::SetNextWindowBgAlpha(0.88f);
@@ -174,16 +192,24 @@ bool draw_login_screen(int win_w, int win_h){
     ImGui::InputText("##id",id_buf,sizeof(id_buf));
     ImGui::Spacing();
 
-    ImGui::Text("PW");
-    ImGui::SetNextItemWidth(PW_-16.0f);
-    bool enter_pw=ImGui::InputText("##pw",pw_buf,sizeof(pw_buf),
-        ImGuiInputTextFlags_Password|ImGuiInputTextFlags_EnterReturnsTrue);
-    ImGui::Spacing();
+    bool enter_pw = false;
+    if(!is_t3){
+        ImGui::Text("PW");
+        ImGui::SetNextItemWidth(PW_-16.0f);
+        enter_pw=ImGui::InputText("##pw",pw_buf,sizeof(pw_buf),
+            ImGuiInputTextFlags_Password|ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::Spacing();
+    } else {
+        // Tier 3: Enter on ID field acts as login trigger
+        enter_pw = ImGui::IsKeyPressed(ImGuiKey_Enter,false) ||
+                   ImGui::IsKeyPressed(ImGuiKey_KeypadEnter,false);
+        pw_buf[0] = '\0'; // no password for Tier 3
+    }
 
     if(failed){
         fail_timer-=ImGui::GetIO().DeltaTime;
         if(fail_timer<=0.0f) failed=false;
-        ImGui::TextColored(ImVec4(1.0f,0.35f,0.35f,1.0f),"ID or PW cannot be empty.");
+        ImGui::TextColored(ImVec4(1.0f,0.35f,0.35f,1.0f),"ID cannot be empty.");
     } else {
         ImGui::Dummy(ImVec2(0,13));
     }
@@ -191,7 +217,8 @@ bool draw_login_screen(int win_w, int win_h){
     ImGui::SetCursorPosX((PW_-110.0f)*0.5f);
     bool do_login=ImGui::Button("LOGIN",ImVec2(110,26))||enter_pw;
     if(do_login){
-        if(id_buf[0]=='\0'||pw_buf[0]=='\0'){ failed=true; fail_timer=2.5f; }
+        if(id_buf[0]=='\0'){ failed=true; fail_timer=2.5f; }
+        else if(!is_t3 && pw_buf[0]=='\0'){ failed=true; fail_timer=2.5f; }
         else {
             strncpy(g_login_id, id_buf, 63);
             strncpy(g_login_pw, pw_buf, 63);

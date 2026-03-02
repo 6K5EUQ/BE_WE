@@ -1,6 +1,8 @@
 #include "net_server.hpp"
+#include "udp_discovery.hpp"
 #include <cstdio>
 #include <cstring>
+#include <tuple>
 #include <algorithm>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -134,6 +136,7 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
         send_to(*c, PacketType::AUTH_ACK, &ack, sizeof(ack));
         if(ack.ok){
             broadcast_operator_list();
+            update_discovery_user_count();
         }
         break;
     }
@@ -206,7 +209,8 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
                 if(cb.on_request_region)
                     cb.on_request_region(c->op_index, c->name,
                         cmd->request_region.fft_top, cmd->request_region.fft_bot,
-                        cmd->request_region.freq_lo, cmd->request_region.freq_hi);
+                        cmd->request_region.freq_lo, cmd->request_region.freq_hi,
+                        cmd->request_region.time_start, cmd->request_region.time_end);
                 break;
             default: break;
         }
@@ -233,6 +237,54 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
         c->alive.store(false);
         break;
 
+    case PacketType::SHARE_DOWNLOAD_REQ: {
+        if(!c->authed || len < sizeof(PktShareDownloadReq)) break;
+        auto* req = reinterpret_cast<const PktShareDownloadReq*>(payload);
+        char fname[129]; strncpy(fname, req->filename, 128); fname[128]='\0';
+        if(cb.on_share_download_req) cb.on_share_download_req(c->op_index, fname);
+        break;
+    }
+
+    case PacketType::SHARE_UPLOAD_META: {
+        if(!c->authed || len < sizeof(PktShareUploadMeta)) break;
+        auto* m = reinterpret_cast<const PktShareUploadMeta*>(payload);
+        // 기존 업로드 중인 파일 닫기
+        if(c->upload.fp){ fclose(c->upload.fp); c->upload.fp=nullptr; }
+        strncpy(c->upload.filename, m->filename, 127); c->upload.filename[127]='\0';
+        c->upload.total_bytes  = m->total_bytes;
+        c->upload.recv_bytes   = 0;
+        c->upload.transfer_id  = m->transfer_id;
+        c->upload.active       = true;
+        // 임시 저장 경로: /tmp/bewe_up_<name>
+        snprintf(c->upload.save_path, sizeof(c->upload.save_path),
+                 "/tmp/bewe_up_%s", c->upload.filename);
+        c->upload.fp = fopen(c->upload.save_path, "wb");
+        if(!c->upload.fp){
+            fprintf(stderr,"SHARE_UPLOAD_META: fopen failed %s\n", c->upload.save_path);
+            c->upload.active=false;
+        }
+        break;
+    }
+
+    case PacketType::SHARE_UPLOAD_DATA: {
+        if(!c->authed || !c->upload.active || !c->upload.fp) break;
+        if(len < sizeof(PktShareUploadData)) break;
+        auto* d = reinterpret_cast<const PktShareUploadData*>(payload);
+        if(d->transfer_id != c->upload.transfer_id) break;
+        uint32_t data_bytes = d->chunk_bytes;
+        if((uint32_t)len < (uint32_t)sizeof(PktShareUploadData) + data_bytes) break;
+        const uint8_t* data_ptr = payload + sizeof(PktShareUploadData);
+        fwrite(data_ptr, 1, data_bytes, c->upload.fp);
+        c->upload.recv_bytes += data_bytes;
+        if(d->is_last){
+            fclose(c->upload.fp); c->upload.fp=nullptr;
+            c->upload.active=false;
+            if(cb.on_share_upload_done)
+                cb.on_share_upload_done(c->op_index, c->name, c->upload.save_path);
+        }
+        break;
+    }
+
     default: break;
     }
 }
@@ -256,6 +308,7 @@ void NetServer::drop_client(std::shared_ptr<ClientConn> c){
     if(was_authed){
         printf("[NetServer] op %d '%s' disconnected\n", idx, name);
         broadcast_operator_list();
+        update_discovery_user_count();
     }
 }
 
@@ -414,6 +467,19 @@ void NetServer::broadcast_wf_event(int32_t fft_offset, int64_t wall_time,
     }
 }
 
+void NetServer::send_region_response(int op_index, bool allowed){
+    PktRegionResponse resp{}; resp.allowed = allowed ? 1 : 0;
+    std::lock_guard<std::mutex> lk(clients_mtx_);
+    for(auto& cli : clients_){
+        if(cli->authed && cli->alive.load() && cli->op_index==(uint8_t)op_index){
+            auto pkt = make_packet(PacketType::REGION_RESPONSE, &resp, sizeof(resp));
+            std::lock_guard<std::mutex> slk(cli->send_mtx);
+            send_all(cli->fd, pkt.data(), pkt.size());
+            break;
+        }
+    }
+}
+
 void NetServer::send_file_to(int op_index, const char* path, uint8_t transfer_id,
                               std::function<void(uint64_t,uint64_t)> progress_cb){
     FILE* fp = fopen(path, "rb");
@@ -466,6 +532,29 @@ void NetServer::send_file_to(int op_index, const char* path, uint8_t transfer_id
     fclose(fp);
 }
 
+void NetServer::send_share_list(int op_index,
+                                 const std::vector<std::tuple<std::string,uint64_t,std::string>>& files){
+    uint16_t cnt = (uint16_t)std::min((size_t)files.size(), (size_t)UINT16_MAX);
+    size_t payload_size = sizeof(PktShareList) + cnt * sizeof(ShareFileEntry);
+    std::vector<uint8_t> payload(payload_size, 0);
+    auto* hdr = reinterpret_cast<PktShareList*>(payload.data());
+    hdr->count = cnt;
+    ShareFileEntry* entries = reinterpret_cast<ShareFileEntry*>(payload.data() + sizeof(PktShareList));
+    for(uint16_t i = 0; i < cnt; i++){
+        strncpy(entries[i].filename, std::get<0>(files[i]).c_str(), 127);
+        entries[i].size_bytes = std::get<1>(files[i]);
+        strncpy(entries[i].uploader, std::get<2>(files[i]).c_str(), 31);
+    }
+    std::lock_guard<std::mutex> lk(clients_mtx_);
+    for(auto& c : clients_){
+        if(!c->authed || !c->alive.load()) continue;
+        if(op_index >= 0 && c->op_index != (uint8_t)op_index) continue;
+        auto pkt = make_packet(PacketType::SHARE_LIST, payload.data(), (uint32_t)payload_size);
+        std::lock_guard<std::mutex> slk(c->send_mtx);
+        send_all(c->fd, pkt.data(), pkt.size());
+    }
+}
+
 std::vector<OpEntry> NetServer::get_operators() const {
     std::vector<OpEntry> ops;
     std::lock_guard<std::mutex> lk(clients_mtx_);
@@ -476,4 +565,32 @@ std::vector<OpEntry> NetServer::get_operators() const {
         ops.push_back(e);
     }
     return ops;
+}
+
+// ── UDP Discovery Broadcast ───────────────────────────────────────────────
+void NetServer::start_discovery_broadcast(const char* station_name,
+                                           float lat, float lon,
+                                           uint16_t tcp_port,
+                                           const char* host_ip) {
+    stop_discovery_broadcast();
+    auto* b = new DiscoveryBroadcaster();
+    b->set_info(station_name, lat, lon, tcp_port, host_ip);
+    b->set_user_count((uint8_t)client_count());
+    if (b->start())
+        discovery_bcast_ = b;
+    else
+        delete b;
+}
+
+void NetServer::stop_discovery_broadcast() {
+    if (discovery_bcast_) {
+        discovery_bcast_->stop();
+        delete discovery_bcast_;
+        discovery_bcast_ = nullptr;
+    }
+}
+
+void NetServer::update_discovery_user_count() {
+    if (discovery_bcast_)
+        discovery_bcast_->set_user_count((uint8_t)client_count());
 }

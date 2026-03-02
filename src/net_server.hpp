@@ -3,6 +3,7 @@
 #include "channel.hpp"
 #include <string>
 #include <vector>
+#include <tuple>
 #include <thread>
 #include <mutex>
 #include <atomic>
@@ -20,6 +21,17 @@ struct ClientConn {
     std::mutex      send_mtx;
     std::atomic<bool> alive{false};
     std::thread     thr;
+
+    // 업로드 수신 상태 (SHARE_UPLOAD_META/DATA)
+    struct UploadRecv {
+        char     filename[128] = {};
+        uint64_t total_bytes   = 0;
+        uint64_t recv_bytes    = 0;
+        uint8_t  transfer_id   = 0;
+        FILE*    fp            = nullptr;
+        bool     active        = false;
+        char     save_path[512]= {};
+    } upload{};
 
     ClientConn() = default;
     ClientConn(const ClientConn&) = delete;
@@ -50,8 +62,12 @@ struct ServerCallbacks {
     std::function<void(bool pause)>                  on_set_spectrum_pause;
     std::function<void(uint8_t op_idx, const char* op_name,
                        int32_t fft_top, int32_t fft_bot,
-                       float freq_lo, float freq_hi)> on_request_region;
+                       float freq_lo, float freq_hi,
+                       int32_t time_start, int32_t time_end)> on_request_region;
     std::function<void(const char* from, const char* msg)> on_chat;
+    std::function<void(uint8_t op_idx, const char* filename)> on_share_download_req;
+    // JOIN이 파일 업로드 완료: op_idx, op_name, 저장된 절대경로
+    std::function<void(uint8_t op_idx, const char* op_name, const char* saved_path)> on_share_upload_done;
 };
 
 // ── NetServer ─────────────────────────────────────────────────────────────
@@ -80,6 +96,7 @@ public:
                             uint8_t type, const char* label);
     void send_file_to(int op_index, const char* path, uint8_t transfer_id,
                       std::function<void(uint64_t done, uint64_t total)> progress_cb = nullptr);
+    void send_region_response(int op_index, bool allowed);
 
     // Channel state → all clients
     void broadcast_channel_sync(const Channel* chs, int n);
@@ -87,12 +104,23 @@ public:
     // Chat → all clients
     void broadcast_chat(const char* from, const char* msg);
 
+    // Share list → specific client (or all clients if op_index==-1)
+    // tuple: (filename, size_bytes, uploader_name)
+    void send_share_list(int op_index,
+                         const std::vector<std::tuple<std::string,uint64_t,std::string>>& files);
+
     // HW status → all clients
     void broadcast_status(float cf_mhz, float gain_db,
                           uint32_t sr, uint8_t hw_type);
 
     // Operator list → all clients
     void broadcast_operator_list();
+
+    // ── UDP Discovery Broadcast ───────────────────────────────────────────
+    void start_discovery_broadcast(const char* station_name, float lat, float lon,
+                                    uint16_t tcp_port, const char* host_ip);
+    void stop_discovery_broadcast();
+    void update_discovery_user_count();
 
     // HOST 본인 정보 설정 (op_list index=0 으로 브로드캐스트)
     void set_host_info(const char* name, uint8_t tier){
@@ -103,6 +131,9 @@ public:
     // Get current operator list (for UI)
     
 private:
+    // Forward declaration to avoid pulling udp_discovery.hpp into every TU
+    class DiscoveryBroadcaster* discovery_bcast_ = nullptr;
+
     char    host_name_[32] = {};
     uint8_t host_tier_     = 1;
     int  server_fd_ = -1;

@@ -1,4 +1,5 @@
 #include "net_client.hpp"
+#include "udp_discovery.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -75,6 +76,7 @@ bool NetClient::connect(const char* host, int port,
 
 // ── disconnect ────────────────────────────────────────────────────────────
 void NetClient::disconnect(){
+    stop_discovery_listen();
     connected_.store(false);
     if(fd_ >= 0){
         send_packet(fd_, PacketType::DISCONNECT, nullptr, 0);
@@ -82,6 +84,28 @@ void NetClient::disconnect(){
         close(fd_); fd_=-1;
     }
     if(recv_thr_.joinable()) recv_thr_.join();
+}
+
+// ── UDP Discovery Listener ────────────────────────────────────────────────
+bool NetClient::start_discovery_listen(
+        std::function<void(const DiscoveryAnnounce&)> callback) {
+    stop_discovery_listen();
+    auto* l = new DiscoveryListener();
+    l->on_station_found = std::move(callback);
+    if (!l->start()) {
+        delete l;
+        return false;
+    }
+    discovery_listener_ = l;
+    return true;
+}
+
+void NetClient::stop_discovery_listen() {
+    if (discovery_listener_) {
+        discovery_listener_->stop();
+        delete discovery_listener_;
+        discovery_listener_ = nullptr;
+    }
 }
 
 // ── recv loop ─────────────────────────────────────────────────────────────
@@ -165,9 +189,13 @@ void NetClient::handle_packet(PacketType type,
         fr.transfer_id = meta->transfer_id;
         fr.done        = false;
         fr.recv_bytes  = 0;
-        // save to ~/Downloads/
-        const char* home = getenv("HOME");
-        std::string dir = home ? std::string(home)+"/Downloads" : "/tmp";
+        // determine save directory (callback override or ~/recordings)
+        std::string dir;
+        if(on_get_save_dir) dir = on_get_save_dir(fr.filename);
+        if(dir.empty()){
+            const char* home = getenv("HOME");
+            dir = home ? std::string(home)+"/Downloads" : "/tmp";
+        }
         fr.save_path = dir + "/" + fr.filename;
         fr.fp = fopen(fr.save_path.c_str(), "wb");
         std::string fn2 = fr.filename;
@@ -231,6 +259,32 @@ void NetClient::handle_packet(PacketType type,
     case PacketType::DISCONNECT:
         connected_.store(false);
         break;
+
+    case PacketType::REGION_RESPONSE: {
+        if(len < sizeof(PktRegionResponse)) break;
+        auto* r = reinterpret_cast<const PktRegionResponse*>(payload);
+        if(on_region_response) on_region_response(r->allowed != 0);
+        break;
+    }
+
+    case PacketType::SHARE_LIST: {
+        if(len < sizeof(PktShareList)) break;
+        auto* hdr = reinterpret_cast<const PktShareList*>(payload);
+        uint16_t cnt = hdr->count;
+        size_t expected = sizeof(PktShareList) + cnt * sizeof(ShareFileEntry);
+        if(len < expected) break;
+        const ShareFileEntry* entries = reinterpret_cast<const ShareFileEntry*>(
+            payload + sizeof(PktShareList));
+        std::vector<std::tuple<std::string,uint64_t,std::string>> files;
+        files.reserve(cnt);
+        for(uint16_t i = 0; i < cnt; i++){
+            char fn[129]; strncpy(fn, entries[i].filename, 128); fn[128]='\0';
+            char up[33]; strncpy(up, entries[i].uploader, 32); up[32]='\0';
+            files.push_back({fn, entries[i].size_bytes, up});
+        }
+        if(on_share_list) on_share_list(files);
+        break;
+    }
 
     default: break;
     }
@@ -311,10 +365,12 @@ bool NetClient::cmd_set_spectrum_pause(bool pause){
     return send_cmd(c);
 }
 bool NetClient::cmd_request_region(int32_t fft_top, int32_t fft_bot,
-                                    float freq_lo, float freq_hi){
+                                    float freq_lo, float freq_hi,
+                                    int32_t time_start, int32_t time_end){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::REQUEST_REGION;
     c.request_region.fft_top=fft_top; c.request_region.fft_bot=fft_bot;
     c.request_region.freq_lo=freq_lo; c.request_region.freq_hi=freq_hi;
+    c.request_region.time_start=time_start; c.request_region.time_end=time_end;
     return send_cmd(c);
 }
 bool NetClient::cmd_toggle_recv(int ch_idx, bool enable){
@@ -328,4 +384,44 @@ bool NetClient::cmd_update_ch_range(int idx, float s, float e){
     c.update_ch_range.idx=(uint8_t)idx;
     c.update_ch_range.s=s; c.update_ch_range.e=e;
     return send_cmd(c);
+}
+bool NetClient::cmd_request_share_download(const char* filename){
+    PktShareDownloadReq req{};
+    strncpy(req.filename, filename, 127);
+    return raw_send(PacketType::SHARE_DOWNLOAD_REQ, &req, sizeof(req));
+}
+
+bool NetClient::cmd_share_upload(const char* filepath, uint8_t transfer_id){
+    FILE* fp = fopen(filepath, "rb");
+    if(!fp){ fprintf(stderr,"cmd_share_upload: open failed %s\n", filepath); return false; }
+    fseek(fp, 0, SEEK_END); uint64_t total=(uint64_t)ftell(fp); fseek(fp, 0, SEEK_SET);
+
+    const char* fn = strrchr(filepath, '/'); fn = fn ? fn+1 : filepath;
+
+    // META 전송
+    PktShareUploadMeta meta{};
+    strncpy(meta.filename, fn, 127);
+    meta.total_bytes = total;
+    meta.transfer_id = transfer_id;
+    if(!raw_send(PacketType::SHARE_UPLOAD_META, &meta, sizeof(meta))){ fclose(fp); return false; }
+
+    // DATA 청크 전송
+    const uint32_t CHUNK = 65536;
+    std::vector<uint8_t> buf(sizeof(PktShareUploadData) + CHUNK);
+    uint64_t offset = 0;
+    while(true){
+        size_t n = fread(buf.data() + sizeof(PktShareUploadData), 1, CHUNK, fp);
+        if(n == 0) break;
+        PktShareUploadData* d = reinterpret_cast<PktShareUploadData*>(buf.data());
+        d->transfer_id = transfer_id;
+        d->is_last     = feof(fp) ? 1 : 0;
+        d->chunk_bytes = (uint32_t)n;
+        d->offset      = offset;
+        offset += n;
+        if(!raw_send(PacketType::SHARE_UPLOAD_DATA, buf.data(), (uint32_t)(sizeof(PktShareUploadData)+n))){
+            fclose(fp); return false;
+        }
+    }
+    fclose(fp);
+    return true;
 }

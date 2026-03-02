@@ -31,15 +31,17 @@ void FFTViewer::sa_cleanup(){
     // 스레드 먼저 종료 대기 (this 캡처 스레드가 살아있으면 크래시)
     if(sa_thread.joinable()) sa_thread.join();
 
-    // 현재 추적 중인 파일 삭제
-    if(!sa_temp_path.empty()){
-        remove(sa_temp_path.c_str());
-        sa_temp_path.clear();
-    }
-    // SA_Temp 폴더 내 모든 파일 삭제
+    // SA_Temp 폴더 내 파일만 삭제 (원본 IQ 파일 보호)
     {
         std::string sa_dir_s=BEWEPaths::sa_temp_dir();
         const char* sa_dir=sa_dir_s.c_str();
+        // sa_temp_path가 sa_temp_dir 내부의 파일인 경우만 삭제
+        if(!sa_temp_path.empty()){
+            if(sa_temp_path.rfind(sa_dir_s, 0) == 0){
+                remove(sa_temp_path.c_str());
+            }
+            sa_temp_path.clear();
+        }
         DIR* d=opendir(sa_dir);
         if(d){
             struct dirent* e;
@@ -55,6 +57,10 @@ void FFTViewer::sa_cleanup(){
     if(sa_texture){ glDeleteTextures(1,&sa_texture); sa_texture=0; }
     sa_tex_w=0; sa_tex_h=0;
     sa_pixel_ready.store(false);
+    {
+        std::lock_guard<std::mutex> lk(sa_pixel_mtx);
+        sa_pixel_buf.clear();
+    }
 }
 
 void FFTViewer::sa_upload_texture(){

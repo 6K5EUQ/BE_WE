@@ -77,8 +77,12 @@ public:
         char  label[32];
     };
     std::vector<WfEvent> wf_events;
-    std::mutex           wf_events_mtx;
+    mutable std::mutex   wf_events_mtx;
     int                  last_tagged_sec=-1; // 마지막으로 5초태그 붙인 초
+
+    // fft_idx → wall_time 변환 (wf_events 보간, 없으면 rps 기반 추정)
+    // 반환값: Unix timestamp (time_t), 0이면 변환 불가
+    time_t fft_idx_to_wall_time(int fft_idx) const;
 
     // IQ 롤링 파일 관리
     // TM_IQ_DIR: BEWEPaths::time_temp_dir() 로 런타임 결정
@@ -181,6 +185,25 @@ public:
     char        host_name[32] = {};   // 접속한 유저 ID (표시용)
     uint8_t     my_op_index   = 0;
 
+    // ── Globe / Station Discovery ─────────────────────────────────────────
+    struct DiscoveredStation {
+        std::string name;
+        float       lat        = 0.f;
+        float       lon        = 0.f;
+        uint16_t    tcp_port   = 0;
+        std::string ip;
+        uint8_t     user_count = 0;
+        double      last_seen  = 0.0; // glfwGetTime()
+    };
+    std::vector<DiscoveredStation> discovered_stations;
+    std::mutex                     discovered_stations_mtx;
+
+    // Station identity (set during HOST mode placement on globe)
+    std::string station_name;
+    float       station_lat          = 0.f;
+    float       station_lon          = 0.f;
+    bool        station_location_set = false;
+
     // 로컬 오디오 출력 선택 (각 PC 독립): 0=L, 1=L+R, 2=R, 3=M(mute)
     // JOIN에서 M이면 cmd_toggle_recv(ch, false) 전송
     int  local_ch_out[5] = {1,1,1,1,1}; // 기본: L+R
@@ -250,6 +273,7 @@ public:
         char        req_op_name[32] = {}; // HOST: 요청한 op 이름
         int32_t     req_fft_top = 0, req_fft_bot = 0;
         float       req_freq_lo = 0, req_freq_hi = 0;
+        int32_t     req_time_start = 0, req_time_end = 0; // Unix timestamps from JOIN
         std::string local_path_to_delete; // HOST: 전송 후 삭제할 파일 경로
         std::chrono::steady_clock::time_point t_start; // 시작 시각
     };

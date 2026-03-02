@@ -60,10 +60,10 @@ void FFTViewer::start_rec(){
     rec_sr=optimal_iq_sr(header.sample_rate,bw_hz);
 
     time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
-    char fn[256];
-    std::string rec_dir=BEWEPaths::recordings_dir();
+    char fn[512];
+    std::string rec_dir=BEWEPaths::record_iq_dir();
     char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
-    snprintf(fn,256,"%s/IQ_%.3fMHz_%s.wav",rec_dir.c_str(),
+    snprintf(fn,sizeof(fn),"%s/IQ_%.3fMHz_%s.wav",rec_dir.c_str(),
              rec_cf_mhz, dts);
     rec_filename=fn;
     rec_frames.store(0);
@@ -113,18 +113,17 @@ void FFTViewer::start_audio_rec(int ch_idx){
     ch.audio_rec_sr=asr;
 
     time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
-    char fn[256];
-    std::string rec_dir=BEWEPaths::recordings_dir();
+    char fn[512];
+    std::string rec_dir=BEWEPaths::record_audio_dir();
     float cf_mhz=(ch.s+ch.e)/2.0f;
-    float bw_khz=bw_hz/1000.0f;
     char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
-    snprintf(fn,256,"%s/Audio_%.3fMHz_%s.wav",
+    snprintf(fn,sizeof(fn),"%s/Audio_%.3fMHz_%s.wav",
              rec_dir.c_str(), cf_mhz, dts);
 
     FILE* fp=fopen(fn,"wb");
     if(!fp){ bewe_log("Audio REC: cannot open %s\n",fn); return; }
     ch.audio_rec_frames=0;
-    ch.audio_rec_write_wav_hdr(fp,asr,0); // 임시 헤더
+    ch.audio_rec_write_wav_hdr(fp,asr,0);
     ch.audio_rec_fp=fp;
     ch.audio_rec_path=fn;
     ch.audio_rec_on.store(true,std::memory_order_release);
@@ -151,13 +150,11 @@ void FFTViewer::stop_audio_rec(int ch_idx){
     if(!ch.audio_rec_on.load()) return;
 
     ch.audio_rec_on.store(false,std::memory_order_release);
-    // demod 스레드가 maybe_rec_audio 완료 대기 (짧게)
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
 
     FILE* fp=ch.audio_rec_fp;
     ch.audio_rec_fp=nullptr;
     if(fp){
-        // 헤더 재작성
         fseek(fp,0,SEEK_SET);
         ch.audio_rec_write_wav_hdr(fp,ch.audio_rec_sr,ch.audio_rec_frames);
         fclose(fp);
@@ -184,11 +181,11 @@ void FFTViewer::start_join_audio_rec(int ch_idx){
     ch.audio_rec_sr = asr;
 
     time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
-    char fn[256];
-    std::string rec_dir=BEWEPaths::recordings_dir();
+    char fn[512];
+    std::string rec_dir=BEWEPaths::record_audio_dir();
     float cf_mhz=(ch.s+ch.e)/2.0f;
     char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
-    snprintf(fn,256,"%s/Audio_%.3fMHz_%s.wav",rec_dir.c_str(),cf_mhz,dts);
+    snprintf(fn,sizeof(fn),"%s/Audio_%.3fMHz_%s.wav",rec_dir.c_str(),cf_mhz,dts);
 
     FILE* fp=fopen(fn,"wb");
     if(!fp){ bewe_log("JOIN Audio REC: cannot open %s\n",fn); return; }
@@ -217,7 +214,7 @@ void FFTViewer::stop_join_audio_rec(int ch_idx){
     if(!ch.audio_rec_on.load()) return;
 
     ch.audio_rec_on.store(false,std::memory_order_release);
-    std::this_thread::sleep_for(std::chrono::milliseconds(10)); // mix_worker 완료 대기
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
     FILE* fp=ch.audio_rec_fp;
     ch.audio_rec_fp=nullptr;

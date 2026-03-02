@@ -3,6 +3,7 @@
 #include "channel.hpp"
 #include <string>
 #include <vector>
+#include <tuple>
 #include <thread>
 #include <mutex>
 #include <atomic>
@@ -80,6 +81,12 @@ public:
     std::function<void(const std::string& name, uint64_t done, uint64_t total)> on_file_progress;
     std::function<void(const std::string& path,
                        const std::string& name)> on_file_done;
+    // Optional: override save directory for incoming file (return "" to use default)
+    std::function<std::string(const std::string& filename)> on_get_save_dir;
+    std::function<void(bool allowed)> on_region_response;
+    // SHARE_LIST: called when HOST sends updated share file list
+    // vector of (filename, size_bytes, uploader)
+    std::function<void(const std::vector<std::tuple<std::string,uint64_t,std::string>>&)> on_share_list;
 
     // ── Operator list ─────────────────────────────────────────────────────
     mutable std::mutex   op_mtx;
@@ -121,7 +128,16 @@ public:
     bool cmd_set_capture_pause(bool pause);
     bool cmd_set_spectrum_pause(bool pause);
     bool cmd_request_region(int32_t fft_top, int32_t fft_bot,
-                             float freq_lo, float freq_hi);
+                             float freq_lo, float freq_hi,
+                             int32_t time_start, int32_t time_end);
+    bool cmd_request_share_download(const char* filename);
+    bool cmd_share_upload(const char* filepath, uint8_t transfer_id);
+
+    // ── UDP Discovery Listener ────────────────────────────────────────────
+    // Note: DiscoveryAnnounce is defined in net_protocol.hpp (already included)
+    bool start_discovery_listen(
+        std::function<void(const DiscoveryAnnounce&)> callback);
+    void stop_discovery_listen();
 
 private:
     int  fd_ = -1;
@@ -129,6 +145,9 @@ private:
     std::thread       recv_thr_;
 
     mutable std::mutex send_mtx_;
+
+    // Discovery listener (forward declared to avoid pulling udp_discovery.hpp)
+    class DiscoveryListener* discovery_listener_ = nullptr;
 
     void recv_loop();
     void handle_packet(PacketType type, const uint8_t* payload, uint32_t len);

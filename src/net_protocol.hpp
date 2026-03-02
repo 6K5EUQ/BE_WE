@@ -25,8 +25,13 @@ enum class PacketType : uint8_t {
     CHANNEL_SYNC   = 0x0A,  // server → all clients
     DISCONNECT     = 0x0B,
     WF_EVENT       = 0x0C,  // server → all: waterfall time/event tag
-    FILE_DATA      = 0x0D,  // server → client: region file transfer chunk
-    FILE_META      = 0x0E,  // server → client: file transfer start info
+    FILE_DATA        = 0x0D,  // server → client: region file transfer chunk
+    FILE_META        = 0x0E,  // server → client: file transfer start info
+    REGION_RESPONSE  = 0x0F,  // server → client: region request allow/deny
+    SHARE_LIST         = 0x10,  // server → all clients: list of shared files
+    SHARE_DOWNLOAD_REQ = 0x11,  // client → server: request download of shared file
+    SHARE_UPLOAD_META  = 0x12,  // client → server: upload file meta (start)
+    SHARE_UPLOAD_DATA  = 0x13,  // client → server: upload file chunk
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────
@@ -113,7 +118,8 @@ struct __attribute__((packed)) PktCmd {
         struct { uint8_t pause; }                          set_capture_pause;
         struct { uint8_t pause; }                          set_spectrum_pause;
         struct { int32_t fft_top; int32_t fft_bot;
-                 float freq_lo; float freq_hi; }           request_region;
+                 float freq_lo; float freq_hi;
+                 int32_t time_start; int32_t time_end; }  request_region;
         uint8_t raw[32];
     };
 };
@@ -181,6 +187,12 @@ struct __attribute__((packed)) PktWfEvent {
     char     label[32];
 };
 
+// ── REGION_RESPONSE ────────────────────────────────────────────────────────
+struct __attribute__((packed)) PktRegionResponse {
+    uint8_t allowed;   // 1=allow, 0=deny
+    uint8_t pad[3];
+};
+
 // ── FILE_META ──────────────────────────────────────────────────────────────
 struct __attribute__((packed)) PktFileMeta {
     char     filename[128];
@@ -192,6 +204,39 @@ struct __attribute__((packed)) PktFileMeta {
 struct __attribute__((packed)) PktFileData {
     uint8_t  transfer_id;
     uint8_t  is_last;        // 1 = final chunk
+    uint32_t chunk_bytes;
+    uint64_t offset;
+    // uint8_t data[chunk_bytes] follows
+};
+
+// ── SHARE_LIST ─────────────────────────────────────────────────────────────
+// Variable-length payload: count (uint16_t) followed by count entries
+struct __attribute__((packed)) ShareFileEntry {
+    char     filename[128];
+    uint64_t size_bytes;
+    char     uploader[32];  // 업로드한 사람 이름 (HOST 이름 또는 JOIN 이름)
+};
+struct __attribute__((packed)) PktShareList {
+    uint16_t count;
+    // ShareFileEntry entries[count] follow
+};
+
+// ── SHARE_DOWNLOAD_REQ ─────────────────────────────────────────────────────
+struct __attribute__((packed)) PktShareDownloadReq {
+    char filename[128];
+};
+
+// ── SHARE_UPLOAD_META (client → server) ────────────────────────────────────
+struct __attribute__((packed)) PktShareUploadMeta {
+    char     filename[128];
+    uint64_t total_bytes;
+    uint8_t  transfer_id;
+};
+
+// ── SHARE_UPLOAD_DATA (client → server) ────────────────────────────────────
+struct __attribute__((packed)) PktShareUploadData {
+    uint8_t  transfer_id;
+    uint8_t  is_last;
     uint32_t chunk_bytes;
     uint64_t offset;
     // uint8_t data[chunk_bytes] follows
@@ -233,4 +278,18 @@ inline bool recv_all(int fd, void* buf, size_t len){
 inline bool send_packet(int fd, PacketType type, const void* payload, uint32_t len){
     auto pkt = make_packet(type, payload, len);
     return send_all(fd, pkt.data(), pkt.size());
-} 
+}
+
+// ── UDP Discovery (port 7701, independent of TCP protocol) ───────────────
+static constexpr int BEWE_DISCOVERY_PORT = 7701;
+
+struct __attribute__((packed)) DiscoveryAnnounce {
+    char     magic[4];          // 'B','E','W','G'
+    char     station_name[64];  // null-terminated UTF-8
+    float    lat;               // degrees [-90, +90]
+    float    lon;               // degrees [-180, +180]
+    uint16_t tcp_port;          // TCP listen port for connections
+    uint8_t  user_count;        // currently connected operator count
+    uint8_t  _pad;              // alignment padding
+    char     host_ip[16];       // IPv4 dotted-decimal, null-terminated
+};                              // total: 96 bytes

@@ -3,12 +3,16 @@
 #include "net_server.hpp"
 #include "net_client.hpp"
 #include "bewe_paths.hpp"
+#include "globe.hpp"
+#include "udp_discovery.hpp"
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <algorithm>
 #include <chrono>
+#include <map>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <thread>
 #include <mutex>
@@ -19,6 +23,25 @@
 #include <ifaddrs.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+
+// Returns the first non-loopback IPv4 address, or "127.0.0.1"
+static std::string get_local_ip(){
+    struct ifaddrs* ifa_list = nullptr;
+    if(getifaddrs(&ifa_list) != 0) return "127.0.0.1";
+    std::string result = "127.0.0.1";
+    for(auto* ifa = ifa_list; ifa; ifa = ifa->ifa_next){
+        if(!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
+        auto* sin = reinterpret_cast<sockaddr_in*>(ifa->ifa_addr);
+        uint32_t addr = ntohl(sin->sin_addr.s_addr);
+        if((addr >> 24) == 127) continue; // skip 127.x.x.x
+        char buf[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf));
+        result = buf;
+        break;
+    }
+    freeifaddrs(ifa_list);
+    return result;
+}
 
 void bewe_log(const char* fmt, ...){
     char buf[256];
@@ -556,11 +579,22 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
                 int disp_idx=tm_active.load()?tm_display_fft_idx:current_fft_idx;
                 region.fft_top=disp_idx-(int)(ry0-gy);
                 region.fft_bot=disp_idx-(int)(ry1-gy);
-                float rps=(float)header.sample_rate/(float)fft_size/(float)time_average;
-                if(rps<=0) rps=37.5f;
-                time_t now=time(nullptr);
-                region.time_end  =now-(time_t)((current_fft_idx-region.fft_top)/rps);
-                region.time_start=now-(time_t)((current_fft_idx-region.fft_bot)/rps);
+                // wall_time 기반 타임스탬프 (JOIN 포함 정확한 시간)
+                {
+                    time_t wt_top = fft_idx_to_wall_time(region.fft_top);
+                    time_t wt_bot = fft_idx_to_wall_time(region.fft_bot);
+                    if(wt_top > 0 && wt_bot > 0){
+                        region.time_end   = wt_top;
+                        region.time_start = wt_bot;
+                    } else {
+                        // fallback: rps 기반
+                        float rps=(float)header.sample_rate/(float)fft_size/(float)time_average;
+                        if(rps<=0) rps=37.5f;
+                        time_t now=time(nullptr);
+                        region.time_end  =now-(time_t)((current_fft_idx-region.fft_top)/rps);
+                        region.time_start=now-(time_t)((current_fft_idx-region.fft_bot)/rps);
+                    }
+                }
                 region.active=true;
                 region.lclick_count=0; region.lclick_timer=0;
             }
@@ -679,9 +713,14 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
                 }
             }
 
-            // 편집 종료
+            // 편집 종료: time_start/end 재계산
             if(region.edit_mode!=RegionSel::EDIT_NONE&&ImGui::IsMouseReleased(ImGuiMouseButton_Left)){
                 region.edit_mode=RegionSel::EDIT_NONE;
+                float rps2=(float)header.sample_rate/(float)fft_size/(float)time_average;
+                if(rps2<=0) rps2=37.5f;
+                time_t now2=time(nullptr);
+                region.time_end  =now2-(time_t)((current_fft_idx-region.fft_top)/rps2);
+                region.time_start=now2-(time_t)((current_fft_idx-region.fft_bot)/rps2);
             }
             // 내부 클릭 카운트 (드래그 없이 release된 경우만)
             if(ImGui::IsMouseReleased(ImGuiMouseButton_Left)&&in_wf&&!ctrl&&inside_box){
@@ -791,11 +830,35 @@ void run_streaming_viewer(){
     // ── 모드선택 outer 루프 (do_main_menu 시 재진입) ─────────────────────
     bool do_main_menu = false;
     bool do_logout = false;
+    bool do_restart = false;
     bool do_chassis_reset = false;
     int  chassis_reset_mode = 0; // 0=LOCAL, 1=HOST
     // 함수 레벨 파일 목록 (스코프 공유 필요)
-    static std::vector<std::string> priv_files;
-    static std::vector<std::string> shared_files;
+    // Record 탭: 세션 중 실시간 녹음 (record/iq, record/audio)
+    static std::vector<std::string> rec_iq_files;
+    static std::vector<std::string> rec_audio_files;
+    // Private 탭: 이전 세션 녹음 (private/iq, private/audio)
+    static std::vector<std::string> priv_iq_files;
+    static std::vector<std::string> priv_audio_files;
+    // Public 탭 (HOST 로컬): public/iq, public/audio
+    static std::vector<std::string> pub_iq_files;
+    static std::vector<std::string> pub_audio_files;
+    // Share 탭: 다운로드된 파일 (share/iq, share/audio)
+    static std::vector<std::string> share_iq_files;
+    static std::vector<std::string> share_audio_files;
+    // 레거시: priv_files → priv_iq+priv_audio 합산 (일부 기존 코드 참조용)
+    static std::vector<std::string> priv_files; // 스캔 후 priv_iq+priv_audio 합산
+    static std::map<std::string,std::string> priv_extra_paths; // filename → full path
+    static std::vector<std::string> shared_files; // 스캔 후 pub_iq+pub_audio 합산
+    static std::vector<std::string> downloaded_files; // 스캔 후 share_iq+share_audio 합산
+    // JOIN: HOST Public 파일 목록 (filename, size_bytes, uploader)
+    struct JoinShareEntry { std::string filename; uint64_t size_bytes=0; std::string uploader; };
+    static std::vector<JoinShareEntry> join_share_files;
+    static std::mutex join_share_mtx;
+    // HOST: Public 파일 다운로드 리스너 추적 (filename → 다운로드한 op_name 목록)
+    static std::map<std::string,std::vector<std::string>> pub_listeners;
+    // Public 파일 소유자 추적 (filename → uploader_name): 업로드한 사람만 삭제 가능
+    static std::map<std::string,std::string> pub_owners;
     do {
     do_main_menu = false;
     FFTViewer v;
@@ -816,124 +879,320 @@ void run_streaming_viewer(){
     NetServer* srv = nullptr;
     NetClient* cli = nullptr;
 
+    // ── Globe-based station discovery ─────────────────────────────────────
+    GlobeRenderer globe;
+    bool globe_ok = globe.init();
+
+    // Discovery listener: populate v.discovered_stations from LAN broadcasts
+    DiscoveryListener disc_listener;
+    disc_listener.on_station_found = [&](const DiscoveryAnnounce& ann){
+        std::lock_guard<std::mutex> lk(v.discovered_stations_mtx);
+        double now = glfwGetTime();
+        // Upsert by ip+port key
+        for(auto& s : v.discovered_stations){
+            if(s.ip == ann.host_ip && s.tcp_port == ann.tcp_port){
+                s.name       = ann.station_name;
+                s.lat        = ann.lat;
+                s.lon        = ann.lon;
+                s.user_count = ann.user_count;
+                s.last_seen  = now;
+                return;
+            }
+        }
+        FFTViewer::DiscoveredStation ns;
+        ns.name       = ann.station_name;
+        ns.lat        = ann.lat;
+        ns.lon        = ann.lon;
+        ns.tcp_port   = ann.tcp_port;
+        ns.ip         = ann.host_ip;
+        ns.user_count = ann.user_count;
+        ns.last_seen  = now;
+        v.discovered_stations.push_back(ns);
+    };
+    disc_listener.start();
+
+    // Pop-up state machine
+    enum GlobePop { POP_NONE, POP_HOST, POP_JOIN } pop_state = POP_NONE;
+    FFTViewer::DiscoveredStation pending_join;
+    float pending_lat=0.f, pending_lon=0.f;
+    char  new_station_name[64] = {};
+    bool  was_dragging = false;
+
     while(!mode_done && !glfwWindowShouldClose(win)){
         glfwPollEvents();
         int fw,fh; glfwGetFramebufferSize(win,&fw,&fh);
         glViewport(0,0,fw,fh);
         glClearColor(0.03f,0.05f,0.10f,1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+
+        // ── Render globe ──────────────────────────────────────────────────
+        if(globe_ok){
+            glEnable(GL_DEPTH_TEST);
+            globe.set_viewport(fw,fh);
+            globe.render();
+            glDisable(GL_DEPTH_TEST);
+        }
+
         ImGui_ImplOpenGL3_NewFrame(); ImGui_ImplGlfw_NewFrame(); ImGui::NewFrame();
+        ImGuiIO& io = ImGui::GetIO();
 
-        // 풀스크린 배경 오버레이
-        ImGui::SetNextWindowPos(ImVec2(0,0));
-        ImGui::SetNextWindowSize(ImVec2((float)fw,(float)fh));
-        ImGui::SetNextWindowBgAlpha(0.0f);
-        ImGui::Begin("##mode_bg",nullptr,
-            ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
-            ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar|
-            ImGuiWindowFlags_NoBringToFrontOnFocus);
-        ImGui::End();
-
-        // 중앙 패널
-        const float PW=440.f, PH=300.f;
-        ImGui::SetNextWindowPos(ImVec2((fw-PW)*0.5f,(fh-PH)*0.5f));
-        ImGui::SetNextWindowSize(ImVec2(PW,PH));
-        ImGui::SetNextWindowBgAlpha(0.92f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,10.f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,4.f);
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,ImVec2(8,8));
-        ImGui::PushStyleColor(ImGuiCol_WindowBg,ImVec4(0.06f,0.08f,0.15f,1.f));
-        ImGui::PushStyleColor(ImGuiCol_Button,  ImVec4(0.14f,0.30f,0.60f,1.f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,ImVec4(0.24f,0.44f,0.80f,1.f));
-
-        ImGui::Begin("##mode_panel",nullptr,
-            ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
-            ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar);
-
-        // 제목
-        ImGui::SetWindowFontScale(1.2f);
-        ImVec2 tsz=ImGui::CalcTextSize("BEWE -- Station Mode");
-        ImGui::SetCursorPosX((PW-tsz.x)*0.5f);
-        ImGui::TextColored(ImVec4(0.4f,0.7f,1.f,1.f),"BEWE -- Station Mode");
-        ImGui::SetWindowFontScale(1.0f);
-        ImGui::Separator(); ImGui::Spacing();
-
-        // 탭 버튼
-        const char* labels[]={"  LOCAL  ","  HOST  ","  JOIN  "};
-        for(int i=0;i<3;i++){
-            if(i>0) ImGui::SameLine();
-            bool sel=(mode_sel==i);
-            if(sel) ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(0.20f,0.50f,0.90f,1.f));
-            if(ImGui::Button(labels[i],ImVec2(130,28))) mode_sel=i;
-            if(sel) ImGui::PopStyleColor();
-        }
-        ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
-
-        if(mode_sel==0){
-            // LOCAL
-            ImGui::TextColored(ImVec4(0.7f,0.9f,0.7f,1.f),"Local SDR device");
-            ImGui::Spacing();
-            ImGui::TextDisabled("BladeRF / RTL-SDR auto detect");
-        } else if(mode_sel==1){
-            // HOST
-            ImGui::Text("Port:"); ImGui::SameLine();
-            ImGui::SetNextItemWidth(90);
-            ImGui::InputInt("##hport",&host_port,0,0);
-            if(host_port<1) host_port=1;
-            if(host_port>65535) host_port=65535;
-            ImGui::Spacing();
-            ImGui::TextColored(ImVec4(0.7f,0.9f,0.7f,1.f),"Run as main station");
-            ImGui::TextDisabled("Others can connect");
-        } else {
-            // JOIN (CONNECT)
-            ImGui::Text("IP:"); ImGui::SameLine();
-            ImGui::SetNextItemWidth(180);
-            ImGui::InputText("##chost",connect_host,sizeof(connect_host));
-            ImGui::Text("Port:"); ImGui::SameLine();
-            ImGui::SetNextItemWidth(80);
-            ImGui::InputInt("##cport",&connect_port,0,0);
-            // ID/PW/Tier는 Auto: login account
-            ImGui::TextColored(ImVec4(0.5f,0.8f,0.5f,1.f),
-                "Account: %s (Tier%d)", login_get_id(), login_get_tier());
+        // Purge stale stations (>6 s without announcement)
+        {
+            std::lock_guard<std::mutex> lk(v.discovered_stations_mtx);
+            double now2 = glfwGetTime();
+            v.discovered_stations.erase(
+                std::remove_if(v.discovered_stations.begin(),
+                               v.discovered_stations.end(),
+                               [now2](const FFTViewer::DiscoveredStation& s){
+                                   return now2 - s.last_seen > 6.0;
+                               }),
+                v.discovered_stations.end());
         }
 
-        // 에러 메시지
-        if(mode_err_timer > 0.f){
-            mode_err_timer -= ImGui::GetIO().DeltaTime;
-            ImGui::Spacing();
-            ImGui::TextColored(ImVec4(1.f,0.3f,0.3f,1.f),"%s",mode_err_msg.c_str());
-        } else {
-            ImGui::Spacing(); ImGui::Dummy(ImVec2(0,16));
-        }
+        // ── Globe mouse interaction (only when no popup and globe init ok) ─
+        if(globe_ok && pop_state == POP_NONE && !io.WantCaptureMouse){
+            if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                globe.on_drag_begin(io.MousePos.x, io.MousePos.y);
+                was_dragging = false;
+            }
+            if(ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.f)){
+                globe.on_drag(io.MousePos.x, io.MousePos.y);
+                was_dragging = true;
+            }
+            if(io.MouseWheel != 0.f)
+                globe.on_scroll(io.MouseWheel);
 
-        // 확인 버튼
-        float bw=110.f;
-        ImGui::SetCursorPosX((PW-bw)*0.5f);
-        if(ImGui::Button("CONFIRM",ImVec2(bw,28))){
-            if(mode_sel==0 || mode_sel==1){
-                mode_done=true;
-            } else {
-                // CONNECT: try to connect (ID/PW auto from login)
-                cli = new NetClient();
-                if(cli->connect(connect_host,(int)connect_port,
-                                login_get_id(),login_get_pw(),(uint8_t)login_get_tier())){
-                    // 자동 재연결용 자격증명 저장
-                    strncpy(connect_id, login_get_id(), 31); connect_id[31]='\0';
-                    strncpy(connect_pw, login_get_pw(), 63); connect_pw[63]='\0';
-                    connect_tier = (uint8_t)login_get_tier();
-                    mode_done=true;
-                } else {
-                    delete cli; cli=nullptr;
-                    mode_err_msg="Connection failed. Check IP/Port"; mode_err_timer=3.f;
+            // Click (not drag) → pick lat/lon
+            if(ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !was_dragging){
+                float plat, plon;
+                if(globe.pick(io.MousePos.x, io.MousePos.y, plat, plon)){
+                    // Check if a station marker was clicked (20px radius)
+                    bool hit_station = false;
+                    {
+                        std::lock_guard<std::mutex> lk(v.discovered_stations_mtx);
+                        for(auto& st : v.discovered_stations){
+                            float sx, sy;
+                            if(globe.project(st.lat, st.lon, sx, sy)){
+                                float dx = sx - io.MousePos.x;
+                                float dy = sy - io.MousePos.y;
+                                if(dx*dx + dy*dy < 400.f){
+                                    pending_join = st;
+                                    hit_station = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if(hit_station){
+                        if(login_get_tier() < 3) pop_state = POP_JOIN;
+                    } else {
+                        if(login_get_tier() < 3){
+                            pending_lat = plat;
+                            pending_lon = plon;
+                            memset(new_station_name, 0, sizeof(new_station_name));
+                            pop_state = POP_HOST;
+                        }
+                    }
                 }
             }
         }
-        ImGui::End();
-        ImGui::PopStyleColor(3); ImGui::PopStyleVar(3);
+
+        // ── Station markers overlay ───────────────────────────────────────
+        if(globe_ok){
+            ImDrawList* fdl = ImGui::GetForegroundDrawList();
+            std::lock_guard<std::mutex> lk(v.discovered_stations_mtx);
+            for(auto& st : v.discovered_stations){
+                float sx, sy;
+                if(!globe.project(st.lat, st.lon, sx, sy)) continue;
+                // Outer glow
+                fdl->AddCircle(ImVec2(sx,sy), 14.f, IM_COL32(80,200,255,60), 32, 3.f);
+                // Inner fill
+                fdl->AddCircleFilled(ImVec2(sx,sy), 8.f, IM_COL32(60,160,255,220));
+                // Core
+                fdl->AddCircleFilled(ImVec2(sx,sy), 4.f, IM_COL32(200,240,255,255));
+                // Hover tooltip
+                float dx = sx - io.MousePos.x, dy = sy - io.MousePos.y;
+                if(dx*dx + dy*dy < 196.f){
+                    fdl->AddText(ImVec2(sx+12,sy-8),
+                                 IM_COL32(220,240,255,255), st.name.c_str());
+                    char ubuf[32];
+                    snprintf(ubuf, sizeof(ubuf), "%d ops", (int)st.user_count);
+                    fdl->AddText(ImVec2(sx+12,sy+4),
+                                 IM_COL32(160,200,220,200), ubuf);
+                }
+            }
+        }
+
+        // ── Title ─────────────────────────────────────────────────────────
+        {
+            ImDrawList* fdl = ImGui::GetForegroundDrawList();
+            fdl->AddText(ImVec2(20,20), IM_COL32(100,180,255,200),
+                         "BEWE Station Discovery");
+            fdl->AddText(ImVec2(20,36), IM_COL32(120,140,160,150),
+                         "Click globe to place station  |  Click marker to join");
+        }
+
+        // ── LOCAL button (top-right corner) ──────────────────────────────
+        {
+            ImGui::SetNextWindowPos(ImVec2((float)fw-170.f, 14.f));
+            ImGui::SetNextWindowSize(ImVec2(154.f, 38.f));
+            ImGui::SetNextWindowBgAlpha(0.75f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
+            ImGui::Begin("##local_btn", nullptr,
+                ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
+                ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar|
+                ImGuiWindowFlags_NoNav);
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f,0.35f,0.15f,1.f));
+            if(ImGui::Button("LOCAL", ImVec2(138,24))){
+                mode_sel=0; mode_done=true;
+            }
+            ImGui::PopStyleColor();
+            ImGui::End();
+            ImGui::PopStyleVar();
+        }
+
+        // ── Manual connect bar (bottom center) — Tier 1/2 only ──────────
+        if(login_get_tier() < 3)
+        {
+            const float MW = 480.f, MH = 60.f;
+            ImGui::SetNextWindowPos(ImVec2(((float)fw-MW)*0.5f, (float)fh-MH-8.f));
+            ImGui::SetNextWindowSize(ImVec2(MW, MH));
+            ImGui::SetNextWindowBgAlpha(0.78f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
+            ImGui::Begin("##manual_bar", nullptr,
+                ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
+                ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar|
+                ImGuiWindowFlags_NoNav);
+            ImGui::Text("Manual:");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(170);
+            ImGui::InputText("##mip", connect_host, sizeof(connect_host));
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(72);
+            ImGui::InputInt("##mport", &connect_port, 0, 0);
+            if(connect_port < 1) connect_port = 1;
+            if(connect_port > 65535) connect_port = 65535;
+            ImGui::SameLine();
+            if(ImGui::Button("Connect##man", ImVec2(72,22))){
+                { std::lock_guard<std::mutex> lk(join_share_mtx); join_share_files.clear(); }
+                cli = new NetClient();
+                if(cli->connect(connect_host, connect_port,
+                                login_get_id(), login_get_pw(),
+                                (uint8_t)login_get_tier())){
+                    strncpy(connect_id, login_get_id(), 31); connect_id[31]='\0';
+                    strncpy(connect_pw, login_get_pw(), 63); connect_pw[63]='\0';
+                    connect_tier = (uint8_t)login_get_tier();
+                    mode_sel=2; mode_done=true;
+                } else {
+                    delete cli; cli=nullptr;
+                    mode_err_msg="Connection failed. Check IP/Port";
+                    mode_err_timer=3.f;
+                }
+            }
+            if(mode_err_timer > 0.f){
+                mode_err_timer -= io.DeltaTime;
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(1.f,0.3f,0.3f,1.f),
+                                   "%s", mode_err_msg.c_str());
+            }
+            ImGui::End();
+            ImGui::PopStyleVar();
+        }
+
+        // ── HOST placement popup ──────────────────────────────────────────
+        if(pop_state == POP_HOST){
+            const float PW=330.f, PH=150.f;
+            ImGui::SetNextWindowPos(ImVec2(((float)fw-PW)*0.5f,((float)fh-PH)*0.5f));
+            ImGui::SetNextWindowSize(ImVec2(PW,PH));
+            ImGui::SetNextWindowBgAlpha(0.92f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,10.f);
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.06f,0.08f,0.15f,1.f));
+            ImGui::Begin("##pop_host", nullptr,
+                ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
+                ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar);
+            char loc[64];
+            snprintf(loc, sizeof(loc), "Location: %.3fN, %.3fE",
+                     pending_lat, pending_lon);
+            ImGui::TextColored(ImVec4(0.5f,0.9f,0.5f,1.f), "%s", loc);
+            ImGui::Spacing();
+            ImGui::Text("Station Name:");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(160);
+            ImGui::InputText("##sname", new_station_name, sizeof(new_station_name));
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14f,0.40f,0.14f,1.f));
+            bool can_host = new_station_name[0] != '\0';
+            if(!can_host) ImGui::BeginDisabled();
+            if(ImGui::Button("Set & Host##sh", ImVec2(110,26))){
+                v.station_name = new_station_name;
+                v.station_lat  = pending_lat;
+                v.station_lon  = pending_lon;
+                v.station_location_set = true;
+                mode_sel=1; pop_state=POP_NONE; mode_done=true;
+            }
+            if(!can_host) ImGui::EndDisabled();
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+            if(ImGui::Button("Cancel##hc", ImVec2(80,26))) pop_state=POP_NONE;
+            ImGui::End();
+            ImGui::PopStyleColor();
+            ImGui::PopStyleVar();
+        }
+
+        // ── JOIN confirm popup ────────────────────────────────────────────
+        if(pop_state == POP_JOIN){
+            const float PW=330.f, PH=130.f;
+            ImGui::SetNextWindowPos(ImVec2(((float)fw-PW)*0.5f,((float)fh-PH)*0.5f));
+            ImGui::SetNextWindowSize(ImVec2(PW,PH));
+            ImGui::SetNextWindowBgAlpha(0.92f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,10.f);
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.06f,0.08f,0.15f,1.f));
+            ImGui::Begin("##pop_join", nullptr,
+                ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
+                ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar);
+            ImGui::TextColored(ImVec4(0.4f,0.8f,1.f,1.f),
+                               "Join: %s", pending_join.name.c_str());
+            char ub[48];
+            snprintf(ub, sizeof(ub), "%d operator%s connected",
+                     (int)pending_join.user_count,
+                     pending_join.user_count == 1 ? "" : "s");
+            ImGui::TextDisabled("%s", ub);
+            ImGui::TextDisabled("IP: %s  Port: %d",
+                                pending_join.ip.c_str(), (int)pending_join.tcp_port);
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14f,0.30f,0.60f,1.f));
+            if(ImGui::Button("Join##jb", ImVec2(100,26))){
+                { std::lock_guard<std::mutex> lk(join_share_mtx); join_share_files.clear(); }
+                cli = new NetClient();
+                if(cli->connect(pending_join.ip.c_str(), (int)pending_join.tcp_port,
+                                login_get_id(), login_get_pw(),
+                                (uint8_t)login_get_tier())){
+                    strncpy(connect_id, login_get_id(), 31); connect_id[31]='\0';
+                    strncpy(connect_pw, login_get_pw(), 63); connect_pw[63]='\0';
+                    connect_tier = (uint8_t)login_get_tier();
+                    mode_sel=2; pop_state=POP_NONE; mode_done=true;
+                } else {
+                    delete cli; cli=nullptr;
+                    mode_err_msg="Connection failed";
+                    mode_err_timer=3.f;
+                    pop_state=POP_NONE;
+                }
+            }
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+            if(ImGui::Button("Cancel##jc", ImVec2(80,26))) pop_state=POP_NONE;
+            ImGui::End();
+            ImGui::PopStyleColor();
+            ImGui::PopStyleVar();
+        }
+
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(win);
     }
+
+    disc_listener.stop();
+    globe.destroy();
 
     if(glfwWindowShouldClose(win)){
         if(cli){ cli->disconnect(); delete cli; }
@@ -949,6 +1208,9 @@ void run_streaming_viewer(){
         v.net_cli     = cli;
         v.my_op_index = cli->my_op_index;
         strncpy(v.host_name, cli->my_name, 31);
+        // 워터폴 타임스탬프 초기화
+        { std::lock_guard<std::mutex> wlk(v.wf_events_mtx); v.wf_events.clear(); }
+        v.last_tagged_sec = -1;
 
         // 채널 sync 콜백 등록
         cli->on_channel_sync = [&](const PktChannelSync& sync){
@@ -1065,15 +1327,98 @@ void run_streaming_viewer(){
                     v.file_xfers.push_back(xf);
                 }
             }
-            // JOIN: REQ_TRANSFERRING → done
+            // JOIN: REQ_TRANSFERRING → done (영역 IQ 요청 결과)
+            bool is_region_iq = false;
             {
                 std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                 for(auto& e : v.rec_entries)
                     if(e.is_region && e.req_state==FFTViewer::RecEntry::REQ_TRANSFERRING && e.filename==name){
                         e.req_state=FFTViewer::RecEntry::REQ_NONE;
-                        e.finished=true; e.path=path; break;
+                        e.finished=true; e.path=path;
+                        is_region_iq = true; break;
                     }
             }
+            // 영역 IQ 요청 결과 → record/iq에 저장됨, rec_iq_files에 추가
+            if(is_region_iq){
+                bool f2=false; for(auto& s:rec_iq_files) if(s==name){f2=true;break;}
+                if(!f2) rec_iq_files.push_back(name);
+            } else {
+                // Public 다운로드 파일 → share 폴더 (share/iq 또는 share/audio)
+                std::string share_iq  = BEWEPaths::share_iq_dir();
+                std::string share_aud = BEWEPaths::share_audio_dir();
+                if(path.find(share_iq) == 0 || path.find(share_aud) == 0){
+                    bool found=false;
+                    for(auto& df:downloaded_files) if(df==name){found=true;break;}
+                    if(!found) downloaded_files.push_back(name);
+                    // share_iq_files / share_audio_files 에도 추가
+                    if(path.find(share_iq) == 0){
+                        bool f2=false; for(auto& s:share_iq_files) if(s==name){f2=true;break;}
+                        if(!f2) share_iq_files.push_back(name);
+                    } else {
+                        bool f2=false; for(auto& s:share_audio_files) if(s==name){f2=true;break;}
+                        if(!f2) share_audio_files.push_back(name);
+                    }
+                }
+            }
+        };
+
+        // JOIN: 호스트가 Deny한 경우 → REQ_PENDING 항목을 REQ_DENIED로
+        cli->on_region_response = [&](bool allowed){
+            if(!allowed){
+                std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                for(auto& e : v.rec_entries)
+                    if(e.is_region && e.req_state==FFTViewer::RecEntry::REQ_PENDING){
+                        e.req_state=FFTViewer::RecEntry::REQ_DENIED;
+                        e.req_deny_timer=30.f; break;
+                    }
+            }
+        };
+
+        // JOIN: HOST Public 파일 목록 수신 (filename, size_bytes, uploader)
+        cli->on_share_list = [&](const std::vector<std::tuple<std::string,uint64_t,std::string>>& files){
+            std::lock_guard<std::mutex> lk(join_share_mtx);
+            // 목록 갱신
+            for(auto& f : files){
+                const std::string& fn  = std::get<0>(f);
+                uint64_t           fsz = std::get<1>(f);
+                const std::string& upl = std::get<2>(f);
+                bool found=false;
+                for(auto& e : join_share_files)
+                    if(e.filename==fn){ e.size_bytes=fsz; if(!upl.empty()) e.uploader=upl; found=true; break; }
+                if(!found){ JoinShareEntry e; e.filename=fn; e.size_bytes=fsz; e.uploader=upl; join_share_files.push_back(e); }
+            }
+            // HOST 목록에 없는 항목은 제거
+            join_share_files.erase(std::remove_if(join_share_files.begin(),join_share_files.end(),
+                [&](const JoinShareEntry& e){
+                    for(auto& f:files) if(std::get<0>(f)==e.filename) return false;
+                    return true;
+                }), join_share_files.end());
+        };
+
+        // JOIN: 수신 파일 저장 경로 결정
+        // - region IQ 요청 결과 (REQ_TRANSFERRING 상태) → record/iq
+        // - Public 다운로드 IQ_ / sa_                  → share/iq
+        // - Public 다운로드 Audio_                      → share/audio
+        cli->on_get_save_dir = [&v](const std::string& filename) -> std::string {
+            // region IQ 요청 여부 확인
+            bool is_region = false;
+            {
+                std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                for(auto& e : v.rec_entries)
+                    if(e.is_region && e.req_state==FFTViewer::RecEntry::REQ_TRANSFERRING
+                       && e.filename==filename){ is_region=true; break; }
+            }
+            if(is_region){
+                std::string dir = BEWEPaths::record_iq_dir();
+                struct stat sd{}; if(stat(dir.c_str(),&sd)!=0) mkdir(dir.c_str(),0755);
+                return dir;
+            }
+            // Public 다운로드: IQ/Audio 구분
+            bool is_iq = (filename.size()>3 && filename.substr(0,3)=="IQ_")
+                      || (filename.size()>3 && filename.substr(0,3)=="sa_");
+            std::string dir = is_iq ? BEWEPaths::share_iq_dir() : BEWEPaths::share_audio_dir();
+            struct stat sd{}; if(stat(dir.c_str(),&sd)!=0) mkdir(dir.c_str(),0755);
+            return dir;
         };
 
         // 오퍼레이터 목록 팝업 표시
@@ -1169,15 +1514,47 @@ void run_streaming_viewer(){
         v.mix_thr=std::thread(&FFTViewer::mix_worker,&v);
 
         if(mode_sel==1){
-            // HOST: 서버 시작
+            // HOST: 서버 시작 (public 목록 + 소유자/리스너 초기화)
+            shared_files.clear(); pub_iq_files.clear(); pub_audio_files.clear();
+            pub_listeners.clear(); pub_owners.clear();
             srv = new NetServer();
             // 인증: 로그인 시스템과 동일하게 처리 (여기서는 간단히 항상 허용)
-            srv->cb.on_auth = [&](const char* id, const char* pw,
+            srv->cb.on_auth = [&,srv](const char* id, const char* pw,
                                    uint8_t tier, uint8_t& idx) -> bool {
                 // TODO: 실제 인증 로직 연결
                 static uint8_t next=1;
                 idx = next++;
                 if(next>MAX_OPERATORS) next=1;
+                // 인증 성공 시 현재 share 목록 전송 (join 초기 동기화)
+                // 백그라운드 스레드에서 약간 지연 후 전송 (AUTH_ACK 후 처리)
+                uint8_t new_idx = idx;
+                // pub_owners를 캡처하여 업로더 정보 포함 전송
+                std::thread([srv, new_idx](){
+                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                    std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
+                    auto scan_pub = [&](const std::string& dir){
+                        DIR* ds = opendir(dir.c_str());
+                        if(!ds) return;
+                        struct dirent* ent;
+                        while((ent=readdir(ds))!=nullptr){
+                            const char* n = ent->d_name;
+                            size_t nl = strlen(n);
+                            if(nl>4 && strcmp(n+nl-4,".wav")==0){
+                                std::string fp = dir+"/"+n;
+                                struct stat st{}; uint64_t fsz=0;
+                                if(stat(fp.c_str(),&st)==0) fsz=(uint64_t)st.st_size;
+                                std::string upl;
+                                auto it=pub_owners.find(n);
+                                if(it!=pub_owners.end()) upl=it->second;
+                                slist.push_back({n, fsz, upl});
+                            }
+                        }
+                        closedir(ds);
+                    };
+                    scan_pub(BEWEPaths::public_iq_dir());
+                    scan_pub(BEWEPaths::public_audio_dir());
+                    if(!slist.empty()) srv->send_share_list((int)new_idx, slist);
+                }).detach();
                 return true;
             };
             // 서버 콜백 → FFTViewer 직접 제어
@@ -1256,7 +1633,8 @@ void run_streaming_viewer(){
             };
             srv->cb.on_request_region = [&](uint8_t op_idx, const char* op_name,
                                              int32_t fft_top, int32_t fft_bot,
-                                             float freq_lo, float freq_hi){
+                                             float freq_lo, float freq_hi,
+                                             int32_t time_start, int32_t time_end){
                 // 즉시 녹음 대신 승인 대기 항목으로 추가
                 std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                 FFTViewer::RecEntry e{};
@@ -1271,6 +1649,7 @@ void run_streaming_viewer(){
                 strncpy(e.req_op_name, op_name?op_name:"?", 31);
                 e.req_fft_top=fft_top; e.req_fft_bot=fft_bot;
                 e.req_freq_lo=freq_lo; e.req_freq_hi=freq_hi;
+                e.req_time_start=time_start; e.req_time_end=time_end;
                 e.t_start=std::chrono::steady_clock::now();
                 v.rec_entries.push_back(e);
             };
@@ -1296,6 +1675,79 @@ void run_streaming_viewer(){
             srv->cb.on_start_rec  = [&](int){ v.start_rec(); };
             srv->cb.on_stop_rec   = [&](){ v.stop_rec(); };
             srv->cb.on_chat       = [&](const char*,const char*){};
+            // HOST: JOIN이 public 파일 다운로드 요청
+            srv->cb.on_share_download_req = [&](uint8_t op_idx, const char* filename){
+                // IQ/Audio 구분하여 올바른 폴더에서 찾기
+                std::string fn(filename);
+                bool is_iq = (fn.size()>3 && fn.substr(0,3)=="IQ_") || (fn.size()>3 && fn.substr(0,3)=="sa_");
+                std::string path = (is_iq ? BEWEPaths::public_iq_dir() : BEWEPaths::public_audio_dir()) + "/" + fn;
+                struct stat st{};
+                if(stat(path.c_str(),&st)!=0){ fprintf(stderr,"share_download: file not found: %s\n",path.c_str()); return; }
+                // 다운로드 요청자 이름 기록
+                {
+                    auto ops = srv->get_operators();
+                    for(auto& op : ops){
+                        if(op.index == op_idx){
+                            std::string fn(filename);
+                            auto& listeners = pub_listeners[fn];
+                            bool already = false;
+                            for(auto& s : listeners) if(s==std::string(op.name)){already=true;break;}
+                            if(!already) listeners.push_back(std::string(op.name));
+                            break;
+                        }
+                    }
+                }
+                uint8_t tid = v.next_transfer_id.fetch_add(1);
+                srv->send_file_to((int)op_idx, path.c_str(), tid);
+            };
+            // HOST: JOIN이 파일을 업로드 완료 → public/iq 또는 public/audio로 이동 + 목록 갱신
+            srv->cb.on_share_upload_done = [&](uint8_t /*op_idx*/, const char* op_name, const char* tmp_path){
+                const char* fn = strrchr(tmp_path, '/'); fn = fn ? fn+1 : tmp_path;
+                // "bewe_up_" 접두사 제거
+                if(strncmp(fn,"bewe_up_",8)==0) fn+=8;
+                // IQ/Audio 구분
+                bool is_iq = (strlen(fn)>3 && strncmp(fn,"IQ_",3)==0)
+                          || (strlen(fn)>3 && strncmp(fn,"sa_",3)==0);
+                std::string pub_dir = is_iq ? BEWEPaths::public_iq_dir() : BEWEPaths::public_audio_dir();
+                struct stat sd{}; if(stat(pub_dir.c_str(),&sd)!=0) mkdir(pub_dir.c_str(),0755);
+                std::string dst = pub_dir + "/" + fn;
+                // 임시 파일 → public 폴더로 복사
+                FILE* fin = fopen(tmp_path,"rb"); FILE* fout = fopen(dst.c_str(),"wb");
+                if(fin&&fout){ char buf[65536]; size_t n; while((n=fread(buf,1,sizeof(buf),fin))>0) fwrite(buf,1,n,fout); }
+                if(fin) fclose(fin); if(fout) fclose(fout);
+                remove(tmp_path); // 임시 파일 삭제
+                std::string fname(fn);
+                // pub_owners: 업로드한 사람 기록
+                pub_owners[fname] = std::string(op_name);
+                // pub_iq_files / pub_audio_files / shared_files 갱신
+                if(is_iq){
+                    bool dup=false; for(auto& sf:pub_iq_files) if(sf==fname){dup=true;break;}
+                    if(!dup) pub_iq_files.push_back(fname);
+                } else {
+                    bool dup=false; for(auto& sf:pub_audio_files) if(sf==fname){dup=true;break;}
+                    if(!dup) pub_audio_files.push_back(fname);
+                }
+                {
+                    bool dup=false; for(auto& sf:shared_files) if(sf==fname){dup=true;break;}
+                    if(!dup) shared_files.push_back(fname);
+                }
+                // 모든 JOIN에게 갱신된 public 목록 브로드캐스트
+                {
+                    std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
+                    for(auto& sf : shared_files){
+                        bool siq = (sf.size()>3&&sf.substr(0,3)=="IQ_")||(sf.size()>3&&sf.substr(0,3)=="sa_");
+                        std::string sfp = (siq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+sf;
+                        struct stat sst{}; uint64_t fsz=0;
+                        if(stat(sfp.c_str(),&sst)==0) fsz=(uint64_t)sst.st_size;
+                        std::string upl;
+                        auto it=pub_owners.find(sf);
+                        if(it!=pub_owners.end()) upl=it->second;
+                        slist.push_back({sf,fsz,upl});
+                    }
+                    srv->send_share_list(-1, slist);
+                }
+                printf("Public upload done: %s (from %s)\n", fn, op_name);
+            };
 
             if(!srv->start(host_port)){
                 printf("Server start failed\n");
@@ -1303,6 +1755,15 @@ void run_streaming_viewer(){
             } else {
                 v.net_srv = srv;
                 srv->set_host_info(login_get_id(), (uint8_t)login_get_tier());
+                // Start UDP discovery broadcast if station location was set via globe
+                if(v.station_location_set){
+                    std::string lip = get_local_ip();
+                    srv->start_discovery_broadcast(
+                        v.station_name.c_str(),
+                        v.station_lat, v.station_lon,
+                        (uint16_t)host_port,
+                        lip.c_str());
+                }
                 // 브로드캐스트 전용 스레드 시작 (캡처 스레드 분리)
                 v.net_bcast_stop.store(false);
                 v.net_bcast_thr = std::thread(&FFTViewer::net_bcast_worker, &v);
@@ -1365,12 +1826,14 @@ void run_streaming_viewer(){
 
     bool  ops_open     = false;
     bool  stat_open    = false;
+    bool  board_open   = false;
     int   last_fft_seq = -1;  // CONNECT 모드 FFT 시퀀스 추적
     bool  chat_scroll_bottom = false;
     // 파일 우클릭 컨텍스트 메뉴
     struct FileCtxMenu {
         bool open=false; float x=0,y=0;
         std::string filepath, filename;
+        bool is_public=false; // Public 탭 파일 (소유자만 삭제)
     } file_ctx;
 
     // HOST 모드 로컬 채팅 로그 (JOIN은 net_cli->chat_log 사용)
@@ -1387,6 +1850,12 @@ void run_streaming_viewer(){
             host_chat_log.push_back(m);
             chat_scroll_bottom = true;
         };
+    }
+
+    // ── TM IQ 기본 활성화 (HOST/LOCAL 모드) ───────────────────────────────
+    if(!v.remote_mode){
+        v.tm_iq_open();
+        if(v.tm_iq_file_ready) v.tm_iq_on.store(true);
     }
 
     // ── Main loop ─────────────────────────────────────────────────────────
@@ -1450,6 +1919,9 @@ void run_streaming_viewer(){
                         if(v.local_ch_out[ci]==3) v.net_cli->cmd_toggle_recv(ci,false);
                     // 재연결 후 오토스케일 트리거
                     v.autoscale_active=true; v.autoscale_init=false; v.autoscale_accum.clear();
+                    // 워터폴 타임스탬프 초기화
+                    { std::lock_guard<std::mutex> wlk(v.wf_events_mtx); v.wf_events.clear(); }
+                    v.last_tagged_sec = -1;
                 }
             }
         }
@@ -1502,8 +1974,8 @@ void run_streaming_viewer(){
                         int fi = v.total_ffts % MAX_FFTS_MEMORY;
                         int8_t* dst = v.fft_data.data() + (size_t)fi * fsz;
                         memcpy(dst, v.net_cli->fft_data.data(), fsz);
-                        v.current_fft_idx = fi;
                         v.total_ffts++;
+                        v.current_fft_idx = v.total_ffts - 1;  // 언바운드 카운터 (TM offset 계산용)
                         // JOIN: wall_time 기반 워터폴 시간태그
                         if(v.net_cli->fft_wall_time > 0){
                             time_t wt = (time_t)v.net_cli->fft_wall_time;
@@ -1512,13 +1984,13 @@ void run_streaming_viewer(){
                             if(cur5 != v.last_tagged_sec){
                                 v.last_tagged_sec = cur5;
                                 FFTViewer::WfEvent wev{};
-                                wev.fft_idx  = fi;
+                                wev.fft_idx  = v.current_fft_idx;  // 언바운드 인덱스
                                 wev.wall_time= wt;
                                 wev.type     = 0;
                                 strftime(wev.label,sizeof(wev.label),"%H:%M:%S",tt);
                                 std::lock_guard<std::mutex> wlk(v.wf_events_mtx);
                                 v.wf_events.push_back(wev);
-                                int cutoff=fi-MAX_FFTS_MEMORY;
+                                int cutoff=v.current_fft_idx-MAX_FFTS_MEMORY;
                                 v.wf_events.erase(std::remove_if(v.wf_events.begin(),v.wf_events.end(),
                                     [&](const FFTViewer::WfEvent& e){return e.fft_idx<cutoff;}),
                                     v.wf_events.end());
@@ -1559,11 +2031,8 @@ void run_streaming_viewer(){
 
         ImGui_ImplOpenGL3_NewFrame(); ImGui_ImplGlfw_NewFrame(); ImGui::NewFrame();
         v.topbar_sel_this_frame=false;
-        // TM 모드: freeze_idx만 최신으로 추적 (버퍼 범위 파악용)
-        // tm_display_fft_idx는 Ctrl+휠 시에만 갱신 → 화면 freeze 유지
-        if(v.tm_active.load()){
-            v.tm_freeze_idx=v.current_fft_idx;
-        }
+        // TM 모드: freeze_idx는 스페이스바 진입 시점에만 세팅 (매 프레임 갱신 금지)
+        // Ctrl+휠로 tm_offset 변경 시 tm_update_display()가 display_idx를 재계산함
         if(v.texture_needs_recreate){ v.texture_needs_recreate=false; v.create_waterfall_texture(); }
 
         ImGuiIO& io=ImGui::GetIO();
@@ -1575,10 +2044,28 @@ void run_streaming_viewer(){
             if(ImGui::IsKeyPressed(ImGuiKey_R,false)){
                 if(v.remote_mode && v.net_cli){
                     if(v.region.active){
+                        // R키 누르는 시점에 time_start/end 재계산 (정확도 최대화)
+                        {
+                            // wall_time 기반 재계산 (JOIN 포함 정확)
+                            time_t wt_top = v.fft_idx_to_wall_time(v.region.fft_top);
+                            time_t wt_bot = v.fft_idx_to_wall_time(v.region.fft_bot);
+                            if(wt_top > 0 && wt_bot > 0){
+                                v.region.time_end   = wt_top;
+                                v.region.time_start = wt_bot;
+                            } else {
+                                float rps_r=(float)v.header.sample_rate/(float)v.fft_size/(float)v.time_average;
+                                if(rps_r<=0) rps_r=37.5f;
+                                time_t now_r=time(nullptr);
+                                v.region.time_end  =now_r-(time_t)((v.current_fft_idx-v.region.fft_top)/rps_r);
+                                v.region.time_start=now_r-(time_t)((v.current_fft_idx-v.region.fft_bot)/rps_r);
+                            }
+                        }
                         // JOIN: 영역 IQ 녹음 요청 → 호스트 승인 필요
                         v.net_cli->cmd_request_region(
                             v.region.fft_top, v.region.fft_bot,
-                            v.region.freq_lo, v.region.freq_hi);
+                            v.region.freq_lo, v.region.freq_hi,
+                            (int32_t)v.region.time_start, (int32_t)v.region.time_end);
+                        v.region.active = false;  // 요청 후 선택영역 UI 해제
                         // 요청 상태 추가 (Record 패널에 표시)
                         {
                             std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
@@ -1629,11 +2116,9 @@ void run_streaming_viewer(){
 
             if(ImGui::IsKeyPressed(ImGuiKey_P,false)){
                 bool np = !v.spectrum_pause.load();
-                if(v.remote_mode && v.net_cli) v.net_cli->cmd_set_spectrum_pause(np);
-                else {
-                    v.spectrum_pause.store(np);
-                    if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
-                }
+                // JOIN이든 HOST든 로컬 FFT 표시만 토글 (채널 복조 스트리밍과 무관)
+                v.spectrum_pause.store(np);
+                if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
             }
             // T키: IQ 롤링 버퍼 활성/비활성 (JOIN이면 HOST에 CMD 전송)
             if(ImGui::IsKeyPressed(ImGuiKey_T,false)){
@@ -2148,7 +2633,7 @@ void run_streaming_viewer(){
 
             // 패널이 처음 열릴 때 STAT 자동 활성화
             if(!prev_right_visible_outer){
-                if(!v.sa_panel_open) stat_open = true;
+                if(!v.sa_panel_open && !board_open) stat_open = true;
             }
             prev_right_visible_outer = true;
 
@@ -2159,31 +2644,36 @@ void run_streaming_viewer(){
             dl->AddRectFilled(ImVec2(rpx,content_y),ImVec2(disp_w,rp_content_y),IM_COL32(35,35,40,255));
             dl->AddLine(ImVec2(rpx,rp_content_y-1),ImVec2(disp_w,rp_content_y-1),IM_COL32(60,60,70,255),1);
 
+            float btn_y = content_y + (SUBBAR_H - ImGui::GetFontSize())/2;
+            auto subbar_btn = [&](float bx, const char* lbl, bool active, ImU32 col_on) -> bool {
+                ImVec2 tsz = ImGui::CalcTextSize(lbl);
+                bool hov = io.MousePos.x>=bx && io.MousePos.x<=bx+tsz.x+2 &&
+                           io.MousePos.y>=content_y && io.MousePos.y<rp_content_y;
+                ImU32 col = active ? col_on
+                          : (hov ? IM_COL32(160,160,180,255) : IM_COL32(110,110,130,255));
+                dl->AddText(ImVec2(bx, btn_y), col, lbl);
+                return hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+            };
+
             // ── STAT 버튼 ─────────────────────────────────────────────────
             float btn_x = rpx + 6;
-            float btn_y = content_y + (SUBBAR_H - ImGui::GetFontSize())/2;
-            bool stat_hov = io.MousePos.x>=btn_x && io.MousePos.x<=btn_x+32 &&
-                            io.MousePos.y>=content_y && io.MousePos.y<rp_content_y;
-            ImU32 stat_btn_col = stat_open
-                ? IM_COL32(80,255,160,255)
-                : (stat_hov ? IM_COL32(160,160,180,255) : IM_COL32(110,110,130,255));
-            dl->AddText(ImVec2(btn_x, btn_y), stat_btn_col, "STAT");
-            if(stat_hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+            if(subbar_btn(btn_x, "STAT", stat_open, IM_COL32(80,255,160,255))){
                 stat_open = !stat_open;
-                if(stat_open) v.sa_panel_open=false;
+                if(stat_open){ v.sa_panel_open=false; board_open=false; }
             }
 
             // ── SA 버튼 ──────────────────────────────────────────────────
-            float sa_btn_x = btn_x + 40;
-            bool sa_hov = io.MousePos.x>=sa_btn_x && io.MousePos.x<=sa_btn_x+24 &&
-                          io.MousePos.y>=content_y && io.MousePos.y<rp_content_y;
-            ImU32 sa_btn_col = v.sa_panel_open
-                ? IM_COL32(80,180,255,255)
-                : (sa_hov ? IM_COL32(160,160,180,255) : IM_COL32(110,110,130,255));
-            dl->AddText(ImVec2(sa_btn_x, btn_y), sa_btn_col, "SA");
-            if(sa_hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+            float sa_btn_x = btn_x + 44;
+            if(subbar_btn(sa_btn_x, "SA", v.sa_panel_open, IM_COL32(80,180,255,255))){
                 v.sa_panel_open = !v.sa_panel_open;
-                if(v.sa_panel_open) stat_open=false;
+                if(v.sa_panel_open){ stat_open=false; board_open=false; }
+            }
+
+            // ── BOARD 버튼 ───────────────────────────────────────────────
+            float board_btn_x = sa_btn_x + 32;
+            if(subbar_btn(board_btn_x, "BOARD", board_open, IM_COL32(255,200,80,255))){
+                board_open = !board_open;
+                if(board_open){ stat_open=false; v.sa_panel_open=false; }
             }
 
             // ── FFT size 선택 (SA 활성화 시에만) ─────────────────────────
@@ -2237,55 +2727,55 @@ void run_streaming_viewer(){
                 // ── Archive 파일 목록 ──────────────────────────────────
                 static bool arch_priv_open = true;
                 static bool arch_share_open = true;
+                static bool arch_pub_open = true;
                 static float arch_scan_timer = 0.0f;
                 arch_scan_timer += io.DeltaTime;
                 if(arch_scan_timer >= 1.0f){
                     arch_scan_timer = 0.0f;
-                    std::string rdir = BEWEPaths::recordings_dir();
-                    std::string sdir = rdir + "/share";
 
-                    // Private 스캔 (recordings_dir 루트, .wav 파일)
-                    priv_files.clear();
-                    DIR* d = opendir(rdir.c_str());
-                    if(d){
+                    // 폴더별 .wav 스캔 헬퍼 (mtime 내림차순 정렬)
+                    auto scan_dir = [](const std::string& dir, std::vector<std::string>& out){
+                        out.clear();
+                        DIR* d = opendir(dir.c_str());
+                        if(!d) return;
                         struct dirent* ent;
                         while((ent=readdir(d))!=nullptr){
                             const char* n = ent->d_name;
                             size_t nl = strlen(n);
-                            if(nl>4 && strcmp(n+nl-4,".wav")==0)
-                                priv_files.push_back(n);
+                            if(nl>4 && strcmp(n+nl-4,".wav")==0) out.push_back(n);
                         }
                         closedir(d);
-                        std::sort(priv_files.begin(),priv_files.end(),
-                            [&rdir](const std::string& a, const std::string& b){
-                                struct stat sa{},sb{};
-                                stat((rdir+"/"+a).c_str(),&sa);
-                                stat((rdir+"/"+b).c_str(),&sb);
-                                return sa.st_mtime > sb.st_mtime;
-                            });
-                    }
+                        std::sort(out.begin(),out.end(),[&dir](const std::string& a,const std::string& b){
+                            struct stat sa{},sb{};
+                            stat((dir+"/"+a).c_str(),&sa); stat((dir+"/"+b).c_str(),&sb);
+                            return sa.st_mtime > sb.st_mtime;
+                        });
+                    };
 
-                    // Share 스캔 (share 서브디렉터리)
-                    struct stat sd{}; if(stat(sdir.c_str(),&sd)!=0) mkdir(sdir.c_str(),0755);
+                    // Record 스캔 (record/iq, record/audio)
+                    scan_dir(BEWEPaths::record_iq_dir(),    rec_iq_files);
+                    scan_dir(BEWEPaths::record_audio_dir(), rec_audio_files);
+
+                    // Private 스캔 (private/iq, private/audio)
+                    scan_dir(BEWEPaths::private_iq_dir(),    priv_iq_files);
+                    scan_dir(BEWEPaths::private_audio_dir(), priv_audio_files);
+                    priv_files.clear();
+                    priv_files.insert(priv_files.end(), priv_iq_files.begin(),    priv_iq_files.end());
+                    priv_files.insert(priv_files.end(), priv_audio_files.begin(), priv_audio_files.end());
+
+                    // Public 스캔 (public/iq, public/audio) - HOST only
+                    scan_dir(BEWEPaths::public_iq_dir(),    pub_iq_files);
+                    scan_dir(BEWEPaths::public_audio_dir(), pub_audio_files);
                     shared_files.clear();
-                    DIR* ds = opendir(sdir.c_str());
-                    if(ds){
-                        struct dirent* ent;
-                        while((ent=readdir(ds))!=nullptr){
-                            const char* n = ent->d_name;
-                            size_t nl = strlen(n);
-                            if(nl>4 && strcmp(n+nl-4,".wav")==0)
-                                shared_files.push_back(n);
-                        }
-                        closedir(ds);
-                        std::sort(shared_files.begin(),shared_files.end(),
-                            [&sdir](const std::string& a, const std::string& b){
-                                struct stat sa{},sb{};
-                                stat((sdir+"/"+a).c_str(),&sa);
-                                stat((sdir+"/"+b).c_str(),&sb);
-                                return sa.st_mtime > sb.st_mtime;
-                            });
-                    }
+                    shared_files.insert(shared_files.end(), pub_iq_files.begin(),    pub_iq_files.end());
+                    shared_files.insert(shared_files.end(), pub_audio_files.begin(), pub_audio_files.end());
+
+                    // Share 스캔 (share/iq, share/audio) - 다운로드된 파일
+                    scan_dir(BEWEPaths::share_iq_dir(),    share_iq_files);
+                    scan_dir(BEWEPaths::share_audio_dir(), share_audio_files);
+                    downloaded_files.clear();
+                    downloaded_files.insert(downloaded_files.end(), share_iq_files.begin(),    share_iq_files.end());
+                    downloaded_files.insert(downloaded_files.end(), share_audio_files.begin(), share_audio_files.end());
                 }
 
                 // ── 탭 바 ─────────────────────────────────────────────────
@@ -2639,7 +3129,7 @@ void run_streaming_viewer(){
                                         ImGui::PopStyleColor();
                                     }
                                     using RS = FFTViewer::RecEntry::ReqState;
-                                    for(int ri=0;ri<(int)v.rec_entries.size();ri++){
+                                    for(int ri=(int)v.rec_entries.size()-1;ri>=0;ri--){
                                         auto& re=v.rec_entries[ri];
                                         if(re.is_audio) continue;
                                         ImGui::PushID(ri+30000);
@@ -2648,7 +3138,7 @@ void run_streaming_viewer(){
                                             if(re.finished){
                                                 std::string szstr = fmt_filesize("",re.path);
                                                 std::string lbl = std::string("[Done]  ")+re.filename;
-                                                if(!szstr.empty()) lbl += "  ["+szstr+"]";
+                                                if(!szstr.empty()) lbl += "  "+szstr;
                                                 ImGui::Selectable(lbl.c_str(), false);
                                                 if(ImGui::IsItemHovered()&&ImGui::IsMouseClicked(ImGuiMouseButton_Right))
                                                     file_ctx={true,io.MousePos.x,io.MousePos.y,re.path,re.filename};
@@ -2659,7 +3149,11 @@ void run_streaming_viewer(){
                                                 bool blink=(fmodf(t2,0.8f)<0.4f);
                                                 ImGui::PushStyleColor(ImGuiCol_Text,
                                                     blink?IM_COL32(255,80,80,255):IM_COL32(200,60,60,255));
-                                                ImGui::Text("[REC]  %s  [%ds]", re.filename.c_str(), (int)elapsed);
+                                                std::string szstr2 = fmt_filesize("", re.path);
+                                                if(!szstr2.empty())
+                                                    ImGui::Text("[REC]  %s  [%ds]  %s", re.filename.c_str(), (int)elapsed, szstr2.c_str());
+                                                else
+                                                    ImGui::Text("[REC]  %s  [%ds]", re.filename.c_str(), (int)elapsed);
                                                 ImGui::PopStyleColor();
                                             }
                                         } else {
@@ -2675,7 +3169,7 @@ void run_streaming_viewer(){
                                                     break;
                                                 case RS::REQ_CONFIRMED:
                                                     snprintf(state_lbl,sizeof(state_lbl),"[Confirm]");
-                                                    col=blink?IM_COL32(80,255,80,255):IM_COL32(60,200,60,255);
+                                                    col=IM_COL32(80,220,80,255);
                                                     break;
                                                 case RS::REQ_DENIED:
                                                     snprintf(state_lbl,sizeof(state_lbl),"[Deny] %.0fs",re.req_deny_timer);
@@ -2683,7 +3177,7 @@ void run_streaming_viewer(){
                                                     break;
                                                 case RS::REQ_TRANSFERRING:
                                                     snprintf(state_lbl,sizeof(state_lbl),"[Transferring]");
-                                                    col=blink?IM_COL32(80,180,255,255):IM_COL32(60,140,200,255);
+                                                    col=IM_COL32(80,180,255,255);
                                                     break;
                                                 default:
                                                     snprintf(state_lbl,sizeof(state_lbl),"[Done]");
@@ -2712,19 +3206,41 @@ void run_streaming_viewer(){
                                                 if(ImGui::MenuItem("Allow")){
                                                     // 요청 정보 복사 후 백그라운드 스레드 실행
                                                     re.req_state = RS::REQ_CONFIRMED;
-                                                    int32_t ft=re.req_fft_top, fb=re.req_fft_bot;
                                                     float fl=re.req_freq_lo, fh=re.req_freq_hi;
+                                                    int32_t ts=re.req_time_start, te=re.req_time_end;
                                                     uint8_t oidx=re.req_op_idx;
                                                     std::string fname=re.filename;
-                                                    std::thread([&v,srv,ft,fb,fl,fh,oidx,fname](){
+                                                    // JOIN 요청 시각 → HOST fft 인덱스 변환
+                                                    float rps=(float)v.header.sample_rate/(float)v.fft_size/(float)v.time_average;
+                                                    if(rps<=0.f) rps=37.5f;
+                                                    time_t now_h=time(nullptr);
+                                                    int cur_fi=v.current_fft_idx;
+                                                    int32_t ft=(int32_t)(cur_fi-(int32_t)((now_h-(time_t)te)*rps));
+                                                    int32_t fb=(int32_t)(cur_fi-(int32_t)((now_h-(time_t)ts)*rps));
+                                                    std::thread([&v,srv,ft,fb,fl,fh,ts,te,oidx,fname](){
+                                                        // rec_busy_flag가 해제될 때까지 대기 (이전 저장 완료 대기)
+                                                        for(int w=0;w<200&&v.rec_busy_flag.load();w++)
+                                                            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                                                        // region 파라미터 설정
                                                         v.region.fft_top=ft; v.region.fft_bot=fb;
                                                         v.region.freq_lo=fl; v.region.freq_hi=fh;
+                                                        v.region.time_start=(time_t)ts;
+                                                        v.region.time_end=(time_t)te;
                                                         v.region.active=true;
-                                                        v.region_save();
-                                                        // region_save 완료 후 경로 수집
+                                                        // region_save() 대신 do_region_save_work() 직접 호출
+                                                        // (region_save는 내부에서 detach 스레드를 띄우므로
+                                                        //  완료를 기다릴 수 없음)
+                                                        v.rec_busy_flag.store(true);
+                                                        v.rec_state = FFTViewer::REC_BUSY;
+                                                        v.rec_anim_timer = 0.0f;
+                                                        v.region.active = false;
+                                                        v.do_region_save_work();
+                                                        v.rec_state = FFTViewer::REC_SUCCESS;
+                                                        v.rec_success_timer = 3.0f;
+                                                        v.rec_busy_flag.store(false);
+                                                        // 저장 완료 후 경로 수집
                                                         std::string path;
-                                                        for(int retry=0;retry<100&&path.empty();retry++){
-                                                            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                                                        {
                                                             std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
                                                             for(auto it=v.rec_entries.rbegin();it!=v.rec_entries.rend();++it)
                                                                 if(it->is_region&&it->req_state==FFTViewer::RecEntry::REQ_NONE&&it->finished){
@@ -2734,7 +3250,16 @@ void run_streaming_viewer(){
                                                                     break;
                                                                 }
                                                         }
-                                                        if(path.empty()) return;
+                                                        if(path.empty()){
+                                                            // region_save 실패 → JOIN에 Deny 전송, 항목 제거
+                                                            srv->send_region_response((int)oidx, false);
+                                                            {
+                                                                std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
+                                                                for(auto it2=v.rec_entries.begin();it2!=v.rec_entries.end();++it2)
+                                                                    if(it2->filename==fname){ v.rec_entries.erase(it2); break; }
+                                                            }
+                                                            return;
+                                                        }
                                                         uint64_t fsz=0;
                                                         {FILE* f=fopen(path.c_str(),"rb");if(f){fseek(f,0,SEEK_END);fsz=(uint64_t)ftell(f);fclose(f);}}
                                                         {
@@ -2754,13 +3279,12 @@ void run_streaming_viewer(){
                                                                 for(auto& e:v.rec_entries)
                                                                     if(e.filename==fname){ e.xfer_done=done; break; }
                                                             });
-                                                        // 전송 완료 → 항목 완료 처리, 로컬 파일 삭제
+                                                        // 전송 완료 → 항목 제거 + 로컬 파일 삭제
                                                         {
                                                             std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
-                                                            for(auto& e:v.rec_entries)
-                                                                if(e.filename==fname){
-                                                                    e.req_state=FFTViewer::RecEntry::REQ_NONE;
-                                                                    e.finished=true; e.path=path;
+                                                            for(auto it2=v.rec_entries.begin();it2!=v.rec_entries.end();++it2)
+                                                                if(it2->filename==fname){
+                                                                    v.rec_entries.erase(it2);
                                                                     break;
                                                                 }
                                                         }
@@ -2770,6 +3294,7 @@ void run_streaming_viewer(){
                                                 if(ImGui::MenuItem("Deny")){
                                                     re.req_state = RS::REQ_DENIED;
                                                     re.req_deny_timer = 30.f;
+                                                    srv->send_region_response((int)re.req_op_idx, false);
                                                 }
                                                 ImGui::EndPopup();
                                             }
@@ -2788,14 +3313,14 @@ void run_streaming_viewer(){
                                 if(has_audio){
                                     ImGui::TextDisabled("  Audio");
                                     ImGui::Indent(6.f);
-                                    for(int ri=0;ri<(int)v.rec_entries.size();ri++){
+                                    for(int ri=(int)v.rec_entries.size()-1;ri>=0;ri--){
                                         auto& re=v.rec_entries[ri];
                                         if(!re.is_audio) continue;
                                         ImGui::PushID(ri+32000);
                                         if(re.finished){
                                             std::string szstr = fmt_filesize("",re.path);
                                             std::string lbl = std::string("[Done]  ")+re.filename;
-                                            if(!szstr.empty()) lbl += "  ["+szstr+"]";
+                                            if(!szstr.empty()) lbl += "  "+szstr;
                                             ImGui::Selectable(lbl.c_str(), false);
                                             if(ImGui::IsItemHovered()&&ImGui::IsMouseClicked(ImGuiMouseButton_Right))
                                                 file_ctx={true,io.MousePos.x,io.MousePos.y,re.path,re.filename};
@@ -2807,7 +3332,11 @@ void run_streaming_viewer(){
                                             bool blink=(fmodf(t2,0.8f)<0.4f);
                                             ImGui::PushStyleColor(ImGuiCol_Text,
                                                 blink?IM_COL32(255,80,80,255):IM_COL32(200,60,60,255));
-                                            ImGui::Text("[REC]  %s  [%ds]", re.filename.c_str(), secs);
+                                            std::string szstr3 = fmt_filesize("", re.path);
+                                            if(!szstr3.empty())
+                                                ImGui::Text("[REC]  %s  [%ds]  %s", re.filename.c_str(), secs, szstr3.c_str());
+                                            else
+                                                ImGui::Text("[REC]  %s  [%ds]", re.filename.c_str(), secs);
                                             ImGui::PopStyleColor();
                                         }
                                         ImGui::PopID();
@@ -2819,129 +3348,236 @@ void run_streaming_viewer(){
                         }
                         ImGui::Spacing();
 
-                        // ── 완료된 항목 → Archive Private 자동 추가 ─────
-                        for(auto& re : v.rec_entries){
-                            if(re.finished){
-                                // priv_files에 없으면 추가
-                                bool found=false;
-                                for(auto& pf:priv_files) if(pf==re.filename){found=true;break;}
-                                if(!found) priv_files.push_back(re.filename);
-                            }
-                        }
                     }
                     // ── Archive ──────────────────────────────────────────
+                    // 공통 파일 리스트 렌더 헬퍼 (IQ/Audio 분리)
+                    auto draw_file_list = [&](
+                        const std::string& child_id,
+                        const std::vector<std::string>& iq_files,
+                        const std::vector<std::string>& audio_files,
+                        const std::string& iq_dir,
+                        const std::string& audio_dir,
+                        int id_base,
+                        std::function<void(const std::string& fp, const std::string& fn)> on_hover = nullptr,
+                        bool is_public_section = false)
+                    {
+                        int total_rows = (int)iq_files.size() + (int)audio_files.size()
+                            + (!iq_files.empty()?1:0) + (!audio_files.empty()?1:0);
+                        float ph = std::min(total_rows*18.f+4.f, 160.f);
+                        if(ph < 36.f) ph = 36.f;
+                        ImGui::BeginChild(child_id.c_str(), ImVec2(0, ph), true);
+                        if(!iq_files.empty()){
+                            ImGui::TextDisabled("  IQ");
+                            for(int fi=0;fi<(int)iq_files.size();fi++){
+                                ImGui::PushID(id_base+fi);
+                                std::string fp = iq_dir+"/"+iq_files[fi];
+                                std::string szstr = fmt_filesize("", fp);
+                                std::string display = "  "+iq_files[fi];
+                                if(!szstr.empty()) display += "  "+szstr;
+                                ImGui::Selectable(display.c_str(), false);
+                                if(ImGui::IsItemHovered()){
+                                    if(on_hover) on_hover(fp, iq_files[fi]);
+                                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                                        file_ctx={true,io.MousePos.x,io.MousePos.y,fp,iq_files[fi]};
+                                        file_ctx.is_public=is_public_section;
+                                    }
+                                }
+                                ImGui::PopID();
+                            }
+                        }
+                        if(!audio_files.empty()){
+                            ImGui::TextDisabled("  Audio");
+                            for(int fi=0;fi<(int)audio_files.size();fi++){
+                                ImGui::PushID(id_base+500+fi);
+                                std::string fp = audio_dir+"/"+audio_files[fi];
+                                std::string szstr = fmt_filesize("", fp);
+                                std::string display = "  "+audio_files[fi];
+                                if(!szstr.empty()) display += "  "+szstr;
+                                ImGui::Selectable(display.c_str(), false);
+                                if(ImGui::IsItemHovered()){
+                                    if(on_hover) on_hover(fp, audio_files[fi]);
+                                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                                        file_ctx={true,io.MousePos.x,io.MousePos.y,fp,audio_files[fi]};
+                                        file_ctx.is_public=is_public_section;
+                                    }
+                                }
+                                ImGui::PopID();
+                            }
+                        }
+                        if(iq_files.empty() && audio_files.empty()) ImGui::TextDisabled("  (empty)");
+                        ImGui::EndChild();
+                    };
+
                     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                     if(ImGui::CollapsingHeader("Archive")){
                         ImGui::Indent(8.f);
-                        std::string rdir = BEWEPaths::recordings_dir();
 
                         // ── Private ──────────────────────────────────────
                         ImGui::SetNextItemOpen(arch_priv_open, ImGuiCond_Always);
-                        if(ImGui::TreeNodeEx("##priv_node", ImGuiTreeNodeFlags_None, "Private  (%d)", (int)priv_files.size())){
+                        int priv_cnt = (int)priv_iq_files.size() + (int)priv_audio_files.size();
+                        // region IQ (extra_paths)도 포함
+                        int priv_extra_cnt = 0;
+                        for(auto& kv : priv_extra_paths){
+                            bool already=false;
+                            for(auto& f : priv_iq_files) if(f==kv.first){already=true;break;}
+                            for(auto& f : priv_audio_files) if(f==kv.first){already=true;break;}
+                            if(!already) priv_extra_cnt++;
+                        }
+                        if(ImGui::TreeNodeEx("##priv_node", ImGuiTreeNodeFlags_None, "Private  (%d)", priv_cnt+priv_extra_cnt)){
                             arch_priv_open = true;
-                            {
-                                // IQ / Audio 분리 (IQ_ 접두사 = IQ, Audio_ 접두사 = Audio)
-                                std::vector<std::string> priv_iq, priv_audio;
-                                for(auto& f : priv_files){
-                                    if(f.size()>3 && f.substr(0,3)=="IQ_") priv_iq.push_back(f);
-                                    else priv_audio.push_back(f);
-                                }
-                                int total_rows = (int)priv_iq.size() + (int)priv_audio.size()
-                                    + (!priv_iq.empty()?1:0) + (!priv_audio.empty()?1:0);
-                                float ph = std::min(total_rows*18.f+4.f, 160.f);
-                                if(ph < 36.f) ph = 36.f;
-                            ImGui::BeginChild("##priv_list", ImVec2(0, ph), true);
-                            if(!priv_iq.empty()){
+                            // extra_paths (region IQ from JOIN)
+                            if(!priv_extra_paths.empty()){
                                 ImGui::TextDisabled("  IQ");
-                                for(int fi=0;fi<(int)priv_iq.size();fi++){
-                                    ImGui::PushID(fi+20000);
-                                    std::string szstr = fmt_filesize(rdir, priv_iq[fi]);
-                                    std::string display = "  "+priv_iq[fi];
+                                int ep_i=0;
+                                for(auto& kv : priv_extra_paths){
+                                    bool already=false;
+                                    for(auto& f : priv_iq_files) if(f==kv.first){already=true;break;}
+                                    if(already) continue;
+                                    ImGui::PushID(18000+ep_i++);
+                                    std::string szstr = fmt_filesize("", kv.second);
+                                    std::string display = "  "+kv.first;
                                     if(!szstr.empty()) display += "  "+szstr;
                                     ImGui::Selectable(display.c_str(), false);
-                                    if(ImGui::IsItemHovered()&&ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                                        std::string fp = rdir+"/"+priv_iq[fi];
-                                        file_ctx={true,io.MousePos.x,io.MousePos.y,fp,priv_iq[fi]};
-                                    }
+                                    if(ImGui::IsItemHovered()&&ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+                                        file_ctx={true,io.MousePos.x,io.MousePos.y,kv.second,kv.first};
                                     ImGui::PopID();
                                 }
                             }
-                            if(!priv_audio.empty()){
-                                ImGui::TextDisabled("  Audio");
-                                for(int fi=0;fi<(int)priv_audio.size();fi++){
-                                    ImGui::PushID(fi+20500);
-                                    std::string szstr = fmt_filesize(rdir, priv_audio[fi]);
-                                    std::string display = "  "+priv_audio[fi];
-                                    if(!szstr.empty()) display += "  "+szstr;
-                                    ImGui::Selectable(display.c_str(), false);
-                                    if(ImGui::IsItemHovered()&&ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                                        std::string fp = rdir+"/"+priv_audio[fi];
-                                        file_ctx={true,io.MousePos.x,io.MousePos.y,fp,priv_audio[fi]};
-                                    }
-                                    ImGui::PopID();
-                                }
-                            }
-                            if(priv_files.empty()) ImGui::TextDisabled("  (empty)");
-                            ImGui::EndChild();
-                            } // ph block
+                            draw_file_list("##priv_list",
+                                priv_iq_files, priv_audio_files,
+                                BEWEPaths::private_iq_dir(), BEWEPaths::private_audio_dir(),
+                                20000);
                             ImGui::TreePop();
                         } else { arch_priv_open = false; }
 
                         ImGui::Spacing();
 
-                        // ── Share ─────────────────────────────────────────
-                        ImGui::SetNextItemOpen(arch_share_open, ImGuiCond_Always);
-                        if(ImGui::TreeNodeEx("##share_node", ImGuiTreeNodeFlags_None,
-                                "Share  (%d)", (int)shared_files.size())){
-                            arch_share_open = true;
-                            std::string sdir = rdir + "/share";
-                            // IQ / Audio 분리
-                            std::vector<std::string> share_iq, share_audio;
-                            for(auto& f : shared_files){
-                                if(f.size()>3 && f.substr(0,3)=="IQ_") share_iq.push_back(f);
-                                else share_audio.push_back(f);
-                            }
-                            int s_total_rows = (int)share_iq.size() + (int)share_audio.size()
-                                + (!share_iq.empty()?1:0) + (!share_audio.empty()?1:0);
-                            float sh = std::min(s_total_rows*18.f+8.f, 160.f);
-                            if(sh < 36.f) sh = 36.f;
-                            ImGui::BeginChild("##share_list", ImVec2(0, sh), true);
-                            auto draw_share_file = [&](const std::string& fn, int id_base, int idx){
-                                ImGui::PushID(id_base+idx);
-                                std::string szstr = fmt_filesize(sdir, fn);
-                                std::string sdisplay = "  "+fn;
-                                if(!szstr.empty()) sdisplay += "  "+szstr;
-                                ImGui::Selectable(sdisplay.c_str(), false);
-                                if(ImGui::IsItemHovered()&&ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                                    std::string fp = sdir+"/"+fn;
-                                    file_ctx={true,io.MousePos.x,io.MousePos.y,fp,fn};
+                        // ── Public ────────────────────────────────────────
+                        ImGui::SetNextItemOpen(arch_pub_open, ImGuiCond_Always);
+                        {
+                        int pub_cnt2;
+                        if(v.net_cli){
+                            std::lock_guard<std::mutex> jlk(join_share_mtx);
+                            pub_cnt2 = (int)join_share_files.size();
+                        } else {
+                            pub_cnt2 = (int)shared_files.size();
+                        }
+                        if(ImGui::TreeNodeEx("##pub_node", ImGuiTreeNodeFlags_None,
+                                "Public  (%d)", pub_cnt2)){
+                            arch_pub_open = true;
+                            if(v.net_cli){
+                                // ── JOIN: HOST Public 파일 목록 표시 (IQ/Audio 구분) ─
+                                std::lock_guard<std::mutex> jlk(join_share_mtx);
+                                std::vector<int> jiq_idx, jaudio_idx;
+                                for(int si=0;si<(int)join_share_files.size();si++){
+                                    const auto& jse = join_share_files[si];
+                                    if(jse.filename.size()>3 && jse.filename.substr(0,3)=="IQ_")
+                                        jiq_idx.push_back(si);
+                                    else
+                                        jaudio_idx.push_back(si);
                                 }
-                                if(v.net_srv){
-                                    ImGui::SameLine(0,8);
-                                    if(ImGui::SmallButton("Send")){
-                                        std::string path = sdir+"/"+fn;
-                                        auto ops_s = v.net_srv->get_operators();
-                                        for(auto& op_s : ops_s){
-                                            uint8_t tid=v.next_transfer_id.fetch_add(1);
-                                            v.net_srv->send_file_to((int)op_s.index,path.c_str(),tid);
-                                        }
+                                int j_total_rows = (int)join_share_files.size()
+                                    + (!jiq_idx.empty()?1:0) + (!jaudio_idx.empty()?1:0);
+                                float sh2 = std::min(j_total_rows*18.f+8.f, 160.f);
+                                if(sh2 < 36.f) sh2 = 36.f;
+                                ImGui::BeginChild("##pub_list", ImVec2(0, sh2), true);
+                                auto draw_join_pub_file = [&](int si){
+                                    auto& jse = join_share_files[si];
+                                    ImGui::PushID(si+22000);
+                                    bool already_dl = false;
+                                    for(auto& df:downloaded_files) if(df==jse.filename){already_dl=true;break;}
+                                    const char* pfx = already_dl ? "[Done]  " : "";
+                                    ImU32 col = already_dl ? IM_COL32(80,220,80,255) : IM_COL32(80,180,255,255);
+                                    std::string sdisplay = std::string(pfx)+jse.filename;
+                                    if(jse.size_bytes > 0){
+                                        char szb[32];
+                                        if(jse.size_bytes >= 1024*1024)
+                                            snprintf(szb,sizeof(szb)," [%.1fM]",(double)jse.size_bytes/1048576.0);
+                                        else
+                                            snprintf(szb,sizeof(szb)," [%.1fK]",(double)jse.size_bytes/1024.0);
+                                        sdisplay += szb;
                                     }
+                                    ImGui::PushStyleColor(ImGuiCol_Text, col);
+                                    ImGui::Selectable(sdisplay.c_str(), false);
+                                    ImGui::PopStyleColor();
+                                    if(ImGui::IsItemHovered()){
+                                        // 업로더 툴팁
+                                        if(!jse.uploader.empty()){
+                                            ImGui::BeginTooltip();
+                                            ImGui::TextDisabled("Uploaded by:");
+                                            ImGui::Text("  %s", jse.uploader.c_str());
+                                            ImGui::EndTooltip();
+                                        }
+                                        if(ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+                                            ImGui::OpenPopup("##pub_dl_ctx");
+                                    }
+                                    if(ImGui::BeginPopup("##pub_dl_ctx")){
+                                        ImGui::TextDisabled("%s", jse.filename.c_str());
+                                        ImGui::Separator();
+                                        if(!already_dl && ImGui::MenuItem("Download")){
+                                            v.net_cli->cmd_request_share_download(jse.filename.c_str());
+                                        }
+                                        // JOIN이 업로더라면 Delete 가능
+                                        std::string my_name = login_get_id();
+                                        if(jse.uploader == my_name){
+                                            ImGui::Separator();
+                                            if(ImGui::MenuItem("Delete")){
+                                                // TODO: JOIN→HOST 삭제 요청 프로토콜 추가 시 구현
+                                            }
+                                        }
+                                        ImGui::EndPopup();
+                                    }
+                                    ImGui::PopID();
+                                };
+                                if(!jiq_idx.empty()){
+                                    ImGui::TextDisabled("  IQ");
+                                    for(int si : jiq_idx) draw_join_pub_file(si);
                                 }
-                                ImGui::PopID();
-                            };
-                            if(!share_iq.empty()){
-                                ImGui::TextDisabled("  IQ");
-                                for(int si=0;si<(int)share_iq.size();si++) draw_share_file(share_iq[si],21000,si);
+                                if(!jaudio_idx.empty()){
+                                    ImGui::TextDisabled("  Audio");
+                                    for(int si : jaudio_idx) draw_join_pub_file(si);
+                                }
+                                if(join_share_files.empty()) ImGui::TextDisabled("  (empty)");
+                                ImGui::EndChild();
+                            } else {
+                                // ── HOST/LOCAL: public 폴더 파일 표시 ─────
+                                draw_file_list("##pub_list",
+                                    pub_iq_files, pub_audio_files,
+                                    BEWEPaths::public_iq_dir(), BEWEPaths::public_audio_dir(),
+                                    21000,
+                                    [&](const std::string& /*fp*/, const std::string& fn){
+                                        // 마우스 오버: 다운로드한 사람 툴팁
+                                        auto it = pub_listeners.find(fn);
+                                        if(it != pub_listeners.end() && !it->second.empty()){
+                                            ImGui::BeginTooltip();
+                                            ImGui::TextDisabled("Downloaded by:");
+                                            for(auto& nm : it->second)
+                                                ImGui::Text("  %s", nm.c_str());
+                                            ImGui::EndTooltip();
+                                        }
+                                    },
+                                    true /* is_public_section */);
                             }
-                            if(!share_audio.empty()){
-                                ImGui::TextDisabled("  Audio");
-                                for(int si=0;si<(int)share_audio.size();si++) draw_share_file(share_audio[si],21500,si);
-                            }
-                            if(shared_files.empty())
-                                ImGui::TextDisabled("  (empty)");
-                            ImGui::EndChild();
+                            ImGui::TreePop();
+                        } else { arch_pub_open = false; }
+                        } // pub block
+
+                        ImGui::Spacing();
+
+                        // ── Share (다운로드된 파일) ───────────────────────
+                        ImGui::SetNextItemOpen(arch_share_open, ImGuiCond_Always);
+                        {
+                        int dl_cnt = (int)downloaded_files.size();
+                        if(ImGui::TreeNodeEx("##share_dl_node", ImGuiTreeNodeFlags_None,
+                                "Share  (%d)", dl_cnt)){
+                            arch_share_open = true;
+                            draw_file_list("##share_dl_list",
+                                share_iq_files, share_audio_files,
+                                BEWEPaths::share_iq_dir(), BEWEPaths::share_audio_dir(),
+                                23000);
                             ImGui::TreePop();
                         } else { arch_share_open = false; }
+                        } // share_dl block
 
                         ImGui::Unindent(8.f);
                     }
@@ -2982,8 +3618,185 @@ void run_streaming_viewer(){
                     dl->AddText(ImVec2(rpx+(rp_w-msz.x)/2, rp_content_y+(rp_content_h-msz.y)/2),
                                 IM_COL32(100,100,120,255), msg);
                 }
+            }
 
+            // ── BOARD 패널 ────────────────────────────────────────────────
+            if(board_open){
+                float px=rpx, py=rp_content_y, pw=disp_w-rpx, ph=rp_content_h;
+                ImGui::SetNextWindowPos(ImVec2(px,py));
+                ImGui::SetNextWindowSize(ImVec2(pw,ph));
+                ImGui::SetNextWindowBgAlpha(0.0f);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8,6));
+                ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0,0,0,0));
+                ImGui::Begin("##board_panel", nullptr,
+                    ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
+                    ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar|
+                    ImGuiWindowFlags_NoDecoration);
 
+                ImGui::BeginChild("##board_scroll", ImVec2(0,0), false,
+                    ImGuiWindowFlags_HorizontalScrollbar);
+
+                // ── 1. Operators ─────────────────────────────────────────
+                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                if(ImGui::CollapsingHeader("Operators")){
+                    ImGui::Indent(6.f);
+                    // HOST 자신
+                    {
+                        const char* my_id = v.net_srv ? login_get_id()
+                                          : (v.net_cli ? v.net_cli->my_name : login_get_id());
+                        const char* badge = v.net_cli ? "[JOIN]" : (v.net_srv ? "[HOST]" : "[LOCAL]");
+                        ImVec4 bcol = v.net_cli ? ImVec4(0.7f,0.92f,0.7f,1.f)
+                                                : ImVec4(0.4f,0.85f,1.f,1.f);
+                        ImGui::TextColored(bcol, "%s %s", badge, my_id);
+                    }
+                    // HOST 모드: JOIN 목록
+                    if(v.net_srv){
+                        auto ops = v.net_srv->get_operators();
+                        for(auto& op : ops){
+                            ImGui::TextColored(ImVec4(0.7f,0.92f,0.7f,1.f),
+                                "[JOIN] %s  [T%d]", op.name, op.tier);
+                        }
+                        if(ops.empty()) ImGui::TextDisabled("  (no operators)");
+                    } else if(v.net_cli){
+                        std::lock_guard<std::mutex> lk(v.net_cli->op_mtx);
+                        for(int i=0;i<(int)v.net_cli->op_list.count;i++){
+                            auto& op = v.net_cli->op_list.ops[i];
+                            bool is_host = (op.index==0);
+                            ImVec4 oc = is_host ? ImVec4(0.4f,0.85f,1.f,1.f)
+                                                : ImVec4(0.7f,0.92f,0.7f,1.f);
+                            ImGui::TextColored(oc, "%s %s  [T%d]",
+                                is_host?"[HOST]":"[JOIN]", op.name, op.tier);
+                        }
+                    }
+                    ImGui::Unindent(6.f);
+                }
+                ImGui::Spacing();
+
+                // ── 2. Channels ───────────────────────────────────────────
+                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                if(ImGui::CollapsingHeader("Channels")){
+                    ImGui::Indent(6.f);
+                    bool any_ch = false;
+                    for(int ci=0;ci<MAX_CHANNELS;ci++){
+                        const Channel& ch = v.channels[ci];
+                        if(!ch.filter_active) continue;
+                        any_ch = true;
+                        float cf = (ch.s + ch.e) * 0.5f;
+                        float bw = fabsf(ch.e - ch.s) * 1000.f; // kHz
+                        // 모드 문자열
+                        const char* mode_str = "NONE";
+                        switch(ch.mode){
+                            case Channel::DM_AM:    mode_str="AM";    break;
+                            case Channel::DM_FM:    mode_str="FM";    break;
+                            case Channel::DM_MAGIC: mode_str="MAGIC"; break;
+                            case Channel::DM_DMR:   mode_str="DMR";   break;
+                            default: break;
+                        }
+                        // 복조 실행 중 여부
+                        bool dem_active = ch.dem_run.load();
+                        ImU32 col = dem_active ? IM_COL32(80,220,80,255) : IM_COL32(160,160,160,255);
+                        ImGui::PushID(ci+40000);
+                        ImGui::PushStyleColor(ImGuiCol_Text, col);
+                        char ch_line[80];
+                        snprintf(ch_line,sizeof(ch_line),"CH%d  %.4f MHz  %.0f kHz  [%s]",
+                                 ci, (double)cf, (double)bw, mode_str);
+                        ImGui::TextUnformatted(ch_line);
+                        ImGui::PopStyleColor();
+                        // 생성자
+                        if(ch.owner[0]){
+                            ImGui::SameLine(0,6);
+                            ImGui::TextDisabled("by %s", ch.owner);
+                        }
+                        // 복조 중이면 수신 중인 오퍼레이터 표시
+                        if(dem_active){
+                            uint32_t mask = v.net_srv
+                                ? ch.audio_mask.load()
+                                : v.srv_audio_mask[ci];
+                            if(mask){
+                                char recv_str[64] = "  Recv:";
+                                if(mask & 0x1) strncat(recv_str," HOST",sizeof(recv_str)-strlen(recv_str)-1);
+                                if(v.net_srv){
+                                    auto ops2 = v.net_srv->get_operators();
+                                    for(auto& op2 : ops2){
+                                        if(mask & (1u<<op2.index))
+                                            strncat(recv_str, (" "+std::string(op2.name)).c_str(),
+                                                    sizeof(recv_str)-strlen(recv_str)-1);
+                                    }
+                                }
+                                ImGui::TextDisabled("%s", recv_str);
+                            }
+                        }
+                        ImGui::PopID();
+                    }
+                    if(!any_ch) ImGui::TextDisabled("  (no active channels)");
+                    ImGui::Unindent(6.f);
+                }
+                ImGui::Spacing();
+
+                // ── 3. Signal Activity ────────────────────────────────────
+                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                if(ImGui::CollapsingHeader("Signal Activity")){
+                    ImGui::Indent(6.f);
+                    bool any_sig = false;
+                    for(int ci=0;ci<MAX_CHANNELS;ci++){
+                        Channel& ch = v.channels[ci];
+                        if(!ch.filter_active) continue;
+                        if(!ch.dem_run.load()) continue;
+                        any_sig = true;
+                        // 오디오 링버퍼에 데이터가 있으면 신호 있음
+                        bool has_signal = (ch.audio_avail() > 0);
+                        ImU32 sig_col = has_signal ? IM_COL32(80,255,100,255) : IM_COL32(100,100,100,200);
+                        const char* sig_str = has_signal ? "SIG" : "---";
+                        ImGui::PushID(ci+41000);
+                        ImGui::PushStyleColor(ImGuiCol_Text, sig_col);
+                        ImGui::Text("CH%d  [%s]  %.4f MHz", ci, sig_str, (double)(ch.s+ch.e)*0.5f);
+                        ImGui::PopStyleColor();
+                        ImGui::PopID();
+                    }
+                    if(!any_sig) ImGui::TextDisabled("  (no demod running)");
+                    ImGui::Unindent(6.f);
+                }
+                ImGui::Spacing();
+
+                // ── 4. Recordings ─────────────────────────────────────────
+                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                if(ImGui::CollapsingHeader("Recordings")){
+                    ImGui::Indent(6.f);
+                    // 진행 중
+                    bool any_rec = false;
+                    {
+                        std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                        for(auto& re : v.rec_entries){
+                            if(re.finished) continue;
+                            any_rec = true;
+                            float elapsed = std::chrono::duration<float>(
+                                std::chrono::steady_clock::now()-re.t_start).count();
+                            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,100,100,255));
+                            ImGui::Text("[REC]  %s  %.0fs", re.filename.c_str(), (double)elapsed);
+                            ImGui::PopStyleColor();
+                        }
+                    }
+                    // Record 폴더 파일 수
+                    int rec_iq_cnt   = (int)rec_iq_files.size();
+                    int rec_aud_cnt  = (int)rec_audio_files.size();
+                    int priv_iq_cnt  = (int)priv_iq_files.size();
+                    int priv_aud_cnt = (int)priv_audio_files.size();
+                    int pub_cnt2     = (int)shared_files.size();
+                    int shr_cnt      = (int)downloaded_files.size();
+                    ImGui::Spacing();
+                    ImGui::TextDisabled("  Record   IQ:%d  Audio:%d", rec_iq_cnt,  rec_aud_cnt);
+                    ImGui::TextDisabled("  Private  IQ:%d  Audio:%d", priv_iq_cnt, priv_aud_cnt);
+                    ImGui::TextDisabled("  Public   %d",  pub_cnt2);
+                    ImGui::TextDisabled("  Share    %d",  shr_cnt);
+                    if(!any_rec && rec_iq_cnt+rec_aud_cnt==0)
+                        ImGui::TextDisabled("  (no active recordings)");
+                    ImGui::Unindent(6.f);
+                }
+
+                ImGui::EndChild();
+                ImGui::End();
+                ImGui::PopStyleColor();
+                ImGui::PopStyleVar();
             }
         }
 
@@ -2994,14 +3807,15 @@ void run_streaming_viewer(){
         {
             float ty_b=bot_y+(TOPBAR_H-ImGui::GetFontSize())/2;
 
-            // ── 중앙: 시스템 모니터 ───────────────────────────────────────
-            char stats[128];
-            snprintf(stats,sizeof(stats),
-                     "CPU %.0f%%  @  %.2f GHz     RAM %.0f%%     IO %.0f%%",
-                     (double)v.sysmon_cpu,(double)v.sysmon_ghz,
-                     (double)v.sysmon_ram,(double)v.sysmon_io);
-            ImVec2 ssz=ImGui::CalcTextSize(stats);
-            dl->AddText(ImVec2((disp_w-ssz.x)/2,ty_b),IM_COL32(160,160,160,255),stats);
+            // ── 중앙: 실시간 시계 (HH:MM:SS) ─────────────────────────────
+            {
+                time_t tnow = time(nullptr);
+                struct tm tlocal{}; localtime_r(&tnow, &tlocal);
+                char clock_str[16];
+                strftime(clock_str, sizeof(clock_str), "%H:%M:%S", &tlocal);
+                ImVec2 csz = ImGui::CalcTextSize(clock_str);
+                dl->AddText(ImVec2((disp_w-csz.x)/2, ty_b), IM_COL32(200,200,200,255), clock_str);
+            }
 
             // ── 좌측: 타임머신 오프셋 (활성 시만 표시) ───────────────────
             if(v.tm_active.load()){
@@ -3082,15 +3896,11 @@ void run_streaming_viewer(){
                 }
             }
             if(click_ind(rx,"WF", wf_visible && fft_on)){
-                // WF = FFT pause 토글
-                bool np=!v.spectrum_pause.load();
-                if(v.remote_mode && v.net_cli) v.net_cli->cmd_set_spectrum_pause(np);
-                else { v.spectrum_pause.store(np); }
+                // WF = 로컬 FFT 표시 pause 토글 (JOIN도 로컬만)
+                v.spectrum_pause.store(!v.spectrum_pause.load());
             }
             if(click_ind(rx,"FFT", fft_on)){
-                bool np=!v.spectrum_pause.load();
-                if(v.remote_mode && v.net_cli) v.net_cli->cmd_set_spectrum_pause(np);
-                else { v.spectrum_pause.store(np); }
+                v.spectrum_pause.store(!v.spectrum_pause.load());
             }
             if(click_ind(rx,"LINK", streaming_on)){
                 bool np=!v.capture_pause.load();
@@ -3122,7 +3932,7 @@ void run_streaming_viewer(){
                 v.sa_mode = false;
                 v.sa_temp_path = file_ctx.filepath;
                 v.sa_panel_open = true;
-                stat_open = false;
+                stat_open = false; board_open = false;
                 if(v.right_panel_ratio < 0.05f) v.right_panel_ratio = 0.3f;
                 prev_right_visible_outer = false;
                 v.sa_start(file_ctx.filepath);
@@ -3135,50 +3945,118 @@ void run_streaming_viewer(){
 
             ImGui::Separator();
 
-            // Share → share 디렉터리로 복사
-            if(ImGui::Selectable("  Share")){
-                std::string share_dir = BEWEPaths::recordings_dir() + "/share";
-                struct stat sd{}; if(stat(share_dir.c_str(),&sd)!=0) mkdir(share_dir.c_str(),0755);
-                std::string dst = share_dir + "/" + file_ctx.filename;
-                // 복사
-                FILE* fin=fopen(file_ctx.filepath.c_str(),"rb");
-                FILE* fout=fopen(dst.c_str(),"wb");
-                if(fin&&fout){
-                    char buf[65536]; size_t n;
-                    while((n=fread(buf,1,sizeof(buf),fin))>0) fwrite(buf,1,n,fout);
-                }
-                if(fin) fclose(fin);
-                if(fout) fclose(fout);
-                // shared_files에 추가
-                {
-                    bool dup=false;
-                    for(auto& sf:shared_files) if(sf==file_ctx.filename){dup=true;break;}
-                    if(!dup) shared_files.push_back(file_ctx.filename);
+            // Public → HOST: public/iq 또는 public/audio 복사 / JOIN: 서버에 업로드
+            if(ImGui::Selectable("  Public")){
+                if(v.net_cli){
+                    // JOIN: 백그라운드로 서버에 업로드
+                    std::string fp_cap = file_ctx.filepath;
+                    uint8_t tid = v.next_transfer_id.fetch_add(1);
+                    NetClient* cli_cap = v.net_cli;
+                    std::thread([cli_cap, fp_cap, tid](){
+                        cli_cap->cmd_share_upload(fp_cap.c_str(), tid);
+                    }).detach();
+                } else {
+                    // HOST: public/iq 또는 public/audio 폴더로 복사
+                    bool is_iq = (file_ctx.filename.size()>3 && file_ctx.filename.substr(0,3)=="IQ_")
+                              || (file_ctx.filename.size()>3 && file_ctx.filename.substr(0,3)=="sa_");
+                    std::string pub_dir = is_iq ? BEWEPaths::public_iq_dir() : BEWEPaths::public_audio_dir();
+                    struct stat sd{}; if(stat(pub_dir.c_str(),&sd)!=0) mkdir(pub_dir.c_str(),0755);
+                    std::string dst = pub_dir + "/" + file_ctx.filename;
+                    FILE* fin=fopen(file_ctx.filepath.c_str(),"rb");
+                    FILE* fout=fopen(dst.c_str(),"wb");
+                    if(fin&&fout){
+                        char buf[65536]; size_t n;
+                        while((n=fread(buf,1,sizeof(buf),fin))>0) fwrite(buf,1,n,fout);
+                    }
+                    if(fin) fclose(fin);
+                    if(fout) fclose(fout);
+                    // pub_owners: HOST 자신이 올린 파일 소유자 등록
+                    pub_owners[file_ctx.filename] = std::string(login_get_id());
+                    // pub_iq_files / pub_audio_files / shared_files에 추가
+                    if(is_iq){
+                        bool dup=false; for(auto& sf:pub_iq_files) if(sf==file_ctx.filename){dup=true;break;}
+                        if(!dup) pub_iq_files.push_back(file_ctx.filename);
+                    } else {
+                        bool dup=false; for(auto& sf:pub_audio_files) if(sf==file_ctx.filename){dup=true;break;}
+                        if(!dup) pub_audio_files.push_back(file_ctx.filename);
+                    }
+                    {
+                        bool dup=false;
+                        for(auto& sf:shared_files) if(sf==file_ctx.filename){dup=true;break;}
+                        if(!dup) shared_files.push_back(file_ctx.filename);
+                    }
+                    // JOIN들에게 public 목록 브로드캐스트
+                    if(v.net_srv){
+                        std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
+                        for(auto& sf : shared_files){
+                            bool siq = (sf.size()>3&&sf.substr(0,3)=="IQ_")||(sf.size()>3&&sf.substr(0,3)=="sa_");
+                            std::string sfp = (siq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+sf;
+                            struct stat sst{}; uint64_t fsz=0;
+                            if(stat(sfp.c_str(),&sst)==0) fsz=(uint64_t)sst.st_size;
+                            std::string upl;
+                            auto it=pub_owners.find(sf); if(it!=pub_owners.end()) upl=it->second;
+                            slist.push_back({sf,fsz,upl});
+                        }
+                        v.net_srv->send_share_list(-1, slist);
+                    }
                 }
                 file_ctx.open = false;
             }
 
             ImGui::Separator();
 
-            // Delete → 파일 삭제
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f,0.35f,0.35f,1.f));
-            if(ImGui::Selectable("  Delete")){
-                remove(file_ctx.filepath.c_str());
-                // priv_files / shared_files 목록에서도 제거
-                priv_files.erase(std::remove(priv_files.begin(),priv_files.end(),
-                    file_ctx.filename),priv_files.end());
-                shared_files.erase(std::remove(shared_files.begin(),shared_files.end(),
-                    file_ctx.filename),shared_files.end());
-                // rec_entries 목록에서도 제거
-                {
-                    std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
-                    v.rec_entries.erase(std::remove_if(v.rec_entries.begin(),v.rec_entries.end(),
-                        [&](const FFTViewer::RecEntry& e){return e.path==file_ctx.filepath;}),
-                        v.rec_entries.end());
+            // Delete → 파일 삭제 (Public은 소유자만 가능)
+            {
+                bool can_delete = true;
+                if(file_ctx.is_public){
+                    // 소유자 확인
+                    auto it = pub_owners.find(file_ctx.filename);
+                    if(it != pub_owners.end()){
+                        const char* my_id = login_get_id();
+                        can_delete = (it->second == std::string(my_id));
+                    }
                 }
-                file_ctx.open = false;
+                ImGui::PushStyleColor(ImGuiCol_Text,
+                    can_delete ? ImVec4(1.f,0.35f,0.35f,1.f) : ImVec4(0.4f,0.4f,0.4f,1.f));
+                if(ImGui::Selectable("  Delete") && can_delete){
+                    remove(file_ctx.filepath.c_str());
+                    // 모든 파일 목록에서 제거
+                    auto rm_from = [&](std::vector<std::string>& v2){
+                        v2.erase(std::remove(v2.begin(),v2.end(),file_ctx.filename),v2.end());
+                    };
+                    rm_from(rec_iq_files); rm_from(rec_audio_files);
+                    rm_from(priv_iq_files); rm_from(priv_audio_files);
+                    rm_from(pub_iq_files); rm_from(pub_audio_files);
+                    rm_from(share_iq_files); rm_from(share_audio_files);
+                    rm_from(priv_files); rm_from(shared_files); rm_from(downloaded_files);
+                    priv_extra_paths.erase(file_ctx.filename);
+                    pub_owners.erase(file_ctx.filename);
+                    pub_listeners.erase(file_ctx.filename);
+                    // rec_entries 목록에서도 제거
+                    {
+                        std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                        v.rec_entries.erase(std::remove_if(v.rec_entries.begin(),v.rec_entries.end(),
+                            [&](const FFTViewer::RecEntry& e){return e.path==file_ctx.filepath;}),
+                            v.rec_entries.end());
+                    }
+                    // HOST: public 파일이 삭제됐으면 JOIN들에게 갱신된 목록 브로드캐스트
+                    if(v.net_srv && file_ctx.is_public){
+                        std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
+                        for(auto& sf : shared_files){
+                            bool siq = (sf.size()>3&&sf.substr(0,3)=="IQ_")||(sf.size()>3&&sf.substr(0,3)=="sa_");
+                            std::string sfp = (siq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+sf;
+                            struct stat sst{}; uint64_t fsz=0;
+                            if(stat(sfp.c_str(),&sst)==0) fsz=(uint64_t)sst.st_size;
+                            std::string upl;
+                            auto oit=pub_owners.find(sf); if(oit!=pub_owners.end()) upl=oit->second;
+                            slist.push_back({sf,fsz,upl});
+                        }
+                        v.net_srv->send_share_list(-1, slist);
+                    }
+                    file_ctx.open = false;
+                }
+                ImGui::PopStyleColor();
             }
-            ImGui::PopStyleColor();
 
             // 창 밖 클릭 또는 ESC → 닫기
             if(!ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
@@ -3251,63 +4129,41 @@ void run_streaming_viewer(){
 
             if(send_chat_msg && chat_input[0]){
                 std::string chat_str = chat_input;
+                // ── 로컬 메시지 추가 헬퍼 ────────────────────────────────
+                auto push_local = [&](const char* from, const char* msg, bool is_err=false){
+                    std::lock_guard<std::mutex> lk(host_chat_mtx);
+                    LocalChatMsg lm{}; lm.is_error=is_err;
+                    strncpy(lm.from, from, 31);
+                    strncpy(lm.msg,  msg,  255);
+                    host_chat_log.push_back(lm);
+                    chat_scroll_bottom = true;
+                };
                 if(chat_str[0] == '/'){
-                    // ── 명령어 처리 ──────────────────────────────────────
+                    // ── 명령어 처리 (3개만 허용) ─────────────────────────
                     if(chat_str == "/shutdown"){
                         glfwSetWindowShouldClose(win, GLFW_TRUE);
                     } else if(chat_str == "/logout"){
                         do_logout = true;
                         glfwSetWindowShouldClose(win, GLFW_TRUE);
-                    } else if(chat_str == "/main"){
-                        do_main_menu = true;
-                    } else if(chat_str == "/chassis 1 reset"){
-                        if(v.net_cli){
-                            // JOIN은 접근 불가
-                            std::lock_guard<std::mutex> lk(v.net_cli->chat_mtx);
-                            NetClient::ChatMsg lm{};
-                            strncpy(lm.from,"System",31);
-                            strncpy(lm.msg,"[!] Access Denied",255);
-                            v.net_cli->chat_log.push_back(lm);
-                            v.net_cli->chat_updated.store(true);
-                            chat_scroll_bottom=true;
-                        } else {
-                            // LOCAL / HOST: 동일 모드로 재진입
-                            chassis_reset_mode = v.net_srv ? 1 : 0;
-                            do_chassis_reset = true;
-                            do_main_menu = true;
-                        }
+                    } else if(chat_str == "/restart"){
+                        // 로그아웃 후 기존 계정으로 자동 재로그인
+                        do_restart = true;
+                        glfwSetWindowShouldClose(win, GLFW_TRUE);
                     } else {
-                        // 알 수 없는 명령어: 로컬 시스템 메시지로 표시
-                        std::string errmsg = "[System] Unknown command: " + chat_str;
-                        if(v.net_srv){
-                            std::lock_guard<std::mutex> lk(host_chat_mtx);
-                            LocalChatMsg lm{};
-                            strncpy(lm.from,"System",31);
-                            strncpy(lm.msg,errmsg.c_str()+9,255); // "[System] " 제거
-                            host_chat_log.push_back(lm);
-                            chat_scroll_bottom=true;
-                        } else {
-                            std::lock_guard<std::mutex> lk(host_chat_mtx);
-                            LocalChatMsg lm{};
-                            strncpy(lm.from,"System",31);
-                            snprintf(lm.msg,sizeof(lm.msg),"Unknown command: %s", chat_str.c_str());
-                            host_chat_log.push_back(lm);
-                            chat_scroll_bottom=true;
-                        }
+                        // 알 수 없는 명령어
+                        char errmsg[280];
+                        snprintf(errmsg, sizeof(errmsg), "Unknown command: %s", chat_str.c_str());
+                        push_local("System", errmsg, true);
                     }
                 } else {
+                    // ── 일반 메시지 ──────────────────────────────────────
                     if(v.net_cli){
                         v.net_cli->send_chat(chat_input);
-                    } else if(v.net_srv){
-                        {
-                            std::lock_guard<std::mutex> lk(host_chat_mtx);
-                            LocalChatMsg lm{};
-                            strncpy(lm.from,login_get_id(),31);
-                            strncpy(lm.msg,chat_input,255);
-                            host_chat_log.push_back(lm);
-                        }
-                        v.net_srv->broadcast_chat(login_get_id(),chat_input);
-                        chat_scroll_bottom=true;
+                    } else {
+                        // LOCAL / HOST: 로컬 로그에 표시
+                        push_local(login_get_id(), chat_input);
+                        if(v.net_srv)
+                            v.net_srv->broadcast_chat(login_get_id(), chat_input);
                     }
                 }
                 chat_input[0]='\0';
@@ -3385,7 +4241,7 @@ void run_streaming_viewer(){
     v.net_bcast_stop.store(true);
     v.net_bcast_cv.notify_all();
     if(v.net_bcast_thr.joinable()) v.net_bcast_thr.join();
-    if(v.net_srv){ v.net_srv->stop(); delete v.net_srv; v.net_srv=nullptr; }
+    if(v.net_srv){ v.net_srv->stop_discovery_broadcast(); v.net_srv->stop(); delete v.net_srv; v.net_srv=nullptr; }
     if(v.net_cli){ v.net_cli->disconnect(); delete v.net_cli; v.net_cli=nullptr; }
     if(!v.remote_mode && cap.joinable()) cap.join();
     if(v.dev_blade){
@@ -3396,14 +4252,40 @@ void run_streaming_viewer(){
     if(v.waterfall_texture) glDeleteTextures(1,&v.waterfall_texture);
     v.sa_cleanup();
 
+    // ── record/ → private/ 이동 (세션 종료 시) ─────────────────────────
+    {
+        auto move_dir = [](const std::string& src_dir, const std::string& dst_dir){
+            DIR* d = opendir(src_dir.c_str());
+            if(!d) return;
+            struct dirent* ent;
+            while((ent=readdir(d))!=nullptr){
+                const char* n = ent->d_name;
+                size_t nl = strlen(n);
+                if(nl>4 && strcmp(n+nl-4,".wav")==0){
+                    std::string src = src_dir+"/"+n;
+                    std::string dst = dst_dir+"/"+n;
+                    rename(src.c_str(), dst.c_str());
+                }
+            }
+            closedir(d);
+        };
+        move_dir(BEWEPaths::record_iq_dir(),    BEWEPaths::private_iq_dir());
+        move_dir(BEWEPaths::record_audio_dir(), BEWEPaths::private_audio_dir());
+    }
+
     } while(do_main_menu && !glfwWindowShouldClose(win)); // ── 모드선택 outer 루프 끝
 
-    if(do_logout){
+    if(do_logout || do_restart){
         // 로그인 화면으로 돌아가기 (프로세스 재시작)
-        printf("Logout: restarting...\n");
+        // /restart: 환경변수로 기존 계정 전달 → 재시작 후 자동 로그인
+        printf("%s: restarting...\n", do_restart ? "Restart" : "Logout");
+        if(do_restart){
+            setenv("BEWE_AUTO_ID",   login_get_id(),             1);
+            setenv("BEWE_AUTO_PW",   login_get_pw(),             1);
+            setenv("BEWE_AUTO_TIER", std::to_string(login_get_tier()).c_str(), 1);
+        }
         ImGui_ImplOpenGL3_Shutdown(); ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext(); glfwDestroyWindow(win); glfwTerminate();
-        extern char** environ;
         char* argv0[] = {(char*)"/proc/self/exe", nullptr};
         execv("/proc/self/exe", argv0);
         _exit(0);
