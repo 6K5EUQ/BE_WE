@@ -11,7 +11,7 @@
 class DiscoveryBroadcaster {
 public:
     void set_info(const char* station_name, float lat, float lon,
-                  uint16_t tcp_port, const char* host_ip);
+                  uint16_t tcp_port, const char* host_ip, uint8_t host_tier = 1);
     void set_user_count(uint8_t n);
 
     bool start();

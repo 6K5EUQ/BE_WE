@@ -193,6 +193,7 @@ public:
         uint16_t    tcp_port   = 0;
         std::string ip;
         uint8_t     user_count = 0;
+        uint8_t     host_tier  = 1;
         double      last_seen  = 0.0; // glfwGetTime()
     };
     std::vector<DiscoveredStation> discovered_stations;

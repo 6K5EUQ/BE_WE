@@ -290,6 +290,6 @@ struct __attribute__((packed)) DiscoveryAnnounce {
     float    lon;               // degrees [-180, +180]
     uint16_t tcp_port;          // TCP listen port for connections
     uint8_t  user_count;        // currently connected operator count
-    uint8_t  _pad;              // alignment padding
+    uint8_t  host_tier;         // host operator tier (1=Tier1, 2=Tier2)
     char     host_ip[16];       // IPv4 dotted-decimal, null-terminated
 };                              // total: 96 bytes

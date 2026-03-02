@@ -118,7 +118,8 @@ public:
 
     // ── UDP Discovery Broadcast ───────────────────────────────────────────
     void start_discovery_broadcast(const char* station_name, float lat, float lon,
-                                    uint16_t tcp_port, const char* host_ip);
+                                    uint16_t tcp_port, const char* host_ip,
+                                    uint8_t host_tier = 1);
     void stop_discovery_broadcast();
     void update_discovery_user_count();
 

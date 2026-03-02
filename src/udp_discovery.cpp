@@ -11,14 +11,15 @@
 // ── DiscoveryBroadcaster ──────────────────────────────────────────────────
 
 void DiscoveryBroadcaster::set_info(const char* name, float lat, float lon,
-                                     uint16_t port, const char* ip) {
+                                     uint16_t port, const char* ip, uint8_t host_tier) {
     std::lock_guard<std::mutex> lk(pkt_mtx_);
     memset(&pkt_, 0, sizeof(pkt_));
     pkt_.magic[0]='B'; pkt_.magic[1]='E'; pkt_.magic[2]='W'; pkt_.magic[3]='G';
     strncpy(pkt_.station_name, name, 63);
-    pkt_.lat      = lat;
-    pkt_.lon      = lon;
-    pkt_.tcp_port = port;
+    pkt_.lat       = lat;
+    pkt_.lon       = lon;
+    pkt_.tcp_port  = port;
+    pkt_.host_tier = host_tier;
     strncpy(pkt_.host_ip, ip, 15);
     printf("[Discovery] TX: station='%s' lat=%.4f lon=%.4f port=%u ip=%s\n",
            name, lat, lon, (unsigned)port, ip);

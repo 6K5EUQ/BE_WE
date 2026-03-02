@@ -571,10 +571,11 @@ std::vector<OpEntry> NetServer::get_operators() const {
 void NetServer::start_discovery_broadcast(const char* station_name,
                                            float lat, float lon,
                                            uint16_t tcp_port,
-                                           const char* host_ip) {
+                                           const char* host_ip,
+                                           uint8_t host_tier) {
     stop_discovery_broadcast();
     auto* b = new DiscoveryBroadcaster();
-    b->set_info(station_name, lat, lon, tcp_port, host_ip);
+    b->set_info(station_name, lat, lon, tcp_port, host_ip, host_tier);
     b->set_user_count((uint8_t)client_count());
     if (b->start())
         discovery_bcast_ = b;

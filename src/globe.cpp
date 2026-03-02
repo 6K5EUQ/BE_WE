@@ -87,20 +87,13 @@ void main(){
 
 static const char* STARS_VERT = R"GLSL(
 #version 330 core
-layout(location=0) in vec3 aPos;
+layout(location=0) in vec2 aPos;   // NDC x,y directly
 layout(location=1) in float aBrightness;
-uniform mat4 uProj;
-uniform mat4 uView;
 out float vBright;
 void main(){
     vBright = aBrightness;
-    // Remove translation from view (stars at infinity)
-    mat4 viewNoTrans = uView;
-    viewNoTrans[3] = vec4(0.0, 0.0, 0.0, 1.0);
-    vec4 pos = uProj * viewNoTrans * vec4(aPos * 90.0, 1.0);
-    // Force to far plane so always behind everything
-    gl_Position = pos.xyww;
-    gl_PointSize = 1.0 + aBrightness * 2.0;
+    gl_Position = vec4(aPos, 0.999, 1.0);
+    gl_PointSize = 1.5 + aBrightness * 2.5;
 }
 )GLSL";
 
@@ -109,13 +102,11 @@ static const char* STARS_FRAG = R"GLSL(
 in float vBright;
 out vec4 FragColor;
 void main(){
-    // Soft circular point
     vec2 c = gl_PointCoord - 0.5;
     float d = dot(c, c) * 4.0;
     if(d > 1.0) discard;
-    float alpha = (1.0 - d) * vBright;
-    // Slight blue-white tint for hot stars, warm tint for dim ones
-    vec3 col = mix(vec3(1.0, 0.85, 0.7), vec3(0.85, 0.92, 1.0), vBright);
+    float alpha = (1.0 - d * 0.8) * vBright;
+    vec3 col = mix(vec3(1.0, 0.88, 0.75), vec3(0.88, 0.95, 1.0), vBright);
     FragColor = vec4(col, alpha);
 }
 )GLSL";
@@ -181,34 +172,19 @@ void GlobeRenderer::render() {
     float mvp[16];
     get_mvp(mvp);
 
-    // 0. Draw star background — depth write OFF so stars stay behind everything
+    // 0. Draw star background in NDC — no depth test, always behind globe
     if (prog_stars_ && vao_stars_) {
-        // Build separate proj and view matrices for stars
-        float proj[16], rot[16], view_rot[16], trans[16], view[16];
-        float fovy = 45.f * (float)M_PI / 180.f;
-        float aspect = (float)vp_w_ / (float)vp_h_;
-        mat4_perspective(proj, fovy, aspect, 0.1f, 100.f);
-        mat4_from_quat(rot, qw_, qx_, qy_, qz_);
-        mat4_identity(view_rot);
-        for (int r=0; r<3; r++)
-            for (int c=0; c<3; c++)
-                view_rot[c*4+r] = rot[r*4+c];
-        mat4_translate(trans, 0.f, 0.f, -zoom_);
-        mat4_mul(view, trans, view_rot);
-
-        glDepthMask(GL_FALSE);
+        glDisable(GL_DEPTH_TEST);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE);
         glEnable(GL_PROGRAM_POINT_SIZE);
 
         glUseProgram(prog_stars_);
-        glUniformMatrix4fv(glGetUniformLocation(prog_stars_, "uProj"), 1, GL_FALSE, proj);
-        glUniformMatrix4fv(glGetUniformLocation(prog_stars_, "uView"), 1, GL_FALSE, view);
         glBindVertexArray(vao_stars_);
         glDrawArrays(GL_POINTS, 0, star_count_);
         glBindVertexArray(0);
 
-        glDepthMask(GL_TRUE);
+        glEnable(GL_DEPTH_TEST);
         glDisable(GL_BLEND);
         glDisable(GL_PROGRAM_POINT_SIZE);
     }
@@ -440,7 +416,17 @@ bool GlobeRenderer::pick(float mx, float my,
 bool GlobeRenderer::project(float lat_deg, float lon_deg,
                              float& sx, float& sy) const {
     float x, y, z;
-    latlon_to_xyz(lat_deg, lon_deg, x, y, z);
+    // lat_deg uses the user-facing convention (pick() negates y internally),
+    // so negate back to match globe geometry before converting to xyz.
+    latlon_to_xyz(-lat_deg, lon_deg, x, y, z);
+
+    // Cull markers on the far side of the globe.
+    // rot column 2 (indices 8,9,10) is the local-space direction toward the camera.
+    float qx=qx_, qy=qy_, qz=qz_, qw=qw_;
+    float cam_dx = 2*(qx*qz + qw*qy);
+    float cam_dy = 2*(qy*qz - qw*qx);
+    float cam_dz = 1 - 2*(qx*qx + qy*qy);
+    if (x*cam_dx + y*cam_dy + z*cam_dz < 0.f) return false; // behind globe
 
     float mvp[16];
     get_mvp(mvp);
@@ -448,7 +434,6 @@ bool GlobeRenderer::project(float lat_deg, float lon_deg,
     // Transform to clip space
     float cx = mvp[0]*x + mvp[4]*y + mvp[8]*z  + mvp[12];
     float cy = mvp[1]*x + mvp[5]*y + mvp[9]*z  + mvp[13];
-    // float cz = mvp[2]*x + mvp[6]*y + mvp[10]*z + mvp[14];
     float cw = mvp[3]*x + mvp[7]*y + mvp[11]*z + mvp[15];
 
     if (cw <= 0.f) return false; // behind camera
@@ -760,34 +745,21 @@ bool GlobeRenderer::load_earth_texture() {
 }
 
 void GlobeRenderer::build_stars() {
-    // Generate random stars on a unit sphere, 4 floats each: x,y,z,brightness
-    static const int N = 2000;
-    float verts[N * 4];
+    // Stars stored as NDC x,y + brightness (3 floats each)
+    static const int N = 2500;
+    float verts[N * 3];
 
-    // Simple LCG for reproducible star field
-    uint32_t seed = 0x12345678u;
+    uint32_t seed = 0xDEADBEEFu;
     auto lcg = [&]() -> float {
         seed = seed * 1664525u + 1013904223u;
-        return (float)(seed >> 8) / (float)(1 << 24);
+        return (float)(seed >> 8) / (float)(1 << 24); // [0,1)
     };
 
     for (int i = 0; i < N; i++) {
-        // Uniform sphere distribution (rejection method)
-        float x, y, z, len;
-        do {
-            x = lcg()*2.f-1.f; y = lcg()*2.f-1.f; z = lcg()*2.f-1.f;
-            len = sqrtf(x*x+y*y+z*z);
-        } while (len < 0.001f || len > 1.f);
-        x/=len; y/=len; z/=len;
-
-        // Brightness: most stars dim, few bright (power distribution)
-        float b = lcg();
-        b = b * b; // bias toward dim
-
-        verts[i*4+0] = x;
-        verts[i*4+1] = y;
-        verts[i*4+2] = z;
-        verts[i*4+3] = 0.15f + b * 0.85f;
+        verts[i*3+0] = lcg() * 2.f - 1.f; // NDC x
+        verts[i*3+1] = lcg() * 2.f - 1.f; // NDC y
+        float b = lcg(); b = b * b;        // bias toward dim
+        verts[i*3+2] = 0.2f + b * 0.8f;
     }
     star_count_ = N;
 
@@ -799,8 +771,8 @@ void GlobeRenderer::build_stars() {
     glBindBuffer(GL_ARRAY_BUFFER, vbo_stars_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 4*sizeof(float), (void*)0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
     glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 4*sizeof(float), (void*)(3*sizeof(float)));
+    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)(2*sizeof(float)));
     glBindVertexArray(0);
 }

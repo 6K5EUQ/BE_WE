@@ -812,6 +812,7 @@ void run_streaming_viewer(){
 
     // early loop 명령 플래그
     bool early_do_shutdown    = false;
+    bool early_do_logout      = false;
     bool early_do_reset       = false; // /reset: 현재 창 재진입 (login/globe에서는 재시작)
     bool early_chat_focus_req = false; // Enter → 입력칸 포커스 요청
 
@@ -847,10 +848,10 @@ void run_streaming_viewer(){
         float msg_h = CH - 60.f;
         ImGui::BeginChild("##early_chat_msgs", ImVec2(0, msg_h), false);
         for(auto& m : early_chat_log){
-            if(m.is_error)
-                ImGui::TextColored(ImVec4(1.f,0.3f,0.3f,1.f), "[%s] %s", m.from, m.msg);
-            else
-                ImGui::TextColored(ImVec4(0.3f,1.f,0.5f,1.f), "[%s] %s", m.from, m.msg);
+            ImVec4 col = m.is_error ? ImVec4(1.f,0.3f,0.3f,1.f) : ImVec4(0.3f,1.f,0.5f,1.f);
+            ImGui::PushStyleColor(ImGuiCol_Text, col);
+            ImGui::TextWrapped("[%s] %s", m.from, m.msg);
+            ImGui::PopStyleColor();
         }
         if(early_chat_scroll){ ImGui::SetScrollHereY(1.f); early_chat_scroll=false; }
         ImGui::EndChild();
@@ -877,7 +878,9 @@ void run_streaming_viewer(){
             if(s[0] == '/'){
                 if(s == "/shutdown"){
                     early_do_shutdown = true;
-                } else if(s == "/logout" || s == "/main" || s == "/chassis 1 reset"){
+                } else if(s == "/logout"){
+                    early_do_logout = true;
+                } else if(s == "/main" || s == "/chassis 1 reset"){
                     push("System", "Not available here.", true);
                 } else if(s == "/reset"){
                     // login/globe에서 reset = 현 창 재시작 (로그인 세션 유지)
@@ -911,6 +914,7 @@ void run_streaming_viewer(){
             logged_in = draw_login_screen(fw,fh);
             draw_early_chat(fw, fh);
             if(early_do_shutdown){ glfwSetWindowShouldClose(win, GLFW_TRUE); }
+            if(early_do_logout){ early_do_logout = false; /* login창에서 logout = 이미 로그아웃 상태, 무시 */ }
             if(early_do_reset){ early_do_reset = false; /* login창: reset = 무시 (이미 초기 상태) */ }
             ImGui::Render();
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -1010,6 +1014,7 @@ void run_streaming_viewer(){
                 s.lat        = ann.lat;
                 s.lon        = ann.lon;
                 s.user_count = ann.user_count;
+                s.host_tier  = ann.host_tier ? ann.host_tier : 1;
                 s.last_seen  = now;
                 return;
             }
@@ -1021,6 +1026,7 @@ void run_streaming_viewer(){
         ns.tcp_port   = ann.tcp_port;
         ns.ip         = ann.host_ip;
         ns.user_count = ann.user_count;
+        ns.host_tier  = ann.host_tier ? ann.host_tier : 1;
         ns.last_seen  = now;
         v.discovered_stations.push_back(ns);
     };
@@ -1088,14 +1094,6 @@ void run_streaming_viewer(){
             if(ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !was_dragging){
                 float plat, plon;
                 if(globe.pick(io.MousePos.x, io.MousePos.y, plat, plon)){
-                    // 좌표 표시 (항상)
-                    show_coord  = true;
-                    coord_lat   = plat;
-                    coord_lon   = plon;
-                    coord_sx    = io.MousePos.x;
-                    coord_sy    = io.MousePos.y;
-                    coord_timer = 3.f; // 3초간 표시
-
                     // Check if a station marker was clicked (20px radius)
                     bool hit_station = false;
                     {
@@ -1120,7 +1118,17 @@ void run_streaming_viewer(){
                             pending_lat = plat;
                             pending_lon = plon;
                             memset(new_station_name, 0, sizeof(new_station_name));
+                            // 빈 지역 클릭 시 좌표 표시 (tier 1,2는 HOST 팝업으로 대체)
+                            show_coord  = false;
                             pop_state = POP_HOST;
+                        } else {
+                            // tier 3: 좌표 표시만
+                            show_coord  = true;
+                            coord_lat   = plat;
+                            coord_lon   = plon;
+                            coord_sx    = io.MousePos.x;
+                            coord_sy    = io.MousePos.y;
+                            coord_timer = 3.f;
                         }
                     }
                 }
@@ -1146,7 +1154,7 @@ void run_streaming_viewer(){
                     fdl->AddText(ImVec2(sx+12,sy-8),
                                  IM_COL32(220,240,255,255), st.name.c_str());
                     char ubuf[32];
-                    snprintf(ubuf, sizeof(ubuf), "%d ops", (int)st.user_count);
+                    snprintf(ubuf, sizeof(ubuf), "Tier %d", (int)st.host_tier);
                     fdl->AddText(ImVec2(sx+12,sy+4),
                                  IM_COL32(160,200,220,200), ubuf);
                 }
@@ -1250,7 +1258,11 @@ void run_streaming_viewer(){
 
         // ── JOIN confirm popup ────────────────────────────────────────────
         if(pop_state == POP_JOIN){
-            const float PW=330.f, PH=130.f;
+            // tier 접속 제한: Tier1=모두 가능, Tier2=Tier2 서버만 가능
+            bool tier_ok = (login_get_tier() == 1) ||
+                           (login_get_tier() == 2 && pending_join.host_tier == 2);
+
+            const float PW=340.f, PH=150.f;
             ImGui::SetNextWindowPos(ImVec2(((float)fw-PW)*0.5f,((float)fh-PH)*0.5f));
             ImGui::SetNextWindowSize(ImVec2(PW,PH));
             ImGui::SetNextWindowBgAlpha(0.92f);
@@ -1259,18 +1271,52 @@ void run_streaming_viewer(){
             ImGui::Begin("##pop_join", nullptr,
                 ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
                 ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar);
-            ImGui::TextColored(ImVec4(0.4f,0.8f,1.f,1.f),
-                               "Join: %s", pending_join.name.c_str());
-            char ub[48];
-            snprintf(ub, sizeof(ub), "%d operator%s connected",
+
+            // Station : NAME  — 가운데 정렬
+            char name_buf[80];
+            snprintf(name_buf, sizeof(name_buf), "Station : %s", pending_join.name.c_str());
+            float nw = ImGui::CalcTextSize(name_buf).x;
+            ImGui::SetCursorPosX((PW - nw) * 0.5f);
+            ImGui::TextColored(ImVec4(0.5f,0.9f,1.f,1.f), "%s", name_buf);
+
+            // 좌표 — 약간 작은 폰트, 항상 N/E 부호 표시
+            char coord_buf[64];
+            const char* ew2 = pending_join.lon >= 0.f ? "E" : "W";
+            snprintf(coord_buf, sizeof(coord_buf), "(%.4fN %.4f%s)",
+                     pending_join.lat, fabsf(pending_join.lon), ew2);
+            ImGui::SetWindowFontScale(0.85f);
+            float cw2 = ImGui::CalcTextSize(coord_buf).x;
+            ImGui::SetCursorPosX((PW - cw2) * 0.5f);
+            ImGui::TextDisabled("%s", coord_buf);
+            ImGui::SetWindowFontScale(1.0f);
+
+            char op_buf[48];
+            snprintf(op_buf, sizeof(op_buf), "%d Operator%s connected",
                      (int)pending_join.user_count,
                      pending_join.user_count == 1 ? "" : "s");
-            ImGui::TextDisabled("%s", ub);
-            ImGui::TextDisabled("IP: %s  Port: %d",
-                                pending_join.ip.c_str(), (int)pending_join.tcp_port);
+            float ow = ImGui::CalcTextSize(op_buf).x;
+            ImGui::SetCursorPosX((PW - ow) * 0.5f);
+            ImGui::TextDisabled("%s", op_buf);
+
+            char tier_buf[32];
+            snprintf(tier_buf, sizeof(tier_buf), "Tier %d", (int)pending_join.host_tier);
+            float tbw = ImGui::CalcTextSize(tier_buf).x;
+            ImGui::SetCursorPosX((PW - tbw) * 0.5f);
+            if(!tier_ok)
+                ImGui::TextColored(ImVec4(1.f,0.4f,0.4f,1.f), "%s", tier_buf);
+            else
+                ImGui::TextColored(ImVec4(0.3f,0.9f,0.4f,1.f), "%s", tier_buf);
+
             ImGui::Spacing();
+
+            // 버튼 가운데 정렬
+            const float btn_join_w=90.f, btn_cancel_w=80.f, spacing=8.f;
+            float btns_total = btn_join_w + spacing + btn_cancel_w;
+            ImGui::SetCursorPosX((PW - btns_total) * 0.5f);
+
+            if(!tier_ok) ImGui::BeginDisabled();
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14f,0.30f,0.60f,1.f));
-            if(ImGui::Button("Join##jb", ImVec2(100,26))){
+            if(ImGui::Button("Join##jb", ImVec2(btn_join_w,28))){
                 { std::lock_guard<std::mutex> lk(join_share_mtx); join_share_files.clear(); }
                 cli = new NetClient();
                 if(cli->connect(pending_join.ip.c_str(), (int)pending_join.tcp_port,
@@ -1288,8 +1334,11 @@ void run_streaming_viewer(){
                 }
             }
             ImGui::PopStyleColor();
-            ImGui::SameLine();
-            if(ImGui::Button("Cancel##jc", ImVec2(80,26))) pop_state=POP_NONE;
+            if(!tier_ok) ImGui::EndDisabled();
+
+            ImGui::SameLine(0.f, spacing);
+            if(ImGui::Button("Cancel##jc", ImVec2(btn_cancel_w,28))) pop_state=POP_NONE;
+
             ImGui::End();
             ImGui::PopStyleColor();
             ImGui::PopStyleVar();
@@ -1297,6 +1346,11 @@ void run_streaming_viewer(){
 
         draw_early_chat(fw, fh);
         if(early_do_shutdown){ glfwSetWindowShouldClose(win, GLFW_TRUE); }
+        if(early_do_logout){
+            early_do_logout = false;
+            do_logout = true;
+            mode_done = true;
+        }
         if(early_do_reset){
             // globe에서 /reset: 지구본 루프 재진입 (do_main_menu 이용)
             early_do_reset = false;
@@ -1318,6 +1372,11 @@ void run_streaming_viewer(){
         ImGui::DestroyContext(); glfwDestroyWindow(win); glfwTerminate();
         return;
     }
+
+    if(do_logout){
+        if(cli){ cli->disconnect(); delete cli; cli=nullptr; }
+    }
+    if(!do_logout){
 
     // ── 모드에 따라 초기화 ────────────────────────────────────────────────
     // /reset(JOIN): cli가 없으면 저장된 connect 정보로 자동 재접속
@@ -1897,7 +1956,8 @@ void run_streaming_viewer(){
                         v.station_name.c_str(),
                         v.station_lat, v.station_lon,
                         (uint16_t)host_port,
-                        lip.c_str());
+                        lip.c_str(),
+                        (uint8_t)login_get_tier());
                 }
                 // 브로드캐스트 전용 스레드 시작 (캡처 스레드 분리)
                 v.net_bcast_stop.store(false);
@@ -2384,13 +2444,16 @@ void run_streaming_viewer(){
         // ── Frequency input ───────────────────────────────────────────────
         static float new_freq=450.0f; static bool fdeact=false, focus_freq=false;
         static bool chat_focus_input=false; // 채팅창 입력 포커스 상태
-        // 채팅창 열려있으면 Enter → 채팅 포커스, 아니면 주파수 포커스
-        if(ImGui::IsKeyPressed(ImGuiKey_Enter,false)||ImGui::IsKeyPressed(ImGuiKey_KeypadEnter,false)){
-            if(chat_open){
-                chat_focus_input = true;
-            } else if(!editing){
-                focus_freq = true;
-            }
+        // Tab → 주파수 입력창 포커스 (스펙트럼 뷰에서만, 채팅창 닫힌 상태)
+        if(ImGui::IsKeyPressed(ImGuiKey_Tab, false) && !editing && !chat_open){
+            focus_freq = true;
+        }
+        // 채팅창 열린 상태에서 Enter → 채팅 입력칸 포커스
+        if(chat_open &&
+           (ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+            ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)) &&
+           !ImGui::GetIO().WantTextInput){
+            chat_focus_input = true;
         }
         if(fdeact){ fdeact=false; ImGui::SetWindowFocus(nullptr); }
         if(focus_freq){ ImGui::SetKeyboardFocusHere(); focus_freq=false; }
@@ -4205,10 +4268,10 @@ void run_streaming_viewer(){
             auto print_chat=[&](const char* from, const char* msg){
                 const char* myname = v.net_cli ? v.net_cli->my_name : login_get_id();
                 bool is_me=(strcmp(from,myname)==0);
-                if(is_me)
-                    ImGui::TextColored(ImVec4(0.3f,1.f,0.5f,1.f),"[%s] %s",from,msg);
-                else
-                    ImGui::TextColored(ImVec4(0.85f,0.85f,0.85f,1.f),"[%s] %s",from,msg);
+                ImVec4 col = is_me ? ImVec4(0.3f,1.f,0.5f,1.f) : ImVec4(0.85f,0.85f,0.85f,1.f);
+                ImGui::PushStyleColor(ImGuiCol_Text, col);
+                ImGui::TextWrapped("[%s] %s", from, msg);
+                ImGui::PopStyleColor();
             };
 
             if(v.net_cli){
@@ -4218,9 +4281,13 @@ void run_streaming_viewer(){
             } else {
                 std::lock_guard<std::mutex> lk(host_chat_mtx);
                 for(auto& m : host_chat_log){
-                    if(m.is_error) ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(1.f,0.3f,0.3f,1.f));
-                    print_chat(m.from, m.msg);
-                    if(m.is_error) ImGui::PopStyleColor();
+                    if(m.is_error){
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f,0.3f,0.3f,1.f));
+                        ImGui::TextWrapped("[%s] %s", m.from, m.msg);
+                        ImGui::PopStyleColor();
+                    } else {
+                        print_chat(m.from, m.msg);
+                    }
                 }
             }
             if(chat_scroll_bottom){ ImGui::SetScrollHereY(1.f); chat_scroll_bottom=false; }
@@ -4267,14 +4334,14 @@ void run_streaming_viewer(){
                         // outer do-while이 do_main_menu=true로 재진입 → 지구본부터
 
                     } else if(chat_str == "/chassis 1 reset"){
-                        // HOST 또는 JOIN만 사용 가능
-                        if(v.net_srv || v.net_cli){
+                        // HOST만 사용 가능 (JOIN은 본인 SDR 없음)
+                        if(v.net_srv){
                             chassis_reset_mode = 1; // HOST 모드로 재시작
                             do_chassis_reset   = true;
                             do_main_menu       = true;
                             // glfwSetWindowShouldClose 없음: outer 루프 재진입
                         } else {
-                            push_local("System", "Only available in HOST or JOIN mode.", true);
+                            push_local("System", "Only available in HOST mode.", true);
                         }
 
                     } else if(chat_str == "/reset"){
@@ -4367,6 +4434,8 @@ void run_streaming_viewer(){
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(win);
     }
+
+    } // end if(!do_logout) — skip SDR init+main loop when logout from globe
 
     v.is_running = false;
     // RTL-SDR: async read 즉시 취소 → cap thread 블로킹 해제
