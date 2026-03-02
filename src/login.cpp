@@ -145,7 +145,7 @@ bool draw_login_screen(int win_w, int win_h){
 
     // ── 로그인 패널 ──────────────────────────────────────────────────────
     bool is_t3 = (tier == 3);
-    const float PW_=290.0f,PH_=(is_t3?220.0f:262.0f),PAD=28.0f;
+    const float PW_=290.0f,PH_=262.0f,PAD=28.0f;
     ImGui::SetNextWindowPos(ImVec2((float)win_w-PW_-PAD,(float)win_h-PH_-PAD));
     ImGui::SetNextWindowSize(ImVec2(PW_,PH_));
     ImGui::SetNextWindowBgAlpha(0.88f);
@@ -200,10 +200,14 @@ bool draw_login_screen(int win_w, int win_h){
             ImGuiInputTextFlags_Password|ImGuiInputTextFlags_EnterReturnsTrue);
         ImGui::Spacing();
     } else {
-        // Tier 3: Enter on ID field acts as login trigger
+        // Tier 3: PW 입력창 숨기되 동일 높이 유지
+        float item_h = ImGui::GetFrameHeightWithSpacing();
+        ImGui::Dummy(ImVec2(0, ImGui::GetTextLineHeight())); // "PW" text height
+        ImGui::Dummy(ImVec2(0, item_h));                     // InputText height
+        ImGui::Spacing();
         enter_pw = ImGui::IsKeyPressed(ImGuiKey_Enter,false) ||
                    ImGui::IsKeyPressed(ImGuiKey_KeypadEnter,false);
-        pw_buf[0] = '\0'; // no password for Tier 3
+        pw_buf[0] = '\0';
     }
 
     if(failed){

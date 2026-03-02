@@ -48,6 +48,8 @@ add_executable(BE_WE
     src/net_server.cpp
     src/net_client.cpp
     src/net_stream.cpp
+    src/globe.cpp
+    src/udp_discovery.cpp
     ${IMGUI_SOURCES}
 )
 

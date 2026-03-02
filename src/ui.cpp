@@ -803,6 +803,101 @@ void run_streaming_viewer(){
     ImGui_ImplGlfw_InitForOpenGL(win,true);
     ImGui_ImplOpenGL3_Init("#version 330");
 
+    // ── Early chat state (login + globe loops 공유) ───────────────────────
+    struct EarlyChatMsg { char from[32]; char msg[256]; bool is_error=false; };
+    std::vector<EarlyChatMsg> early_chat_log;
+    bool  early_chat_open   = false;
+    bool  early_chat_scroll = false;
+    char  early_chat_input[256] = {};
+
+    // early loop 명령 플래그
+    bool early_do_shutdown    = false;
+    bool early_do_reset       = false; // /reset: 현재 창 재진입 (login/globe에서는 재시작)
+    bool early_chat_focus_req = false; // Enter → 입력칸 포커스 요청
+
+    auto draw_early_chat = [&](int fw, int fh){
+        // RShift 토글
+        ImGuiIO& eio = ImGui::GetIO();
+        if(ImGui::IsKeyPressed(ImGuiKey_RightShift, false) && !eio.WantTextInput)
+            early_chat_open = !early_chat_open;
+
+        // 채팅창 열린 상태에서 Enter → 입력칸 포커스
+        if(early_chat_open &&
+           (ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+            ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)) &&
+           !eio.WantTextInput)
+            early_chat_focus_req = true;
+
+        if(!early_chat_open) return;
+
+        const float CW=360.f, CH=320.f;
+        ImGui::SetNextWindowPos(ImVec2((float)fw-CW-10.f, (float)fh-CH-10.f));
+        ImGui::SetNextWindowSize(ImVec2(CW, CH));
+        ImGui::SetNextWindowBgAlpha(0.92f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.f);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f,0.07f,0.12f,1.f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg,  ImVec4(0.10f,0.12f,0.20f,1.f));
+        ImGui::Begin("##early_chat", nullptr,
+            ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
+            ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar);
+
+        ImGui::TextColored(ImVec4(0.4f,0.7f,1.f,1.f), "Chat");
+        ImGui::Separator();
+
+        float msg_h = CH - 60.f;
+        ImGui::BeginChild("##early_chat_msgs", ImVec2(0, msg_h), false);
+        for(auto& m : early_chat_log){
+            if(m.is_error)
+                ImGui::TextColored(ImVec4(1.f,0.3f,0.3f,1.f), "[%s] %s", m.from, m.msg);
+            else
+                ImGui::TextColored(ImVec4(0.3f,1.f,0.5f,1.f), "[%s] %s", m.from, m.msg);
+        }
+        if(early_chat_scroll){ ImGui::SetScrollHereY(1.f); early_chat_scroll=false; }
+        ImGui::EndChild();
+
+        ImGui::Separator();
+        ImGui::SetNextItemWidth(CW - 16.f);
+        if(early_chat_focus_req){
+            ImGui::SetKeyboardFocusHere(0);
+            early_chat_focus_req = false;
+        }
+        bool send = false;
+        if(ImGui::InputText("##early_chat_in", early_chat_input, sizeof(early_chat_input),
+                            ImGuiInputTextFlags_EnterReturnsTrue))
+            send = true;
+
+        if(send && early_chat_input[0]){
+            std::string s = early_chat_input;
+            auto push = [&](const char* from, const char* msg, bool err=false){
+                EarlyChatMsg m{}; m.is_error=err;
+                strncpy(m.from, from, 31); strncpy(m.msg, msg, 255);
+                early_chat_log.push_back(m);
+                early_chat_scroll = true;
+            };
+            if(s[0] == '/'){
+                if(s == "/shutdown"){
+                    early_do_shutdown = true;
+                } else if(s == "/logout" || s == "/main" || s == "/chassis 1 reset"){
+                    push("System", "Not available here.", true);
+                } else if(s == "/reset"){
+                    // login/globe에서 reset = 현 창 재시작 (로그인 세션 유지)
+                    early_do_reset = true;
+                } else {
+                    char errmsg[280];
+                    snprintf(errmsg, sizeof(errmsg), "Unknown command: %s", s.c_str());
+                    push("System", errmsg, true);
+                }
+            } else {
+                push(login_get_id()[0] ? login_get_id() : "me", s.c_str());
+            }
+            early_chat_input[0] = '\0';
+        }
+
+        ImGui::End();
+        ImGui::PopStyleColor(2);
+        ImGui::PopStyleVar();
+    };
+
     // ── Login screen loop ─────────────────────────────────────────────────
     {
         bool logged_in = false;
@@ -814,6 +909,9 @@ void run_streaming_viewer(){
             glClear(GL_COLOR_BUFFER_BIT);
             ImGui_ImplOpenGL3_NewFrame(); ImGui_ImplGlfw_NewFrame(); ImGui::NewFrame();
             logged_in = draw_login_screen(fw,fh);
+            draw_early_chat(fw, fh);
+            if(early_do_shutdown){ glfwSetWindowShouldClose(win, GLFW_TRUE); }
+            if(early_do_reset){ early_do_reset = false; /* login창: reset = 무시 (이미 초기 상태) */ }
             ImGui::Render();
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
             glfwSwapBuffers(win);
@@ -830,7 +928,6 @@ void run_streaming_viewer(){
     // ── 모드선택 outer 루프 (do_main_menu 시 재진입) ─────────────────────
     bool do_main_menu = false;
     bool do_logout = false;
-    bool do_restart = false;
     bool do_chassis_reset = false;
     int  chassis_reset_mode = 0; // 0=LOCAL, 1=HOST
     // 함수 레벨 파일 목록 (스코프 공유 필요)
@@ -865,13 +962,31 @@ void run_streaming_viewer(){
     std::thread cap;
     v.create_waterfall_texture();
     // 0=LOCAL, 1=HOST, 2=CONNECT
+    // /reset 재진입을 위해 루프 간 상태 보존
+    static int   s_host_port    = 7700;
+    static char  s_connect_host[128] = "192.168.1.";
+    static int   s_connect_port = 7700;
+    static char  s_connect_id[32]  = {};
+    static char  s_connect_pw[64]  = {};
+    static uint8_t s_connect_tier  = 1;
+    // HOST reset용 station 정보 보존
+    static std::string s_station_name;
+    static float       s_station_lat = 0.f, s_station_lon = 0.f;
+    static bool        s_station_set = false;
     int  mode_sel     = do_chassis_reset ? chassis_reset_mode : 0;
-    int  host_port    = 7700;
-    char connect_host[128] = "192.168.1.";
-    int  connect_port = 7700;
-    char connect_id[32]  = {};
-    char connect_pw[64]  = {};
-    uint8_t connect_tier = 1;
+    int& host_port    = s_host_port;
+    char (&connect_host)[128] = s_connect_host;
+    int& connect_port = s_connect_port;
+    char (&connect_id)[32]   = s_connect_id;
+    char (&connect_pw)[64]   = s_connect_pw;
+    uint8_t& connect_tier    = s_connect_tier;
+    // HOST reset: 저장된 station 정보 복원
+    if(do_chassis_reset && (chassis_reset_mode == 1) && s_station_set){
+        v.station_name         = s_station_name;
+        v.station_lat          = s_station_lat;
+        v.station_lon          = s_station_lon;
+        v.station_location_set = true;
+    }
     std::string mode_err_msg;
     float mode_err_timer = 0.0f;
     bool  mode_done = do_chassis_reset; // chassis reset: skip mode selection
@@ -918,6 +1033,13 @@ void run_streaming_viewer(){
     char  new_station_name[64] = {};
     bool  was_dragging = false;
 
+    // 클릭 좌표 표시 상태
+    bool  show_coord     = false;
+    float coord_lat      = 0.f, coord_lon = 0.f;
+    float coord_sx       = 0.f, coord_sy  = 0.f;
+    float coord_timer    = 0.f; // 표시 유지 시간
+
+    glfwSwapInterval(1); // VSync ON — globe loop는 무거운 연산 없음
     while(!mode_done && !glfwWindowShouldClose(win)){
         glfwPollEvents();
         int fw,fh; glfwGetFramebufferSize(win,&fw,&fh);
@@ -966,6 +1088,14 @@ void run_streaming_viewer(){
             if(ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !was_dragging){
                 float plat, plon;
                 if(globe.pick(io.MousePos.x, io.MousePos.y, plat, plon)){
+                    // 좌표 표시 (항상)
+                    show_coord  = true;
+                    coord_lat   = plat;
+                    coord_lon   = plon;
+                    coord_sx    = io.MousePos.x;
+                    coord_sy    = io.MousePos.y;
+                    coord_timer = 3.f; // 3초간 표시
+
                     // Check if a station marker was clicked (20px radius)
                     bool hit_station = false;
                     {
@@ -1023,13 +1153,37 @@ void run_streaming_viewer(){
             }
         }
 
+        // ── Click coordinate display ──────────────────────────────────────
+        if(show_coord){
+            coord_timer -= io.DeltaTime;
+            if(coord_timer <= 0.f){ show_coord = false; }
+            else {
+                // fade out last 0.5s
+                float alpha = (coord_timer < 0.5f) ? coord_timer / 0.5f : 1.f;
+                ImU32 col_text = IM_COL32(220, 255, 180, (int)(220*alpha));
+                ImU32 col_bg   = IM_COL32(10,  30,  10,  (int)(180*alpha));
+                char cbuf[48];
+                const char* ew = coord_lon >= 0.f ? "E" : "W";
+                snprintf(cbuf, sizeof(cbuf), "%.4f°N  %.4f°%s",
+                         coord_lat, fabsf(coord_lon), ew);
+                ImVec2 tsz = ImGui::CalcTextSize(cbuf);
+                float cx = coord_sx + 14.f;
+                float cy = coord_sy - 22.f;
+                // keep inside screen
+                if(cx + tsz.x + 6 > fw) cx = coord_sx - tsz.x - 14.f;
+                if(cy < 4.f) cy = coord_sy + 10.f;
+                ImDrawList* fdl = ImGui::GetForegroundDrawList();
+                fdl->AddRectFilled(ImVec2(cx-4,cy-3), ImVec2(cx+tsz.x+4,cy+tsz.y+3),
+                                   col_bg, 4.f);
+                fdl->AddText(ImVec2(cx, cy), col_text, cbuf);
+            }
+        }
+
         // ── Title ─────────────────────────────────────────────────────────
         {
             ImDrawList* fdl = ImGui::GetForegroundDrawList();
             fdl->AddText(ImVec2(20,20), IM_COL32(100,180,255,200),
                          "BEWE Station Discovery");
-            fdl->AddText(ImVec2(20,36), IM_COL32(120,140,160,150),
-                         "Click globe to place station  |  Click marker to join");
         }
 
         // ── LOCAL button (top-right corner) ──────────────────────────────
@@ -1051,57 +1205,9 @@ void run_streaming_viewer(){
             ImGui::PopStyleVar();
         }
 
-        // ── Manual connect bar (bottom center) — Tier 1/2 only ──────────
-        if(login_get_tier() < 3)
-        {
-            const float MW = 480.f, MH = 60.f;
-            ImGui::SetNextWindowPos(ImVec2(((float)fw-MW)*0.5f, (float)fh-MH-8.f));
-            ImGui::SetNextWindowSize(ImVec2(MW, MH));
-            ImGui::SetNextWindowBgAlpha(0.78f);
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
-            ImGui::Begin("##manual_bar", nullptr,
-                ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
-                ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar|
-                ImGuiWindowFlags_NoNav);
-            ImGui::Text("Manual:");
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(170);
-            ImGui::InputText("##mip", connect_host, sizeof(connect_host));
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(72);
-            ImGui::InputInt("##mport", &connect_port, 0, 0);
-            if(connect_port < 1) connect_port = 1;
-            if(connect_port > 65535) connect_port = 65535;
-            ImGui::SameLine();
-            if(ImGui::Button("Connect##man", ImVec2(72,22))){
-                { std::lock_guard<std::mutex> lk(join_share_mtx); join_share_files.clear(); }
-                cli = new NetClient();
-                if(cli->connect(connect_host, connect_port,
-                                login_get_id(), login_get_pw(),
-                                (uint8_t)login_get_tier())){
-                    strncpy(connect_id, login_get_id(), 31); connect_id[31]='\0';
-                    strncpy(connect_pw, login_get_pw(), 63); connect_pw[63]='\0';
-                    connect_tier = (uint8_t)login_get_tier();
-                    mode_sel=2; mode_done=true;
-                } else {
-                    delete cli; cli=nullptr;
-                    mode_err_msg="Connection failed. Check IP/Port";
-                    mode_err_timer=3.f;
-                }
-            }
-            if(mode_err_timer > 0.f){
-                mode_err_timer -= io.DeltaTime;
-                ImGui::SameLine();
-                ImGui::TextColored(ImVec4(1.f,0.3f,0.3f,1.f),
-                                   "%s", mode_err_msg.c_str());
-            }
-            ImGui::End();
-            ImGui::PopStyleVar();
-        }
-
         // ── HOST placement popup ──────────────────────────────────────────
         if(pop_state == POP_HOST){
-            const float PW=330.f, PH=150.f;
+            const float PW=330.f, PH=110.f;
             ImGui::SetNextWindowPos(ImVec2(((float)fw-PW)*0.5f,((float)fh-PH)*0.5f));
             ImGui::SetNextWindowSize(ImVec2(PW,PH));
             ImGui::SetNextWindowBgAlpha(0.92f);
@@ -1110,20 +1216,23 @@ void run_streaming_viewer(){
             ImGui::Begin("##pop_host", nullptr,
                 ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
                 ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar);
-            char loc[64];
-            snprintf(loc, sizeof(loc), "Location: %.3fN, %.3fE",
-                     pending_lat, pending_lon);
-            ImGui::TextColored(ImVec4(0.5f,0.9f,0.5f,1.f), "%s", loc);
-            ImGui::Spacing();
-            ImGui::Text("Station Name:");
+            const char* lbl = "Station Name:";
+            float lbl_w = ImGui::CalcTextSize(lbl).x;
+            float input_w = 160.f;
+            float total_w = lbl_w + ImGui::GetStyle().ItemSpacing.x + input_w;
+            ImGui::SetCursorPosX((PW - total_w) * 0.5f);
+            ImGui::Text("%s", lbl);
             ImGui::SameLine();
-            ImGui::SetNextItemWidth(160);
+            ImGui::SetNextItemWidth(input_w);
             ImGui::InputText("##sname", new_station_name, sizeof(new_station_name));
             ImGui::Spacing();
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14f,0.40f,0.14f,1.f));
             bool can_host = new_station_name[0] != '\0';
+            float btn_host_w = 90.f, btn_cancel_w = 80.f;
+            float btns_w = btn_host_w + ImGui::GetStyle().ItemSpacing.x + btn_cancel_w;
+            ImGui::SetCursorPosX((PW - btns_w) * 0.5f);
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14f,0.40f,0.14f,1.f));
             if(!can_host) ImGui::BeginDisabled();
-            if(ImGui::Button("Set & Host##sh", ImVec2(110,26))){
+            if(ImGui::Button("Host##sh", ImVec2(btn_host_w,26))){
                 v.station_name = new_station_name;
                 v.station_lat  = pending_lat;
                 v.station_lon  = pending_lon;
@@ -1133,7 +1242,7 @@ void run_streaming_viewer(){
             if(!can_host) ImGui::EndDisabled();
             ImGui::PopStyleColor();
             ImGui::SameLine();
-            if(ImGui::Button("Cancel##hc", ImVec2(80,26))) pop_state=POP_NONE;
+            if(ImGui::Button("Cancel##hc", ImVec2(btn_cancel_w,26))) pop_state=POP_NONE;
             ImGui::End();
             ImGui::PopStyleColor();
             ImGui::PopStyleVar();
@@ -1186,6 +1295,15 @@ void run_streaming_viewer(){
             ImGui::PopStyleVar();
         }
 
+        draw_early_chat(fw, fh);
+        if(early_do_shutdown){ glfwSetWindowShouldClose(win, GLFW_TRUE); }
+        if(early_do_reset){
+            // globe에서 /reset: 지구본 루프 재진입 (do_main_menu 이용)
+            early_do_reset = false;
+            do_main_menu = true;
+            mode_done = true;
+        }
+
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(win);
@@ -1202,6 +1320,16 @@ void run_streaming_viewer(){
     }
 
     // ── 모드에 따라 초기화 ────────────────────────────────────────────────
+    // /reset(JOIN): cli가 없으면 저장된 connect 정보로 자동 재접속
+    if(mode_sel==2 && !cli && connect_host[0] && connect_port > 0){
+        cli = new NetClient();
+        if(!cli->connect(connect_host, connect_port,
+                         connect_id, connect_pw, connect_tier)){
+            delete cli; cli = nullptr;
+            mode_sel = 0; // 접속 실패 시 LOCAL로 fallback
+        }
+    }
+
     if(mode_sel==2 && cli){
         // CONNECT 모드: 하드웨어 없이 원격 수신
         v.remote_mode = true;
@@ -1755,6 +1883,13 @@ void run_streaming_viewer(){
             } else {
                 v.net_srv = srv;
                 srv->set_host_info(login_get_id(), (uint8_t)login_get_tier());
+                // HOST station 정보를 static에 저장 (/reset 재진입 시 복원)
+                if(v.station_location_set){
+                    s_station_name = v.station_name;
+                    s_station_lat  = v.station_lat;
+                    s_station_lon  = v.station_lon;
+                    s_station_set  = true;
+                }
                 // Start UDP discovery broadcast if station location was set via globe
                 if(v.station_location_set){
                     std::string lip = get_local_ip();
@@ -1858,6 +1993,7 @@ void run_streaming_viewer(){
         if(v.tm_iq_file_ready) v.tm_iq_on.store(true);
     }
 
+    glfwSwapInterval(0); // VSync OFF — main loop는 SDR 실시간 렌더링
     // ── Main loop ─────────────────────────────────────────────────────────
     while(!glfwWindowShouldClose(win) && !do_logout && !do_main_menu){
         glfwPollEvents();
@@ -2202,7 +2338,7 @@ void run_streaming_viewer(){
                     else { v.channels[sci].pan= 0; if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS); }
                 }
             }
-            if(ImGui::IsKeyPressed(ImGuiKey_C,false) && !editing){
+            if(ImGui::IsKeyPressed(ImGuiKey_RightShift,false) && !editing){
                 chat_open = !chat_open;
             }
 
@@ -2807,33 +2943,8 @@ void run_streaming_viewer(){
                         }
                         ImGui::TextColored(ImVec4(0.4f,0.85f,1.f,1.f), "%s", hw_role);
                         ImGui::SameLine(0,6);
-                        // HOST 모드: IP를 하드웨어 이름과 같은 줄에 표시
-                        if(v.net_srv){
-                            static char s_host_ip[INET_ADDRSTRLEN] = "";
-                            static float s_ip_timer = 0.f;
-                            s_ip_timer -= io.DeltaTime;
-                            if(s_ip_timer <= 0.f){
-                                s_ip_timer = 5.f;
-                                s_host_ip[0] = '\0';
-                                struct ifaddrs* ifa_list;
-                                if(getifaddrs(&ifa_list) == 0){
-                                    for(auto* ifa=ifa_list; ifa; ifa=ifa->ifa_next){
-                                        if(!ifa->ifa_addr||ifa->ifa_addr->sa_family!=AF_INET) continue;
-                                        if(strcmp(ifa->ifa_name,"lo")==0) continue;
-                                        auto* sin=(struct sockaddr_in*)ifa->ifa_addr;
-                                        inet_ntop(AF_INET,&sin->sin_addr,s_host_ip,sizeof(s_host_ip));
-                                        break;
-                                    }
-                                    freeifaddrs(ifa_list);
-                                }
-                            }
-                            if(s_host_ip[0])
-                                ImGui::Text("%s (%s)", hw_name, s_host_ip);
-                            else
-                                ImGui::TextUnformatted(hw_name);
-                        } else {
-                            ImGui::TextUnformatted(hw_name);
-                        }
+                        ImGui::TextUnformatted(hw_name);
+
                         // 주파수 / SR 표시
                         if(v.net_cli){
                             ImGui::TextDisabled("  %.4f MHz  /  %.3f MSPS",
@@ -4085,7 +4196,7 @@ void run_streaming_viewer(){
                 ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
                 ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar);
 
-            ImGui::TextColored(ImVec4(0.4f,0.7f,1.f,1.f),"Chat  [C]");
+            ImGui::TextColored(ImVec4(0.4f,0.7f,1.f,1.f),"Chat");
             ImGui::Separator();
 
             float msg_h=CH-60.f;
@@ -4139,18 +4250,47 @@ void run_streaming_viewer(){
                     chat_scroll_bottom = true;
                 };
                 if(chat_str[0] == '/'){
-                    // ── 명령어 처리 (3개만 허용) ─────────────────────────
                     if(chat_str == "/shutdown"){
+                        // 프로그램 완전 종료
                         glfwSetWindowShouldClose(win, GLFW_TRUE);
+
                     } else if(chat_str == "/logout"){
+                        // SDR 종료 → 로그인 화면으로 (세션 삭제, 프로세스 재시작)
                         do_logout = true;
-                        glfwSetWindowShouldClose(win, GLFW_TRUE);
-                    } else if(chat_str == "/restart"){
-                        // 로그아웃 후 기존 계정으로 자동 재로그인
-                        do_restart = true;
-                        glfwSetWindowShouldClose(win, GLFW_TRUE);
+                        // glfwSetWindowShouldClose 없이 do_logout만으로 inner while 탈출
+                        // outer do-while은 !do_main_menu이므로 탈출 → if(do_logout) execv
+
+                    } else if(chat_str == "/main"){
+                        // SDR 종료 → main(지구본)으로 (로그인 세션 유지)
+                        do_main_menu = true;
+                        // inner while의 !do_main_menu 조건으로 탈출
+                        // outer do-while이 do_main_menu=true로 재진입 → 지구본부터
+
+                    } else if(chat_str == "/chassis 1 reset"){
+                        // HOST 또는 JOIN만 사용 가능
+                        if(v.net_srv || v.net_cli){
+                            chassis_reset_mode = 1; // HOST 모드로 재시작
+                            do_chassis_reset   = true;
+                            do_main_menu       = true;
+                            // glfwSetWindowShouldClose 없음: outer 루프 재진입
+                        } else {
+                            push_local("System", "Only available in HOST or JOIN mode.", true);
+                        }
+
+                    } else if(chat_str == "/reset"){
+                        // 현재 상태 그대로 리셋 (지구본 건너뜀)
+                        if(v.net_cli){
+                            chassis_reset_mode = 2; // JOIN 재접속
+                        } else if(v.net_srv){
+                            chassis_reset_mode = 1; // HOST 재시작
+                        } else {
+                            chassis_reset_mode = 0; // LOCAL 재시작
+                        }
+                        do_chassis_reset = true;
+                        do_main_menu     = true;
+                        // glfwSetWindowShouldClose 없음: outer 루프 재진입
+
                     } else {
-                        // 알 수 없는 명령어
                         char errmsg[280];
                         snprintf(errmsg, sizeof(errmsg), "Unknown command: %s", chat_str.c_str());
                         push_local("System", errmsg, true);
@@ -4275,15 +4415,9 @@ void run_streaming_viewer(){
 
     } while(do_main_menu && !glfwWindowShouldClose(win)); // ── 모드선택 outer 루프 끝
 
-    if(do_logout || do_restart){
-        // 로그인 화면으로 돌아가기 (프로세스 재시작)
-        // /restart: 환경변수로 기존 계정 전달 → 재시작 후 자동 로그인
-        printf("%s: restarting...\n", do_restart ? "Restart" : "Logout");
-        if(do_restart){
-            setenv("BEWE_AUTO_ID",   login_get_id(),             1);
-            setenv("BEWE_AUTO_PW",   login_get_pw(),             1);
-            setenv("BEWE_AUTO_TIER", std::to_string(login_get_tier()).c_str(), 1);
-        }
+    if(do_logout){
+        // 로그인 화면으로 돌아가기 (프로세스 재시작, 세션 삭제)
+        printf("Logout: restarting to login screen...\n");
         ImGui_ImplOpenGL3_Shutdown(); ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext(); glfwDestroyWindow(win); glfwTerminate();
         char* argv0[] = {(char*)"/proc/self/exe", nullptr};

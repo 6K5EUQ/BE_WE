@@ -85,15 +85,53 @@ void main(){
 }
 )GLSL";
 
+static const char* STARS_VERT = R"GLSL(
+#version 330 core
+layout(location=0) in vec3 aPos;
+layout(location=1) in float aBrightness;
+uniform mat4 uProj;
+uniform mat4 uView;
+out float vBright;
+void main(){
+    vBright = aBrightness;
+    // Remove translation from view (stars at infinity)
+    mat4 viewNoTrans = uView;
+    viewNoTrans[3] = vec4(0.0, 0.0, 0.0, 1.0);
+    vec4 pos = uProj * viewNoTrans * vec4(aPos * 90.0, 1.0);
+    // Force to far plane so always behind everything
+    gl_Position = pos.xyww;
+    gl_PointSize = 1.0 + aBrightness * 2.0;
+}
+)GLSL";
+
+static const char* STARS_FRAG = R"GLSL(
+#version 330 core
+in float vBright;
+out vec4 FragColor;
+void main(){
+    // Soft circular point
+    vec2 c = gl_PointCoord - 0.5;
+    float d = dot(c, c) * 4.0;
+    if(d > 1.0) discard;
+    float alpha = (1.0 - d) * vBright;
+    // Slight blue-white tint for hot stars, warm tint for dim ones
+    vec3 col = mix(vec3(1.0, 0.85, 0.7), vec3(0.85, 0.92, 1.0), vBright);
+    FragColor = vec4(col, alpha);
+}
+)GLSL";
+
 // ── Static helpers ────────────────────────────────────────────────────────
 
 static void latlon_to_xyz(float lat_deg, float lon_deg,
                            float& x, float& y, float& z) {
-    float lat = lat_deg * (float)M_PI / 180.f;
-    float lon = -lon_deg * (float)M_PI / 180.f; // negate to match sphere UV winding
-    x = cosf(lat) * cosf(lon);
+    // Standard spherical: lon→theta, lat→phi
+    // x=cos(lat)*cos(lon), y=sin(lat), z=cos(lat)*sin(lon)
+    // Inverse: lat=asin(y), lon=atan2(z,x)
+    float lat   = lat_deg * (float)M_PI / 180.f;
+    float theta = lon_deg * (float)M_PI / 180.f;
+    x = cosf(lat) * cosf(theta);
     y = sinf(lat);
-    z = cosf(lat) * sinf(lon);
+    z = cosf(lat) * sinf(theta);
 }
 
 // ── GlobeRenderer ─────────────────────────────────────────────────────────
@@ -106,9 +144,11 @@ bool GlobeRenderer::init() {
     build_sphere(30, 60);
     build_land();
     build_map_lines();
+    build_stars();
     load_earth_texture();
     // Default orientation: face lon=127 (Korea), equator at screen center
-    yaw_rad_   = -127.f * (float)M_PI / 180.f;
+    // atan2(cos(127°), sin(127°)) gives the Y-rotation needed so Korea faces camera (+z)
+    yaw_rad_   = 37.f * (float)M_PI / 180.f;
     pitch_deg_ = 0.f;
     float qyw = cosf(yaw_rad_ * 0.5f), qyy = sinf(yaw_rad_ * 0.5f);
     qw_ = qyw; qx_ = 0.f; qy_ = qyy; qz_ = 0.f;
@@ -127,6 +167,9 @@ void GlobeRenderer::destroy() {
     if (prog_sphere_){ glDeleteProgram(prog_sphere_); prog_sphere_=0; }
     if (prog_lines_) { glDeleteProgram(prog_lines_); prog_lines_=0; }
     if (prog_land_)  { glDeleteProgram(prog_land_); prog_land_=0; }
+    if (vao_stars_)  { glDeleteVertexArrays(1, &vao_stars_); vao_stars_=0; }
+    if (vbo_stars_)  { glDeleteBuffers(1, &vbo_stars_); vbo_stars_=0; }
+    if (prog_stars_) { glDeleteProgram(prog_stars_); prog_stars_=0; }
     seg_starts_.clear(); seg_counts_.clear();
 }
 
@@ -137,6 +180,38 @@ void GlobeRenderer::set_viewport(int w, int h) {
 void GlobeRenderer::render() {
     float mvp[16];
     get_mvp(mvp);
+
+    // 0. Draw star background — depth write OFF so stars stay behind everything
+    if (prog_stars_ && vao_stars_) {
+        // Build separate proj and view matrices for stars
+        float proj[16], rot[16], view_rot[16], trans[16], view[16];
+        float fovy = 45.f * (float)M_PI / 180.f;
+        float aspect = (float)vp_w_ / (float)vp_h_;
+        mat4_perspective(proj, fovy, aspect, 0.1f, 100.f);
+        mat4_from_quat(rot, qw_, qx_, qy_, qz_);
+        mat4_identity(view_rot);
+        for (int r=0; r<3; r++)
+            for (int c=0; c<3; c++)
+                view_rot[c*4+r] = rot[r*4+c];
+        mat4_translate(trans, 0.f, 0.f, -zoom_);
+        mat4_mul(view, trans, view_rot);
+
+        glDepthMask(GL_FALSE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+        glEnable(GL_PROGRAM_POINT_SIZE);
+
+        glUseProgram(prog_stars_);
+        glUniformMatrix4fv(glGetUniformLocation(prog_stars_, "uProj"), 1, GL_FALSE, proj);
+        glUniformMatrix4fv(glGetUniformLocation(prog_stars_, "uView"), 1, GL_FALSE, view);
+        glBindVertexArray(vao_stars_);
+        glDrawArrays(GL_POINTS, 0, star_count_);
+        glBindVertexArray(0);
+
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+        glDisable(GL_PROGRAM_POINT_SIZE);
+    }
 
     // 1. Draw globe sphere (with texture if loaded, else flat color)
     glUseProgram(prog_sphere_);
@@ -219,9 +294,13 @@ void GlobeRenderer::on_drag(float mx, float my) {
 
     float nw, nx, ny, nz;
 
+    // Scale drag speed by base_zoom/current_zoom so zoomed-in view moves slower
+    const float base_zoom = 3.5f;
+    const float drag_scale = base_zoom / zoom_;
+
     if (fabsf(ddx) > 0.f) {
         // Horizontal → rotate around world Y axis
-        float angle = -ddx * 0.002f;
+        float angle = -ddx * 0.002f * drag_scale;
         float dw = cosf(angle * 0.5f), dy = sinf(angle * 0.5f);
         // pre-multiply: delta * current  (world-space axis)
         quat_mul(nw,nx,ny,nz, dw,0,dy,0, qw_,qx_,qy_,qz_);
@@ -240,7 +319,7 @@ void GlobeRenderer::on_drag(float mx, float my) {
         float ay =  2.f*(qx_*qy_ + qw_*qz_);
         float az =  2.f*(qx_*qz_ - qw_*qy_);
 
-        float angle = -ddy * 0.002f;
+        float angle = ddy * 0.002f * drag_scale;
         pitch_deg_ += angle * (180.f / (float)M_PI);
         if (pitch_deg_ >  90.f) { angle -= (pitch_deg_ - 90.f) * (float)M_PI / 180.f; pitch_deg_ =  90.f; }
         if (pitch_deg_ < -90.f) { angle -= (pitch_deg_ + 90.f) * (float)M_PI / 180.f; pitch_deg_ = -90.f; }
@@ -261,43 +340,85 @@ void GlobeRenderer::on_scroll(float delta) {
 }
 
 // ── Picking ───────────────────────────────────────────────────────────────
+// Strategy: unproject two NDC points (near/far) through MVP_inverse to get
+// a ray in globe LOCAL space, then intersect with unit sphere.
+// This is independent of camera orientation — the hit point is always in
+// the globe's own coordinate frame where latlon_to_xyz is defined.
+
+static bool mat4_inverse(const float* M, float* I) {
+    // General 4x4 inverse via cofactors (column-major input/output)
+    float s0  = M[0]*M[5]  - M[4]*M[1];
+    float s1  = M[0]*M[9]  - M[8]*M[1];
+    float s2  = M[0]*M[13] - M[12]*M[1];
+    float s3  = M[4]*M[9]  - M[8]*M[5];
+    float s4  = M[4]*M[13] - M[12]*M[5];
+    float s5  = M[8]*M[13] - M[12]*M[9];
+    float c5  = M[10]*M[15] - M[14]*M[11];
+    float c4  = M[6]*M[15]  - M[14]*M[7];
+    float c3  = M[6]*M[11]  - M[10]*M[7];
+    float c2  = M[2]*M[15]  - M[14]*M[3];
+    float c1  = M[2]*M[11]  - M[10]*M[3];
+    float c0  = M[2]*M[7]   - M[6]*M[3];
+    float det = s0*c5 - s1*c4 + s2*c3 + s3*c2 - s4*c1 + s5*c0;
+    if (fabsf(det) < 1e-10f) return false;
+    float idet = 1.f / det;
+    I[0]  = ( M[5]*c5  - M[9]*c4  + M[13]*c3) * idet;
+    I[1]  = (-M[1]*c5  + M[9]*c2  - M[13]*c1) * idet;
+    I[2]  = ( M[1]*c4  - M[5]*c2  + M[13]*c0) * idet;
+    I[3]  = (-M[1]*c3  + M[5]*c1  - M[9]*c0)  * idet;
+    I[4]  = (-M[4]*c5  + M[8]*c4  - M[12]*c3) * idet;
+    I[5]  = ( M[0]*c5  - M[8]*c2  + M[12]*c1) * idet;
+    I[6]  = (-M[0]*c4  + M[4]*c2  - M[12]*c0) * idet;
+    I[7]  = ( M[0]*c3  - M[4]*c1  + M[8]*c0)  * idet;
+    I[8]  = ( M[7]*s5  - M[11]*s4 + M[15]*s3) * idet;
+    I[9]  = (-M[3]*s5  + M[11]*s2 - M[15]*s1) * idet;
+    I[10] = ( M[3]*s4  - M[7]*s2  + M[15]*s0) * idet;
+    I[11] = (-M[3]*s3  + M[7]*s1  - M[11]*s0) * idet;
+    I[12] = (-M[6]*s5  + M[10]*s4 - M[14]*s3) * idet;
+    I[13] = ( M[2]*s5  - M[10]*s2 + M[14]*s1) * idet;
+    I[14] = (-M[2]*s4  + M[6]*s2  - M[14]*s0) * idet;
+    I[15] = ( M[2]*s3  - M[6]*s1  + M[10]*s0) * idet;
+    return true;
+}
+
+static void mat4_mul_vec4(const float* M, float x, float y, float z, float w,
+                           float& rx, float& ry, float& rz, float& rw) {
+    rx = M[0]*x + M[4]*y + M[8]*z  + M[12]*w;
+    ry = M[1]*x + M[5]*y + M[9]*z  + M[13]*w;
+    rz = M[2]*x + M[6]*y + M[10]*z + M[14]*w;
+    rw = M[3]*x + M[7]*y + M[11]*z + M[15]*w;
+}
 
 bool GlobeRenderer::pick(float mx, float my,
                           float& lat_deg, float& lon_deg) const {
-    float inv[16];
-    get_view_inv(inv);
+    // NDC of the mouse pixel
+    float ndcx =  2.f * mx / (float)vp_w_ - 1.f;
+    float ndcy =  1.f - 2.f * my / (float)vp_h_;
 
-    float fovy = 45.f * (float)M_PI / 180.f;
-    float tan_half = tanf(fovy * 0.5f);
-    float aspect = (float)vp_w_ / (float)vp_h_;
+    // Unproject two NDC depths through MVP_inverse → globe local space
+    float mvp[16], mvp_inv[16];
+    get_mvp(mvp);
+    if (!mat4_inverse(mvp, mvp_inv)) return false;
 
-    // NDC coords
-    float nx = (2.f * mx / vp_w_ - 1.f);
-    float ny = (1.f - 2.f * my / vp_h_);
+    float nx0, ny0, nz0, nw0;   // near (ndcz = -1)
+    float nx1, ny1, nz1, nw1;   // far  (ndcz = +1)
+    mat4_mul_vec4(mvp_inv, ndcx, ndcy, -1.f, 1.f, nx0,ny0,nz0,nw0);
+    mat4_mul_vec4(mvp_inv, ndcx, ndcy, +1.f, 1.f, nx1,ny1,nz1,nw1);
 
-    // Ray direction in view space (pointing into -Z)
-    float vx = nx * tan_half * aspect;
-    float vy = ny * tan_half;
-    float vz = -1.f;
+    // Perspective divide → Cartesian globe-local coords
+    if (fabsf(nw0) < 1e-8f || fabsf(nw1) < 1e-8f) return false;
+    float px0 = nx0/nw0, py0 = ny0/nw0, pz0 = nz0/nw0; // ray origin
+    float px1 = nx1/nw1, py1 = ny1/nw1, pz1 = nz1/nw1; // ray far
 
-    // Transform to world space using view inverse (3×3 rotation part)
-    // view_inv columns 0-2 are the world-space basis vectors
-    float wx = inv[0]*vx + inv[4]*vy + inv[8]*vz;
-    float wy = inv[1]*vx + inv[5]*vy + inv[9]*vz;
-    float wz = inv[2]*vx + inv[6]*vy + inv[10]*vz;
+    // Ray in globe local space
+    float dx = px1-px0, dy = py1-py0, dz = pz1-pz0;
+    float dlen = sqrtf(dx*dx + dy*dy + dz*dz);
+    if (dlen < 1e-8f) return false;
+    dx/=dlen; dy/=dlen; dz/=dlen;
 
-    // Normalize ray direction
-    float wlen = sqrtf(wx*wx + wy*wy + wz*wz);
-    if (wlen < 1e-8f) return false;
-    wx/=wlen; wy/=wlen; wz/=wlen;
-
-    // Ray origin = camera world position (column 3 of view_inv)
-    float ox = inv[12], oy = inv[13], oz = inv[14];
-
-    // Ray-sphere intersection with unit sphere at origin
-    // |o + t*d|² = 1  →  t² + 2(o·d)t + (o·o - 1) = 0
-    float b = 2.f * (ox*wx + oy*wy + oz*wz);
-    float c = ox*ox + oy*oy + oz*oz - 1.f;
+    // Ray-sphere intersection with unit sphere at local origin
+    float b = 2.f*(px0*dx + py0*dy + pz0*dz);
+    float c = px0*px0 + py0*py0 + pz0*pz0 - 1.f;
     float disc = b*b - 4.f*c;
     if (disc < 0.f) return false;
 
@@ -305,12 +426,14 @@ bool GlobeRenderer::pick(float mx, float my,
     if (t < 0.f) t = (-b + sqrtf(disc)) * 0.5f;
     if (t < 0.f) return false;
 
-    float hx = ox + t*wx;
-    float hy = oy + t*wy;
-    float hz = oz + t*wz;
+    float hx = px0 + t*dx;
+    float hy = py0 + t*dy;
+    float hz = pz0 + t*dz;
 
-    lat_deg = asinf(hy < -1.f ? -1.f : (hy > 1.f ? 1.f : hy)) * 180.f / (float)M_PI;
-    lon_deg = -atan2f(hz, hx) * 180.f / (float)M_PI; // negate to match latlon_to_xyz convention
+    // hit point is already in globe local space — extract lat/lon directly
+    // latlon_to_xyz: x=cos(lat)*cos(lon), y=sin(lat), z=cos(lat)*sin(lon)
+    lat_deg = -asinf(hy < -1.f ? -1.f : (hy > 1.f ? 1.f : hy)) * 180.f / (float)M_PI;
+    lon_deg = atan2f(hz, hx) * 180.f / (float)M_PI;
     return true;
 }
 
@@ -359,7 +482,7 @@ void GlobeRenderer::mat4_perspective(float* M, float fovy, float aspect,
     memset(M, 0, 64);
     float t = 1.f / tanf(fovy * 0.5f);
     M[0]  = t / aspect;
-    M[5]  = t;
+    M[5]  = -t;
     M[10] = -(far_z + near_z) / (far_z - near_z);
     M[11] = -1.f;          // col=2, row=3 (column-major: index = col*4+row)
     M[14] = -(2.f * far_z * near_z) / (far_z - near_z);
@@ -424,15 +547,16 @@ void GlobeRenderer::get_mvp(float* mvp) const {
 }
 
 void GlobeRenderer::get_view_inv(float* inv) const {
-    // View = trans(-zoom_) * view_rot_transpose
-    // view_inv = view_rot * trans(zoom_) = rot * trans(zoom_)
-    // Camera world position = rot * (0, 0, zoom_)^T = col2 of rot * zoom_
+    // View = trans(-zoom_) * view_rot_T   where view_rot_T = transpose(rot)
+    // view_inv = rot * trans(zoom_)
+    // Camera world pos col = rot * (0,0,zoom,1)^T
+    //   col3,row0 = rot[8]*zoom, col3,row1 = rot[9]*zoom, col3,row2 = rot[10]*zoom
     float rot[16];
     mat4_from_quat(rot, qw_, qx_, qy_, qz_);
     memcpy(inv, rot, 64);
-    inv[12] = rot[8]  * zoom_;  // col=3, row=0
-    inv[13] = rot[9]  * zoom_;  // col=3, row=1
-    inv[14] = rot[10] * zoom_;  // col=3, row=2
+    inv[12] = rot[8]  * zoom_;
+    inv[13] = rot[9]  * zoom_;
+    inv[14] = rot[10] * zoom_;
     inv[15] = 1.f;
 }
 
@@ -476,12 +600,14 @@ void GlobeRenderer::build_sphere(int stacks, int slices) {
         float phi = (float)M_PI * ((float)st / stacks - 0.5f); // -pi/2 to pi/2
         float y   = sinf(phi);
         float r   = cosf(phi);
-        float v   = (float)st / stacks;
+        float v   = 1.f - (float)st / stacks; // st=0=south(y=-1)→v=1, stacks=north(y=+1)→v=0
         for (int sl = 0; sl <= slices; sl++) {
             float theta = 2.f * (float)M_PI * (float)sl / slices;
             float x = r * cosf(theta);
             float z = r * sinf(theta);
-            float u = 1.f - (float)sl / slices; // mirror U to match lon-negated geometry
+            // u=0 at theta=0 (lon=0°E), offset +0.5 so Greenwich→texture center
+            float u = (float)sl / slices + 0.5f;
+            if (u > 1.f) u -= 1.f;
             verts.push_back(x); verts.push_back(y); verts.push_back(z);
             verts.push_back(u); verts.push_back(v);
         }
@@ -604,6 +730,16 @@ bool GlobeRenderer::load_earth_texture() {
         printf("[Globe] earth texture not found: %s\n", path.c_str());
         return false;
     }
+    // Flip image horizontally (mirror each row) to match sphere u-direction
+    for (int row = 0; row < h; row++) {
+        unsigned char* r = data + row * w * 3;
+        for (int col = 0; col < w / 2; col++) {
+            int opp = w - 1 - col;
+            unsigned char tmp[3] = {r[col*3], r[col*3+1], r[col*3+2]};
+            r[col*3]=r[opp*3]; r[col*3+1]=r[opp*3+1]; r[col*3+2]=r[opp*3+2];
+            r[opp*3]=tmp[0];   r[opp*3+1]=tmp[1];     r[opp*3+2]=tmp[2];
+        }
+    }
     glGenTextures(1, &tex_earth_);
     glBindTexture(GL_TEXTURE_2D, tex_earth_);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
@@ -621,4 +757,50 @@ bool GlobeRenderer::load_earth_texture() {
     stbi_image_free(data);
     printf("[Globe] earth texture loaded: %dx%d\n", w, h);
     return true;
+}
+
+void GlobeRenderer::build_stars() {
+    // Generate random stars on a unit sphere, 4 floats each: x,y,z,brightness
+    static const int N = 2000;
+    float verts[N * 4];
+
+    // Simple LCG for reproducible star field
+    uint32_t seed = 0x12345678u;
+    auto lcg = [&]() -> float {
+        seed = seed * 1664525u + 1013904223u;
+        return (float)(seed >> 8) / (float)(1 << 24);
+    };
+
+    for (int i = 0; i < N; i++) {
+        // Uniform sphere distribution (rejection method)
+        float x, y, z, len;
+        do {
+            x = lcg()*2.f-1.f; y = lcg()*2.f-1.f; z = lcg()*2.f-1.f;
+            len = sqrtf(x*x+y*y+z*z);
+        } while (len < 0.001f || len > 1.f);
+        x/=len; y/=len; z/=len;
+
+        // Brightness: most stars dim, few bright (power distribution)
+        float b = lcg();
+        b = b * b; // bias toward dim
+
+        verts[i*4+0] = x;
+        verts[i*4+1] = y;
+        verts[i*4+2] = z;
+        verts[i*4+3] = 0.15f + b * 0.85f;
+    }
+    star_count_ = N;
+
+    prog_stars_ = compile_shader(STARS_VERT, STARS_FRAG);
+
+    glGenVertexArrays(1, &vao_stars_);
+    glGenBuffers(1, &vbo_stars_);
+    glBindVertexArray(vao_stars_);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_stars_);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 4*sizeof(float), (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 4*sizeof(float), (void*)(3*sizeof(float)));
+    glBindVertexArray(0);
 }

@@ -20,6 +20,8 @@ void DiscoveryBroadcaster::set_info(const char* name, float lat, float lon,
     pkt_.lon      = lon;
     pkt_.tcp_port = port;
     strncpy(pkt_.host_ip, ip, 15);
+    printf("[Discovery] TX: station='%s' lat=%.4f lon=%.4f port=%u ip=%s\n",
+           name, lat, lon, (unsigned)port, ip);
 }
 
 void DiscoveryBroadcaster::set_user_count(uint8_t n) {
@@ -59,8 +61,8 @@ void DiscoveryBroadcaster::broadcast_loop() {
             sendto(sock_, &pkt_, sizeof(pkt_), 0,
                    reinterpret_cast<sockaddr*>(&dest), sizeof(dest));
         }
-        // 2-second interval in 100 ms increments for responsive stop
-        for (int i = 0; i < 20 && running_.load(); i++)
+        // 1-second interval in 100 ms increments for responsive stop
+        for (int i = 0; i < 10 && running_.load(); i++)
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 }
@@ -112,6 +114,9 @@ void DiscoveryListener::listen_loop() {
         if (memcmp(ann.magic, "BEWG", 4) != 0) continue;
         ann.station_name[63] = '\0';
         ann.host_ip[15]      = '\0';
+        printf("[Discovery] RX: station='%s' lat=%.4f lon=%.4f port=%u ip=%s\n",
+               ann.station_name, ann.lat, ann.lon,
+               (unsigned)ann.tcp_port, ann.host_ip);
         if (on_station_found) on_station_found(ann);
     }
 }
