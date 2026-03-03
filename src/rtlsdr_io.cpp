@@ -218,7 +218,7 @@ void FFTViewer::capture_and_process_rtl(){
                      }
                  }
                  total_ffts++; current_fft_idx=total_ffts-1;
-                 header.num_ffts=std::min(total_ffts,MAX_FFTS_MEMORY); cached_sp_idx=-1;
+                 header.num_ffts=std::min(total_ffts,MAX_FFTS_MEMORY);
                  row_write_pos[current_fft_idx%MAX_FFTS_MEMORY]=tm_iq_write_sample;
                  if(tm_iq_on.load(std::memory_order_relaxed))
                      tm_mark_rows(current_fft_idx%MAX_FFTS_MEMORY);

@@ -31,6 +31,7 @@ void FFTViewer::net_bcast_worker(){
         last_seq = cur_seq;
 
         if(!net_srv || net_srv->client_count() == 0) continue;
+        if(net_bcast_pause.load(std::memory_order_relaxed)) continue;
 
         // 최신 FFT 행을 로컬 버퍼로 빠르게 복사 (data_mtx는 최소 시간만 점유)
         {

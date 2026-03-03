@@ -426,10 +426,15 @@ bool NetClient::cmd_share_upload(const char* filepath, uint8_t transfer_id){
     meta.transfer_id = transfer_id;
     if(!raw_send(PacketType::SHARE_UPLOAD_META, &meta, sizeof(meta))){ fclose(fp); return false; }
 
-    // DATA 청크 전송
+    // DATA 청크 전송 (유동 속도 상한: 실측 TCP 속도의 50%, FFT 스트림 보호)
+    static constexpr uint64_t UPL_RATE_FLOOR = 256 * 1024;      // 최솟값 256 KB/s
+    static constexpr uint64_t UPL_RATE_INIT  = 1 * 1024 * 1024; // 초기값 1 MB/s
     const uint32_t CHUNK = 65536;
     std::vector<uint8_t> buf(sizeof(PktShareUploadData) + CHUNK);
     uint64_t offset = 0;
+    double measured_bps = (double)UPL_RATE_INIT;
+    auto rate_epoch = std::chrono::steady_clock::now();
+    uint64_t rate_sent = 0;
     while(true){
         size_t n = fread(buf.data() + sizeof(PktShareUploadData), 1, CHUNK, fp);
         if(n == 0) break;
@@ -439,9 +444,25 @@ bool NetClient::cmd_share_upload(const char* filepath, uint8_t transfer_id){
         d->chunk_bytes = (uint32_t)n;
         d->offset      = offset;
         offset += n;
-        if(!raw_send(PacketType::SHARE_UPLOAD_DATA, buf.data(), (uint32_t)(sizeof(PktShareUploadData)+n))){
+        uint32_t send_len = (uint32_t)(sizeof(PktShareUploadData)+n);
+        auto t0 = std::chrono::steady_clock::now();
+        if(!raw_send(PacketType::SHARE_UPLOAD_DATA, buf.data(), send_len)){
             fclose(fp); return false;
         }
+        double send_us = (double)std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        if(send_us > 0.0){
+            double chunk_bps = (double)(send_len + PKT_HDR_SIZE) / (send_us * 1e-6);
+            measured_bps = measured_bps * 0.75 + chunk_bps * 0.25;
+        }
+        uint64_t target_bps = (uint64_t)(measured_bps * 0.50);
+        if(target_bps < UPL_RATE_FLOOR) target_bps = UPL_RATE_FLOOR;
+        rate_sent += n;
+        auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - rate_epoch).count();
+        int64_t want_us = (int64_t)(rate_sent * 1000000ULL / target_bps);
+        if(want_us > elapsed_us)
+            std::this_thread::sleep_for(std::chrono::microseconds(want_us - elapsed_us));
     }
     fclose(fp);
     return true;

@@ -107,6 +107,10 @@ public:
     // Heartbeat → all clients (host_state: 0=OK, 1=CHASSIS_RESETTING)
     void broadcast_heartbeat(uint8_t host_state = 0);
 
+    // /chassis 2 reset: FFT+오디오 방송 일시 중단 / 재개
+    void pause_broadcast()  { bcast_pause_.store(true,  std::memory_order_relaxed); }
+    void resume_broadcast() { bcast_pause_.store(false, std::memory_order_relaxed); }
+
     // Chat → all clients
     void broadcast_chat(const char* from, const char* msg);
 
@@ -140,6 +144,7 @@ public:
 private:
     // Forward declaration to avoid pulling udp_discovery.hpp into every TU
     class DiscoveryBroadcaster* discovery_bcast_ = nullptr;
+    std::atomic<bool> bcast_pause_{false}; // /chassis 2 reset: 방송 일시 중단 플래그
 
     char    host_name_[32] = {};
     uint8_t host_tier_     = 1;

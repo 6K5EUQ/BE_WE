@@ -4,10 +4,19 @@
 #include <cstring>
 #include <tuple>
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
 #include <fcntl.h>
+
+// IQ 파일 전송 속도 상한 (bytes/sec). FFT 스트림 대역폭 보호용.
+// 실제 TCP send 속도를 EWMA로 측정하고, 그 50%를 목표로 삼음.
+// 최솟값: 256 KB/s (너무 느려지지 않도록), 초기값: 1 MB/s
+static constexpr uint64_t FILE_RATE_FLOOR = 256 * 1024;       // 최솟값
+static constexpr uint64_t FILE_RATE_INIT  = 1 * 1024 * 1024;  // 초기값
+static constexpr double   FILE_RATE_EWMA_ALPHA = 0.25;         // EWMA 평활 계수
 
 // ── start / stop ──────────────────────────────────────────────────────────
 bool NetServer::start(int port){
@@ -339,6 +348,7 @@ void NetServer::broadcast_fft(const int8_t* data, int fft_size,
                                int64_t wall_time,
                                uint64_t center_hz, uint32_t sr,
                                float pmin, float pmax){
+    if(bcast_pause_.load(std::memory_order_relaxed)) return;
     PktFftFrame hdr{};
     hdr.center_freq_hz = center_hz;
     hdr.sample_rate    = sr;
@@ -365,6 +375,7 @@ void NetServer::broadcast_fft(const int8_t* data, int fft_size,
 void NetServer::send_audio(uint32_t op_mask, uint8_t ch_idx, int8_t pan,
                             const float* pcm, uint32_t n_samples){
     if(!op_mask || !n_samples) return;
+    if(bcast_pause_.load(std::memory_order_relaxed)) return;
 
     uint32_t payload_size = (uint32_t)(sizeof(PktAudioFrame) + n_samples*sizeof(float));
     std::vector<uint8_t> payload(payload_size);
@@ -529,10 +540,14 @@ void NetServer::send_file_to(int op_index, const char* path, uint8_t transfer_id
         send_all(target->fd, pkt.data(), pkt.size());
     }
 
-    // send chunks
+    // send chunks (유동 속도 상한: 실측 TCP 속도의 50%, FFT 스트림 보호)
     const uint32_t CHUNK = 65536;
     std::vector<uint8_t> buf(sizeof(PktFileData)+CHUNK);
     uint64_t offset=0;
+    // EWMA로 측정한 실제 TCP send 속도 (bytes/sec)
+    double measured_bps = (double)FILE_RATE_INIT;
+    auto rate_epoch = std::chrono::steady_clock::now();
+    uint64_t rate_sent = 0;
     while(true){
         size_t n = fread(buf.data()+sizeof(PktFileData), 1, CHUNK, fp);
         if(n==0) break;
@@ -544,11 +559,30 @@ void NetServer::send_file_to(int op_index, const char* path, uint8_t transfer_id
         offset += n;
         uint32_t total_payload = (uint32_t)(sizeof(PktFileData)+n);
         auto pkt = make_packet(PacketType::FILE_DATA, buf.data(), total_payload);
+        // send 에 걸리는 시간 측정 → 실 TCP throughput
+        auto t0 = std::chrono::steady_clock::now();
         {
             std::lock_guard<std::mutex> slk(target->send_mtx);
             send_all(target->fd, pkt.data(), pkt.size());
         }
+        double send_us = (double)std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        if(send_us > 0.0){
+            double chunk_bps = (double)pkt.size() / (send_us * 1e-6);
+            measured_bps = measured_bps * (1.0 - FILE_RATE_EWMA_ALPHA)
+                         + chunk_bps    *        FILE_RATE_EWMA_ALPHA;
+        }
         if(progress_cb) progress_cb(offset, total);
+        // 목표: 측정 속도의 50% 사용 → 나머지 50%를 FFT 스트림에 양보
+        uint64_t target_bps = (uint64_t)(measured_bps * 0.50);
+        if(target_bps < FILE_RATE_FLOOR) target_bps = FILE_RATE_FLOOR;
+        // 누적 기준으로 sleep (drift 방지)
+        rate_sent += n;
+        auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - rate_epoch).count();
+        int64_t want_us = (int64_t)(rate_sent * 1000000ULL / target_bps);
+        if(want_us > elapsed_us)
+            std::this_thread::sleep_for(std::chrono::microseconds(want_us - elapsed_us));
     }
     fclose(fp);
 }

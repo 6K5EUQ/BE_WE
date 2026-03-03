@@ -1,14 +1,22 @@
 #include "fft_viewer.hpp"
 #include <algorithm>
 
-// ── Jet colormap ──────────────────────────────────────────────────────────
-static uint32_t jet(float t){
-    t=t<0?0:t>1?1:t;
-    float r=1.5f-fabsf(4*t-3);
-    float g=1.5f-fabsf(4*t-2);
-    float b=1.5f-fabsf(4*t-1);
-    auto c=[](float v)->uint8_t{v=v<0?0:v>1?1:v;return(uint8_t)(v*255);};
-    return IM_COL32(c(r),c(g),c(b),255);
+// ── Jet colormap LUT (256 entry, 한 번만 계산) ────────────────────────────
+static const uint32_t* jet_lut(){
+    static uint32_t lut[256];
+    static bool init=false;
+    if(!init){
+        init=true;
+        auto c=[](float v)->uint8_t{v=v<0?0:v>1?1:v;return(uint8_t)(v*255);};
+        for(int i=0;i<256;i++){
+            float t=i/255.0f;
+            float r=1.5f-fabsf(4*t-3);
+            float g=1.5f-fabsf(4*t-2);
+            float b=1.5f-fabsf(4*t-1);
+            lut[i]=IM_COL32(c(r),c(g),c(b),255);
+        }
+    }
+    return lut;
 }
 
 // ── Waterfall texture ─────────────────────────────────────────────────────
@@ -34,14 +42,18 @@ void FFTViewer::update_wf_row(int fi){
     float pscale=(header.power_max-header.power_min)/127.0f;
     float pbase=header.power_min;
     int half=fft_size/2;
-    auto norm=[&](int bin)->float{
+    const uint32_t* lut=jet_lut();
+    // norm → LUT 인덱스 변환 (float→int 1회, fabsf 연산 제거)
+    auto map=[&](int bin)->uint32_t{
         float p=row[bin]*pscale+pbase;
         float v=(p-wmin)*wrng_inv;
-        return v<0.0f?0.0f:v>1.0f?1.0f:v;
+        int idx=(int)(v*255.0f);
+        idx=idx<0?0:idx>255?255:idx;
+        return lut[idx];
     };
-    for(int i=0;i<half;i++) wf_row_buf[i]=jet(norm(half+1+i));
-    wf_row_buf[half]=jet(norm(0));
-    for(int i=1;i<=half;i++) wf_row_buf[half+i]=jet(norm(i));
+    for(int i=0;i<half;i++) wf_row_buf[i]=map(half+1+i);
+    wf_row_buf[half]=map(0);
+    for(int i=1;i<=half;i++) wf_row_buf[half+i]=map(i);
     glBindTexture(GL_TEXTURE_2D,waterfall_texture);
     glTexSubImage2D(GL_TEXTURE_2D,0,0,mi,fft_size,1,GL_RGBA,GL_UNSIGNED_BYTE,wf_row_buf.data());
     glBindTexture(GL_TEXTURE_2D,0);

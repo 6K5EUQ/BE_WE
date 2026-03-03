@@ -10,6 +10,13 @@ void FFTViewer::mix_worker(){
     std::vector<int16_t> sbuf(PERIOD*2,0);
 
     while(!mix_stop.load(std::memory_order_relaxed)){
+        // ALSA 장치가 없으면 재연결 시도 (블루투스 연결/해제, 기본 장치 변경 대응)
+        if(!alsa.pcm){
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            alsa.open(AUDIO_SR);
+            if(!alsa.pcm) continue; // 아직 안 되면 계속 대기
+        }
+
         for(int i=0;i<PERIOD;i++){
             float L=0,R=0;
             if(net_cli && remote_mode){
@@ -23,15 +30,13 @@ void FFTViewer::mix_worker(){
                     }
                     float smp=0; int8_t pan=0;
                     if(!net_cli->audio[c].pop(smp, pan)){
-                        // 녹음 중 뮤트 상태면 0으로 기록
                         if(rec_on && channels[c].audio_rec_fp)
                             channels[c].maybe_rec_audio(0.f);
                         continue;
                     }
-                    // JOIN 오디오 녹음
                     if(rec_on) channels[c].maybe_rec_audio(smp);
-                    if(is_muted) continue; // 뮤트: 스피커 출력 안 함
-                    int lco = local_ch_out[c]; // 0=L,1=LR,2=R
+                    if(is_muted) continue;
+                    int lco = local_ch_out[c];
                     if(lco==0)      { L+=smp; }
                     else if(lco==2) { R+=smp; }
                     else            { L+=smp; R+=smp; }
@@ -41,11 +46,11 @@ void FFTViewer::mix_worker(){
                 for(int c=0;c<MAX_CHANNELS;c++){
                     if(!channels[c].dem_run.load(std::memory_order_relaxed)) continue;
                     if(net_srv && !(channels[c].audio_mask.load() & 0x1u)) continue;
-                    if(local_ch_out[c]==3) { // M(mute): drain ring
+                    if(local_ch_out[c]==3) {
                         float dummy; channels[c].pop_audio(dummy); continue;
                     }
                     float smp=0; channels[c].pop_audio(smp);
-                    int lco = local_ch_out[c]; // 0=L,1=LR,2=R
+                    int lco = local_ch_out[c];
                     if(lco==0)      { L+=smp; }
                     else if(lco==2) { R+=smp; }
                     else            { L+=smp; R+=smp; }
@@ -56,6 +61,7 @@ void FFTViewer::mix_worker(){
             sbuf[i*2  ]=(int16_t)(L*32767.0f);
             sbuf[i*2+1]=(int16_t)(R*32767.0f);
         }
+        // write 실패(기기 분리 등) → pcm=nullptr → 다음 루프에서 재연결
         alsa.write(sbuf.data(),PERIOD);
     }
     alsa.close();

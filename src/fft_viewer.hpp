@@ -58,6 +58,7 @@ public:
     std::atomic<bool> tm_iq_on{false};     // T키: IQ SSD 롤링 활성
     std::atomic<bool> tm_active{false};    // 스페이스바: 타임머신 뷰 모드
     std::atomic<bool> capture_pause{false};// 캡처 스레드 pause (타임머신과 무관)
+    std::atomic<bool> net_bcast_pause{false}; // /chassis 2 reset: 방송 일시 중단
     bool tm_iq_was_stopped=false;
     int  tm_freeze_idx=0;                  // 스페이스바 누른 시점의 fft 인덱스
     float tm_offset=0.0f;                  // 현재 보는 과거 오프셋 (초)

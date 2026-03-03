@@ -3,14 +3,22 @@
 #include <alsa/asoundlib.h>
 #include <cstdio>
 #include <cstdint>
+#include <thread>
+#include <chrono>
 
 // ── Stereo ALSA output ────────────────────────────────────────────────────
+// "default" 디바이스를 사용하므로 PulseAudio/PipeWire가
+// 시스템 기본 출력(블루투스 포함)으로 자동 라우팅.
+// 장치 오픈/recover 실패 시 재연결 지원.
 struct AlsaOut {
     snd_pcm_t* pcm=nullptr;
+    uint32_t   open_sr=AUDIO_SR;
 
     bool open(uint32_t sr=AUDIO_SR){
+        close();
+        open_sr=sr;
         int err=snd_pcm_open(&pcm,AUDIO_DEVICE,SND_PCM_STREAM_PLAYBACK,0);
-        if(err<0){ fprintf(stderr,"ALSA open: %s\n",snd_strerror(err)); return false; }
+        if(err<0){ fprintf(stderr,"ALSA open: %s\n",snd_strerror(err)); pcm=nullptr; return false; }
 
         snd_pcm_hw_params_t* hw; snd_pcm_hw_params_alloca(&hw);
         snd_pcm_hw_params_any(pcm,hw);
@@ -29,22 +37,28 @@ struct AlsaOut {
         snd_pcm_sw_params_set_start_threshold(pcm,sw,256);
         snd_pcm_sw_params_set_avail_min(pcm,sw,256);
         snd_pcm_sw_params(pcm,sw);
-        printf("ALSA: %u Hz stereo\n",rsr);
+        printf("ALSA: %u Hz stereo  device=%s\n",rsr,AUDIO_DEVICE);
         return true;
     }
 
     // buf = interleaved L,R,L,R,... int16 pairs; frames = number of stereo frames
-    void write(const int16_t* buf, int frames){
-        if(!pcm) return;
+    // 반환값: false = 복구 불가 → 호출자가 재연결해야 함
+    bool write(const int16_t* buf, int frames){
+        if(!pcm) return false;
         while(frames>0){
             snd_pcm_sframes_t r=snd_pcm_writei(pcm,buf,frames);
             if(r<0){
                 r=snd_pcm_recover(pcm,(int)r,0);
-                if(r<0){ fprintf(stderr,"ALSA wr: %s\n",snd_strerror((int)r)); return; }
+                if(r<0){
+                    fprintf(stderr,"ALSA wr failed (%s) — will reconnect\n",snd_strerror((int)r));
+                    close();
+                    return false; // 재연결 필요
+                }
                 continue;
             }
             buf+=r*2; frames-=(int)r;
         }
+        return true;
     }
 
     void close(){
