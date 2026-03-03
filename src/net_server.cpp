@@ -212,6 +212,9 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
                         cmd->request_region.freq_lo, cmd->request_region.freq_hi,
                         cmd->request_region.time_start, cmd->request_region.time_end);
                 break;
+            case CmdType::CHASSIS_RESET:
+                if(cb.on_chassis_reset) cb.on_chassis_reset();
+                break;
             default: break;
         }
         // ACK
@@ -282,6 +285,14 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
             if(cb.on_share_upload_done)
                 cb.on_share_upload_done(c->op_index, c->name, c->upload.save_path);
         }
+        break;
+    }
+
+    case PacketType::PUB_DELETE_REQ: {
+        if(!c->authed || len < sizeof(PktPubDeleteReq)) break;
+        auto* req = reinterpret_cast<const PktPubDeleteReq*>(payload);
+        char fname[129]; strncpy(fname, req->filename, 128); fname[128]='\0';
+        if(cb.on_pub_delete_req) cb.on_pub_delete_req(c->name, fname);
         break;
     }
 
@@ -406,6 +417,16 @@ void NetServer::broadcast_chat(const char* from, const char* msg){
     for(auto& c : clients_){
         if(!c->authed || !c->alive.load()) continue;
         send_to(*c, PacketType::CHAT, &chat, sizeof(chat));
+    }
+}
+
+// ── Broadcast heartbeat ───────────────────────────────────────────────────
+void NetServer::broadcast_heartbeat(uint8_t host_state){
+    PktHeartbeat hb{}; hb.host_state = host_state;
+    std::lock_guard<std::mutex> lk(clients_mtx_);
+    for(auto& c : clients_){
+        if(!c->authed || !c->alive.load()) continue;
+        send_to(*c, PacketType::HEARTBEAT, &hb, sizeof(hb));
     }
 }
 

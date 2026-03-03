@@ -68,6 +68,9 @@ struct ServerCallbacks {
     std::function<void(uint8_t op_idx, const char* filename)> on_share_download_req;
     // JOIN이 파일 업로드 완료: op_idx, op_name, 저장된 절대경로
     std::function<void(uint8_t op_idx, const char* op_name, const char* saved_path)> on_share_upload_done;
+    std::function<void()> on_chassis_reset;  // JOIN이 /chassis 1 reset 명령 전송
+    // JOIN이 public 파일 삭제 요청: op_name, filename (소유자 검증은 ui.cpp에서)
+    std::function<void(const char* op_name, const char* filename)> on_pub_delete_req;
 };
 
 // ── NetServer ─────────────────────────────────────────────────────────────
@@ -100,6 +103,9 @@ public:
 
     // Channel state → all clients
     void broadcast_channel_sync(const Channel* chs, int n);
+
+    // Heartbeat → all clients (host_state: 0=OK, 1=CHASSIS_RESETTING)
+    void broadcast_heartbeat(uint8_t host_state = 0);
 
     // Chat → all clients
     void broadcast_chat(const char* from, const char* msg);

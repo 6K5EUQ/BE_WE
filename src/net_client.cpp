@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <string>
 #include <cstring>
+#include <chrono>
 #include <netdb.h>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -260,6 +261,17 @@ void NetClient::handle_packet(PacketType type,
         connected_.store(false);
         break;
 
+    case PacketType::HEARTBEAT: {
+        if(len < sizeof(PktHeartbeat)) break;
+        auto* hb = reinterpret_cast<const PktHeartbeat*>(payload);
+        host_state.store((int)hb->host_state);
+        // Use wall-clock seconds (monotonic substitute via steady_clock)
+        auto now = std::chrono::steady_clock::now().time_since_epoch();
+        last_heartbeat_time.store(
+            std::chrono::duration<double>(now).count());
+        break;
+    }
+
     case PacketType::REGION_RESPONSE: {
         if(len < sizeof(PktRegionResponse)) break;
         auto* r = reinterpret_cast<const PktRegionResponse*>(payload);
@@ -363,6 +375,15 @@ bool NetClient::cmd_set_spectrum_pause(bool pause){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::SET_SPECTRUM_PAUSE;
     c.set_spectrum_pause.pause=pause?1:0;
     return send_cmd(c);
+}
+bool NetClient::cmd_chassis_reset(){
+    PktCmd c{}; c.cmd=(uint8_t)CmdType::CHASSIS_RESET;
+    return send_cmd(c);
+}
+bool NetClient::cmd_delete_pub_file(const char* filename){
+    PktPubDeleteReq req{};
+    strncpy(req.filename, filename, sizeof(req.filename)-1);
+    return send_packet(fd_, PacketType::PUB_DELETE_REQ, &req, sizeof(req));
 }
 bool NetClient::cmd_request_region(int32_t fft_top, int32_t fft_bot,
                                     float freq_lo, float freq_hi,

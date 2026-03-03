@@ -73,6 +73,10 @@ public:
     std::atomic<uint32_t> remote_sr{0};
     std::atomic<uint8_t>  remote_hw{0};
 
+    // Heartbeat state: 0=OK, 1=CHASSIS_RESETTING; -1=no heartbeat received yet
+    std::atomic<int>      host_state{-1};
+    std::atomic<double>   last_heartbeat_time{0.0};  // glfwGetTime() at last HB
+
     // ── Channel sync (from CHANNEL_SYNC packets) ──────────────────────────
     // Applied directly to a FFTViewer's channels array via callback
     std::function<void(const PktChannelSync&)> on_channel_sync;
@@ -132,6 +136,8 @@ public:
                              int32_t time_start, int32_t time_end);
     bool cmd_request_share_download(const char* filename);
     bool cmd_share_upload(const char* filepath, uint8_t transfer_id);
+    bool cmd_chassis_reset();            // JOIN → HOST: trigger chassis 1 reset
+    bool cmd_delete_pub_file(const char* filename);  // JOIN → HOST: delete public file
 
     // ── UDP Discovery Listener ────────────────────────────────────────────
     // Note: DiscoveryAnnounce is defined in net_protocol.hpp (already included)

@@ -270,9 +270,16 @@ void GlobeRenderer::on_drag(float mx, float my) {
 
     float nw, nx, ny, nz;
 
-    // Scale drag speed by base_zoom/current_zoom so zoomed-in view moves slower
-    const float base_zoom = 3.5f;
-    const float drag_scale = base_zoom / zoom_;
+    // 줌 5단계별 드래그 속도 계산
+    // zoom_ 범위: 1.5(최대 확대) ~ 8.0(최대 축소)
+    // 단계: 1=가장 멀리(wide), 5=가장 가까이(close)
+    // 멀리 볼수록 빠르게, 가까이 볼수록 느리게
+    float drag_scale;
+    if      (zoom_ >= 6.5f) drag_scale = 2.2f;  // 단계1: 가장 멀리 — 빠르게
+    else if (zoom_ >= 5.0f) drag_scale = 1.6f;  // 단계2
+    else if (zoom_ >= 3.5f) drag_scale = 1.0f;  // 단계3: 기본 (zoom_=3.5)
+    else if (zoom_ >= 2.5f) drag_scale = 0.55f; // 단계4
+    else                    drag_scale = 0.28f;  // 단계5: 가장 가까이 — 느리게
 
     if (fabsf(ddx) > 0.f) {
         // Horizontal → rotate around world Y axis

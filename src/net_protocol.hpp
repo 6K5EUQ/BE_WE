@@ -32,6 +32,8 @@ enum class PacketType : uint8_t {
     SHARE_DOWNLOAD_REQ = 0x11,  // client → server: request download of shared file
     SHARE_UPLOAD_META  = 0x12,  // client → server: upload file meta (start)
     SHARE_UPLOAD_DATA  = 0x13,  // client → server: upload file chunk
+    HEARTBEAT          = 0x14,  // server → all clients: 3s keepalive + state
+    PUB_DELETE_REQ     = 0x15,  // client → server: request delete of public file (owner only)
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────
@@ -96,6 +98,8 @@ enum class CmdType : uint8_t {
     SET_CAPTURE_PAUSE  = 0x0F,
     SET_SPECTRUM_PAUSE = 0x10,
     REQUEST_REGION  = 0x11,  // JOIN: request region file transfer
+    CHASSIS_RESET   = 0x12,  // JOIN → server: trigger chassis 1 reset on HOST
+    DELETE_PUB_FILE = 0x13,  // JOIN → server: delete a public file (owner only)
 };
 
 struct __attribute__((packed)) PktCmd {
@@ -240,6 +244,19 @@ struct __attribute__((packed)) PktShareUploadData {
     uint32_t chunk_bytes;
     uint64_t offset;
     // uint8_t data[chunk_bytes] follows
+};
+
+// ── PUB_DELETE_REQ (client → server) ─────────────────────────────────────
+// JOIN sends this to request deletion of a public file they own.
+struct __attribute__((packed)) PktPubDeleteReq {
+    char filename[128];  // null-terminated filename (no path)
+};
+
+// ── HEARTBEAT (server → all clients) ─────────────────────────────────────
+// Sent every 3 seconds. host_state: 0=OK, 1=CHASSIS_RESETTING
+struct __attribute__((packed)) PktHeartbeat {
+    uint8_t host_state;  // 0=OK, 1=CHASSIS_RESETTING
+    uint8_t pad[3];
 };
 
 // ── Wire helpers ──────────────────────────────────────────────────────────
