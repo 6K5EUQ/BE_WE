@@ -425,15 +425,22 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         cached_sp_idx=sp_idx; cached_pan=freq_pan; cached_zoom=freq_zoom;
         cached_px=np; cached_pmin=display_power_min; cached_pmax=display_power_max;
     }
-    // AddPolyline 1회 호출 — AddLine × np 대비 ImGui draw call 대폭 감소
+    // AddPolyline 1회 호출 — cache 히트 시 ImVec2 재계산 스킵
     {
         float pr_inv=1.0f/std::max(1.0f,display_power_max-display_power_min);
         static thread_local std::vector<ImVec2> sp_pts;
-        sp_pts.resize(np);
-        for(int px=0;px<np;px++){
-            float t=(current_spectrum[px]-display_power_min)*pr_inv;
-            t=t<0.0f?0.0f:t>1.0f?1.0f:t;
-            sp_pts[px]=ImVec2(gx+(float)px, gy+(1.0f-t)*gh);
+        // cache miss 이거나 gx/gy/gh가 바뀐 경우에만 재계산
+        static thread_local float sp_cached_gx=0,sp_cached_gy=0,sp_cached_gh=0;
+        bool pts_dirty = !cv || (int)sp_pts.size()!=np
+                      || sp_cached_gx!=gx || sp_cached_gy!=gy || sp_cached_gh!=gh;
+        if(pts_dirty){
+            sp_pts.resize(np);
+            for(int px=0;px<np;px++){
+                float t=(current_spectrum[px]-display_power_min)*pr_inv;
+                t=t<0.0f?0.0f:t>1.0f?1.0f:t;
+                sp_pts[px]=ImVec2(gx+(float)px, gy+(1.0f-t)*gh);
+            }
+            sp_cached_gx=gx; sp_cached_gy=gy; sp_cached_gh=gh;
         }
         dl->AddPolyline(sp_pts.data(), np, IM_COL32(0,255,0,255), ImDrawFlags_None, 1.5f);
     }
@@ -536,25 +543,35 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         handle_zoom_scroll(gx,gw,mm.x);
     }
     // 파워 축 드래그 (편집 중이 아닐 때만)
+    // 드래그 방향: 위로 → 값 증가, 아래로 → 값 감소
+    // 상반부 드래그 → max 조절, 하반부 → min 조절
+    // 1픽셀 이동 = (range/gh) dB 선형 변화 (시작 시점 값 기준)
     if(pax_edit == 0){
         ImGui::SetCursorScreenPos(ImVec2(full_x,gy));
         ImGui::InvisibleButton("pax",ImVec2(AXIS_LABEL_WIDTH,gh));
-        static float dsy=0,dsmin=0,dsmax=0; static bool dl_lo=false;
+        static float drag_start_y=0, drag_start_val=0;
+        static bool  drag_is_max=false;
         if(ImGui::IsItemActive()){
             if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
                 ImVec2 m2=ImGui::GetMousePos();
-                float mid=(display_power_min+display_power_max)/2;
-                float midy=gy+gh*(1-(mid-display_power_min)/(display_power_max-display_power_min));
-                dsy=m2.y; dsmin=display_power_min; dsmax=display_power_max; dl_lo=(m2.y>midy);
+                float mid_y=gy+gh*0.5f;
+                drag_is_max = (m2.y <= mid_y); // 상반부=max, 하반부=min
+                drag_start_y   = m2.y;
+                drag_start_val = drag_is_max ? display_power_max : display_power_min;
             }
-            if(ImGui::IsMouseDragging(ImGuiMouseButton_Left)){
-                ImVec2 m2=ImGui::GetMousePos(); float dy=m2.y-dsy;
-                float midp=(dsmin+dsmax)/2, midyy=gy+gh*(1-(midp-dsmin)/(dsmax-dsmin));
-                if(dl_lo){ float n=dy/(gy+gh-midyy); n=std::max(-1.0f,std::min(1.0f,n)); display_power_min=midp-n*50; }
-                else      { float n=-dy/midyy;        n=std::max(-1.0f,std::min(1.0f,n)); display_power_max=midp+n*50; }
-                if(display_power_max-display_power_min<5){
-                    float md=(display_power_min+display_power_max)/2;
-                    display_power_min=md-2.5f; display_power_max=md+2.5f;
+            if(ImGui::IsMouseDragging(ImGuiMouseButton_Left,0)){
+                float dy   = ImGui::GetMousePos().y - drag_start_y;
+                float range= display_power_max - display_power_min;
+                // 1픽셀 = range/gh dB, 위로 드래그(-dy)=값 증가
+                float delta= -dy * (range / std::max(1.0f, gh));
+                if(drag_is_max){
+                    display_power_max = drag_start_val + delta;
+                    if(display_power_max - display_power_min < 5.f)
+                        display_power_max = display_power_min + 5.f;
+                } else {
+                    display_power_min = drag_start_val + delta;
+                    if(display_power_max - display_power_min < 5.f)
+                        display_power_min = display_power_max - 5.f;
                 }
                 cached_sp_idx=-1;
             }
@@ -2187,23 +2204,22 @@ void run_streaming_viewer(){
         if(v.tm_iq_file_ready) v.tm_iq_on.store(true);
     }
 
-    // JOIN은 서버 FFT rate에 맞게 렌더링하면 충분하므로 VSync ON
-    // LOCAL/HOST는 실시간 캡처 타이밍에 영향주지 않기 위해 VSync OFF
-    glfwSwapInterval(v.remote_mode ? 1 : 0);
+    // 모든 모드: VSync OFF, 60fps 자체 캡 (포커스 여부 무관)
+    // 워터폴 연속성 보장을 위해 백그라운드도 동일 프레임레이트 유지
+    glfwSwapInterval(0);
     // ── Main loop ─────────────────────────────────────────────────────────
+    using clk = std::chrono::steady_clock;
+    static constexpr float FRAME_TARGET = 1.0f / 60.0f; // 60fps
+    clk::time_point frame_last = clk::now();
     while(!glfwWindowShouldClose(win) && !do_logout && !do_main_menu){
-        // 백그라운드(포커스 잃음) 시 프레임 레이트 제한 — timestamp 누적 방지
-        if(!glfwGetWindowAttrib(win, GLFW_FOCUSED)){
-            // 포커스 없을 때 ~10fps로 제한
-            using clk = std::chrono::steady_clock;
-            static clk::time_point bg_last = clk::now();
-            auto bg_now = clk::now();
-            float bg_elapsed = std::chrono::duration<float>(bg_now - bg_last).count();
-            if(bg_elapsed < 0.1f){
-                std::this_thread::sleep_for(std::chrono::milliseconds(
-                    (int)((0.1f - bg_elapsed) * 1000)));
-            }
-            bg_last = clk::now();
+        // 60fps 캡: 포커스/백그라운드 구분 없이 동일
+        {
+            auto now = clk::now();
+            float elapsed = std::chrono::duration<float>(now - frame_last).count();
+            if(elapsed < FRAME_TARGET)
+                std::this_thread::sleep_for(std::chrono::microseconds(
+                    (int)((FRAME_TARGET - elapsed) * 1e6f)));
+            frame_last = clk::now();
         }
         glfwPollEvents();
 
@@ -2557,17 +2573,6 @@ void run_streaming_viewer(){
                     else { v.channels[sci].pan= 0; if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS); }
                 }
             }
-            if(ImGui::IsKeyPressed(ImGuiKey_RightShift,false) && !editing){
-                chat_open = !chat_open;
-            }
-            // '/' 키 → 채팅창 열고 '/' 미리 입력
-            if(ImGui::IsKeyPressed(ImGuiKey_Slash, false) && !editing){
-                if(!chat_open){ chat_open = true; }
-                chat_input[0] = '/'; chat_input[1] = '\0';
-                chat_focus_input = true;
-                chat_cursor_end  = true; // 커서를 '/' 뒤에 위치
-            }
-
             if(ImGui::IsKeyPressed(ImGuiKey_O,false) && !editing){
                 ops_open = !ops_open;
             }
@@ -2588,6 +2593,17 @@ void run_streaming_viewer(){
                     v.selected_ch=-1;
                 }
             }
+        }
+
+        // ── 채팅창 토글 / 빠른 명령 입력 (항상 우선 처리, editing 무관) ─────
+        if(ImGui::IsKeyPressed(ImGuiKey_RightShift, false) && !ImGui::GetIO().WantTextInput){
+            chat_open = !chat_open;
+        }
+        if(ImGui::IsKeyPressed(ImGuiKey_Slash, false) && !ImGui::GetIO().WantTextInput){
+            if(!chat_open){ chat_open = true; }
+            chat_input[0] = '/'; chat_input[1] = '\0';
+            chat_focus_input = true;
+            chat_cursor_end  = true;
         }
 
         // ── Main window ───────────────────────────────────────────────────

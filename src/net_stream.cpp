@@ -44,7 +44,9 @@ void FFTViewer::net_bcast_worker(){
             local_wt  = (int64_t)time(nullptr);
             int fi    = (current_fft_idx) % MAX_FFTS_MEMORY;
             const int8_t* rowp = fft_data.data() + fi * fft_size;
-            local_fft.assign(rowp, rowp + fft_size);
+            // assign() 대신 resize()+memcpy: fft_size 불변 시 heap 재할당 없음
+            if((int)local_fft.size() != fft_size) local_fft.resize(fft_size);
+            memcpy(local_fft.data(), rowp, (size_t)fft_size);
         }
 
         // TCP 전송 (블로킹이어도 캡처 스레드와 무관)

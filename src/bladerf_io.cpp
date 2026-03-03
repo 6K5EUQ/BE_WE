@@ -177,17 +177,31 @@ void FFTViewer::capture_and_process(){
                  }
                  if(autoscale_active){
                      if(!autoscale_init){
-                         autoscale_accum.reserve(fft_size*200);
+                         // 고정 크기 순환 버퍼: fft_size*100 슬롯 (1회만 할당)
+                         size_t cap=(size_t)fft_size*100;
+                         if(autoscale_accum.size()!=cap) autoscale_accum.assign(cap,0.0f);
+                         autoscale_wp=0; autoscale_buf_full=false;
                          autoscale_last=std::chrono::steady_clock::now();
                          autoscale_init=true;
                      }
-                     for(int i=1;i<fft_size;i++) autoscale_accum.push_back(current_spectrum[i]);
+                     // 순환 write (push_back/재할당 없음)
+                     size_t cap=autoscale_accum.size();
+                     for(int i=1;i<fft_size;i++){
+                         autoscale_accum[autoscale_wp]=current_spectrum[i];
+                         if(++autoscale_wp>=cap){ autoscale_wp=0; autoscale_buf_full=true; }
+                     }
                      float el=std::chrono::duration<float>(std::chrono::steady_clock::now()-autoscale_last).count();
-                     if(el>=1.0f&&!autoscale_accum.empty()){
-                         size_t idx=(size_t)(autoscale_accum.size()*0.15f);
-                         std::nth_element(autoscale_accum.begin(),autoscale_accum.begin()+idx,autoscale_accum.end());
-                         display_power_min=autoscale_accum[idx]-10.0f;
-                         autoscale_accum.clear(); autoscale_active=false; cached_sp_idx=-1;
+                     if(el>=1.0f&&(autoscale_buf_full||autoscale_wp>0)){
+                         size_t n=autoscale_buf_full?cap:autoscale_wp;
+                         // nth_element을 위해 별도 복사 (정렬은 원본 훼손하므로)
+                         std::vector<float> tmp(autoscale_accum.begin(),
+                                                autoscale_accum.begin()+(ptrdiff_t)n);
+                         size_t idx=(size_t)(n*0.15f);
+                         std::nth_element(tmp.begin(),tmp.begin()+(ptrdiff_t)idx,tmp.end());
+                         display_power_min=tmp[idx]-10.0f;
+                         autoscale_active=false; autoscale_init=false;
+                         autoscale_wp=0; autoscale_buf_full=false;
+                         cached_sp_idx=-1;
                      }
                  }
                  total_ffts++; current_fft_idx=total_ffts-1;

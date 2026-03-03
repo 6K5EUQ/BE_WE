@@ -174,7 +174,11 @@ public:
     std::vector<float> current_spectrum;
     int   cached_sp_idx=-1; float cached_pan=-999, cached_zoom=-999;
     int   cached_px=-1;     float cached_pmin=-999, cached_pmax=-999;
+    // autoscale: 고정 크기 순환 버퍼 (push_back per FFT 제거)
+    // 최대 fft_size*100 샘플 고정 → nth_element 시 재할당 없음
     std::vector<float> autoscale_accum;
+    size_t             autoscale_wp=0;   // 순환 버퍼 write pointer
+    bool               autoscale_buf_full=false;
     std::chrono::steady_clock::time_point autoscale_last;
     bool  autoscale_init=false, autoscale_active=true;
     std::atomic<bool> spectrum_pause{false};
