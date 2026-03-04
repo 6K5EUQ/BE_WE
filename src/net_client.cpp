@@ -426,10 +426,11 @@ bool NetClient::cmd_share_upload(const char* filepath, uint8_t transfer_id){
     meta.transfer_id = transfer_id;
     if(!raw_send(PacketType::SHARE_UPLOAD_META, &meta, sizeof(meta))){ fclose(fp); return false; }
 
-    // DATA 청크 전송 (유동 속도 상한: 실측 TCP 속도의 50%, FFT 스트림 보호)
+    // DATA 청크 전송 (유동 속도 상한: 실측 TCP 속도의 50%, FFT·오디오 스트림 보호)
+    // 청크 크기를 4KB로 줄여 send_mtx 점유 시간 최소화
     static constexpr uint64_t UPL_RATE_FLOOR = 256 * 1024;      // 최솟값 256 KB/s
     static constexpr uint64_t UPL_RATE_INIT  = 1 * 1024 * 1024; // 초기값 1 MB/s
-    const uint32_t CHUNK = 65536;
+    const uint32_t CHUNK = 4096;
     std::vector<uint8_t> buf(sizeof(PktShareUploadData) + CHUNK);
     uint64_t offset = 0;
     double measured_bps = (double)UPL_RATE_INIT;

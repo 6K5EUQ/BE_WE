@@ -13,16 +13,20 @@
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WAV 헤더 작성 (stereo int16: L=I, R=Q)
+// bewe 커스텀 청크: center_freq_hz(uint64) + start_time(int64) + sample_rate(uint32) = 20바이트
 // ─────────────────────────────────────────────────────────────────────────────
-static void write_wav_header(FILE* f, uint32_t sample_rate, uint32_t n_frames){
-    uint32_t data_bytes = n_frames * 2 * 2; // frames * channels * bytes
-    uint32_t chunk_size = 36 + data_bytes;
-    uint16_t audio_fmt  = 1;   // PCM
-    uint16_t channels   = 2;
-    uint32_t byte_rate  = sample_rate * 4;
-    uint16_t block_align= 4;
-    uint16_t bits       = 16;
-    uint32_t subchunk2  = data_bytes;
+static void write_wav_header(FILE* f, uint32_t sample_rate, uint32_t n_frames,
+                              uint64_t center_freq_hz=0, int64_t start_time=0){
+    uint32_t data_bytes  = n_frames * 2 * 2; // frames * channels * bytes
+    // bewe 청크: "bewe"(4) + size(4) + payload(20) = 28
+    const uint32_t BEWE_SIZE = 20;
+    uint32_t chunk_size  = 36 + data_bytes + 4 + 4 + BEWE_SIZE;
+    uint16_t audio_fmt   = 1;   // PCM
+    uint16_t channels    = 2;
+    uint32_t byte_rate   = sample_rate * 4;
+    uint16_t block_align = 4;
+    uint16_t bits        = 16;
+    uint32_t subchunk2   = data_bytes;
 
     fwrite("RIFF",1,4,f); fwrite(&chunk_size,4,1,f);
     fwrite("WAVE",1,4,f);
@@ -32,6 +36,12 @@ static void write_wav_header(FILE* f, uint32_t sample_rate, uint32_t n_frames){
     fwrite(&sample_rate,4,1,f); fwrite(&byte_rate,4,1,f);
     fwrite(&block_align,2,1,f); fwrite(&bits,2,1,f);
     fwrite("data",1,4,f); fwrite(&subchunk2,4,1,f);
+    // 표준 44바이트 헤더 끝 → bewe 청크
+    fwrite("bewe",1,4,f);
+    uint32_t bewe_sz = BEWE_SIZE; fwrite(&bewe_sz,4,1,f);
+    fwrite(&center_freq_hz,8,1,f);
+    fwrite(&start_time,    8,1,f);
+    fwrite(&sample_rate,   4,1,f);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -157,29 +167,18 @@ void FFTViewer::do_region_save_work(){
 
     // ── 출력 파일 열기 ─────────────────────────────────────────────────────
     char outpath[512];
-    if(sa_mode){
-        // SA 전용 임시 경로
-        std::string sa_dir_s = BEWEPaths::sa_temp_dir();
-        const char* sa_dir = sa_dir_s.c_str();
-        struct stat sd{}; if(stat(sa_dir,&sd)!=0) mkdir(sa_dir,0755);
-        struct tm *ts=localtime(&region.time_start);
-        char date[16],s_start[8];
-        strftime(date,sizeof(date),"%Y%m%d",ts);
-        strftime(s_start,sizeof(s_start),"%H%M%S",ts);
-        snprintf(outpath,sizeof(outpath),"%s/sa_%.4fMHz_BW%.0fkHz_%s_%s.wav",
-                 sa_dir,(double)cf_abs_mhz,(double)bw_khz,date,s_start);
-    } else {
-        make_filename(outpath, sizeof(outpath),
-                      cf_abs_mhz, bw_khz,
-                      region.time_start, region.time_end);
-    }
+    make_filename(outpath, sizeof(outpath),
+                  cf_abs_mhz, bw_khz,
+                  region.time_start, region.time_end);
     FILE* wf = fopen(outpath, "wb");
     if(!wf){
         fprintf(stderr,"region_save: fopen failed: %s\n", outpath);
         return;
     }
-    // WAV 헤더 자리 확보 (나중에 덮어쓸 것)
-    write_wav_header(wf, out_sr, (uint32_t)n_out);
+    // WAV 헤더 작성 (bewe 청크 포함: 중심주파수, 시작시각)
+    uint64_t cf_hz_meta = (uint64_t)(cf_abs_mhz * 1e6 + 0.5);
+    int64_t  t_start_meta = (int64_t)region.time_start;
+    write_wav_header(wf, out_sr, (uint32_t)n_out, cf_hz_meta, t_start_meta);
 
     // ── 청크 단위 읽기 + mix-down + decimate + 저장 ───────────────────────
     const int CHUNK = 65536; // 샘플 단위
@@ -245,9 +244,9 @@ void FFTViewer::do_region_save_work(){
         pos += to_read;
     }
 
-    // WAV 헤더 실제 샘플 수로 갱신
+    // WAV 헤더 실제 샘플 수로 갱신 (bewe 메타데이터 유지)
     rewind(wf);
-    write_wav_header(wf, out_sr, (uint32_t)actual_out);
+    write_wav_header(wf, out_sr, (uint32_t)actual_out, cf_hz_meta, t_start_meta);
     fclose(wf);
 
     printf("Region IQ saved: %s  (%.1f sec  %.0f kHz SR)\n",

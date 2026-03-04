@@ -137,12 +137,15 @@ bool GlobeRenderer::init() {
     build_map_lines();
     build_stars();
     load_earth_texture();
-    // Default orientation: face lon=127 (Korea), equator at screen center
-    // atan2(cos(127°), sin(127°)) gives the Y-rotation needed so Korea faces camera (+z)
-    yaw_rad_   = 37.f * (float)M_PI / 180.f;
-    pitch_deg_ = 0.f;
-    float qyw = cosf(yaw_rad_ * 0.5f), qyy = sinf(yaw_rad_ * 0.5f);
-    qw_ = qyw; qx_ = 0.f; qy_ = qyy; qz_ = 0.f;
+    // Default orientation: screen center = 38N 127E, north pole straight up
+    // col2=pick-fwd(38N,-127lon), col1=Gram-Schmidt(north,fwd), col0=cross(col1,col2)
+    // Quaternion via Shepperd from that rotation matrix
+    qw_ = -0.300017f;
+    qx_ = -0.103304f;
+    qy_ =  0.896658f;
+    qz_ = -0.308744f;
+    yaw_rad_   = 0.f;  // arcball 드래그 추적용 (초기값 무관)
+    pitch_deg_ = 38.f; // 위도 추적용
     return true;
 }
 
@@ -646,6 +649,7 @@ void GlobeRenderer::build_map_lines() {
     GLint current_start = 0;
     int   current_count = 0;
     bool  in_segment    = false;
+    float prev_lon      = 0.f;
 
     for (int i = 0; i + 1 < WORLD_MAP_DATA_COUNT; i += 2) {
         float lat = WORLD_MAP_DATA[i];
@@ -660,12 +664,29 @@ void GlobeRenderer::build_map_lines() {
             current_start = (GLint)(verts.size() / 3);
             current_count = 0;
             in_segment = false;
+            prev_lon = 0.f;
         } else {
+            // 180° 안티메리디안 교차 감지: 인접 두 점 경도 차 > 180° → 세그먼트 분할
+            if (in_segment) {
+                float dlon = lon - prev_lon;
+                if (dlon >  180.f) dlon -= 360.f;
+                if (dlon < -180.f) dlon += 360.f;
+                if (fabsf(dlon) > 170.f) {
+                    // 현재 세그먼트 저장 후 새 세그먼트 시작
+                    if (current_count > 0) {
+                        seg_starts_.push_back(current_start);
+                        seg_counts_.push_back((GLsizei)current_count);
+                    }
+                    current_start = (GLint)(verts.size() / 3);
+                    current_count = 0;
+                }
+            }
             float x, y, z;
             latlon_to_xyz(lat, lon, x, y, z);
             verts.push_back(x); verts.push_back(y); verts.push_back(z);
             current_count++;
             in_segment = true;
+            prev_lon = lon;
         }
     }
     // Flush final segment

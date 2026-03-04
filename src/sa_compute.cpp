@@ -1,12 +1,13 @@
 #include "fft_viewer.hpp"
+#include "audio.hpp"
 #include "bewe_paths.hpp"
 #include <fftw3.h>
-#include <dirent.h>
 #include <cstdio>
 #include <cmath>
 #include <cstring>
 #include <algorithm>
 #include <vector>
+#include <thread>
 
 // ── Jet colormap (sa 전용) ─────────────────────────────────────────────────
 static uint32_t sa_jet(float t){
@@ -29,31 +30,11 @@ static void sa_hann(float* buf, int n){
 
 void FFTViewer::sa_cleanup(){
     // 스레드 먼저 종료 대기 (this 캡처 스레드가 살아있으면 크래시)
+    sa_playing.store(false);  // 재생 중이면 중단
+    if(sa_play_thread.joinable()) sa_play_thread.join();
     if(sa_thread.joinable()) sa_thread.join();
 
-    // SA_Temp 폴더 내 파일만 삭제 (원본 IQ 파일 보호)
-    {
-        std::string sa_dir_s=BEWEPaths::sa_temp_dir();
-        const char* sa_dir=sa_dir_s.c_str();
-        // sa_temp_path가 sa_temp_dir 내부의 파일인 경우만 삭제
-        if(!sa_temp_path.empty()){
-            if(sa_temp_path.rfind(sa_dir_s, 0) == 0){
-                remove(sa_temp_path.c_str());
-            }
-            sa_temp_path.clear();
-        }
-        DIR* d=opendir(sa_dir);
-        if(d){
-            struct dirent* e;
-            char path[512];
-            while((e=readdir(d))!=nullptr){
-                if(e->d_name[0]=='.') continue;
-                snprintf(path,sizeof(path),"%s/%s",sa_dir,e->d_name);
-                remove(path);
-            }
-            closedir(d);
-        }
-    }
+    sa_temp_path.clear();
     if(sa_texture){ glDeleteTextures(1,&sa_texture); sa_texture=0; }
     sa_tex_w=0; sa_tex_h=0;
     sa_pixel_ready.store(false);
@@ -89,18 +70,57 @@ void FFTViewer::sa_start(const std::string& wav_path){
     int fft_n = sa_fft_size;
 
     sa_thread = std::thread([this, wav_path, fft_n](){
-        // ── WAV 읽기 ──────────────────────────────────────────────────────
+        // ── WAV 읽기 + bewe 청크 파싱 ────────────────────────────────────
         FILE* f = fopen(wav_path.c_str(),"rb");
         if(!f){ sa_computing.store(false); return; }
 
-        // 헤더 44바이트 skip
-        uint8_t hdr[44]; fread(hdr,1,44,f);
+        // RIFF 헤더 파싱: 청크를 순회하여 data 오프셋과 bewe 메타데이터 추출
+        uint64_t meta_cf_hz  = 0;
+        int64_t  meta_time   = 0;
+        uint32_t meta_sr     = 0;
+        long     data_offset = 44; // 기본값 (표준 44바이트)
+        long     data_size   = 0;
 
-        // data_bytes를 실제 파일 크기로 계산 (헤더 불일치 대비)
-        fseek(f, 0, SEEK_END);
-        long file_sz = ftell(f);
-        fseek(f, 44, SEEK_SET);
-        long data_bytes_actual = file_sz - 44;
+        // fmt chunk의 sample_rate 읽기 (offset 24, uint32)
+        fseek(f, 24, SEEK_SET);
+        uint32_t wav_sr = 0; fread(&wav_sr, 4, 1, f);
+
+        // 청크 순회: "RIFF"(4) + size(4) + "WAVE"(4) = 12바이트 이후부터
+        fseek(f, 12, SEEK_SET);
+        while(true){
+            char id[5]={};
+            uint32_t csz = 0;
+            if(fread(id, 1, 4, f) != 4) break;
+            if(fread(&csz, 4, 1, f) != 1) break;
+            long chunk_data_pos = ftell(f);
+            if(strncmp(id, "data", 4) == 0){
+                data_offset = chunk_data_pos;
+                data_size   = (long)csz;
+            } else if(strncmp(id, "bewe", 4) == 0 && csz >= 20){
+                fread(&meta_cf_hz, 8, 1, f);
+                fread(&meta_time,  8, 1, f);
+                fread(&meta_sr,    4, 1, f);
+            }
+            // 다음 청크로 이동 (짝수 정렬)
+            long next = chunk_data_pos + (long)csz + ((long)csz & 1);
+            if(fseek(f, next, SEEK_SET) != 0) break;
+        }
+        if(data_size <= 0){
+            // 파싱 실패 시 파일 크기로 추정
+            fseek(f, 0, SEEK_END);
+            long file_sz = ftell(f);
+            data_offset = 44;
+            data_size   = file_sz - 44;
+        }
+        if(meta_sr == 0) meta_sr = wav_sr;
+
+        // SA 메타데이터 저장
+        sa_center_freq_hz = meta_cf_hz;
+        sa_start_time     = meta_time;
+        sa_sample_rate    = meta_sr > 0 ? meta_sr : wav_sr;
+
+        fseek(f, data_offset, SEEK_SET);
+        long data_bytes_actual = data_size;
         if(data_bytes_actual <= 0){ fclose(f); sa_computing.store(false); return; }
         int64_t n_samples = data_bytes_actual / (int64_t)(2*sizeof(int16_t));
 
@@ -221,11 +241,147 @@ void FFTViewer::sa_start(const std::string& wav_path){
         // 메인 스레드로 전달
         {
             std::lock_guard<std::mutex> lk(sa_pixel_mtx);
-            sa_pixel_buf = std::move(pixels);
-            sa_tex_w = actual_fft_n;
-            sa_tex_h = (int)out_rows;
+            sa_pixel_buf   = std::move(pixels);
+            sa_tex_w       = actual_fft_n;
+            sa_tex_h       = (int)out_rows;
         }
+        // SA 좌표 메타데이터 저장 (뷰 계산에 사용)
+        sa_total_rows   = rows;    // 실제 FFT 행 수 (시간축)
+        sa_actual_fft_n = actual_fft_n;
+        // 뷰 리셋 (새 SA 로드 시)
+        sa_view_x0 = 0.0f; sa_view_x1 = 1.0f;
+        sa_view_y0 = 0.0f; sa_view_y1 = 1.0f;
+        sa_sel_active = false;
         sa_pixel_ready.store(true);
         sa_computing.store(false);
     });
+}
+
+// ── SA 선택 영역 복조 재생 ─────────────────────────────────────────────────────
+// 선택된 UV 범위 → 시간축 샘플 추출 → 주파수 mix-down + 복조 → ALSA 재생
+void FFTViewer::sa_play_demod(){
+    sa_playing.store(true);
+
+    // 필요한 파라미터 스냅샷 (스레드 안전)
+    std::string wav_path = sa_temp_path;
+    uint64_t cf_hz       = sa_center_freq_hz;
+    uint32_t wav_sr      = sa_sample_rate;
+    int      demod_mode  = sa_demod_mode;
+    float    sel_y0      = sa_sel_y0;
+    float    sel_y1      = sa_sel_y1;
+    float    sel_x0      = sa_sel_x0;
+    float    sel_x1      = sa_sel_x1;
+    int64_t  total_rows  = sa_total_rows;
+    int      fft_n       = sa_actual_fft_n;
+
+    if(wav_path.empty() || wav_sr == 0 || total_rows == 0 || fft_n == 0){
+        sa_playing.store(false); return;
+    }
+
+    // WAV 파일 열기 + data 오프셋 파싱
+    FILE* f = fopen(wav_path.c_str(), "rb");
+    if(!f){ sa_playing.store(false); return; }
+
+    long data_offset = 44;
+    fseek(f, 12, SEEK_SET);
+    while(true){
+        char id[5]={};
+        uint32_t csz=0;
+        if(fread(id,1,4,f)!=4) break;
+        if(fread(&csz,4,1,f)!=1) break;
+        long cdp = ftell(f);
+        if(strncmp(id,"data",4)==0){ data_offset=cdp; break; }
+        fseek(f, cdp+(long)csz+((long)csz&1), SEEK_SET);
+    }
+
+    // 선택된 시간 범위 → 샘플 범위
+    // total_rows 행 × fft_n = 전체 샘플 (50% 오버랩 없이, 근사치)
+    int64_t total_samp = (int64_t)total_rows * (int64_t)fft_n;
+    int64_t samp_start = (int64_t)(sel_y0 * total_samp);
+    int64_t samp_end   = (int64_t)(sel_y1 * total_samp);
+    if(samp_start >= samp_end){ fclose(f); sa_playing.store(false); return; }
+
+    // 선택된 주파수 범위 → mix-down 중심 주파수
+    // sel_x0..x1은 텍스처 UV: 0 = cf - sr/2, 1 = cf + sr/2
+    double bw_hz = (double)wav_sr;
+    double sel_cf_hz  = (double)cf_hz - bw_hz * 0.5
+                      + ((sel_x0 + sel_x1) * 0.5) * bw_hz;
+    double offset_hz  = sel_cf_hz - (double)cf_hz;
+    // 선택 대역폭 (데시메이션용)
+    double sel_bw_hz  = (sel_x1 - sel_x0) * bw_hz;
+    if(sel_bw_hz < 1000.0) sel_bw_hz = 1000.0;
+
+    int decim = std::max(1, (int)(bw_hz / sel_bw_hz));
+    uint32_t out_sr = wav_sr / decim;
+    if(out_sr < 4000) { out_sr = 4000; decim = (int)(wav_sr / out_sr); }
+
+    // 읽기: 선택 범위 IQ 샘플
+    int64_t n_read = samp_end - samp_start;
+    fseek(f, data_offset + (long)(samp_start * 4), SEEK_SET); // 4 = 2ch * int16
+    std::vector<int16_t> raw(n_read * 2);
+    int64_t n_got = (int64_t)fread(raw.data(), sizeof(int16_t), (size_t)(n_read*2), f) / 2;
+    fclose(f);
+    if(n_got < 1){ sa_playing.store(false); return; }
+
+    // Mix-down + 박스필터 데시메이션 + 복조
+    const float SCL = 1.0f / 32768.0f;
+    float phase = 0.0f;
+    float dphi  = (float)(2.0 * M_PI * (-offset_hz) / (double)wav_sr); // mix to baseband
+    float prev_phase_fm = 0.0f; // FM 이전 위상 (미분용)
+
+    int64_t n_out = n_got / decim;
+    std::vector<int16_t> out_buf(n_out * 2); // stereo
+    int64_t oi = 0;
+    for(int64_t i = 0; i < n_got && oi < n_out; i += decim){
+        // box-filter average over decim samples
+        float sum_i = 0.f, sum_q = 0.f;
+        int cnt = 0;
+        for(int d = 0; d < decim && (i+d) < n_got; d++){
+            int64_t idx = i + d;
+            float si = raw[idx*2  ] * SCL;
+            float sq = raw[idx*2+1] * SCL;
+            // mix-down: multiply by e^(-j*phase)
+            float cp = cosf(phase + d * dphi);
+            float sp = sinf(phase + d * dphi);
+            sum_i += si * cp + sq * sp;
+            sum_q += -si * sp + sq * cp;
+            cnt++;
+        }
+        phase += decim * dphi;
+        // wrap phase to [-π,π]
+        while(phase >  (float)M_PI) phase -= 2.f*(float)M_PI;
+        while(phase < -(float)M_PI) phase += 2.f*(float)M_PI;
+        if(cnt == 0) continue;
+        float mi = sum_i / cnt, mq = sum_q / cnt;
+
+        float audio = 0.f;
+        if(demod_mode == 1){ // AM: envelope
+            audio = sqrtf(mi*mi + mq*mq);
+            audio = audio * 2.f - 1.f; // 기준선 제거 (대략)
+        } else { // FM: phase diff
+            float cur_phase = atan2f(mq, mi);
+            float diff = cur_phase - prev_phase_fm;
+            if(diff >  (float)M_PI) diff -= 2.f*(float)M_PI;
+            if(diff < -(float)M_PI) diff += 2.f*(float)M_PI;
+            audio = diff * (float)(wav_sr / decim) / (float)(2.0 * M_PI * 75000.0);
+            prev_phase_fm = cur_phase;
+        }
+        audio = audio > 1.f ? 1.f : audio < -1.f ? -1.f : audio;
+        int16_t s = (int16_t)(audio * 28000.f);
+        out_buf[oi*2  ] = s;
+        out_buf[oi*2+1] = s;
+        oi++;
+    }
+
+    // ALSA 재생
+    AlsaOut alsa;
+    if(alsa.open(out_sr)){
+        const int BLOCK = 512;
+        for(int64_t b = 0; b < oi && sa_playing.load(); b += BLOCK){
+            int frames = (int)std::min((int64_t)BLOCK, oi - b);
+            alsa.write(out_buf.data() + b*2, frames);
+        }
+        alsa.close();
+    }
+    sa_playing.store(false);
 }

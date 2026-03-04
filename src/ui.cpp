@@ -494,6 +494,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
                         display_power_max = display_power_min + 5.f;
                 }
                 cached_sp_idx = -1;
+                join_manual_scale = true; // JOIN 모드: 수동 입력 → HOST 값 덮어쓰기 차단
                 pax_edit = 0; pax_had_focus = false;
             }
             if(ImGui::IsKeyPressed(ImGuiKey_Escape)){ pax_edit = 0; pax_had_focus = false; }
@@ -573,6 +574,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
                     if(display_power_max - display_power_min < 5.f)
                         display_power_min = display_power_max - 5.f;
                 }
+                join_manual_scale = true; // JOIN 모드: 수동 조절 → HOST 값 덮어쓰기 차단
                 cached_sp_idx=-1;
             }
         }
@@ -1996,7 +1998,13 @@ void run_streaming_viewer(){
                     }
                 }
                 uint8_t tid = v.next_transfer_id.fetch_add(1);
-                srv->send_file_to((int)op_idx, path.c_str(), tid);
+                // 백그라운드 스레드에서 전송: client_loop 스레드 블로킹 방지
+                // (inline 호출 시 send_audio가 send_mtx를 기다리며 demod 스레드 블로킹 → HOST 오디오 끊김)
+                std::string path_copy = path;
+                int op_int = (int)op_idx;
+                std::thread([srv, path_copy, op_int, tid](){
+                    srv->send_file_to(op_int, path_copy.c_str(), tid);
+                }).detach();
             };
             // HOST: JOIN이 파일을 업로드 완료 → public/iq 또는 public/audio로 이동 + 목록 갱신
             srv->cb.on_share_upload_done = [&](uint8_t /*op_idx*/, const char* op_name, const char* tmp_path){
@@ -2289,6 +2297,7 @@ void run_streaming_viewer(){
                         if(v.local_ch_out[ci]==3) v.net_cli->cmd_toggle_recv(ci,false);
                     // 재연결 후 오토스케일 트리거
                     v.autoscale_active=true; v.autoscale_init=false; v.autoscale_accum.clear();
+                    v.join_manual_scale=false;
                     // 워터폴 타임스탬프 초기화
                     { std::lock_guard<std::mutex> wlk(v.wf_events_mtx); v.wf_events.clear(); }
                     v.last_tagged_sec = -1;
@@ -2306,9 +2315,10 @@ void run_streaming_viewer(){
             static float last_cf_mhz = 0.f;
             float cur_cf = v.net_cli->remote_cf_mhz.load();
             if(cur_cf > 0.f && fabsf(cur_cf - last_cf_mhz) > 0.001f){
-                v.autoscale_active = true;
-                v.autoscale_init   = false;
+                v.autoscale_active  = true;
+                v.autoscale_init    = false;
                 v.autoscale_accum.clear();
+                v.join_manual_scale = false;
             }
             last_cf_mhz = cur_cf;
         }
@@ -2334,8 +2344,8 @@ void run_streaming_viewer(){
                     v.header.sample_rate      = v.net_cli->sr;
                     v.header.power_min        = v.net_cli->pmin;
                     v.header.power_max        = v.net_cli->pmax;
-                    // HOST autoscale 결과만 수용 (active 중엔 덮어쓰지 않음)
-                    if(!v.autoscale_active){
+                    // HOST autoscale 결과 수용: JOIN 수동 스케일 중이거나 autoscale 중이면 덮어쓰기 금지
+                    if(!v.autoscale_active && !v.join_manual_scale){
                         v.display_power_min = v.net_cli->pmin;
                         v.display_power_max = v.net_cli->pmax;
                     }
@@ -2692,6 +2702,57 @@ void run_streaming_viewer(){
             ImGui::PopStyleVar();
         }
         ImGui::SameLine();
+
+        // ── Sample Rate combo (LOCAL/HOST만 표시) ─────────────────────────
+        if(!v.remote_mode && (v.dev_blade || v.dev_rtl)){
+            // BladeRF: 2.5/5/10/20/30.72/61.44 MSPS
+            // RTL-SDR: 0.25/0.96/1.44/2.56 MSPS
+            static const float blade_srs[]  = {2.5f,5.0f,10.0f,20.0f,30.72f,61.44f};
+            static const char* blade_lbls[] = {"2.5M","5M","10M","20M","30.72M","61.44M"};
+            static const float rtl_srs[]    = {0.25f,0.96f,1.44f,2.56f};
+            static const char* rtl_lbls[]   = {"0.25M","0.96M","1.44M","2.56M"};
+            const float* sr_list  = v.dev_blade ? blade_srs  : rtl_srs;
+            const char** sr_lbls  = v.dev_blade ? blade_lbls : rtl_lbls;
+            int          sr_count = v.dev_blade ? 6 : 4;
+
+            // 현재 SR에 맞는 인덱스 선택 (초기화 or SR 변경 완료 후 동기화)
+            static int sr_si = -1;
+            float cur_sr_msps = v.hw.sample_rate_mhz;
+            if(sr_si < 0 || !v.sr_change_req){
+                // 현재 HW SR과 가장 가까운 항목 선택
+                float best_diff = 1e9f;
+                for(int i=0;i<sr_count;i++){
+                    float d = fabsf(sr_list[i] - cur_sr_msps);
+                    if(d < best_diff){ best_diff=d; sr_si=i; }
+                }
+            }
+
+            const char* cur_lbl = (sr_si>=0 && sr_si<sr_count) ? sr_lbls[sr_si] : "?";
+            float tw_sr  = ImGui::CalcTextSize(cur_lbl).x;
+            float box_sr = 76.0f;
+            float px_sr  = std::max(2.0f,(box_sr-tw_sr)*0.5f-12.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px_sr, ImGui::GetStyle().FramePadding.y));
+            ImGui::SetNextItemWidth(box_sr);
+            if(ImGui::BeginCombo("##srcombo", cur_lbl, ImGuiComboFlags_HeightSmall)){
+                for(int i=0;i<sr_count;i++){
+                    bool sel = (sr_si==i);
+                    if(ImGui::Selectable(sr_lbls[i], sel)){
+                        if(i != sr_si){
+                            sr_si = i;
+                            v.pending_sr_msps = sr_list[i];
+                            v.sr_change_req   = true;
+                            // autoscale 리셋
+                            v.autoscale_active=true; v.autoscale_init=false;
+                            v.autoscale_accum.clear();
+                        }
+                    }
+                    if(sel) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::PopStyleVar();
+            ImGui::SameLine();
+        }
 
         // ── Gain Control 슬라이더 ─────────────────────────────────────────
         {
@@ -4049,10 +4110,148 @@ void run_streaming_viewer(){
                     dl->AddText(ImVec2(rpx+(rp_w-msz.x)/2, rp_content_y+(rp_content_h-msz.y)/2),
                                 IM_COL32(180,180,100,255), msg);
                 } else if(v.sa_texture){
-                    // SA 워터폴 텍스처 표시 (패널 꽉 채움)
+                    // ── SA 텍스처 표시 (줌 뷰 적용) ─────────────────────
+                    float sa_x0 = rpx, sa_y0 = rp_content_y;
+                    float sa_x1 = disp_w, sa_y1 = content_y + content_h;
+                    float sa_w  = sa_x1 - sa_x0;
+                    float sa_h  = sa_y1 - sa_y0;
+
                     ImTextureID tid = (ImTextureID)(intptr_t)v.sa_texture;
-                    dl->AddImage(tid, ImVec2(rpx,rp_content_y), ImVec2(disp_w,content_y+content_h),
-                                 ImVec2(0,0), ImVec2(1,1), IM_COL32(255,255,255,255));
+                    dl->AddImage(tid, ImVec2(sa_x0, sa_y0), ImVec2(sa_x1, sa_y1),
+                                 ImVec2(v.sa_view_x0, v.sa_view_y0),
+                                 ImVec2(v.sa_view_x1, v.sa_view_y1),
+                                 IM_COL32(255,255,255,255));
+
+                    // ── 스크롤 휠: 줌 ─────────────────────────────────────
+                    ImVec2 mp = io.MousePos;
+                    bool mouse_in_sa = (mp.x >= sa_x0 && mp.x < sa_x1 &&
+                                        mp.y >= sa_y0 && mp.y < sa_y1);
+                    if(mouse_in_sa && io.MouseWheel != 0.f){
+                        float zoom_factor = (io.MouseWheel > 0) ? 0.8f : 1.25f;
+                        // 마우스 위치 기준 UV
+                        float mu = v.sa_view_x0 + (mp.x - sa_x0) / sa_w * (v.sa_view_x1 - v.sa_view_x0);
+                        float mv = v.sa_view_y0 + (mp.y - sa_y0) / sa_h * (v.sa_view_y1 - v.sa_view_y0);
+                        // 시간축(Y)만 줌 (주파수축은 고정 BW이므로)
+                        float new_half = (v.sa_view_y1 - v.sa_view_y0) * 0.5f * zoom_factor;
+                        v.sa_view_y0 = mv - new_half;
+                        v.sa_view_y1 = mv + new_half;
+                        // 클램프
+                        if(v.sa_view_y0 < 0.f){ v.sa_view_y1 -= v.sa_view_y0; v.sa_view_y0 = 0.f; }
+                        if(v.sa_view_y1 > 1.f){ v.sa_view_y0 -= (v.sa_view_y1 - 1.f); v.sa_view_y1 = 1.f; }
+                        v.sa_view_y0 = std::max(0.f, v.sa_view_y0);
+                        v.sa_view_y1 = std::min(1.f, v.sa_view_y1);
+                        if(v.sa_view_y1 - v.sa_view_y0 < 0.01f){
+                            float mid = (v.sa_view_y0 + v.sa_view_y1) * 0.5f;
+                            v.sa_view_y0 = mid - 0.005f; v.sa_view_y1 = mid + 0.005f;
+                        }
+                    }
+
+                    // ── Ctrl+우클릭 드래그: 범위 선택 ─────────────────────
+                    if(mouse_in_sa && io.KeyCtrl &&
+                       ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                        float u = (mp.x - sa_x0) / sa_w;
+                        float vv = (mp.y - sa_y0) / sa_h;
+                        // UV → 텍스처 공간
+                        v.sa_sel_drag_ox = v.sa_view_x0 + u * (v.sa_view_x1 - v.sa_view_x0);
+                        v.sa_sel_drag_oy = v.sa_view_y0 + vv * (v.sa_view_y1 - v.sa_view_y0);
+                        v.sa_sel_x0 = v.sa_sel_drag_ox; v.sa_sel_x1 = v.sa_sel_drag_ox;
+                        v.sa_sel_y0 = v.sa_sel_drag_oy; v.sa_sel_y1 = v.sa_sel_drag_oy;
+                        v.sa_sel_dragging = true;
+                        v.sa_sel_active   = false;
+                    }
+                    if(v.sa_sel_dragging){
+                        if(ImGui::IsMouseDown(ImGuiMouseButton_Right)){
+                            float u  = (mp.x - sa_x0) / sa_w;
+                            float vv = (mp.y - sa_y0) / sa_h;
+                            float cu = v.sa_view_x0 + u  * (v.sa_view_x1 - v.sa_view_x0);
+                            float cv = v.sa_view_y0 + vv * (v.sa_view_y1 - v.sa_view_y0);
+                            v.sa_sel_x0 = std::min(v.sa_sel_drag_ox, cu);
+                            v.sa_sel_x1 = std::max(v.sa_sel_drag_ox, cu);
+                            v.sa_sel_y0 = std::min(v.sa_sel_drag_oy, cv);
+                            v.sa_sel_y1 = std::max(v.sa_sel_drag_oy, cv);
+                        } else {
+                            v.sa_sel_dragging = false;
+                            if(v.sa_sel_x1 - v.sa_sel_x0 > 0.005f ||
+                               v.sa_sel_y1 - v.sa_sel_y0 > 0.005f)
+                                v.sa_sel_active = true;
+                        }
+                    }
+
+                    // 선택 범위 사각형 표시
+                    if((v.sa_sel_active || v.sa_sel_dragging) &&
+                       v.sa_sel_x0 < v.sa_sel_x1 && v.sa_sel_y0 < v.sa_sel_y1){
+                        // 텍스처 UV → 화면 좌표
+                        float vr_w = v.sa_view_x1 - v.sa_view_x0;
+                        float vr_h = v.sa_view_y1 - v.sa_view_y0;
+                        float rx0 = sa_x0 + (v.sa_sel_x0 - v.sa_view_x0) / vr_w * sa_w;
+                        float rx1 = sa_x0 + (v.sa_sel_x1 - v.sa_view_x0) / vr_w * sa_w;
+                        float ry0 = sa_y0 + (v.sa_sel_y0 - v.sa_view_y0) / vr_h * sa_h;
+                        float ry1 = sa_y0 + (v.sa_sel_y1 - v.sa_view_y0) / vr_h * sa_h;
+                        dl->AddRectFilled(ImVec2(rx0,ry0), ImVec2(rx1,ry1), IM_COL32(255,200,0,40));
+                        dl->AddRect(ImVec2(rx0,ry0), ImVec2(rx1,ry1), IM_COL32(255,200,0,200), 0.f, 0, 1.5f);
+                        // 복조 모드 표시
+                        if(v.sa_demod_mode != 0){
+                            const char* dm = (v.sa_demod_mode == 1) ? "AM" : "FM";
+                            ImVec2 dmsz = ImGui::CalcTextSize(dm);
+                            dl->AddText(ImVec2(rx0 + 2, ry0 + 2), IM_COL32(255,220,60,255), dm);
+                            (void)dmsz;
+                        }
+                    }
+
+                    // ── A/F 키: 복조 모드 선택 (SA 패널 마우스 위 + sel_active) ─
+                    if(mouse_in_sa && !ImGui::GetIO().WantTextInput){
+                        if(ImGui::IsKeyPressed(ImGuiKey_A, false)) v.sa_demod_mode = 1; // AM
+                        if(ImGui::IsKeyPressed(ImGuiKey_F, false)) v.sa_demod_mode = 2; // FM
+                        // 스페이스바: 복조 재생 시작
+                        if(ImGui::IsKeyPressed(ImGuiKey_Space, false) &&
+                           v.sa_sel_active && v.sa_demod_mode != 0 && !v.sa_playing.load()){
+                            if(v.sa_play_thread.joinable()) v.sa_play_thread.join();
+                            v.sa_play_thread = std::thread([&v](){ v.sa_play_demod(); });
+                        }
+                    }
+
+                    // ── Freq/Time 오버레이 (마우스 커서 위치 정보) ────────
+                    if(mouse_in_sa && v.sa_center_freq_hz > 0){
+                        float u  = (mp.x - sa_x0) / sa_w;
+                        float vv = (mp.y - sa_y0) / sa_h;
+                        // 텍스처 내 UV
+                        float tu = v.sa_view_x0 + u  * (v.sa_view_x1 - v.sa_view_x0);
+                        float tv = v.sa_view_y0 + vv * (v.sa_view_y1 - v.sa_view_y0);
+
+                        // 주파수 계산: 텍스처 X → bin → 실제 주파수
+                        // bin 0 = cf - sr/2, bin N-1 = cf + sr/2 (FFT shift 후)
+                        if(v.sa_actual_fft_n > 0 && v.sa_sample_rate > 0){
+                            double cf_hz = (double)v.sa_center_freq_hz;
+                            double bw_hz = (double)v.sa_sample_rate;
+                            double freq_hz = cf_hz - bw_hz * 0.5 + tu * bw_hz;
+                            double freq_mhz = freq_hz / 1e6;
+
+                            // 시간 계산: 텍스처 Y → 행 → 시간
+                            // total_rows 행이 n_samples/sa_sample_rate 초에 해당
+                            double row_sec = 0.0;
+                            if(v.sa_sample_rate > 0 && v.sa_actual_fft_n > 0)
+                                row_sec = (double)v.sa_actual_fft_n / (double)v.sa_sample_rate;
+                            double t_offset = tv * v.sa_total_rows * row_sec;
+                            time_t t_abs = (time_t)(v.sa_start_time + (int64_t)t_offset);
+                            struct tm* tmv = localtime(&t_abs);
+                            char time_buf[16]="--:--:--";
+                            if(tmv) strftime(time_buf, sizeof(time_buf), "%H:%M:%S", tmv);
+
+                            // 오버레이 텍스트 (우측 상단)
+                            char freq_buf[32]; snprintf(freq_buf, sizeof(freq_buf), "Freq : %.3fMHz", freq_mhz);
+                            char time_txt[32]; snprintf(time_txt, sizeof(time_txt), "Time : %s", time_buf);
+                            float fw = std::max(ImGui::CalcTextSize(freq_buf).x,
+                                                ImGui::CalcTextSize(time_txt).x);
+                            float fh = ImGui::GetFontSize() * 2.5f;
+                            float ox = sa_x1 - fw - 10.f, oy = sa_y0 + 6.f;
+                            dl->AddRectFilled(ImVec2(ox-4,oy-2), ImVec2(ox+fw+4,oy+fh),
+                                             IM_COL32(0,0,0,160), 4.f);
+                            dl->AddText(ImVec2(ox, oy),
+                                        IM_COL32(200,230,255,255), freq_buf);
+                            dl->AddText(ImVec2(ox, oy + ImGui::GetFontSize() + 2.f),
+                                        IM_COL32(200,230,255,255), time_txt);
+                        }
+                    }
                 } else {
                     // 안내
                     const char* msg = "Drag region here";
@@ -4249,14 +4448,76 @@ void run_streaming_viewer(){
         {
             float ty_b=bot_y+(TOPBAR_H-ImGui::GetFontSize())/2;
 
-            // ── 중앙: 실시간 시계 (HH:MM:SS) ─────────────────────────────
+            // ── 중앙: CPU온도  HH:MM:SS  SDR온도 ─────────────────────────
             {
+                // CPU 온도 (2초마다 백그라운드 갱신)
+                static char  cpu_temp_str[16]  = "";
+                static float cpu_temp_timer    = 1.f;
+                static std::atomic<bool> cpu_fetching{false};
+                static std::mutex        cpu_temp_mtx;
+                cpu_temp_timer += io.DeltaTime;
+                if(cpu_temp_timer >= 1.0f && !cpu_fetching.load()){
+                    cpu_temp_timer = 0.f;
+                    cpu_fetching.store(true);
+                    std::thread([](){
+                        char tmp[16] = "";
+                        FILE* fp = popen("sensors 2>/dev/null | grep 'Package id 0'", "r");
+                        if(fp){
+                            char buf[128]={};
+                            if(fgets(buf, sizeof(buf), fp)){
+                                const char* plus = strchr(buf, '+');
+                                if(plus){ float d=0.f;
+                                    if(sscanf(plus+1,"%f",&d)==1)
+                                        snprintf(tmp,sizeof(tmp),"%.0f\xC2\xB0""C",d); }
+                            }
+                            pclose(fp);
+                        }
+                        { std::lock_guard<std::mutex> lk(cpu_temp_mtx);
+                          strncpy(cpu_temp_str, tmp, sizeof(cpu_temp_str)-1); }
+                        cpu_fetching.store(false);
+                    }).detach();
+                }
+
+                // SDR 온도 (3초마다 libbladeRF 직접 쿼리)
+                static char  sdr_temp_str[16]  = "";
+                static float sdr_temp_timer    = 1.f;
+                static std::mutex sdr_temp_mtx;
+                sdr_temp_timer += io.DeltaTime;
+                if(sdr_temp_timer >= 1.0f && v.dev_blade && !v.remote_mode){
+                    sdr_temp_timer = 0.f;
+                    float sdr_t = 0.f;
+                    if(bladerf_get_rfic_temperature(v.dev_blade, &sdr_t) == 0){
+                        std::lock_guard<std::mutex> lk(sdr_temp_mtx);
+                        snprintf(sdr_temp_str, sizeof(sdr_temp_str), "%.0f\xC2\xB0""C", sdr_t);
+                    }
+                }
+
+                // 시계
                 time_t tnow = time(nullptr);
                 struct tm tlocal{}; localtime_r(&tnow, &tlocal);
                 char clock_str[16];
                 strftime(clock_str, sizeof(clock_str), "%H:%M:%S", &tlocal);
-                ImVec2 csz = ImGui::CalcTextSize(clock_str);
-                dl->AddText(ImVec2((disp_w-csz.x)/2, ty_b), IM_COL32(200,200,200,255), clock_str);
+
+                // 조합 문자열: "CPU: ##°C  HH:MM:SS  SDR: ##°C"
+                char center_str[80] = {};
+                {
+                    std::lock_guard<std::mutex> lk(cpu_temp_mtx);
+                    std::lock_guard<std::mutex> lk2(sdr_temp_mtx);
+                    if(cpu_temp_str[0] && sdr_temp_str[0])
+                        snprintf(center_str, sizeof(center_str),
+                                 "CPU: %s  %s  SDR: %s", cpu_temp_str, clock_str, sdr_temp_str);
+                    else if(cpu_temp_str[0])
+                        snprintf(center_str, sizeof(center_str),
+                                 "CPU: %s  %s", cpu_temp_str, clock_str);
+                    else if(sdr_temp_str[0])
+                        snprintf(center_str, sizeof(center_str),
+                                 "%s  SDR: %s", clock_str, sdr_temp_str);
+                    else
+                        snprintf(center_str, sizeof(center_str), "%s", clock_str);
+                }
+                ImVec2 csz = ImGui::CalcTextSize(center_str);
+                dl->AddText(ImVec2((disp_w - csz.x) / 2.f, ty_b),
+                            IM_COL32(200,200,200,255), center_str);
             }
 
             // ── 좌측: 타임머신 오프셋 (활성 시만 표시) ───────────────────

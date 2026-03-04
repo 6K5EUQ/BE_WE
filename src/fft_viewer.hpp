@@ -41,10 +41,12 @@ public:
 
     int   fft_size=DEFAULT_FFT_SIZE, time_average=TIME_AVERAGE;
     bool  fft_size_change_req=false; int pending_fft_size=DEFAULT_FFT_SIZE;
+    bool  sr_change_req=false; float pending_sr_msps=61.44f; // 샘플레이트 변경 요청
     bool  texture_needs_recreate=false;
     int   current_fft_idx=0, last_wf_update_idx=-1;
     float freq_zoom=1, freq_pan=0;
     float display_power_min=-80, display_power_max=0;
+    bool  join_manual_scale=false; // JOIN 수동 스케일: true면 HOST pmin/pmax 덮어쓰기 금지
     float spectrum_height_ratio=0.2f;
     float right_panel_ratio=0.0f;
     std::atomic<bool> render_visible{true}; // false=좌측 패널 완전 숨김 → FFT/WF 연산 중단
@@ -167,6 +169,32 @@ public:
     void sa_start(const std::string& wav_path);  // 비동기 FFT 계산 시작
     void sa_cleanup();                            // 임시파일 삭제 + 텍스처 해제
     void sa_upload_texture();                     // 메인스레드에서 GL 업로드
+
+    // SA 메타데이터 (WAV BEWE 청크에서 읽음)
+    uint64_t sa_center_freq_hz = 0;   // 중심주파수 (Hz)
+    int64_t  sa_start_time     = 0;   // 시작 시각 (Unix timestamp)
+    uint32_t sa_sample_rate    = 0;   // 출력 샘플레이트 (데시메이션 후)
+    int64_t  sa_total_rows     = 0;   // 총 FFT 행 수 (시간축 길이)
+    int      sa_actual_fft_n   = 0;   // 실제 FFT 크기 (주파수축 길이)
+
+    // SA 뷰 상태 (줌/팬)
+    float    sa_view_x0 = 0.0f;   // 텍스처 UV: 주파수축 시작 [0,1]
+    float    sa_view_x1 = 1.0f;   // 텍스처 UV: 주파수축 끝
+    float    sa_view_y0 = 0.0f;   // 텍스처 UV: 시간축 시작
+    float    sa_view_y1 = 1.0f;   // 텍스처 UV: 시간축 끝
+
+    // SA 범위 선택 (Ctrl+우클릭 드래그)
+    bool     sa_sel_active = false;
+    float    sa_sel_x0 = 0.f, sa_sel_x1 = 0.f; // 텍스처 UV 좌표
+    float    sa_sel_y0 = 0.f, sa_sel_y1 = 0.f;
+    bool     sa_sel_dragging = false;
+    float    sa_sel_drag_ox = 0.f, sa_sel_drag_oy = 0.f; // 드래그 시작 UV
+
+    // SA 복조 재생
+    int      sa_demod_mode = 0;   // 0=없음 1=AM 2=FM
+    std::atomic<bool> sa_playing{false};
+    std::thread       sa_play_thread;
+    void sa_play_demod();         // 선택 영역 복조 재생 (별도 스레드)
 
     // tm_rec 내부 상태
     bool    tm_rec_active=false;

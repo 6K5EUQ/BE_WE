@@ -90,6 +90,59 @@ void FFTViewer::capture_and_process(){
             texture_needs_recreate=true; continue;
         }
 
+        // ── Sample rate change ────────────────────────────────────────────
+        if(sr_change_req){
+            sr_change_req=false;
+            uint32_t new_sr = (uint32_t)(pending_sr_msps * 1e6f);
+
+            // TM IQ 리셋: on/off 여부 관계없이 기존 롤링 파일 삭제 후 재생성
+            bool tm_was_on = tm_iq_on.load(std::memory_order_relaxed);
+            if(tm_was_on) tm_iq_on.store(false);
+            tm_iq_close(); // fd 닫기 + 상태 초기화 (이미 closed면 no-op)
+            // 기존 SR 롤링 파일 삭제 (SR 불일치 방지)
+            {
+                std::string tm_dir = BEWEPaths::time_temp_dir();
+                char old_path[256];
+                snprintf(old_path, sizeof(old_path), "%s/iq_rolling_%uMSPS.wav",
+                         tm_dir.c_str(), header.sample_rate/1000000);
+                if(access(old_path, F_OK)==0){ remove(old_path); }
+            }
+
+            uint32_t actual_sr=0, actual_bw=0;
+            bladerf_set_sample_rate(dev_blade,BLADERF_CHANNEL_RX(0),new_sr,&actual_sr);
+            // BW = SR * 80% (BladeRF 권장: 나이퀴스트의 80%)
+            bladerf_set_bandwidth(dev_blade,BLADERF_CHANNEL_RX(0),(uint32_t)(actual_sr*0.8f),&actual_bw);
+
+            // 스트림 재설정 (새 SR에 맞춰)
+            bladerf_enable_module(dev_blade,BLADERF_CHANNEL_RX(0),false);
+            bladerf_sync_config(dev_blade,BLADERF_RX_X1,BLADERF_FORMAT_SC16_Q11,512,16384,128,5000);
+            bladerf_enable_module(dev_blade,BLADERF_CHANNEL_RX(0),true);
+
+            // HW 파라미터 갱신
+            hw = make_bladerf_config(actual_sr);
+            time_average = hw.compute_time_average(fft_size);
+
+            {std::lock_guard<std::mutex> lk(data_mtx);
+             header.sample_rate = actual_sr;
+             header.time_average = time_average;
+             fft_data.assign(MAX_FFTS_MEMORY*fft_size,0);
+             current_spectrum.assign(fft_size,-80.0f);
+             total_ffts=0; current_fft_idx=0; cached_sp_idx=-1;
+             autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;}
+            {std::lock_guard<std::mutex> lk(wf_events_mtx);
+             wf_events.clear(); last_tagged_sec=-1;}
+
+            pacc.assign(fft_size,0.0f); fcnt=0; warmup_cnt=0;
+            texture_needs_recreate=true;
+            // TM IQ가 켜져 있었으면 새 SR로 롤링 파일 재시작
+            if(tm_was_on){
+                tm_iq_open();
+                tm_iq_on.store(true);
+            }
+            bewe_log("SR → %.2f MSPS  BW → %.2f MHz\n", actual_sr/1e6f, actual_bw/1e6f);
+            continue;
+        }
+
         // ── Frequency change ──────────────────────────────────────────────
         if(freq_req&&!freq_prog){
             freq_prog=true;
@@ -145,18 +198,20 @@ void FFTViewer::capture_and_process(){
             std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
             continue;
         }
-        for(int i=0;i<fft_size;i++){
-            fft_in[i][0]=iq[i*2]/hw.iq_scale;
-            fft_in[i][1]=iq[i*2+1]/hw.iq_scale;
-        }
         if(!spectrum_pause.load(std::memory_order_relaxed)){
+            // fft_in 복사는 실제로 FFT를 수행할 때만 (spectrum_pause 시 불필요한 연산 제거)
+            for(int i=0;i<fft_size;i++){
+                fft_in[i][0]=iq[i*2]/hw.iq_scale;
+                fft_in[i][1]=iq[i*2+1]/hw.iq_scale;
+            }
             apply_hann(fft_in,fft_size);
             fftwf_execute(fft_plan);
             {
+                // 파워(선형) 누산: log10은 행 경계에서 1회만 계산 → CPU 절감
                 const float scale=HANN_WINDOW_CORRECTION/((float)fft_size*(float)fft_size);
                 for(int i=0;i<fft_size;i++){
                     float ms=(fft_out[i][0]*fft_out[i][0]+fft_out[i][1]*fft_out[i][1])*scale+1e-10f;
-                    pacc[i]+=10.0f*log10f(ms);
+                    pacc[i]+=ms;
                 }
             }
             pacc[0]=(pacc[1]+pacc[fft_size-1])*0.5f; fcnt++;
@@ -170,7 +225,7 @@ void FFTViewer::capture_and_process(){
                 int8_t* rowp=fft_data.data()+fi*fft_size;
                 {std::lock_guard<std::mutex> lk(data_mtx);
                  for(int i=0;i<fft_size;i++){
-                     float avg=pacc[i]/fcnt;
+                     float avg=10.0f*log10f(pacc[i]/fcnt); // 평균 파워 → dB
                      float nn=(avg-header.power_min)/(header.power_max-header.power_min);
                      rowp[i]=(int8_t)(std::max(-1.0f,std::min(1.0f,nn))*127);
                      current_spectrum[i]=avg;

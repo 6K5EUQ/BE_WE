@@ -39,8 +39,9 @@ void FFTViewer::net_bcast_worker(){
             local_sz  = fft_size;
             local_cf  = header.center_frequency;
             local_sr  = header.sample_rate;
-            local_min = display_power_min;
-            local_max = display_power_max;
+            // 캡처 양자화 범위만 전송 (HOST 화면 스케일 아님 → JOIN 독립 스케일 유지)
+            local_min = header.power_min;
+            local_max = header.power_max;
             local_wt  = (int64_t)time(nullptr);
             int fi    = (current_fft_idx) % MAX_FFTS_MEMORY;
             const int8_t* rowp = fft_data.data() + fi * fft_size;

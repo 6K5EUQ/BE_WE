@@ -20,7 +20,6 @@
 //     share/iq/        ← Public에서 다운받은 파일 (JOIN)
 //     share/audio/
 //     Time_temp/       ← TM IQ rolling (기존 유지)
-//     SA_Temp/         ← SA temp (기존 유지)
 
 namespace BEWEPaths {
 
@@ -93,10 +92,6 @@ static inline std::string time_temp_dir(){
     return recordings_dir()+"/Time_temp";
 }
 
-static inline std::string sa_temp_dir(){
-    return recordings_dir()+"/SA_Temp";
-}
-
 // 디렉터리 없으면 자동 생성
 static inline void ensure_dirs(){
     auto mk=[](const std::string& p){ mkdir(p.c_str(),0755); };
@@ -107,7 +102,6 @@ static inline void ensure_dirs(){
     mk(public_dir());    mk(public_iq_dir());    mk(public_audio_dir());
     mk(share_dir());     mk(share_iq_dir());     mk(share_audio_dir());
     mk(time_temp_dir());
-    mk(sa_temp_dir());
 }
 
 } // namespace BEWEPaths

@@ -540,7 +540,9 @@ void NetServer::send_file_to(int op_index, const char* path, uint8_t transfer_id
         send_all(target->fd, pkt.data(), pkt.size());
     }
 
-    // send chunks (유동 속도 상한: 실측 TCP 속도의 50%, FFT 스트림 보호)
+    // send chunks: 64KB 청크로 TCP 효율 극대화
+    // send_file_to는 detach 스레드에서 실행되므로 캡처·오디오 스레드 차단 없음
+    // 속도: 측정 속도의 80% 사용 → FFT 스트림 보호하되 전송 속도 확보
     const uint32_t CHUNK = 65536;
     std::vector<uint8_t> buf(sizeof(PktFileData)+CHUNK);
     uint64_t offset=0;
@@ -573,8 +575,8 @@ void NetServer::send_file_to(int op_index, const char* path, uint8_t transfer_id
                          + chunk_bps    *        FILE_RATE_EWMA_ALPHA;
         }
         if(progress_cb) progress_cb(offset, total);
-        // 목표: 측정 속도의 50% 사용 → 나머지 50%를 FFT 스트림에 양보
-        uint64_t target_bps = (uint64_t)(measured_bps * 0.50);
+        // 목표: 측정 속도의 80% 사용 → 나머지 20%를 FFT 스트림에 양보
+        uint64_t target_bps = (uint64_t)(measured_bps * 0.80);
         if(target_bps < FILE_RATE_FLOOR) target_bps = FILE_RATE_FLOOR;
         // 누적 기준으로 sleep (drift 방지)
         rate_sent += n;
