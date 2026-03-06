@@ -69,6 +69,8 @@ struct ServerCallbacks {
     // JOIN이 파일 업로드 완료: op_idx, op_name, 저장된 절대경로
     std::function<void(uint8_t op_idx, const char* op_name, const char* saved_path)> on_share_upload_done;
     std::function<void()> on_chassis_reset;  // JOIN이 /chassis 1 reset 명령 전송
+    std::function<void(uint32_t size)>       on_set_fft_size; // JOIN → HOST: FFT 크기 변경
+    std::function<void(float msps)>          on_set_sr;       // JOIN → HOST: SR 변경
     // JOIN이 public 파일 삭제 요청: op_name, filename (소유자 검증은 ui.cpp에서)
     std::function<void(const char* op_name, const char* filename)> on_pub_delete_req;
 };
@@ -105,7 +107,7 @@ public:
     void broadcast_channel_sync(const Channel* chs, int n);
 
     // Heartbeat → all clients (host_state: 0=OK, 1=CHASSIS_RESETTING)
-    void broadcast_heartbeat(uint8_t host_state = 0);
+    void broadcast_heartbeat(uint8_t host_state = 0, uint8_t sdr_temp_c = 0);
 
     // /chassis 2 reset: FFT+오디오 방송 일시 중단 / 재개
     void pause_broadcast()  { bcast_pause_.store(true,  std::memory_order_relaxed); }

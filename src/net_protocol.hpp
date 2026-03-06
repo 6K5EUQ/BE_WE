@@ -100,6 +100,8 @@ enum class CmdType : uint8_t {
     REQUEST_REGION  = 0x11,  // JOIN: request region file transfer
     CHASSIS_RESET   = 0x12,  // JOIN → server: trigger chassis 1 reset on HOST
     DELETE_PUB_FILE = 0x13,  // JOIN → server: delete a public file (owner only)
+    SET_FFT_SIZE    = 0x14,  // bidirectional: change FFT size
+    SET_SR          = 0x15,  // bidirectional: change sample rate
 };
 
 struct __attribute__((packed)) PktCmd {
@@ -124,6 +126,8 @@ struct __attribute__((packed)) PktCmd {
         struct { int32_t fft_top; int32_t fft_bot;
                  float freq_lo; float freq_hi;
                  int32_t time_start; int32_t time_end; }  request_region;
+        struct { uint32_t size; }                          set_fft_size;
+        struct { float msps; }                             set_sr;
         uint8_t raw[32];
     };
 };
@@ -256,7 +260,8 @@ struct __attribute__((packed)) PktPubDeleteReq {
 // Sent every 3 seconds. host_state: 0=OK, 1=CHASSIS_RESETTING
 struct __attribute__((packed)) PktHeartbeat {
     uint8_t host_state;  // 0=OK, 1=CHASSIS_RESETTING
-    uint8_t pad[3];
+    uint8_t sdr_temp_c;  // SDR 온도 (°C 정수, 0=미지원/미측정)
+    uint8_t pad[2];
 };
 
 // ── Wire helpers ──────────────────────────────────────────────────────────

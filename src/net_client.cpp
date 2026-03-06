@@ -265,6 +265,7 @@ void NetClient::handle_packet(PacketType type,
         if(len < sizeof(PktHeartbeat)) break;
         auto* hb = reinterpret_cast<const PktHeartbeat*>(payload);
         host_state.store((int)hb->host_state);
+        remote_sdr_temp_c.store(hb->sdr_temp_c);
         // Use wall-clock seconds (monotonic substitute via steady_clock)
         auto now = std::chrono::steady_clock::now().time_since_epoch();
         last_heartbeat_time.store(
@@ -378,6 +379,16 @@ bool NetClient::cmd_set_spectrum_pause(bool pause){
 }
 bool NetClient::cmd_chassis_reset(){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::CHASSIS_RESET;
+    return send_cmd(c);
+}
+bool NetClient::cmd_set_fft_size(uint32_t size){
+    PktCmd c{}; c.cmd=(uint8_t)CmdType::SET_FFT_SIZE;
+    c.set_fft_size.size=size;
+    return send_cmd(c);
+}
+bool NetClient::cmd_set_sr(float msps){
+    PktCmd c{}; c.cmd=(uint8_t)CmdType::SET_SR;
+    c.set_sr.msps=msps;
     return send_cmd(c);
 }
 bool NetClient::cmd_delete_pub_file(const char* filename){

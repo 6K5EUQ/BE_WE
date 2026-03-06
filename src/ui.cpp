@@ -2055,6 +2055,21 @@ void run_streaming_viewer(){
                 printf("Public upload done: %s (from %s)\n", fn, op_name);
             };
             // JOIN이 /chassis 1 reset 명령 전송 → HOST 측에서 재시작
+            // JOIN → HOST: FFT size 변경 (HOST 적용 후 FFT_FRAME으로 자동 동기화)
+            srv->cb.on_set_fft_size = [&](uint32_t size){
+                static const int valid[]={512,1024,2048,4096,8192,16384};
+                for(int vs : valid){
+                    if((uint32_t)vs==size){
+                        v.pending_fft_size=size; v.fft_size_change_req=true;
+                        break;
+                    }
+                }
+            };
+            // JOIN → HOST: SR 변경
+            srv->cb.on_set_sr = [&](float msps){
+                v.pending_sr_msps=msps; v.sr_change_req=true;
+                v.autoscale_active=true; v.autoscale_init=false; v.autoscale_accum.clear();
+            };
             srv->cb.on_chassis_reset = [&](){
                 // 재시작 전에 CHASSIS_RESETTING 상태 브로드캐스트
                 srv->broadcast_heartbeat(1);
@@ -2273,13 +2288,19 @@ void run_streaming_viewer(){
                     (v.hw.type==HWType::RTLSDR)?1:0);
             }
         }
-        // ── HOST: 3초마다 HEARTBEAT 브로드캐스트 ────────────────────────────
+        // ── HOST: 3초마다 HEARTBEAT 브로드캐스트 (SDR 온도 포함) ──────────────
         if(v.net_srv){
             auto now2=std::chrono::steady_clock::now();
             float elh=std::chrono::duration<float>(now2-heartbeat_last).count();
             if(elh>=3.0f){
                 heartbeat_last=now2;
-                v.net_srv->broadcast_heartbeat(0); // 0=OK
+                uint8_t sdr_t_hb = 0;
+                if(v.dev_blade){
+                    float _t = 0.f;
+                    if(bladerf_get_rfic_temperature(v.dev_blade, &_t) == 0)
+                        sdr_t_hb = (uint8_t)std::min(255.f, std::max(0.f, _t));
+                }
+                v.net_srv->broadcast_heartbeat(0, sdr_t_hb);
             }
         }
 
@@ -2689,11 +2710,22 @@ void run_streaming_viewer(){
             float px2=std::max(2.0f,(box_w2-tw2)*0.5f-12.0f);
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,ImVec2(px2,ImGui::GetStyle().FramePadding.y));
             ImGui::SetNextItemWidth(box_w2);
+            // JOIN: HOST fft_size로 콤보 동기화
+            if(v.remote_mode){
+                for(int i=0;i<6;i++) if(fft_sizes[i]==v.fft_size){ fft_si=i; break; }
+            }
             if(ImGui::BeginCombo("##fftsize",fft_lbls[fft_si],ImGuiComboFlags_HeightSmall)){
                 for(int i=0;i<6;i++){
                     bool sel2=(fft_si==i);
                     if(ImGui::Selectable(fft_lbls[i],sel2)){
-                        fft_si=i; v.pending_fft_size=fft_sizes[i]; v.fft_size_change_req=true;
+                        if(i != fft_si){
+                            fft_si=i;
+                            if(v.remote_mode && v.net_cli){
+                                v.net_cli->cmd_set_fft_size((uint32_t)fft_sizes[i]);
+                            } else {
+                                v.pending_fft_size=fft_sizes[i]; v.fft_size_change_req=true;
+                            }
+                        }
                     }
                     if(sel2) ImGui::SetItemDefaultFocus();
                 }
@@ -2703,23 +2735,27 @@ void run_streaming_viewer(){
         }
         ImGui::SameLine();
 
-        // ── Sample Rate combo (LOCAL/HOST만 표시) ─────────────────────────
-        if(!v.remote_mode && (v.dev_blade || v.dev_rtl)){
+        // ── Sample Rate combo (LOCAL/HOST/JOIN 표시) ──────────────────────
+        if((v.dev_blade || v.dev_rtl) || v.remote_mode){
             // BladeRF: 2.5/5/10/20/30.72/61.44 MSPS
             // RTL-SDR: 0.25/0.96/1.44/2.56 MSPS
             static const float blade_srs[]  = {2.5f,5.0f,10.0f,20.0f,30.72f,61.44f};
             static const char* blade_lbls[] = {"2.5M","5M","10M","20M","30.72M","61.44M"};
             static const float rtl_srs[]    = {0.25f,0.96f,1.44f,2.56f};
             static const char* rtl_lbls[]   = {"0.25M","0.96M","1.44M","2.56M"};
-            const float* sr_list  = v.dev_blade ? blade_srs  : rtl_srs;
-            const char** sr_lbls  = v.dev_blade ? blade_lbls : rtl_lbls;
-            int          sr_count = v.dev_blade ? 6 : 4;
+            // JOIN: HOST hw_type으로 SR 리스트 결정
+            bool use_blade = v.remote_mode ? (v.net_cli && v.net_cli->remote_hw.load()==0)
+                                           : (v.dev_blade != nullptr);
+            const float* sr_list  = use_blade ? blade_srs  : rtl_srs;
+            const char** sr_lbls  = use_blade ? blade_lbls : rtl_lbls;
+            int          sr_count = use_blade ? 6 : 4;
 
-            // 현재 SR에 맞는 인덱스 선택 (초기화 or SR 변경 완료 후 동기화)
+            // 현재 SR에 맞는 인덱스 선택
             static int sr_si = -1;
-            float cur_sr_msps = v.hw.sample_rate_mhz;
-            if(sr_si < 0 || !v.sr_change_req){
-                // 현재 HW SR과 가장 가까운 항목 선택
+            float cur_sr_msps = v.remote_mode
+                ? (v.net_cli ? v.net_cli->remote_sr.load() / 1e6f : 0.f)
+                : v.hw.sample_rate_mhz;
+            {
                 float best_diff = 1e9f;
                 for(int i=0;i<sr_count;i++){
                     float d = fabsf(sr_list[i] - cur_sr_msps);
@@ -2739,11 +2775,15 @@ void run_streaming_viewer(){
                     if(ImGui::Selectable(sr_lbls[i], sel)){
                         if(i != sr_si){
                             sr_si = i;
+                            if(v.remote_mode && v.net_cli){
+                                v.net_cli->cmd_set_sr(sr_list[i]);
+                            } else {
                             v.pending_sr_msps = sr_list[i];
                             v.sr_change_req   = true;
                             // autoscale 리셋
                             v.autoscale_active=true; v.autoscale_init=false;
                             v.autoscale_accum.clear();
+                            } // end local/host branch
                         }
                     }
                     if(sel) ImGui::SetItemDefaultFocus();
@@ -3179,7 +3219,6 @@ void run_streaming_viewer(){
                     ImGuiWindowFlags_NoDecoration);
 
                 // ── Archive 파일 목록 ──────────────────────────────────
-                static bool arch_rec_open  = true;
                 static bool arch_priv_open = true;
                 static bool arch_share_open = true;
                 static bool arch_pub_open = true;
@@ -3873,23 +3912,6 @@ void run_streaming_viewer(){
                     if(ImGui::CollapsingHeader("Archive")){
                         ImGui::Indent(8.f);
 
-                        // ── Record (record/iq, record/audio) ─────────────
-                        ImGui::SetNextItemOpen(arch_rec_open, ImGuiCond_Always);
-                        {
-                        int rec_cnt2 = (int)rec_iq_files.size() + (int)rec_audio_files.size();
-                        if(ImGui::TreeNodeEx("##rec_arch_node", ImGuiTreeNodeFlags_None,
-                                "Record  (%d)", rec_cnt2)){
-                            arch_rec_open = true;
-                            draw_file_list("##rec_arch_list",
-                                rec_iq_files, rec_audio_files,
-                                BEWEPaths::record_iq_dir(), BEWEPaths::record_audio_dir(),
-                                19000);
-                            ImGui::TreePop();
-                        } else { arch_rec_open = false; }
-                        } // rec_arch block
-
-                        ImGui::Spacing();
-
                         // ── Private ──────────────────────────────────────
                         ImGui::SetNextItemOpen(arch_priv_open, ImGuiCond_Always);
                         {
@@ -4451,6 +4473,7 @@ void run_streaming_viewer(){
             // ── 중앙: CPU온도  HH:MM:SS  SDR온도 ─────────────────────────
             {
                 // CPU 온도 (2초마다 백그라운드 갱신)
+                // sysfs hwmon 방식: sensors 불필요, AppImage 호환
                 static char  cpu_temp_str[16]  = "";
                 static float cpu_temp_timer    = 1.f;
                 static std::atomic<bool> cpu_fetching{false};
@@ -4461,16 +4484,70 @@ void run_streaming_viewer(){
                     cpu_fetching.store(true);
                     std::thread([](){
                         char tmp[16] = "";
-                        FILE* fp = popen("sensors 2>/dev/null | grep 'Package id 0'", "r");
-                        if(fp){
-                            char buf[128]={};
-                            if(fgets(buf, sizeof(buf), fp)){
-                                const char* plus = strchr(buf, '+');
-                                if(plus){ float d=0.f;
-                                    if(sscanf(plus+1,"%f",&d)==1)
-                                        snprintf(tmp,sizeof(tmp),"%.0f\xC2\xB0""C",d); }
+                        // 1) hwmon에서 coretemp 드라이버의 temp1_input (Package id 0) 탐색
+                        bool found = false;
+                        for(int i = 0; i < 32 && !found; i++){
+                            char name_path[64];
+                            snprintf(name_path, sizeof(name_path),
+                                     "/sys/class/hwmon/hwmon%d/name", i);
+                            FILE* fn = fopen(name_path, "r");
+                            if(!fn) continue;
+                            char name[32] = {};
+                            fgets(name, sizeof(name), fn);
+                            fclose(fn);
+                            // coretemp: temp1 = Package id 0
+                            if(strncmp(name, "coretemp", 8) == 0){
+                                char tp[80];
+                                snprintf(tp, sizeof(tp),
+                                         "/sys/class/hwmon/hwmon%d/temp1_input", i);
+                                FILE* ft = fopen(tp, "r");
+                                if(ft){
+                                    int milli = 0;
+                                    if(fscanf(ft, "%d", &milli) == 1)
+                                        snprintf(tmp, sizeof(tmp), "%.0f\xC2\xB0""C",
+                                                 milli / 1000.f);
+                                    fclose(ft);
+                                    found = true;
+                                }
                             }
-                            pclose(fp);
+                        }
+                        // 2) fallback: /sys/class/thermal/thermal_zone* 에서 x86_pkg_temp
+                        if(!found){
+                            for(int i = 0; i < 16 && !found; i++){
+                                char tp[80], tt[80];
+                                snprintf(tt, sizeof(tt),
+                                         "/sys/class/thermal/thermal_zone%d/type", i);
+                                FILE* ft = fopen(tt, "r");
+                                if(!ft) continue;
+                                char zone_type[32] = {};
+                                fgets(zone_type, sizeof(zone_type), ft);
+                                fclose(ft);
+                                if(strncmp(zone_type, "x86_pkg_temp", 12) == 0 ||
+                                   strncmp(zone_type, "TCPU", 4) == 0){
+                                    snprintf(tp, sizeof(tp),
+                                             "/sys/class/thermal/thermal_zone%d/temp", i);
+                                    FILE* fv = fopen(tp, "r");
+                                    if(fv){
+                                        int milli = 0;
+                                        if(fscanf(fv, "%d", &milli) == 1)
+                                            snprintf(tmp, sizeof(tmp), "%.0f\xC2\xB0""C",
+                                                     milli / 1000.f);
+                                        fclose(fv);
+                                        found = true;
+                                    }
+                                }
+                            }
+                        }
+                        // 3) fallback: acpitz (노트북 등)
+                        if(!found){
+                            FILE* fv = fopen("/sys/class/thermal/thermal_zone0/temp", "r");
+                            if(fv){
+                                int milli = 0;
+                                if(fscanf(fv, "%d", &milli) == 1 && milli > 0)
+                                    snprintf(tmp, sizeof(tmp), "%.0f\xC2\xB0""C",
+                                             milli / 1000.f);
+                                fclose(fv);
+                            }
                         }
                         { std::lock_guard<std::mutex> lk(cpu_temp_mtx);
                           strncpy(cpu_temp_str, tmp, sizeof(cpu_temp_str)-1); }
@@ -4478,17 +4555,33 @@ void run_streaming_viewer(){
                     }).detach();
                 }
 
-                // SDR 온도 (3초마다 libbladeRF 직접 쿼리)
+                // SDR 온도
+                // - LOCAL/HOST + BladeRF: libbladeRF 직접 쿼리 (3초마다)
+                // - LOCAL/HOST + RTL-SDR: 온도 API 없음 → "00°C"
+                // - JOIN: HOST HEARTBEAT에서 수신한 remote_sdr_temp_c 사용
                 static char  sdr_temp_str[16]  = "";
                 static float sdr_temp_timer    = 1.f;
                 static std::mutex sdr_temp_mtx;
                 sdr_temp_timer += io.DeltaTime;
-                if(sdr_temp_timer >= 1.0f && v.dev_blade && !v.remote_mode){
+                if(v.remote_mode && v.net_cli){
+                    // JOIN: HOST에서 받은 SDR 온도
+                    uint8_t rt = v.net_cli->remote_sdr_temp_c.load();
+                    std::lock_guard<std::mutex> lk(sdr_temp_mtx);
+                    snprintf(sdr_temp_str, sizeof(sdr_temp_str),
+                             "%02d\xC2\xB0""C", (int)rt);
+                } else if(sdr_temp_timer >= 3.0f){
                     sdr_temp_timer = 0.f;
-                    float sdr_t = 0.f;
-                    if(bladerf_get_rfic_temperature(v.dev_blade, &sdr_t) == 0){
+                    if(v.dev_blade){
+                        float sdr_t = 0.f;
+                        if(bladerf_get_rfic_temperature(v.dev_blade, &sdr_t) == 0){
+                            std::lock_guard<std::mutex> lk(sdr_temp_mtx);
+                            snprintf(sdr_temp_str, sizeof(sdr_temp_str),
+                                     "%.0f\xC2\xB0""C", sdr_t);
+                        }
+                    } else if(v.dev_rtl){
+                        // RTL-SDR: 온도 API 미지원
                         std::lock_guard<std::mutex> lk(sdr_temp_mtx);
-                        snprintf(sdr_temp_str, sizeof(sdr_temp_str), "%.0f\xC2\xB0""C", sdr_t);
+                        snprintf(sdr_temp_str, sizeof(sdr_temp_str), "00\xC2\xB0""C");
                     }
                 }
 

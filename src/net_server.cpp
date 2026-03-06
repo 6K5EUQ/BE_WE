@@ -224,6 +224,12 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
             case CmdType::CHASSIS_RESET:
                 if(cb.on_chassis_reset) cb.on_chassis_reset();
                 break;
+            case CmdType::SET_FFT_SIZE:
+                if(cb.on_set_fft_size) cb.on_set_fft_size(cmd->set_fft_size.size);
+                break;
+            case CmdType::SET_SR:
+                if(cb.on_set_sr) cb.on_set_sr(cmd->set_sr.msps);
+                break;
             default: break;
         }
         // ACK
@@ -432,8 +438,8 @@ void NetServer::broadcast_chat(const char* from, const char* msg){
 }
 
 // ── Broadcast heartbeat ───────────────────────────────────────────────────
-void NetServer::broadcast_heartbeat(uint8_t host_state){
-    PktHeartbeat hb{}; hb.host_state = host_state;
+void NetServer::broadcast_heartbeat(uint8_t host_state, uint8_t sdr_temp_c){
+    PktHeartbeat hb{}; hb.host_state = host_state; hb.sdr_temp_c = sdr_temp_c;
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
         if(!c->authed || !c->alive.load()) continue;

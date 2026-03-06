@@ -38,21 +38,29 @@ bool FFTViewer::initialize_bladerf(float cf_mhz, float sr_msps){
     header.version=1; header.fft_size=fft_size; header.sample_rate=actual;
     header.center_frequency=(uint64_t)(cf_mhz*1e6);
     time_average=hw.compute_time_average(fft_size);
-    header.time_average=time_average; header.power_min=-80; header.power_max=-30; header.num_ffts=0;
+    header.time_average=time_average; header.power_min=-100; header.power_max=0; header.num_ffts=0;
     fft_data.resize(MAX_FFTS_MEMORY*fft_size);
-    current_spectrum.resize(fft_size,-80.0f);
+    current_spectrum.resize(fft_size,-100.0f);
 
     char title[256]; snprintf(title,256,"BEWE - %.2f MHz",cf_mhz);
-    window_title=title; display_power_min=-80; display_power_max=0;
+    window_title=title; display_power_min=-100; display_power_max=0;
+    autoscale_active=true; autoscale_init=false;
     fft_in =fftwf_alloc_complex(fft_size);
     fft_out=fftwf_alloc_complex(fft_size);
-    fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_MEASURE);
+    fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_ESTIMATE);
     ring.resize(IQ_RING_CAPACITY*2,0);
     return true;
 }
 
 void FFTViewer::capture_and_process(){
-    int16_t* iq=new int16_t[fft_size*2];
+    // RX 버퍼: fft_size와 무관하게 최소 8192 샘플 고정 → USB 오버헤드 최소화
+    static constexpr int RX_MIN = 8192;
+    int rx_chunk = std::max(fft_size, RX_MIN);
+    int16_t* iq_buf=new int16_t[rx_chunk*2];
+    // FFT 처리용 오프셋 (rx_chunk 내 슬라이딩)
+    int rx_pos = 0; // iq_buf 내 현재 읽기 위치 (샘플 단위)
+    int rx_avail = 0; // iq_buf에 유효한 샘플 수
+
     std::vector<float> pacc(fft_size,0.0f); int fcnt=0;
     // 초기 안정화: 처음 N번 FFT 결과 버림
     static constexpr int WARMUP_FFTS = 30;
@@ -62,6 +70,7 @@ void FFTViewer::capture_and_process(){
         // ── Pause (타임머신 모드) ─────────────────────────────────────────
         if(capture_pause.load(std::memory_order_relaxed)){
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            rx_avail=0; rx_pos=0;
             continue;
         }
 
@@ -78,8 +87,10 @@ void FFTViewer::capture_and_process(){
             fft_size=ns; time_average=hw.compute_time_average(ns);
             fft_in =fftwf_alloc_complex(fft_size);
             fft_out=fftwf_alloc_complex(fft_size);
-            fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_MEASURE);
-            delete[] iq; iq=new int16_t[fft_size*2];
+            fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_ESTIMATE);
+            rx_chunk = std::max(fft_size, RX_MIN);
+            delete[] iq_buf; iq_buf=new int16_t[rx_chunk*2];
+            rx_pos=0; rx_avail=0;
             pacc.assign(fft_size,0.0f); fcnt=0;
             {std::lock_guard<std::mutex> lk(data_mtx);
              header.fft_size=fft_size;
@@ -132,6 +143,9 @@ void FFTViewer::capture_and_process(){
             {std::lock_guard<std::mutex> lk(wf_events_mtx);
              wf_events.clear(); last_tagged_sec=-1;}
 
+            rx_chunk = std::max(fft_size, RX_MIN);
+            delete[] iq_buf; iq_buf = new int16_t[rx_chunk*2];
+            rx_pos=0; rx_avail=0;
             pacc.assign(fft_size,0.0f); fcnt=0; warmup_cnt=0;
             texture_needs_recreate=true;
             // TM IQ가 켜져 있었으면 새 SR로 롤링 파일 재시작
@@ -158,48 +172,55 @@ void FFTViewer::capture_and_process(){
             freq_req=false; freq_prog=false;
         }
 
-        // ── RX ────────────────────────────────────────────────────────────
-        int status=bladerf_sync_rx(dev_blade,iq,fft_size,nullptr,3000);
-        if(status){
-            if(status==BLADERF_ERR_TIMEOUT){
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        // ── RX: 고정 청크(min 8192)로 읽기 → fft_size 무관 일정 throughput ──
+        if(rx_avail == 0){
+            int status=bladerf_sync_rx(dev_blade,iq_buf,rx_chunk,nullptr,3000);
+            if(status){
+                if(status==BLADERF_ERR_TIMEOUT){
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    continue;
+                }
+                bewe_log("RX error: %s\n",bladerf_strerror(status));
+                if(status==BLADERF_ERR_IO || status==BLADERF_ERR_UNEXPECTED){
+                    bladerf_enable_module(dev_blade,BLADERF_CHANNEL_RX(0),false);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    bladerf_enable_module(dev_blade,BLADERF_CHANNEL_RX(0),true);
+                    bladerf_sync_config(dev_blade,BLADERF_RX_X1,BLADERF_FORMAT_SC16_Q11,
+                                        512,16384,128,5000);
+                }
                 continue;
             }
-            bewe_log("RX error: %s\n",bladerf_strerror(status));
-            if(status==BLADERF_ERR_IO || status==BLADERF_ERR_UNEXPECTED){
-                bladerf_enable_module(dev_blade,BLADERF_CHANNEL_RX(0),false);
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                bladerf_enable_module(dev_blade,BLADERF_CHANNEL_RX(0),true);
-                bladerf_sync_config(dev_blade,BLADERF_RX_X1,BLADERF_FORMAT_SC16_Q11,
-                                    512,16384,128,5000);
+            // IQ Ring write: 전체 청크를 한 번에 ring에 추가
+            bool need_ring=rec_on.load(std::memory_order_relaxed);
+            if(!need_ring) for(int i=0;i<MAX_CHANNELS;i++) if(channels[i].dem_run.load()){need_ring=true;break;}
+            bool need_tm=tm_iq_on.load(std::memory_order_relaxed)&&(warmup_cnt>=WARMUP_FFTS);
+            if(need_ring||need_tm){
+                size_t wp=ring_wp.load(std::memory_order_relaxed);
+                size_t n=(size_t)rx_chunk, cap=IQ_RING_CAPACITY;
+                if(wp+n<=cap) memcpy(&ring[wp*2],iq_buf,n*2*sizeof(int16_t));
+                else{
+                    size_t p1=cap-wp, p2=n-p1;
+                    memcpy(&ring[wp*2],iq_buf,p1*2*sizeof(int16_t));
+                    memcpy(&ring[0],iq_buf+p1*2,p2*2*sizeof(int16_t));
+                }
+                ring_wp.store((wp+n)&IQ_RING_MASK,std::memory_order_release);
+                if(need_tm) tm_iq_write(iq_buf,(int)n);
             }
-            continue;
+            rx_pos=0; rx_avail=rx_chunk;
         }
 
-        // ── IQ Ring write ─────────────────────────────────────────────────
-        bool need_ring=rec_on.load(std::memory_order_relaxed);
-        if(!need_ring) for(int i=0;i<MAX_CHANNELS;i++) if(channels[i].dem_run.load()){need_ring=true;break;}
-        bool need_tm=tm_iq_on.load(std::memory_order_relaxed)&&(warmup_cnt>=WARMUP_FFTS);
-        if(need_ring||need_tm){
-            size_t wp=ring_wp.load(std::memory_order_relaxed);
-            size_t n=(size_t)fft_size, cap=IQ_RING_CAPACITY;
-            if(wp+n<=cap) memcpy(&ring[wp*2],iq,n*2*sizeof(int16_t));
-            else{
-                size_t p1=cap-wp, p2=n-p1;
-                memcpy(&ring[wp*2],iq,p1*2*sizeof(int16_t));
-                memcpy(&ring[0],iq+p1*2,p2*2*sizeof(int16_t));
-            }
-            ring_wp.store((wp+n)&IQ_RING_MASK,std::memory_order_release);
-            if(need_tm) tm_iq_write(iq,(int)n);
-        }
+        // ── FFT: 버퍼에서 fft_size씩 처리 ───────────────────────────────
+        // 남은 샘플이 fft_size 미만이면 다음 RX로
+        if(rx_avail < fft_size){ rx_avail=0; rx_pos=0; continue; }
 
-        // ── FFT ───────────────────────────────────────────────────────────
+        const int16_t* iq = iq_buf + rx_pos*2;
+
         if(!render_visible.load(std::memory_order_relaxed)){
+            rx_pos+=fft_size; rx_avail-=fft_size;
             std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
             continue;
         }
         if(!spectrum_pause.load(std::memory_order_relaxed)){
-            // fft_in 복사는 실제로 FFT를 수행할 때만 (spectrum_pause 시 불필요한 연산 제거)
             for(int i=0;i<fft_size;i++){
                 fft_in[i][0]=iq[i*2]/hw.iq_scale;
                 fft_in[i][1]=iq[i*2+1]/hw.iq_scale;
@@ -207,7 +228,6 @@ void FFTViewer::capture_and_process(){
             apply_hann(fft_in,fft_size);
             fftwf_execute(fft_plan);
             {
-                // 파워(선형) 누산: log10은 행 경계에서 1회만 계산 → CPU 절감
                 const float scale=HANN_WINDOW_CORRECTION/((float)fft_size*(float)fft_size);
                 for(int i=0;i<fft_size;i++){
                     float ms=(fft_out[i][0]*fft_out[i][0]+fft_out[i][1]*fft_out[i][1])*scale+1e-10f;
@@ -219,27 +239,26 @@ void FFTViewer::capture_and_process(){
                 if(warmup_cnt < WARMUP_FFTS){
                     warmup_cnt++;
                     std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
+                    rx_pos+=fft_size; rx_avail-=fft_size;
                     continue;
                 }
                 int fi=total_ffts%MAX_FFTS_MEMORY;
                 int8_t* rowp=fft_data.data()+fi*fft_size;
                 {std::lock_guard<std::mutex> lk(data_mtx);
                  for(int i=0;i<fft_size;i++){
-                     float avg=10.0f*log10f(pacc[i]/fcnt); // 평균 파워 → dB
+                     float avg=10.0f*log10f(pacc[i]/fcnt);
                      float nn=(avg-header.power_min)/(header.power_max-header.power_min);
                      rowp[i]=(int8_t)(std::max(-1.0f,std::min(1.0f,nn))*127);
                      current_spectrum[i]=avg;
                  }
                  if(autoscale_active){
                      if(!autoscale_init){
-                         // 고정 크기 순환 버퍼: fft_size*100 슬롯 (1회만 할당)
                          size_t cap=(size_t)fft_size*100;
                          if(autoscale_accum.size()!=cap) autoscale_accum.assign(cap,0.0f);
                          autoscale_wp=0; autoscale_buf_full=false;
                          autoscale_last=std::chrono::steady_clock::now();
                          autoscale_init=true;
                      }
-                     // 순환 write (push_back/재할당 없음)
                      size_t cap=autoscale_accum.size();
                      for(int i=1;i<fft_size;i++){
                          autoscale_accum[autoscale_wp]=current_spectrum[i];
@@ -248,7 +267,6 @@ void FFTViewer::capture_and_process(){
                      float el=std::chrono::duration<float>(std::chrono::steady_clock::now()-autoscale_last).count();
                      if(el>=1.0f&&(autoscale_buf_full||autoscale_wp>0)){
                          size_t n=autoscale_buf_full?cap:autoscale_wp;
-                         // nth_element을 위해 별도 복사 (정렬은 원본 훼손하므로)
                          std::vector<float> tmp(autoscale_accum.begin(),
                                                 autoscale_accum.begin()+(ptrdiff_t)n);
                          size_t idx=(size_t)(n*0.15f);
@@ -273,6 +291,7 @@ void FFTViewer::capture_and_process(){
                 std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
             }
         } // end !spectrum_pause
+        rx_pos+=fft_size; rx_avail-=fft_size;
     }
-    delete[] iq;
+    delete[] iq_buf;
 }

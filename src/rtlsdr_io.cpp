@@ -51,15 +51,16 @@ bool FFTViewer::initialize_rtlsdr(float cf_mhz){
     header.version=1; header.fft_size=fft_size; header.sample_rate=actual_sr;
     header.center_frequency=(uint64_t)(cf_mhz*1e6);
     time_average=hw.compute_time_average(fft_size);
-    header.time_average=time_average; header.power_min=-80; header.power_max=-30; header.num_ffts=0;
+    header.time_average=time_average; header.power_min=-100; header.power_max=0; header.num_ffts=0;
     fft_data.resize(MAX_FFTS_MEMORY*fft_size);
-    current_spectrum.resize(fft_size,-80.0f);
+    current_spectrum.resize(fft_size,-100.0f);
 
     char title[256]; snprintf(title,256,"BEWE RTL-SDR - %.2f MHz",cf_mhz);
-    window_title=title; display_power_min=-80; display_power_max=0;
+    window_title=title; display_power_min=-100; display_power_max=0;
+    autoscale_active=true; autoscale_init=false;
     fft_in =fftwf_alloc_complex(fft_size);
     fft_out=fftwf_alloc_complex(fft_size);
-    fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_MEASURE);
+    fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_ESTIMATE);
     ring.resize(IQ_RING_CAPACITY*2,0);
     return true;
 }
