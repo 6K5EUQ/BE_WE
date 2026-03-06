@@ -82,14 +82,17 @@ void FFTViewer::set_frequency(float cf_mhz){
 // RTL-SDR은 uint8 IQ, center=127.5
 // 동기 read 방식 사용 (async보다 지연 제어 쉬움)
 void FFTViewer::capture_and_process_rtl(){
-    size_t    n_bytes = (size_t)fft_size * 2; // 각 샘플 I+Q = 2 bytes (SR 변경 시 재계산)
+    static constexpr int RX_MIN = 8192; // 최소 RX 청크 (USB 오버헤드 최소화)
+    int rx_chunk = std::max(fft_size, RX_MIN);
+    size_t    n_bytes = (size_t)rx_chunk * 2;
     uint8_t*  raw     = new uint8_t[n_bytes];
-    // ring에 넣을 int16 변환 버퍼 (채널 복조, TM IQ는 int16 사용)
-    int16_t*  iq16    = new int16_t[fft_size * 2];
+    int16_t*  iq16    = new int16_t[rx_chunk * 2];
+    int rx_pos  = 0; // raw/iq16 내 현재 읽기 위치 (샘플 단위)
+    int rx_avail = 0;
 
     std::vector<float> pacc(fft_size, 0.0f);
     int   fcnt      = 0;
-    static constexpr int WARMUP_FFTS = 15; // RTL-SDR은 BladeRF 절반 (더 적은 버퍼)
+    static constexpr int WARMUP_FFTS = 15;
     int   warmup_cnt = 0;
     float iq_scale   = hw.iq_scale;   // 127.5f
     float iq_offset  = hw.iq_offset;  // 127.5f
@@ -97,6 +100,7 @@ void FFTViewer::capture_and_process_rtl(){
     while(is_running){
         if(capture_pause.load(std::memory_order_relaxed)){
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            rx_avail=0; rx_pos=0;
             continue;
         }
 
@@ -107,9 +111,12 @@ void FFTViewer::capture_and_process_rtl(){
             fft_size=ns; time_average=hw.compute_time_average(ns);
             fft_in =fftwf_alloc_complex(fft_size);
             fft_out=fftwf_alloc_complex(fft_size);
-            fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_MEASURE);
-            delete[] raw;  raw  = new uint8_t[fft_size*2];
-            delete[] iq16; iq16 = new int16_t[fft_size*2];
+            fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_ESTIMATE);
+            rx_chunk = std::max(fft_size, RX_MIN);
+            n_bytes = (size_t)rx_chunk * 2;
+            delete[] raw;  raw  = new uint8_t[n_bytes];
+            delete[] iq16; iq16 = new int16_t[rx_chunk*2];
+            rx_pos=0; rx_avail=0;
             pacc.assign(fft_size,0.0f); fcnt=0;
             {std::lock_guard<std::mutex> lk(data_mtx);
              header.fft_size=fft_size;
@@ -143,9 +150,12 @@ void FFTViewer::capture_and_process_rtl(){
             rtlsdr_reset_buffer(dev_rtl);
             uint32_t actual_sr = rtlsdr_get_sample_rate(dev_rtl);
 
-            // RX 버퍼 크기 재계산 (fft_size * 2 bytes)
-            n_bytes = (size_t)fft_size * 2;
+            // RX 버퍼 크기 재계산 (rx_chunk * 2 bytes)
+            rx_chunk = std::max(fft_size, RX_MIN);
+            n_bytes = (size_t)rx_chunk * 2;
             delete[] raw;  raw  = new uint8_t[n_bytes];
+            delete[] iq16; iq16 = new int16_t[rx_chunk*2];
+            rx_pos=0; rx_avail=0;
 
             hw = make_rtlsdr_config(actual_sr);
             iq_scale  = hw.iq_scale;
@@ -185,54 +195,55 @@ void FFTViewer::capture_and_process_rtl(){
             freq_req=false; freq_prog=false;
         }
 
-        // ── RX ────────────────────────────────────────────────────────────
-        int n_read = 0;
-        int r = rtlsdr_read_sync(dev_rtl, raw, n_bytes, &n_read);
-        if(r < 0 || n_read < n_bytes){
-            fprintf(stderr,"RTL-SDR RX: r=%d n_read=%d\n", r, n_read);
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            continue;
-        }
-
-        // uint8 → int16 변환 (채널 복조/TM IQ용)
-        // iq16 스케일: (raw-127.5)/127.5 * 2048 → int16
-        // → 실제로는 (raw-128)*16 (근사, 빠른 정수 연산)
-        for(int i=0; i<fft_size*2; i++){
-            iq16[i] = (int16_t)((int)raw[i] - 128) << 4; // ×16
-        }
-
-        // ── IQ Ring write ─────────────────────────────────────────────────
-        bool need_ring = rec_on.load(std::memory_order_relaxed);
-        if(!need_ring) for(int i=0;i<MAX_CHANNELS;i++) if(channels[i].dem_run.load()){need_ring=true;break;}
-        bool need_tm = tm_iq_on.load(std::memory_order_relaxed) && (warmup_cnt>=WARMUP_FFTS);
-        if(need_ring || need_tm){
-            size_t wp=ring_wp.load(std::memory_order_relaxed);
-            size_t n=(size_t)fft_size, cap=IQ_RING_CAPACITY;
-            if(wp+n<=cap) memcpy(&ring[wp*2],iq16,n*2*sizeof(int16_t));
-            else{
-                size_t p1=cap-wp, p2=n-p1;
-                memcpy(&ring[wp*2],iq16,p1*2*sizeof(int16_t));
-                memcpy(&ring[0],iq16+p1*2,p2*2*sizeof(int16_t));
+        // ── RX: 고정 청크(min 8192)로 읽기 → USB 오버헤드 최소화 ──────────
+        if(rx_avail == 0){
+            int n_read = 0;
+            int r = rtlsdr_read_sync(dev_rtl, raw, (int)n_bytes, &n_read);
+            if(r < 0 || n_read < (int)n_bytes){
+                fprintf(stderr,"RTL-SDR RX: r=%d n_read=%d\n", r, n_read);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
             }
-            ring_wp.store((wp+n)&IQ_RING_MASK, std::memory_order_release);
-            if(need_tm) tm_iq_write(iq16,(int)n);
+            // uint8 → int16 변환 (ring/TM IQ용)
+            for(int i=0; i<rx_chunk*2; i++){
+                iq16[i] = (int16_t)((int)raw[i] - 128) << 4;
+            }
+            // IQ Ring write: 전체 청크
+            bool need_ring = rec_on.load(std::memory_order_relaxed);
+            if(!need_ring) for(int i=0;i<MAX_CHANNELS;i++) if(channels[i].dem_run.load()){need_ring=true;break;}
+            bool need_tm = tm_iq_on.load(std::memory_order_relaxed) && (warmup_cnt>=WARMUP_FFTS);
+            if(need_ring || need_tm){
+                size_t wp=ring_wp.load(std::memory_order_relaxed);
+                size_t n=(size_t)rx_chunk, cap=IQ_RING_CAPACITY;
+                if(wp+n<=cap) memcpy(&ring[wp*2],iq16,n*2*sizeof(int16_t));
+                else{
+                    size_t p1=cap-wp, p2=n-p1;
+                    memcpy(&ring[wp*2],iq16,p1*2*sizeof(int16_t));
+                    memcpy(&ring[0],iq16+p1*2,p2*2*sizeof(int16_t));
+                }
+                ring_wp.store((wp+n)&IQ_RING_MASK, std::memory_order_release);
+                if(need_tm) tm_iq_write(iq16,(int)n);
+            }
+            rx_pos=0; rx_avail=rx_chunk;
         }
 
-        // ── FFT ───────────────────────────────────────────────────────────
+        // ── FFT: 버퍼에서 fft_size씩 처리 ───────────────────────────────
+        if(rx_avail < fft_size){ rx_avail=0; rx_pos=0; continue; }
+
         if(!render_visible.load(std::memory_order_relaxed)){
+            rx_pos+=fft_size; rx_avail-=fft_size;
             std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
             continue;
         }
         if(!spectrum_pause.load(std::memory_order_relaxed)){
-            // fft_in 복사는 실제로 FFT를 수행할 때만 (spectrum_pause 시 불필요한 연산 제거)
+            const uint8_t* rp = raw + rx_pos*2;
             for(int i=0;i<fft_size;i++){
-                fft_in[i][0] = ((float)raw[i*2  ] - iq_offset) / iq_scale;
-                fft_in[i][1] = ((float)raw[i*2+1] - iq_offset) / iq_scale;
+                fft_in[i][0] = ((float)rp[i*2  ] - iq_offset) / iq_scale;
+                fft_in[i][1] = ((float)rp[i*2+1] - iq_offset) / iq_scale;
             }
             apply_hann(fft_in,fft_size);
             fftwf_execute(fft_plan);
             {
-                // 파워(선형) 누산: log10은 행 경계에서 1회만 계산 → CPU 절감
                 const float scale=HANN_WINDOW_CORRECTION/((float)fft_size*(float)fft_size);
                 for(int i=0;i<fft_size;i++){
                     float ms=(fft_out[i][0]*fft_out[i][0]+fft_out[i][1]*fft_out[i][1])*scale+1e-10f;
@@ -244,13 +255,14 @@ void FFTViewer::capture_and_process_rtl(){
                 if(warmup_cnt < WARMUP_FFTS){
                     warmup_cnt++;
                     std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
+                    rx_pos+=fft_size; rx_avail-=fft_size;
                     continue;
                 }
                 int fi=total_ffts%MAX_FFTS_MEMORY;
                 int8_t* rowp=fft_data.data()+fi*fft_size;
                 {std::lock_guard<std::mutex> lk(data_mtx);
                  for(int i=0;i<fft_size;i++){
-                     float avg=10.0f*log10f(pacc[i]/fcnt); // 평균 파워 → dB
+                     float avg=10.0f*log10f(pacc[i]/fcnt);
                      float nn=(avg-header.power_min)/(header.power_max-header.power_min);
                      rowp[i]=(int8_t)(std::max(-1.0f,std::min(1.0f,nn))*127);
                      current_spectrum[i]=avg;
@@ -294,7 +306,8 @@ void FFTViewer::capture_and_process_rtl(){
                 }
                 std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
             }
-        }
+        } // end !spectrum_pause
+        rx_pos+=fft_size; rx_avail-=fft_size;
     }
     delete[] raw;
     delete[] iq16;
