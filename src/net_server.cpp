@@ -466,8 +466,8 @@ void NetServer::broadcast_chat(const char* from, const char* msg){
 }
 
 // ── Broadcast heartbeat ───────────────────────────────────────────────────
-void NetServer::broadcast_heartbeat(uint8_t host_state, uint8_t sdr_temp_c, uint8_t sdr_state){
-    PktHeartbeat hb{}; hb.host_state = host_state; hb.sdr_temp_c = sdr_temp_c; hb.sdr_state = sdr_state;
+void NetServer::broadcast_heartbeat(uint8_t host_state, uint8_t sdr_temp_c, uint8_t sdr_state, uint8_t iq_on){
+    PktHeartbeat hb{}; hb.host_state = host_state; hb.sdr_temp_c = sdr_temp_c; hb.sdr_state = sdr_state; hb.iq_on = iq_on;
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
         if(!c->authed || !c->alive.load()) continue;

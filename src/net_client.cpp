@@ -214,6 +214,8 @@ void NetClient::handle_packet(PacketType type,
 
     case PacketType::FFT_FRAME: {
         if(len < sizeof(PktFftFrame)) break;
+        // 수직바가 왼쪽 끝으로 밀려있으면 FFT 패킷 드롭 (큐에 쌓지 않음)
+        if(!fft_recv_enabled.load(std::memory_order_relaxed)) break;
         auto* fh = reinterpret_cast<const PktFftFrame*>(payload);
         uint32_t data_len = len - (uint32_t)sizeof(PktFftFrame);
         if(data_len != fh->fft_size) break;
@@ -369,6 +371,7 @@ void NetClient::handle_packet(PacketType type,
         host_state.store((int)hb->host_state);
         remote_sdr_temp_c.store(hb->sdr_temp_c);
         remote_sdr_state.store(hb->sdr_state);
+        remote_iq_on.store(hb->iq_on);
         // Use wall-clock seconds (monotonic substitute via steady_clock)
         auto now = std::chrono::steady_clock::now().time_since_epoch();
         last_heartbeat_time.store(

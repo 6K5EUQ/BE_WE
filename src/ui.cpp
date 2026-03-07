@@ -2418,7 +2418,9 @@ void run_streaming_viewer(){
                 uint8_t hst = (v.spectrum_pause.load() || !v.render_visible.load()) ? 2 : 0;
                 // sdr_state: 0=OK, 1=stream error (SDR 뽑힘/초기화 실패)
                 uint8_t sdr_st = cur_sdr_err ? 1 : 0;
-                v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st);
+                // iq_on: HOST IQ 롤링 상태
+                uint8_t iq_st = v.tm_iq_on.load() ? 1 : 0;
+                v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st, iq_st);
             }
         }
 
@@ -3216,6 +3218,9 @@ void run_streaming_viewer(){
                 v.net_srv->broadcast_heartbeat(paused ? 2 : 0);
                 heartbeat_last = std::chrono::steady_clock::now();
             }
+            // JOIN: 수직바 왼쪽 끝이면 FFT 패킷을 큐에 넣지 않음 (트래픽 절약)
+            if(v.remote_mode && v.net_cli)
+                v.net_cli->fft_recv_enabled.store(left_visible);
         }
 
         // ── 가로 분할: 끝까지 허용 (0~1 풀레인지) ───────────────────────
@@ -4817,7 +4822,10 @@ void run_streaming_viewer(){
             bool spectrum_paused = v.spectrum_pause.load();
             bool fft_panel_on    = v.render_visible.load(); // 수직바: false이면 FFT 연산 스킵
             bool tm_on           = v.tm_active.load();
-            bool iq_on           = v.tm_iq_on.load();
+            // IQ: JOIN이면 HOST의 iq 상태를 표시, LOCAL/HOST는 자체 상태
+            bool iq_on = (v.remote_mode && v.net_cli)
+                         ? (v.net_cli->remote_iq_on.load() != 0)
+                         : v.tm_iq_on.load();
 
             // ── FFT / WF LED ──────────────────────────────────────────────
             // LOCAL/HOST: fft_panel_on && capturing && !spectrum_paused
@@ -4834,9 +4842,14 @@ void run_streaming_viewer(){
                 bool host_paused = (hs == 2);  // HOST spectrum pause / 수직바 끝
                 bool fft_recv   = connected && (join_fft_stall < 3.f);
                 // host_state 2 = HOST 의도적 정지 → 노란, 연결 끊김/stall → 빨간, 수신 중 → 초록
-                if(!connected)        { fft_led = 0; wf_led = 0; }
-                else if(host_paused)  { fft_led = 2; wf_led = 2; } // 노란: HOST가 멈춤
-                else if(fft_recv)     { fft_led = 1; wf_led = 1; } // 초록: 수신 중
+                // JOIN 로컬 수직바(fft_panel_on=false) → FFT/WF 빨간
+                // JOIN 로컬 수평바(wf_area_visible=false) → WF만 빨간
+                bool local_fft_hidden = !fft_panel_on;   // 수직바 왼쪽 끝
+                bool local_wf_hidden  = !v.wf_area_visible.load(); // 수평바 아래 끝
+                if(!connected || local_fft_hidden)
+                                      { fft_led = 0; wf_led = 0; } // 빨간: 연결 없음 or 수직바
+                else if(host_paused)  { fft_led = 2; wf_led = local_wf_hidden ? 0 : 2; } // 노란(HOST멈춤)
+                else if(fft_recv)     { fft_led = 1; wf_led = local_wf_hidden ? 0 : 1; } // 초록: 수신 중
                 else                  { fft_led = 0; wf_led = 0; } // 빨간: stall
             } else {
                 bool fft_active = fft_panel_on && capturing && !spectrum_paused;
@@ -4873,7 +4886,11 @@ void run_streaming_viewer(){
             // LINK: HOST=클라이언트 연결 중, JOIN=서버 연결 상태, LOCAL=꺼짐
             int link_state = 0; // 0=빨간, 1=초록, 2=노란
             if(v.net_srv){
-                link_state = (capturing && v.net_srv->client_count() > 0) ? 1 : 0;
+                bool has_clients = v.net_srv->client_count() > 0;
+                bool relay_ok    = relay_cli.is_relay_connected();
+                if(has_clients)   link_state = 1; // 초록: 실제 JOIN 클라이언트 있음
+                else if(relay_ok) link_state = 2; // 노란: relay 연결됨 (JOIN 없음)
+                else              link_state = 0; // 빨간: 연결 없음
             } else if(v.net_cli){
                 bool connected = v.net_cli->is_connected();
                 int  hs        = v.net_cli->host_state.load();
@@ -4919,6 +4936,12 @@ void run_streaming_viewer(){
                 if(!any_dem)        aud_led = 0; // 빨간: 복조채널 없음
                 else if(sq_pass)    aud_led = 1; // 초록: 스컬치 통과 + 출력 중
                 else                aud_led = 2; // 노란: 채널 있으나 스컬치 미통과 or 전체 뮤트
+            }
+
+            // ── SDR 오류 시 FFT/WF/AUD/IQ 모두 빨간 (LINK/TM/SDR은 독립) ──
+            if(!v.remote_mode && v.sdr_stream_error.load()){
+                fft_led = 0; wf_led = 0; aud_led = 0;
+                iq_on = false; // IQ도 빨간 (tm_iq_on 실제론 꺼져있을 것)
             }
 
             // 인디케이터 그리기 헬퍼: state 0=빨간, 1=초록, 2=노란

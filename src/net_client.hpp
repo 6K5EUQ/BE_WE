@@ -97,6 +97,7 @@ public:
     std::atomic<int>      host_state{-1};
     std::atomic<uint8_t>  remote_sdr_temp_c{0};      // HOST SDR 온도 (°C, 0=미측정)
     std::atomic<uint8_t>  remote_sdr_state{0};        // 0=OK, 1=stream error
+    std::atomic<uint8_t>  remote_iq_on{0};            // HOST IQ 롤링 상태 (0=off, 1=on)
     std::atomic<double>   last_heartbeat_time{0.0};  // glfwGetTime() at last HB
 
     // ── Channel sync (from CHANNEL_SYNC packets) ──────────────────────────
@@ -128,6 +129,9 @@ public:
     std::vector<ChatMsg>    chat_log;
     static constexpr int    CHAT_LOG_MAX = 200;
     std::atomic<bool>       chat_updated{false};
+
+    // JOIN이 수직바를 왼쪽 끝으로 밀면 FFT 수신을 멈춤 (서버로부터 패킷 미사용)
+    std::atomic<bool> fft_recv_enabled{true};
 
     // ── Auth result ───────────────────────────────────────────────────────
     uint8_t my_op_index = 0;
