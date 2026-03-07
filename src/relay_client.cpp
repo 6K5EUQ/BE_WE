@@ -170,8 +170,11 @@ void RelayClient::mux_loop(int relay_fd,
                 last_hb = now;
                 RelayMuxHdr hb{}; hb.type = 0x00; hb.len = sizeof(RelayHostHb);
                 RelayHostHb hbp{}; hbp.user_count = count_fn ? count_fn() : 0;
-                relay_send_all(relay_fd, &hb, RELAY_MUX_HDR_SIZE);
-                relay_send_all(relay_fd, &hbp, sizeof(hbp));
+                {
+                    std::lock_guard<std::mutex> wlk(mux_relay_write_mtx_);
+                    relay_send_all(relay_fd, &hb, RELAY_MUX_HDR_SIZE);
+                    relay_send_all(relay_fd, &hbp, sizeof(hbp));
+                }
                 printf("[RelayClient] HB sent (users=%u)\n", hbp.user_count);
             }
             continue;
@@ -209,16 +212,11 @@ void RelayClient::mux_loop(int relay_fd,
                 while(jp->local_fd >= 0){
                     ssize_t n = recv(jp->remote_fd, tbuf.data(), tbuf.size(), 0);
                     if(n <= 0) break;
-                    // MUX 헤더 붙여서 relay로 전달 (broadcast: conn_id=0xFFFF)
-                    // JOIN이 보낸 데이터는 HOST→모든JOIN(broadcast)으로 처리
-                    // 실제로는 NetServer가 특정 JOIN에만 보내는 경우도 있으나
-                    // relay 서버가 conn_id로 필터링하므로 broadcast로 통일
                     RelayMuxHdr mh{}; mh.conn_id=0xFFFF;
                     mh.type = static_cast<uint8_t>(RelayMuxType::DATA);
                     mh.len  = (uint32_t)n;
-                    // relay_fd write는 이 스레드 + mux_loop 스레드(HB) 동시 접근 가능
-                    // → mutex로 보호
-                    // 단순화: HOST→JOIN 방향은 relay 서버가 broadcast 처리
+                    // relay_fd write: mux_loop(HB)와 동시 접근 방지 → mutex
+                    std::lock_guard<std::mutex> wlk(mux_relay_write_mtx_);
                     relay_send_all(rfd, &mh, RELAY_MUX_HDR_SIZE);
                     relay_send_all(rfd, tbuf.data(), n);
                 }

@@ -102,6 +102,7 @@ enum class CmdType : uint8_t {
     DELETE_PUB_FILE = 0x13,  // JOIN → server: delete a public file (owner only)
     SET_FFT_SIZE    = 0x14,  // bidirectional: change FFT size
     SET_SR          = 0x15,  // bidirectional: change sample rate
+    NET_RESET       = 0x16,  // JOIN → server: trigger chassis 2 (net-only) reset
 };
 
 struct __attribute__((packed)) PktCmd {
@@ -257,11 +258,14 @@ struct __attribute__((packed)) PktPubDeleteReq {
 };
 
 // ── HEARTBEAT (server → all clients) ─────────────────────────────────────
-// Sent every 3 seconds. host_state: 0=OK, 1=CHASSIS_RESETTING
+// Sent every 3 seconds.
+// host_state: 0=OK, 1=CHASSIS_RESETTING, 2=SPECTRUM_PAUSED
+// sdr_state:  0=OK, 1=ERROR (stall/buffer problem)
 struct __attribute__((packed)) PktHeartbeat {
-    uint8_t host_state;  // 0=OK, 1=CHASSIS_RESETTING
+    uint8_t host_state;  // 0=OK, 1=CHASSIS_RESETTING, 2=SPECTRUM_PAUSED
     uint8_t sdr_temp_c;  // SDR 온도 (°C 정수, 0=미지원/미측정)
-    uint8_t pad[2];
+    uint8_t sdr_state;   // 0=streaming OK, 1=stream error
+    uint8_t pad[1];
 };
 
 // ── Wire helpers ──────────────────────────────────────────────────────────

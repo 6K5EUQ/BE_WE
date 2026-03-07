@@ -93,9 +93,10 @@ public:
     std::atomic<uint32_t> remote_sr{0};
     std::atomic<uint8_t>  remote_hw{0};
 
-    // Heartbeat state: 0=OK, 1=CHASSIS_RESETTING; -1=no heartbeat received yet
+    // Heartbeat state: 0=OK, 1=CHASSIS_RESETTING, 2=SPECTRUM_PAUSED; -1=no HB yet
     std::atomic<int>      host_state{-1};
     std::atomic<uint8_t>  remote_sdr_temp_c{0};      // HOST SDR 온도 (°C, 0=미측정)
+    std::atomic<uint8_t>  remote_sdr_state{0};        // 0=OK, 1=stream error
     std::atomic<double>   last_heartbeat_time{0.0};  // glfwGetTime() at last HB
 
     // ── Channel sync (from CHANNEL_SYNC packets) ──────────────────────────
@@ -158,6 +159,7 @@ public:
     bool cmd_request_share_download(const char* filename);
     bool cmd_share_upload(const char* filepath, uint8_t transfer_id);
     bool cmd_chassis_reset();            // JOIN → HOST: trigger chassis 1 reset
+    bool cmd_net_reset();               // JOIN → HOST: trigger chassis 2 (net-only) reset
     bool cmd_delete_pub_file(const char* filename);  // JOIN → HOST: delete public file
     bool cmd_set_fft_size(uint32_t size); // JOIN → HOST: FFT 크기 변경
     bool cmd_set_sr(float msps);          // JOIN → HOST: SR 변경

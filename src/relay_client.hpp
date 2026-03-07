@@ -73,6 +73,7 @@ private:
     std::thread       mux_thr_;
     std::atomic<bool> mux_running_{false};
     int               mux_relay_fd_ = -1;
+    std::mutex        mux_relay_write_mtx_; // relay_fd write 직렬화 (mux_loop HB + pump thr)
 
     struct JoinPair {
         int local_fd  = -1;  // NetServer 쪽 (accept로 받음)

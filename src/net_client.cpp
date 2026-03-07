@@ -368,6 +368,7 @@ void NetClient::handle_packet(PacketType type,
         auto* hb = reinterpret_cast<const PktHeartbeat*>(payload);
         host_state.store((int)hb->host_state);
         remote_sdr_temp_c.store(hb->sdr_temp_c);
+        remote_sdr_state.store(hb->sdr_state);
         // Use wall-clock seconds (monotonic substitute via steady_clock)
         auto now = std::chrono::steady_clock::now().time_since_epoch();
         last_heartbeat_time.store(
@@ -481,6 +482,10 @@ bool NetClient::cmd_set_spectrum_pause(bool pause){
 }
 bool NetClient::cmd_chassis_reset(){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::CHASSIS_RESET;
+    return send_cmd(c);
+}
+bool NetClient::cmd_net_reset(){
+    PktCmd c{}; c.cmd=(uint8_t)CmdType::NET_RESET;
     return send_cmd(c);
 }
 bool NetClient::cmd_set_fft_size(uint32_t size){

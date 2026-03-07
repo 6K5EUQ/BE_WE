@@ -182,11 +182,12 @@ void FFTViewer::capture_and_process(){
                 }
                 bewe_log("RX error: %s\n",bladerf_strerror(status));
                 if(status==BLADERF_ERR_IO || status==BLADERF_ERR_UNEXPECTED){
-                    bladerf_enable_module(dev_blade,BLADERF_CHANNEL_RX(0),false);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                    bladerf_enable_module(dev_blade,BLADERF_CHANNEL_RX(0),true);
-                    bladerf_sync_config(dev_blade,BLADERF_RX_X1,BLADERF_FORMAT_SC16_Q11,
-                                        512,16384,128,5000);
+                    // USB 뽑힘 → 장치 핸들 즉시 무효화 후 루프 종료
+                    // bladerf_close()는 이미 장치가 없어 블로킹되므로 호출 생략
+                    fprintf(stderr,"BladeRF: fatal RX IO error — SDR disconnected\n");
+                    dev_blade = nullptr;  // 핸들 무효화 (close 생략)
+                    sdr_stream_error.store(true);
+                    break;
                 }
                 continue;
             }
@@ -294,4 +295,9 @@ void FFTViewer::capture_and_process(){
         rx_pos+=fft_size; rx_avail-=fft_size;
     }
     delete[] iq_buf;
+    if(dev_blade){
+        bladerf_enable_module(dev_blade, BLADERF_CHANNEL_RX(0), false);
+        bladerf_close(dev_blade);
+        dev_blade = nullptr;
+    }
 }

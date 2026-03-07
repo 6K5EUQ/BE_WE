@@ -200,9 +200,12 @@ void FFTViewer::capture_and_process_rtl(){
             int n_read = 0;
             int r = rtlsdr_read_sync(dev_rtl, raw, (int)n_bytes, &n_read);
             if(r < 0 || n_read < (int)n_bytes){
-                fprintf(stderr,"RTL-SDR RX: r=%d n_read=%d\n", r, n_read);
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                continue;
+                fprintf(stderr,"RTL-SDR RX: r=%d n_read=%d — SDR disconnected\n", r, n_read);
+                sdr_stream_error.store(true);
+                // 디바이스 닫고 루프 종료 → ui는 sdr_stream_error 빨간불 표시
+                rtlsdr_close(dev_rtl);
+                dev_rtl = nullptr;
+                break;
             }
             // uint8 → int16 변환 (ring/TM IQ용)
             for(int i=0; i<rx_chunk*2; i++){
@@ -311,6 +314,5 @@ void FFTViewer::capture_and_process_rtl(){
     }
     delete[] raw;
     delete[] iq16;
-    rtlsdr_close(dev_rtl);
-    dev_rtl=nullptr;
+    if(dev_rtl){ rtlsdr_close(dev_rtl); dev_rtl=nullptr; }
 }

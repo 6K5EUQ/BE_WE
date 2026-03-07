@@ -1867,16 +1867,26 @@ void run_streaming_viewer(){
         // host_name = 로그인 ID
         strncpy(v.host_name, login_get_id(), 31);
         if(!v.initialize(cf)){
-            printf("SDR init failed\n");
-            if(cli){ cli->disconnect(); delete cli; }
-            ImGui_ImplOpenGL3_Shutdown(); ImGui_ImplGlfw_Shutdown();
-            ImGui::DestroyContext(); glfwDestroyWindow(win); glfwTerminate();
-            return;
+            // SDR 없음: 오류 상태로 표시하고 대기 (프로그램은 계속 실행)
+            printf("SDR init failed — running without hardware (SDR LED red)\n");
+            v.sdr_stream_error.store(true);
+            // 버퍼/텍스처 기본 초기화 (SA 재생 등은 가능)
+            v.fft_size = DEFAULT_FFT_SIZE;
+            v.header.fft_size  = DEFAULT_FFT_SIZE;
+            v.header.power_min = -100.f;
+            v.header.power_max = 0.f;
+            v.display_power_min = -80.f;
+            v.display_power_max = 0.f;
+            v.fft_data.assign((size_t)MAX_FFTS_MEMORY * DEFAULT_FFT_SIZE, 0);
+            v.current_spectrum.assign(DEFAULT_FFT_SIZE, -80.f);
+            v.autoscale_active = false;
+            v.create_waterfall_texture();
+        } else {
+            if(v.hw.type == HWType::BLADERF)
+                cap = std::thread(&FFTViewer::capture_and_process, &v);
+            else
+                cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
         }
-        if(v.hw.type == HWType::BLADERF)
-            cap = std::thread(&FFTViewer::capture_and_process, &v);
-        else
-            cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
         v.mix_stop.store(false);
         v.mix_thr=std::thread(&FFTViewer::mix_worker,&v);
 
@@ -2144,6 +2154,22 @@ void run_streaming_viewer(){
                 do_chassis_reset   = true;
                 do_main_menu       = true;
             };
+            // JOIN이 /chassis 2 reset 전송 → 네트워크 브로드캐스트 일시 중단 후 재개
+            srv->cb.on_net_reset = [&](){
+                // 즉시 노란불 heartbeat 전송
+                srv->broadcast_heartbeat(2);
+                v.net_bcast_pause.store(true, std::memory_order_relaxed);
+                srv->pause_broadcast();
+                NetServer* srv_ptr = v.net_srv;
+                std::atomic<bool>* bcast_pause_ptr = &v.net_bcast_pause;
+                std::thread([srv_ptr, bcast_pause_ptr](){
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                    srv_ptr->resume_broadcast();
+                    bcast_pause_ptr->store(false, std::memory_order_relaxed);
+                    // 재개 후 즉시 정상 heartbeat
+                    srv_ptr->broadcast_heartbeat(0);
+                }).detach();
+            };
             // JOIN이 public 파일 삭제 요청 → 소유자 확인 후 삭제 + 브로드캐스트
             srv->cb.on_pub_delete_req = [&](const char* op_name, const char* filename){
                 std::string fname(filename);
@@ -2372,11 +2398,15 @@ void run_streaming_viewer(){
                     (v.hw.type==HWType::RTLSDR)?1:0);
             }
         }
-        // ── HOST: 3초마다 HEARTBEAT 브로드캐스트 (SDR 온도 포함) ──────────────
+        // ── HOST: 3초마다 HEARTBEAT 브로드캐스트; SDR 뽑힘 감지 시 즉시 ──────
         if(v.net_srv){
+            static bool prev_sdr_err = false;
+            bool cur_sdr_err = v.sdr_stream_error.load();
             auto now2=std::chrono::steady_clock::now();
             float elh=std::chrono::duration<float>(now2-heartbeat_last).count();
-            if(elh>=3.0f){
+            bool sdr_err_changed = (cur_sdr_err != prev_sdr_err);
+            if(elh>=3.0f || sdr_err_changed){
+                if(sdr_err_changed) prev_sdr_err = cur_sdr_err;
                 heartbeat_last=now2;
                 uint8_t sdr_t_hb = 0;
                 if(v.dev_blade){
@@ -2384,7 +2414,59 @@ void run_streaming_viewer(){
                     if(bladerf_get_rfic_temperature(v.dev_blade, &_t) == 0)
                         sdr_t_hb = (uint8_t)std::min(255.f, std::max(0.f, _t));
                 }
-                v.net_srv->broadcast_heartbeat(0, sdr_t_hb);
+                // host_state: 0=OK, 2=SPECTRUM_PAUSED (JOIN에게 노란 LINK 표시)
+                uint8_t hst = (v.spectrum_pause.load() || !v.render_visible.load()) ? 2 : 0;
+                // sdr_state: 0=OK, 1=stream error (SDR 뽑힘/초기화 실패)
+                uint8_t sdr_st = cur_sdr_err ? 1 : 0;
+                v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st);
+            }
+        }
+
+        // ── LOCAL/HOST: SDR 뽑힘 감지 → 백그라운드 join + 주기적 재탐지 ──────
+        if(!v.remote_mode && v.sdr_stream_error.load()){
+            // cap 스레드 종료를 백그라운드에서 대기 (메인 렌더 스레드 블로킹 방지)
+            static bool     bg_join_started = false;
+            static std::atomic<bool> cap_joined{false};
+            if(!bg_join_started && cap.joinable()){
+                bg_join_started = true;
+                cap_joined.store(false);
+                std::thread([&cap, &cap_joined](){
+                    if(cap.joinable()) cap.join();
+                    cap_joined.store(true);
+                }).detach();
+            } else if(!cap.joinable()){
+                cap_joined.store(true);  // 처음부터 캡처 스레드 없었던 경우(SDR 없이 시작)
+            }
+
+            static float sdr_retry_timer = 0.f;
+            sdr_retry_timer -= ImGui::GetIO().DeltaTime;
+            if(sdr_retry_timer <= 0.f && cap_joined.load()){
+                sdr_retry_timer = 2.f;
+                // 이전 FFTW 리소스 정리
+                if(v.fft_plan){ fftwf_destroy_plan(v.fft_plan); v.fft_plan=nullptr; }
+                if(v.fft_in)  { fftwf_free(v.fft_in);   v.fft_in=nullptr; }
+                if(v.fft_out) { fftwf_free(v.fft_out);  v.fft_out=nullptr; }
+                // SDR 재탐지: 현재 설정(주파수) 기반으로 재초기화
+                float cur_cf = (float)(v.header.center_frequency / 1e6);
+                if(cur_cf < 0.1f) cur_cf = 100.f;
+                if(v.initialize(cur_cf)){
+                    printf("SDR reconnected — resuming at %.2f MHz\n", cur_cf);
+                    v.sdr_stream_error.store(false);
+                    bg_join_started = false;  // 다음 뽑힘을 위해 리셋
+                    cap_joined.store(false);
+                    // 이전 게인 복원
+                    v.set_gain(v.gain_db);
+                    // 캡처 스레드 재시작
+                    if(v.hw.type == HWType::BLADERF)
+                        cap = std::thread(&FFTViewer::capture_and_process, &v);
+                    else
+                        cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
+                    // HOST면 즉시 heartbeat로 JOIN에게 SDR 복구 알림
+                    if(v.net_srv){
+                        uint8_t hst = v.spectrum_pause.load() ? 2 : 0;
+                        v.net_srv->broadcast_heartbeat(hst, 0, 0);
+                    }
+                }
             }
         }
 
@@ -2613,7 +2695,12 @@ void run_streaming_viewer(){
                 bool np = !v.spectrum_pause.load();
                 // JOIN이든 HOST든 로컬 FFT 표시만 토글 (채널 복조 스트리밍과 무관)
                 v.spectrum_pause.store(np);
-                if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
+                if(v.net_srv){
+                    v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
+                    // 즉시 heartbeat: JOIN에게 pause 상태 즉시 반영
+                    v.net_srv->broadcast_heartbeat(np ? 2 : 0);
+                    heartbeat_last = std::chrono::steady_clock::now();
+                }
             }
             // T키: IQ 롤링 버퍼 활성/비활성 (JOIN이면 HOST에 CMD 전송)
             if(ImGui::IsKeyPressed(ImGuiKey_T,false)){
@@ -3120,7 +3207,16 @@ void run_streaming_viewer(){
         // 좌측 영역 폭
         float left_w = vdiv_x;
         bool left_visible = left_w > 2.0f;
-        v.render_visible.store(left_visible);
+        {
+            bool was_visible = v.render_visible.load();
+            v.render_visible.store(left_visible);
+            // 워터폴창 숨김/표시 전환 시 HOST는 즉시 heartbeat로 JOIN에게 알림
+            if(v.net_srv && was_visible != left_visible){
+                bool paused = v.spectrum_pause.load() || !left_visible;
+                v.net_srv->broadcast_heartbeat(paused ? 2 : 0);
+                heartbeat_last = std::chrono::steady_clock::now();
+            }
+        }
 
         // ── 가로 분할: 끝까지 허용 (0~1 풀레인지) ───────────────────────
         float sp_h = (content_h - div_h) * v.spectrum_height_ratio;
@@ -3128,6 +3224,7 @@ void run_streaming_viewer(){
         sp_h = std::max(0.0f, sp_h);
         wf_h = std::max(0.0f, wf_h);
         bool wf_visible = left_visible && wf_h > 1.0f;
+        v.wf_area_visible.store(wf_visible);
 
         // ── 파워스펙트럼 ──────────────────────────────────────────────────
         if(left_visible && sp_h > 1.0f)
@@ -4716,64 +4813,133 @@ void run_streaming_viewer(){
 
             // ── 우측: 상태 인디케이터 (오른쪽→왼쪽) ─────────────────────
             // 초록=활성, 빨간=비활성
-            bool capturing     = !v.capture_pause.load();
-            bool fft_on        = capturing && !v.spectrum_pause.load() && v.render_visible.load();
-            bool tm_on         = v.tm_active.load();
-            bool iq_on         = v.tm_iq_on.load();
-            // SDR: LOCAL/HOST에서 실제로 FFT 데이터가 들어오고 있을 때
-            // 2초 이상 fft_idx 변화 없으면 데이터 없음으로 판단
-            static int  sdr_last_fft_idx = -1;
-            static float sdr_stall_timer = 0.f;
+            bool capturing       = !v.capture_pause.load();
+            bool spectrum_paused = v.spectrum_pause.load();
+            bool fft_panel_on    = v.render_visible.load(); // 수직바: false이면 FFT 연산 스킵
+            bool tm_on           = v.tm_active.load();
+            bool iq_on           = v.tm_iq_on.load();
+
+            // ── FFT / WF LED ──────────────────────────────────────────────
+            // LOCAL/HOST: fft_panel_on && capturing && !spectrum_paused
+            // JOIN: fft_seq가 최근 3초 이내에 변한 경우 → 실제 데이터 수신 중
+            int fft_led, wf_led; // 0=빨간, 1=초록
+            if(v.remote_mode && v.net_cli){
+                static int   join_last_fft_seq = -1;
+                static float join_fft_stall    = 0.f;
+                int cur_seq = v.net_cli->fft_seq.load();
+                if(cur_seq != join_last_fft_seq){ join_last_fft_seq=cur_seq; join_fft_stall=0.f; }
+                else join_fft_stall += io.DeltaTime;
+                bool connected  = v.net_cli->is_connected();
+                int  hs         = v.net_cli->host_state.load();
+                bool host_paused = (hs == 2);  // HOST spectrum pause / 수직바 끝
+                bool fft_recv   = connected && (join_fft_stall < 3.f);
+                // host_state 2 = HOST 의도적 정지 → 노란, 연결 끊김/stall → 빨간, 수신 중 → 초록
+                if(!connected)        { fft_led = 0; wf_led = 0; }
+                else if(host_paused)  { fft_led = 2; wf_led = 2; } // 노란: HOST가 멈춤
+                else if(fft_recv)     { fft_led = 1; wf_led = 1; } // 초록: 수신 중
+                else                  { fft_led = 0; wf_led = 0; } // 빨간: stall
+            } else {
+                bool fft_active = fft_panel_on && capturing && !spectrum_paused;
+                fft_led = fft_active ? 1 : 0;
+                // WF: FFT 활성 + 워터폴 영역이 실제 표시 중 (wf_area_visible: 수평바 포함)
+                wf_led  = (fft_active && v.wf_area_visible.load()) ? 1 : 0;
+            }
+
+            // SDR: 스트리밍 실제 끊김 여부
+            static int   sdr_last_fft_idx = -1;
+            static float sdr_stall_timer  = 0.f;
             if(!v.remote_mode){
                 if(v.current_fft_idx != sdr_last_fft_idx){
                     sdr_last_fft_idx = v.current_fft_idx;
                     sdr_stall_timer  = 0.f;
-                } else {
+                } else if(!spectrum_paused && capturing && fft_panel_on){
                     sdr_stall_timer += io.DeltaTime;
                 }
+                if(spectrum_paused || !capturing || !fft_panel_on) sdr_stall_timer = 0.f;
             } else {
                 sdr_last_fft_idx = -1;
                 sdr_stall_timer  = 0.f;
             }
-            bool sdr_on = !v.remote_mode && capturing && (sdr_stall_timer < 2.0f);
-            // LINK: HOST=클라이언트 연결 중, JOIN=서버 연결 && 수신 중, LOCAL=항상 꺼짐
-            // JOIN: host_state==1이면 노란색(chassis resetting), 미수신이면 빨간
-            bool link_on;
-            int  link_state = 0; // 0=red, 1=green, 2=yellow
+            bool sdr_on;
+            if(v.remote_mode && v.net_cli){
+                bool hb_ok = (glfwGetTime() - v.net_cli->last_heartbeat_time.load()) < 10.0;
+                bool sdr_ok = v.net_cli->remote_sdr_state.load() == 0;
+                sdr_on = v.net_cli->is_connected() && hb_ok && sdr_ok;
+            } else {
+                bool stream_err = v.sdr_stream_error.load();
+                sdr_on = !v.remote_mode && !stream_err && capturing && (sdr_stall_timer < 2.0f);
+            }
+
+            // LINK: HOST=클라이언트 연결 중, JOIN=서버 연결 상태, LOCAL=꺼짐
+            int link_state = 0; // 0=빨간, 1=초록, 2=노란
             if(v.net_srv){
-                link_on    = capturing && v.net_srv->client_count() > 0;
-                link_state = link_on ? 1 : 0;
+                link_state = (capturing && v.net_srv->client_count() > 0) ? 1 : 0;
             } else if(v.net_cli){
                 bool connected = v.net_cli->is_connected();
                 int  hs        = v.net_cli->host_state.load();
-                if(!connected){
-                    link_on = false; link_state = 0; // 빨간
-                } else if(hs == 1){
-                    link_on = true;  link_state = 2; // 노란 (chassis resetting)
-                } else {
-                    link_on    = capturing;
-                    link_state = link_on ? 1 : 0;
-                }
-            } else {
-                link_on = false; link_state = 0;
+                if(!connected)           link_state = 0;
+                else if(hs==1||hs==2)    link_state = 2;
+                else                     link_state = 1;
             }
 
-            // 인디케이터 그리기 헬퍼: 초록/빨간
-            auto draw_ind=[&](float rx, const char* txt, bool on) -> float {
+            // ── AUD LED: 오디오 출력 상태 ────────────────────────────────
+            // LOCAL/HOST: 복조채널 없음=빨간, 채널있고 스컬치 미통과=노란, 스컬치 통과+출력=초록
+            // JOIN: 채널 없음=빨간, 채널있으나 수신 안됨=노란, 오디오 수신 중=초록
+            int aud_led = 0; // 0=빨간, 1=초록, 2=노란
+            if(v.remote_mode && v.net_cli){
+                // JOIN: 채널 존재 여부 + 실제 오디오 수신
+                bool any_ch = false;
+                bool audio_active = false;
+                for(int ci=0;ci<MAX_CHANNELS;ci++){
+                    if(v.channels[ci].mode == Channel::DM_NONE) continue;
+                    any_ch = true;
+                    // 뮤트(local_ch_out==3)가 아니고 NetAudioRing에 데이터 있으면 활성
+                    if(v.local_ch_out[ci] != 3){
+                        auto& ar = v.net_cli->audio[ci];
+                        size_t wp = ar.wp.load(std::memory_order_acquire);
+                        size_t rp = ar.rp.load(std::memory_order_relaxed);
+                        if(wp != rp) audio_active = true;
+                    }
+                }
+                if(!any_ch)           aud_led = 0; // 빨간: 채널 없음
+                else if(audio_active) aud_led = 1; // 초록: 오디오 수신 중
+                else                  aud_led = 2; // 노란: 채널 있으나 수신 없음(스컬치 등)
+            } else {
+                // LOCAL/HOST: dem_run 채널 존재 + sq_gate + 뮤트 아님
+                bool any_dem = false;
+                bool sq_pass = false;
+                bool muted_all = true;
+                for(int ci=0;ci<MAX_CHANNELS;ci++){
+                    if(!v.channels[ci].dem_run.load()) continue;
+                    any_dem = true;
+                    if(v.local_ch_out[ci] != 3) muted_all = false;
+                    if(v.channels[ci].sq_gate.load() && v.local_ch_out[ci] != 3)
+                        sq_pass = true;
+                }
+                if(!any_dem)        aud_led = 0; // 빨간: 복조채널 없음
+                else if(sq_pass)    aud_led = 1; // 초록: 스컬치 통과 + 출력 중
+                else                aud_led = 2; // 노란: 채널 있으나 스컬치 미통과 or 전체 뮤트
+            }
+
+            // 인디케이터 그리기 헬퍼: state 0=빨간, 1=초록, 2=노란
+            auto draw_ind=[&](float rx, const char* txt, int state) -> float {
                 ImVec2 sz=ImGui::CalcTextSize(txt);
                 float x=rx-sz.x;
-                ImU32 col=on ? IM_COL32(80,220,80,255) : IM_COL32(220,60,60,255);
-                if(on) dl->AddText(ImVec2(x+1,ty_b),col,txt); // bold shadow
+                ImU32 col = (state==1) ? IM_COL32(80,220,80,255)
+                          : (state==2) ? IM_COL32(255,200,0,255)
+                          :              IM_COL32(220,60,60,255);
+                if(state>0) dl->AddText(ImVec2(x+1,ty_b),col,txt); // bold shadow
                 dl->AddText(ImVec2(x,ty_b),col,txt);
                 return x-14.0f;
             };
-
-            // 클릭 가능 인디케이터 헬퍼
-            auto click_ind=[&](float& rx2, const char* txt, bool on) -> bool {
+            // 클릭 가능 인디케이터 헬퍼 (state 0=빨간, 1=초록, 2=노란)
+            auto click_ind=[&](float& rx2, const char* txt, int state) -> bool {
                 ImVec2 sz=ImGui::CalcTextSize(txt);
                 float x=rx2-sz.x;
-                ImU32 col=on ? IM_COL32(80,220,80,255) : IM_COL32(220,60,60,255);
-                if(on) dl->AddText(ImVec2(x+1,ty_b),col,txt);
+                ImU32 col = (state==1) ? IM_COL32(80,220,80,255)
+                          : (state==2) ? IM_COL32(255,200,0,255)
+                          :              IM_COL32(220,60,60,255);
+                if(state>0) dl->AddText(ImVec2(x+1,ty_b),col,txt);
                 dl->AddText(ImVec2(x,ty_b),col,txt);
                 bool clicked=ImGui::IsMouseClicked(ImGuiMouseButton_Left)&&
                     io.MousePos.x>=x&&io.MousePos.x<=x+sz.x&&
@@ -4782,34 +4948,14 @@ void run_streaming_viewer(){
                 return clicked;
             };
 
-            // 오른쪽→왼쪽: REC TM IQ WF FFT LINK SDR
+            // 오른쪽→왼쪽: TM IQ AUD WF FFT LINK SDR
             float rx=disp_w-8.0f;
 
-            // REC: 맨 오른쪽 고정 (녹음 중=노란, 성공=초록, 선택중=흰, 아니면=빨간)
-            {
-                ImVec2 sz=ImGui::CalcTextSize("REC");
-                float rec_x=disp_w-8.0f-sz.x;
+            // TM
+            rx=draw_ind(rx,"TM", tm_on ? 1 : 0);
 
-                ImU32 col; bool bold=false;
-                if(v.rec_state==FFTViewer::REC_BUSY){
-                    col=IM_COL32(255,200,0,255); bold=true;
-                } else if(v.rec_state==FFTViewer::REC_SUCCESS){
-                    v.rec_success_timer-=io.DeltaTime;
-                    if(v.rec_success_timer<=0.0f) v.rec_state=FFTViewer::REC_IDLE;
-                    col=IM_COL32(80,220,80,255); bold=true;
-                } else if(v.region.active){
-                    col=IM_COL32(255,255,255,255); bold=true;
-                } else {
-                    col=IM_COL32(220,60,60,255); bold=false;
-                }
-                if(bold) dl->AddText(ImVec2(rec_x+1,ty_b),col,"REC");
-                dl->AddText(ImVec2(rec_x,ty_b),col,"REC");
-                rx=rec_x-14.0f;
-            }
-
-            rx=draw_ind(rx,"TM", tm_on);
-
-            if(click_ind(rx,"IQ", iq_on)){
+            // IQ (클릭 가능)
+            if(click_ind(rx,"IQ", iq_on ? 1 : 0)){
                 if(v.remote_mode && v.net_cli) v.net_cli->cmd_toggle_tm_iq();
                 else {
                     bool cur=v.tm_iq_on.load();
@@ -4821,21 +4967,26 @@ void run_streaming_viewer(){
                             if(v.net_srv) v.net_srv->broadcast_wf_event(0,(int64_t)time(nullptr),1,"IQ Start"); }}
                 }
             }
-            if(click_ind(rx,"WF", fft_on && v.render_visible.load())){
+
+            // AUD (3색)
+            rx=draw_ind(rx,"AUD", aud_led);
+
+            // WF (클릭 가능, 3색→초록/빨간)
+            if(click_ind(rx,"WF", wf_led)){
                 v.spectrum_pause.store(!v.spectrum_pause.load());
             }
-            if(click_ind(rx,"FFT", fft_on)){
+
+            // FFT (클릭 가능, 3색→초록/빨간)
+            if(click_ind(rx,"FFT", fft_led)){
                 v.spectrum_pause.store(!v.spectrum_pause.load());
             }
-            // LINK: 3색 (초록=정상, 노란=chassis resetting, 빨간=끊김)
+
+            // LINK (3색: draw_ind 사용)
+            rx=draw_ind(rx,"LINK", link_state);
+            // LINK 클릭: capture_pause 토글
             {
                 ImVec2 lsz=ImGui::CalcTextSize("LINK");
-                float lx=rx-lsz.x;
-                ImU32 lcol = (link_state==1) ? IM_COL32(80,220,80,255)
-                           : (link_state==2) ? IM_COL32(255,200,0,255)
-                           :                   IM_COL32(220,60,60,255);
-                if(link_state>0) dl->AddText(ImVec2(lx+1,ty_b),lcol,"LINK");
-                dl->AddText(ImVec2(lx,ty_b),lcol,"LINK");
+                float lx=rx+14.0f; // draw_ind가 이미 이동시킴, 실제 그려진 위치 복원
                 bool lclicked=ImGui::IsMouseClicked(ImGuiMouseButton_Left)&&
                     io.MousePos.x>=lx&&io.MousePos.x<=lx+lsz.x&&
                     io.MousePos.y>=ty_b&&io.MousePos.y<=ty_b+lsz.y;
@@ -4844,9 +4995,10 @@ void run_streaming_viewer(){
                     if(v.remote_mode && v.net_cli) v.net_cli->cmd_set_capture_pause(np);
                     else { v.capture_pause.store(np); }
                 }
-                rx=lx-14.0f;
             }
-            rx=draw_ind(rx,"SDR", sdr_on);
+
+            // SDR
+            rx=draw_ind(rx,"SDR", sdr_on ? 1 : 0);
 
         }
         ImGui::End();
@@ -5156,9 +5308,9 @@ void run_streaming_viewer(){
                         if(v.net_srv){
                             // HOST: 방송 중단 → 1초 대기 → 재개 (버퍼 플러시)
                             push_local("System", "Network broadcast reset...", false);
+                            v.net_srv->broadcast_heartbeat(2); // JOIN에게 노란불
                             v.net_bcast_pause.store(true, std::memory_order_relaxed);
                             v.net_srv->pause_broadcast();
-                            // 1초 후 재개 (detach: 메인 루프는 계속 동작)
                             NetServer* srv_ptr = v.net_srv;
                             std::atomic<bool>* bcast_pause_ptr = &v.net_bcast_pause;
                             std::mutex* log_mtx_ptr = &host_chat_mtx;
@@ -5167,6 +5319,7 @@ void run_streaming_viewer(){
                                 std::this_thread::sleep_for(std::chrono::seconds(1));
                                 srv_ptr->resume_broadcast();
                                 bcast_pause_ptr->store(false, std::memory_order_relaxed);
+                                srv_ptr->broadcast_heartbeat(0); // 정상 복귀
                                 std::lock_guard<std::mutex> lk(*log_mtx_ptr);
                                 LocalChatMsg lm{}; lm.is_error = false;
                                 strncpy(lm.from, "System", 31);
@@ -5174,8 +5327,12 @@ void run_streaming_viewer(){
                                 if((int)log_ptr->size() >= 200) log_ptr->erase(log_ptr->begin());
                                 log_ptr->push_back(lm);
                             }).detach();
+                        } else if(v.net_cli){
+                            // JOIN: HOST에게 명령 전달
+                            v.net_cli->cmd_net_reset();
+                            push_local("System", "Net reset command sent to HOST.", false);
                         } else {
-                            push_local("System", "/chassis 2 reset is HOST-only.", true);
+                            push_local("System", "/chassis 2 reset: not in HOST/JOIN mode.", true);
                         }
 
                     } else {
