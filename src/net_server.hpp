@@ -84,6 +84,9 @@ public:
     void stop();
     bool is_running() const { return running_.load(); }
     int  client_count() const;
+
+    // relay MUX 모드: socketpair의 local_fd를 새 클라이언트로 inject
+    void inject_fd(int fd);
     std::vector<OpEntry> get_operators() const;
 
     // ── Broadcast / Send ─────────────────────────────────────────────────

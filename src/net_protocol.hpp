@@ -9,7 +9,7 @@
 // ── Magic & version ───────────────────────────────────────────────────────
 static constexpr uint8_t BEWE_MAGIC[4] = {'B','E','W','E'};
 static constexpr uint16_t BEWE_PROTO_VER = 1;
-static constexpr int      BEWE_DEFAULT_PORT = 7700;
+static constexpr int      BEWE_DEFAULT_PORT = 7701;
 
 // ── Packet types ──────────────────────────────────────────────────────────
 enum class PacketType : uint8_t {

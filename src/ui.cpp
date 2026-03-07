@@ -5,6 +5,7 @@
 #include "bewe_paths.hpp"
 #include "globe.hpp"
 #include "udp_discovery.hpp"
+#include "relay_client.hpp"
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <algorithm>
@@ -1078,9 +1079,9 @@ void run_streaming_viewer(){
     v.create_waterfall_texture();
     // 0=LOCAL, 1=HOST, 2=CONNECT
     // /reset 재진입을 위해 루프 간 상태 보존
-    static int   s_host_port    = 7700;
+    static int   s_host_port    = 7701;
     static char  s_connect_host[128] = "192.168.1.";
-    static int   s_connect_port = 7700;
+    static int   s_connect_port = 7701;
     static char  s_connect_id[32]  = {};
     static char  s_connect_pw[64]  = {};
     static uint8_t s_connect_tier  = 1;
@@ -1088,6 +1089,11 @@ void run_streaming_viewer(){
     static std::string s_station_name;
     static float       s_station_lat = 0.f, s_station_lon = 0.f;
     static bool        s_station_set = false;
+    // Relay 서버 설정 (세션 간 유지)
+    static constexpr const char* s_relay_host      = "124.56.147.40";
+    static constexpr int         s_relay_list_port = RELAY_PORT;
+    // relay 경유 JOIN 시 station_id 보존 (재연결용)
+    static std::string s_relay_join_station_id;
     int  mode_sel     = do_chassis_reset ? chassis_reset_mode : 0;
     int& host_port    = s_host_port;
     char (&connect_host)[128] = s_connect_host;
@@ -1142,6 +1148,44 @@ void run_streaming_viewer(){
         v.discovered_stations.push_back(ns);
     };
     disc_listener.start();
+
+    // Relay 클라이언트: Relay 주소가 설정돼 있으면 인터넷 스테이션 폴링
+    RelayClient relay_cli;
+    if(s_relay_host[0] != '\0'){
+        relay_cli.start_polling(s_relay_host, s_relay_list_port,
+            [&](const std::vector<RelayClient::Station>& stations){
+                std::lock_guard<std::mutex> lk(v.discovered_stations_mtx);
+                double now = glfwGetTime();
+                for(auto& rs : stations){
+                    // station_id 기반 upsert (relay 모드: ip/port 없음)
+                    bool found = false;
+                    for(auto& s : v.discovered_stations){
+                        if(!s.station_id.empty() && s.station_id == rs.station_id){
+                            s.name       = rs.name;
+                            s.lat        = rs.lat;
+                            s.lon        = rs.lon;
+                            s.user_count = rs.user_count;
+                            s.host_tier  = rs.host_tier ? rs.host_tier : 1;
+                            s.last_seen  = now + 12.0;
+                            found = true; break;
+                        }
+                    }
+                    if(!found){
+                        FFTViewer::DiscoveredStation ns;
+                        ns.station_id = rs.station_id;
+                        ns.name       = rs.name;
+                        ns.lat        = rs.lat;
+                        ns.lon        = rs.lon;
+                        ns.tcp_port   = 0;  // relay 모드: 포트 직접 연결 없음
+                        ns.ip         = ""; // relay 모드: IP 직접 연결 없음
+                        ns.user_count = rs.user_count;
+                        ns.host_tier  = rs.host_tier ? rs.host_tier : 1;
+                        ns.last_seen  = now + 12.0;
+                        v.discovered_stations.push_back(ns);
+                    }
+                }
+            });
+    }
 
     // Pop-up state machine
     enum GlobePop { POP_NONE, POP_HOST, POP_JOIN } pop_state = POP_NONE;
@@ -1430,14 +1474,36 @@ void run_streaming_viewer(){
             if(ImGui::Button("Join##jb", ImVec2(btn_join_w,28))){
                 { std::lock_guard<std::mutex> lk(join_share_mtx); join_share_files.clear(); }
                 cli = new NetClient();
-                if(cli->connect(pending_join.ip.c_str(), (int)pending_join.tcp_port,
-                                login_get_id(), login_get_pw(),
-                                (uint8_t)login_get_tier())){
+                bool join_ok = false;
+
+                if(!pending_join.station_id.empty() && s_relay_host[0] != '\0'){
+                    // ── relay 경유 JOIN ──────────────────────────────────
+                    int rfd = relay_cli.join_room(s_relay_host, s_relay_list_port,
+                                                  pending_join.station_id);
+                    if(rfd >= 0){
+                        join_ok = cli->connect_fd(rfd, login_get_id(), login_get_pw(),
+                                                  (uint8_t)login_get_tier());
+                        if(!join_ok) close(rfd);
+                    }
+                } else {
+                    // ── 직접 TCP JOIN (LAN) ───────────────────────────────
+                    join_ok = cli->connect(pending_join.ip.c_str(),
+                                           (int)pending_join.tcp_port,
+                                           login_get_id(), login_get_pw(),
+                                           (uint8_t)login_get_tier());
+                }
+
+                if(join_ok){
                     strncpy(connect_host, pending_join.ip.c_str(), sizeof(connect_host)-1);
                     connect_port = (int)pending_join.tcp_port;
                     strncpy(connect_id, login_get_id(), 31); connect_id[31]='\0';
                     strncpy(connect_pw, login_get_pw(), 63); connect_pw[63]='\0';
                     connect_tier = (uint8_t)login_get_tier();
+                    // relay 경유 JOIN이면 station_id 보존 (재연결용)
+                    if(!pending_join.station_id.empty() && s_relay_host[0] != '\0')
+                        s_relay_join_station_id = pending_join.station_id;
+                    else
+                        s_relay_join_station_id.clear();
                     mode_sel=2; pop_state=POP_NONE; mode_done=true;
                 } else {
                     delete cli; cli=nullptr;
@@ -1471,6 +1537,7 @@ void run_streaming_viewer(){
     }
 
     disc_listener.stop();
+    relay_cli.stop_polling();
     globe.destroy();
 
     if(glfwWindowShouldClose(win)){
@@ -2120,7 +2187,7 @@ void run_streaming_viewer(){
                     s_station_lon  = v.station_lon;
                     s_station_set  = true;
                 }
-                // Start UDP discovery broadcast if station location was set via globe
+                // LAN 브로드캐스트 시작
                 if(v.station_location_set){
                     std::string lip = get_local_ip();
                     srv->start_discovery_broadcast(
@@ -2129,6 +2196,23 @@ void run_streaming_viewer(){
                         (uint16_t)host_port,
                         lip.c_str(),
                         (uint8_t)login_get_tier());
+                }
+                // relay MUX 어댑터 시작
+                if(s_relay_host[0] != '\0' && v.station_location_set){
+                    std::string sid = v.station_name + "_" + std::string(login_get_id());
+                    int rfd = relay_cli.open_room(
+                        s_relay_host, s_relay_list_port,
+                        sid, v.station_name,
+                        v.station_lat, v.station_lon,
+                        (uint8_t)login_get_tier());
+                    if(rfd >= 0){
+                        relay_cli.start_mux_adapter(rfd,
+                            [&v](int local_fd){ if(v.net_srv) v.net_srv->inject_fd(local_fd); },
+                            [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; });
+                        printf("[UI] relay MUX adapter started\n");
+                    } else {
+                        printf("[UI] relay open_room failed, relay unavailable\n");
+                    }
                 }
                 // 브로드캐스트 전용 스레드 시작 (캡처 스레드 분리)
                 v.net_bcast_stop.store(false);
@@ -2310,8 +2394,20 @@ void run_streaming_viewer(){
             reconn_timer -= ImGui::GetIO().DeltaTime;
             if(reconn_timer <= 0.f){
                 reconn_timer = 2.f;
-                bool ok = v.net_cli->connect(connect_host, connect_port,
-                                              connect_id, connect_pw, connect_tier);
+                bool ok = false;
+                if(!s_relay_join_station_id.empty()){
+                    // relay 경유 재연결
+                    int rfd = relay_cli.join_room(s_relay_host, s_relay_list_port,
+                                                  s_relay_join_station_id);
+                    if(rfd >= 0){
+                        ok = v.net_cli->connect_fd(rfd, connect_id, connect_pw, connect_tier);
+                        if(!ok) close(rfd);
+                    }
+                } else if(connect_host[0]){
+                    // 직접 TCP 재연결
+                    ok = v.net_cli->connect(connect_host, connect_port,
+                                            connect_id, connect_pw, connect_tier);
+                }
                 if(ok){
                     // 재연결 성공: 뮤트 채널 상태 복원
                     for(int ci=0;ci<MAX_CHANNELS;ci++)
@@ -2344,90 +2440,87 @@ void run_streaming_viewer(){
             last_cf_mhz = cur_cf;
         }
 
-        // ── CONNECT 모드: 수신 FFT → waterfall 업데이트 ─────────────────
-        // P키(spectrum_pause)로 워터폴/스펙트럼 업데이트 정지
+        // ── CONNECT 모드: 수신 FFT → waterfall 업데이트 (1초 버퍼) ─────────
+        // 수신된 프레임은 1초 지연 후 표시 → 끊김 없는 스크롤 보장
         if(v.remote_mode && v.net_cli && !v.spectrum_pause.load()){
-            int cur_seq = v.net_cli->fft_seq.load(std::memory_order_acquire);
-            if(cur_seq != last_fft_seq){
-                last_fft_seq = cur_seq;
-                std::lock_guard<std::mutex> lk(v.net_cli->fft_mtx);
-                int fsz = (int)v.net_cli->fft_sz;
-                if(fsz > 0 && (int)v.net_cli->fft_data.size() == fsz){
-                    // FFT 크기 변경 시 재초기화
-                    if(fsz != v.fft_size){
-                        v.fft_size = fsz;
-                        v.header.fft_size = (uint32_t)fsz;
-                        v.fft_data.assign((size_t)MAX_FFTS_MEMORY * fsz, 0);
-                        v.current_spectrum.assign(fsz, -80.f);
-                        v.texture_needs_recreate = true;
-                    }
-                    v.header.center_frequency = v.net_cli->cf_hz;
-                    v.header.sample_rate      = v.net_cli->sr;
-                    v.header.power_min        = v.net_cli->pmin;
-                    v.header.power_max        = v.net_cli->pmax;
-                    // HOST autoscale 결과 수용: JOIN 수동 스케일 중이거나 autoscale 중이면 덮어쓰기 금지
-                    if(!v.autoscale_active && !v.join_manual_scale){
-                        v.display_power_min = v.net_cli->pmin;
-                        v.display_power_max = v.net_cli->pmax;
-                    }
-                    {
-                        std::lock_guard<std::mutex> dlk(v.data_mtx);
-                        // circular buffer의 올바른 위치에 한 행만 복사
-                        int fi = v.total_ffts % MAX_FFTS_MEMORY;
-                        int8_t* dst = v.fft_data.data() + (size_t)fi * fsz;
-                        memcpy(dst, v.net_cli->fft_data.data(), fsz);
-                        v.total_ffts++;
-                        v.current_fft_idx = v.total_ffts - 1;  // 언바운드 카운터 (TM offset 계산용)
-                        // JOIN: wall_time 기반 워터폴 시간태그
-                        if(v.net_cli->fft_wall_time > 0){
-                            time_t wt = (time_t)v.net_cli->fft_wall_time;
-                            struct tm* tt = localtime(&wt);
-                            int cur5 = tt->tm_hour*720+tt->tm_min*12+tt->tm_sec/5;
-                            if(cur5 != v.last_tagged_sec){
-                                v.last_tagged_sec = cur5;
-                                FFTViewer::WfEvent wev{};
-                                wev.fft_idx  = v.current_fft_idx;  // 언바운드 인덱스
-                                wev.wall_time= wt;
-                                wev.type     = 0;
-                                strftime(wev.label,sizeof(wev.label),"%H:%M:%S",tt);
-                                std::lock_guard<std::mutex> wlk(v.wf_events_mtx);
-                                v.wf_events.push_back(wev);
-                                int cutoff=v.current_fft_idx-MAX_FFTS_MEMORY;
-                                v.wf_events.erase(std::remove_if(v.wf_events.begin(),v.wf_events.end(),
-                                    [&](const FFTViewer::WfEvent& e){return e.fft_idx<cutoff;}),
-                                    v.wf_events.end());
-                            }
-                        }
-                        // JOIN 오토스케일 누적
-                        if(v.autoscale_active){
-                            if(!v.autoscale_init){
-                                v.autoscale_accum.reserve(fsz*200);
-                                v.autoscale_last = std::chrono::steady_clock::now();
-                                v.autoscale_init = true;
-                            }
-                            for(int _i=1;_i<fsz;_i++){
-                                float val = v.net_cli->pmin +
-                                    (dst[_i]/127.0f)*(v.net_cli->pmax - v.net_cli->pmin);
-                                v.autoscale_accum.push_back(val);
-                            }
-                            float _el=std::chrono::duration<float>(
-                                std::chrono::steady_clock::now()-v.autoscale_last).count();
-                            if(_el>=1.0f && !v.autoscale_accum.empty()){
-                                size_t _idx=(size_t)(v.autoscale_accum.size()*0.15f);
-                                std::nth_element(v.autoscale_accum.begin(),
-                                    v.autoscale_accum.begin()+_idx,
-                                    v.autoscale_accum.end());
-                                v.display_power_min = v.autoscale_accum[_idx] - 10.f;
-                                v.display_power_max = v.display_power_min + 60.f;
-                                v.autoscale_accum.clear();
-                                v.autoscale_active = false;
-                                v.cached_sp_idx = -1;
-                            }
-                        }
-                        v.header.num_ffts = std::min(v.total_ffts, MAX_FFTS_MEMORY);
-                    }
-                    v.update_wf_row(v.current_fft_idx);
+            NetClient::FftFrame frm;
+            // 한 프레임 루프 반복 (버퍼에 쌓인 모든 준비 프레임 소화)
+            while(v.net_cli->pop_fft_frame(frm)){
+                last_fft_seq++;
+                int fsz = (int)frm.fft_sz;
+                if(fsz <= 0 || (int)frm.data.size() != fsz) continue;
+
+                // FFT 크기 변경 시 재초기화
+                if(fsz != v.fft_size){
+                    v.fft_size = fsz;
+                    v.header.fft_size = (uint32_t)fsz;
+                    v.fft_data.assign((size_t)MAX_FFTS_MEMORY * fsz, 0);
+                    v.current_spectrum.assign(fsz, -80.f);
+                    v.texture_needs_recreate = true;
                 }
+                v.header.center_frequency = frm.cf_hz;
+                v.header.sample_rate      = frm.sr;
+                v.header.power_min        = frm.pmin;
+                v.header.power_max        = frm.pmax;
+                if(!v.autoscale_active && !v.join_manual_scale){
+                    v.display_power_min = frm.pmin;
+                    v.display_power_max = frm.pmax;
+                }
+                {
+                    std::lock_guard<std::mutex> dlk(v.data_mtx);
+                    int fi = v.total_ffts % MAX_FFTS_MEMORY;
+                    int8_t* dst = v.fft_data.data() + (size_t)fi * fsz;
+                    memcpy(dst, frm.data.data(), fsz);
+                    v.total_ffts++;
+                    v.current_fft_idx = v.total_ffts - 1;
+                    // wall_time 기반 워터폴 시간태그
+                    if(frm.wall_time > 0){
+                        time_t wt = (time_t)frm.wall_time;
+                        struct tm* tt = localtime(&wt);
+                        int cur5 = tt->tm_hour*720+tt->tm_min*12+tt->tm_sec/5;
+                        if(cur5 != v.last_tagged_sec){
+                            v.last_tagged_sec = cur5;
+                            FFTViewer::WfEvent wev{};
+                            wev.fft_idx  = v.current_fft_idx;
+                            wev.wall_time= wt;
+                            wev.type     = 0;
+                            strftime(wev.label,sizeof(wev.label),"%H:%M:%S",tt);
+                            std::lock_guard<std::mutex> wlk(v.wf_events_mtx);
+                            v.wf_events.push_back(wev);
+                            int cutoff=v.current_fft_idx-MAX_FFTS_MEMORY;
+                            v.wf_events.erase(std::remove_if(v.wf_events.begin(),v.wf_events.end(),
+                                [&](const FFTViewer::WfEvent& e){return e.fft_idx<cutoff;}),
+                                v.wf_events.end());
+                        }
+                    }
+                    // 오토스케일 누적
+                    if(v.autoscale_active){
+                        if(!v.autoscale_init){
+                            v.autoscale_accum.reserve(fsz*200);
+                            v.autoscale_last = std::chrono::steady_clock::now();
+                            v.autoscale_init = true;
+                        }
+                        for(int _i=1;_i<fsz;_i++){
+                            float val = frm.pmin + (dst[_i]/127.0f)*(frm.pmax - frm.pmin);
+                            v.autoscale_accum.push_back(val);
+                        }
+                        float _el=std::chrono::duration<float>(
+                            std::chrono::steady_clock::now()-v.autoscale_last).count();
+                        if(_el>=1.0f && !v.autoscale_accum.empty()){
+                            size_t _idx=(size_t)(v.autoscale_accum.size()*0.15f);
+                            std::nth_element(v.autoscale_accum.begin(),
+                                v.autoscale_accum.begin()+_idx,
+                                v.autoscale_accum.end());
+                            v.display_power_min = v.autoscale_accum[_idx] - 10.f;
+                            v.display_power_max = v.display_power_min + 60.f;
+                            v.autoscale_accum.clear();
+                            v.autoscale_active = false;
+                            v.cached_sp_idx = -1;
+                        }
+                    }
+                    v.header.num_ffts = std::min(v.total_ffts, MAX_FFTS_MEMORY);
+                }
+                v.update_wf_row(v.current_fft_idx);
             }
         }
 
@@ -5178,6 +5271,8 @@ void run_streaming_viewer(){
     v.net_bcast_stop.store(true);
     v.net_bcast_cv.notify_all();
     if(v.net_bcast_thr.joinable()) v.net_bcast_thr.join();
+    relay_cli.stop_mux_adapter();
+    relay_cli.stop_polling();
     if(v.net_srv){ v.net_srv->stop_discovery_broadcast(); v.net_srv->stop(); delete v.net_srv; v.net_srv=nullptr; }
     if(v.net_cli){ v.net_cli->disconnect(); delete v.net_cli; v.net_cli=nullptr; }
     if(!v.remote_mode && cap.joinable()) cap.join();

@@ -40,18 +40,38 @@ public:
     // ── Connection ───────────────────────────────────────────────────────
     bool connect(const char* host, int port,
                  const char* id, const char* pw, uint8_t tier);
+    // relay 모드: 이미 연결된 fd로 AUTH만 수행
+    bool connect_fd(int fd, const char* id, const char* pw, uint8_t tier);
     void disconnect();
     bool is_connected() const { return connected_.load(); }
 
     // ── Remote FFT data (written by recv thread, read by UI) ─────────────
-    // UI should lock fft_mtx when reading
+    // UI calls pop_fft_frame() to get buffered frames (1s delay for smooth playback)
+    struct FftFrame {
+        std::vector<int8_t> data;
+        uint64_t cf_hz;
+        uint32_t sr;
+        uint16_t fft_sz;
+        float    pmin, pmax;
+        int64_t  wall_time;  // seconds since epoch
+        int64_t  recv_us;    // steady_clock microseconds at receive time
+    };
+
     mutable std::mutex   fft_mtx;
-    std::vector<int8_t>  fft_data;     // latest FFT row
+    // Legacy single-frame access (kept for compatibility)
+    std::vector<int8_t>  fft_data;
     uint64_t             cf_hz   = 0;
     uint32_t             sr      = 0;
     uint16_t             fft_sz  = 0;
     float                pmin    = -80.f, pmax = 0.f;
-    std::atomic<int>     fft_seq{0};   // incremented each new frame
+    std::atomic<int>     fft_seq{0};   // incremented each new buffered frame
+
+    // Buffer queue: recv thread enqueues, UI dequeues after DISPLAY_DELAY_US
+    static constexpr int64_t DISPLAY_DELAY_US = 1'000'000;  // 1 second
+    static constexpr size_t  FFT_QUEUE_MAX     = 512;        // max buffered frames
+
+    // Returns true if a frame was dequeued (ready to display)
+    bool pop_fft_frame(FftFrame& out);
 
     // ── HW status (from STATUS packets) ──────────────────────────────────
     // ── File transfer receive state ───────────────────────────────────────
@@ -157,6 +177,10 @@ private:
 
     // Discovery listener (forward declared to avoid pulling udp_discovery.hpp)
     class DiscoveryListener* discovery_listener_ = nullptr;
+
+    // FFT buffer queue (1s delay)
+    std::mutex              fft_queue_mtx_;
+    std::vector<FftFrame>   fft_queue_;
 
     void recv_loop();
     void handle_packet(PacketType type, const uint8_t* payload, uint32_t len);

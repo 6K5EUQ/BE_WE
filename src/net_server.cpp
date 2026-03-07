@@ -2,6 +2,7 @@
 #include "udp_discovery.hpp"
 #include <cstdio>
 #include <cstring>
+#include <cerrno>
 #include <tuple>
 #include <algorithm>
 #include <chrono>
@@ -91,26 +92,50 @@ void NetServer::accept_loop(){
     }
 }
 
+// ── Inject fd (relay MUX 모드) ────────────────────────────────────────────
+void NetServer::inject_fd(int fd){
+    auto conn = std::make_shared<ClientConn>();
+    conn->fd = fd;
+    conn->alive.store(true);
+    {
+        std::lock_guard<std::mutex> lk(clients_mtx_);
+        clients_.push_back(conn);
+    }
+    conn->thr = std::thread(&NetServer::client_loop, this, conn);
+    conn->thr.detach();
+}
+
 // ── Client loop ───────────────────────────────────────────────────────────
 void NetServer::client_loop(std::shared_ptr<ClientConn> c){
+    uint64_t pkt_count = 0;
     while(c->alive.load()){
         PktHdr hdr{};
         if(!recv_all(c->fd, &hdr, PKT_HDR_SIZE)){
+            int e = errno;
+            if(c->alive.load())  // 정상 stop이면 로그 생략
+                printf("[NetServer] recv hdr failed op=%d('%s') fd=%d errno=%d(%s) pkts=%llu\n",
+                       c->op_index, c->name, c->fd, e, strerror(e), (unsigned long long)pkt_count);
             break;
         }
-        // validate magic
         if(memcmp(hdr.magic, BEWE_MAGIC, 4) != 0){
-            printf("[NetServer] bad magic from op %d\n", c->op_index);
+            printf("[NetServer] bad magic from op=%d('%s') fd=%d (type=0x%02x)\n",
+                   c->op_index, c->name, c->fd, hdr.type);
             break;
         }
         uint32_t len = hdr.len;
-        if(len > 1024*1024){ // 1MB sanity limit
-            printf("[NetServer] oversized packet %u\n", len);
+        if(len > 1024*1024){
+            printf("[NetServer] oversized pkt op=%d type=0x%02x len=%u\n",
+                   c->op_index, (uint8_t)hdr.type, len);
             break;
         }
         std::vector<uint8_t> payload(len);
-        if(len > 0 && !recv_all(c->fd, payload.data(), len)) break;
-
+        if(len > 0 && !recv_all(c->fd, payload.data(), len)){
+            int e = errno;
+            printf("[NetServer] recv payload failed op=%d type=0x%02x len=%u errno=%d(%s)\n",
+                   c->op_index, (uint8_t)hdr.type, len, e, strerror(e));
+            break;
+        }
+        pkt_count++;
         handle_packet(c, static_cast<PacketType>(hdr.type),
                       payload.data(), len);
     }

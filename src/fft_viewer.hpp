@@ -221,6 +221,7 @@ public:
     // ── Globe / Station Discovery ─────────────────────────────────────────
     struct DiscoveredStation {
         std::string name;
+        std::string station_id; // relay 모드: 룸 ID; LAN 모드: ""
         float       lat        = 0.f;
         float       lon        = 0.f;
         uint16_t    tcp_port   = 0;

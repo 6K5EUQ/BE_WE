@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <string>
 #include <cstring>
+#include <cerrno>
 #include <chrono>
 #include <netdb.h>
 #include <unistd.h>
@@ -75,6 +76,58 @@ bool NetClient::connect(const char* host, int port,
     return true;
 }
 
+// ── relay 모드: 이미 연결된 fd로 AUTH만 수행 ─────────────────────────────
+bool NetClient::connect_fd(int fd, const char* id, const char* pw, uint8_t tier){
+    fd_ = fd;
+
+    PktAuthReq req{};
+    strncpy(req.id, id, 31);
+    strncpy(req.pw, pw, 63);
+    req.tier = tier;
+    if(!raw_send(PacketType::AUTH_REQ, &req, sizeof(req))){
+        fd_=-1; return false;
+    }
+
+    PktHdr hdr{};
+    if(!recv_all(fd_, &hdr, PKT_HDR_SIZE) ||
+       static_cast<PacketType>(hdr.type) != PacketType::AUTH_ACK){
+        fd_=-1; return false;
+    }
+    std::vector<uint8_t> payload(hdr.len);
+    if(hdr.len > 0 && !recv_all(fd_, payload.data(), hdr.len)){ fd_=-1; return false; }
+    if(hdr.len < sizeof(PktAuthAck)){ fd_=-1; return false; }
+    auto* ack = reinterpret_cast<PktAuthAck*>(payload.data());
+    if(!ack->ok){
+        printf("[NetClient] relay auth failed: %s\n", ack->reason);
+        fd_=-1; return false;
+    }
+
+    my_op_index = ack->op_index;
+    my_tier     = tier;
+    strncpy(my_name, id, 31);
+    connected_.store(true);
+
+    printf("[NetClient] relay connected as op %d '%s' (Tier%d)\n",
+           my_op_index, my_name, my_tier);
+
+    if(recv_thr_.joinable()) recv_thr_.join();
+    recv_thr_ = std::thread(&NetClient::recv_loop, this);
+    return true;
+}
+
+// ── FFT buffer pop (1s delay) ─────────────────────────────────────────────
+bool NetClient::pop_fft_frame(FftFrame& out){
+    auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    std::lock_guard<std::mutex> lk(fft_queue_mtx_);
+    if(fft_queue_.empty()) return false;
+    // 앞에서부터 충분히 오래된 프레임만 꺼냄
+    if(now_us - fft_queue_.front().recv_us < DISPLAY_DELAY_US) return false;
+    out = std::move(fft_queue_.front());
+    fft_queue_.erase(fft_queue_.begin());
+    return true;
+}
+
 // ── disconnect ────────────────────────────────────────────────────────────
 void NetClient::disconnect(){
     stop_discovery_listen();
@@ -111,21 +164,47 @@ void NetClient::stop_discovery_listen() {
 
 // ── recv loop ─────────────────────────────────────────────────────────────
 void NetClient::recv_loop(){
+    uint64_t pkt_count = 0;
+    const char* disc_reason = "unknown";
     while(connected_.load()){
         PktHdr hdr{};
-        if(!recv_all(fd_, &hdr, PKT_HDR_SIZE)) break;
-        if(memcmp(hdr.magic, BEWE_MAGIC, 4) != 0) break;
-
+        if(!recv_all(fd_, &hdr, PKT_HDR_SIZE)){
+            int e = errno;
+            if(connected_.load()){
+                printf("[NetClient] recv hdr failed: errno=%d(%s) pkts=%llu\n",
+                       e, strerror(e), (unsigned long long)pkt_count);
+                disc_reason = "recv_hdr_fail";
+            } else {
+                disc_reason = "disconnect_called";
+            }
+            break;
+        }
+        if(memcmp(hdr.magic, BEWE_MAGIC, 4) != 0){
+            printf("[NetClient] bad magic: type=0x%02x len=%u pkts=%llu\n",
+                   hdr.type, hdr.len, (unsigned long long)pkt_count);
+            disc_reason = "bad_magic";
+            break;
+        }
         uint32_t len = hdr.len;
-        if(len > 4*1024*1024) break;
-
+        if(len > 4*1024*1024){
+            printf("[NetClient] oversized pkt: type=0x%02x len=%u\n", hdr.type, len);
+            disc_reason = "oversized";
+            break;
+        }
         std::vector<uint8_t> payload(len);
-        if(len > 0 && !recv_all(fd_, payload.data(), len)) break;
-
+        if(len > 0 && !recv_all(fd_, payload.data(), len)){
+            int e = errno;
+            printf("[NetClient] recv payload failed: type=0x%02x len=%u errno=%d(%s)\n",
+                   hdr.type, len, e, strerror(e));
+            disc_reason = "recv_payload_fail";
+            break;
+        }
+        pkt_count++;
         handle_packet(static_cast<PacketType>(hdr.type), payload.data(), len);
     }
     connected_.store(false);
-    printf("[NetClient] disconnected\n");
+    printf("[NetClient] disconnected: reason=%s total_pkts=%llu\n",
+           disc_reason, (unsigned long long)pkt_count);
 }
 
 // ── handle_packet ─────────────────────────────────────────────────────────
@@ -139,15 +218,38 @@ void NetClient::handle_packet(PacketType type,
         uint32_t data_len = len - (uint32_t)sizeof(PktFftFrame);
         if(data_len != fh->fft_size) break;
 
-        std::lock_guard<std::mutex> lk(fft_mtx);
-        cf_hz   = fh->center_freq_hz;
-        sr      = fh->sample_rate;
-        fft_sz  = fh->fft_size;
-        pmin         = fh->power_min;
-        pmax         = fh->power_max;
-        fft_wall_time= fh->wall_time;
-        fft_data.assign(payload + sizeof(PktFftFrame),
+        // 수신 시각 (steady_clock μs)
+        auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+
+        FftFrame frm;
+        frm.data.assign(payload + sizeof(PktFftFrame),
                         payload + sizeof(PktFftFrame) + data_len);
+        frm.cf_hz     = fh->center_freq_hz;
+        frm.sr        = fh->sample_rate;
+        frm.fft_sz    = (uint16_t)fh->fft_size;
+        frm.pmin      = fh->power_min;
+        frm.pmax      = fh->power_max;
+        frm.wall_time = fh->wall_time;
+        frm.recv_us   = now_us;
+
+        {
+            std::lock_guard<std::mutex> qlk(fft_queue_mtx_);
+            // 큐가 너무 크면 오래된 것부터 drop (백로그 방지)
+            if(fft_queue_.size() >= FFT_QUEUE_MAX)
+                fft_queue_.erase(fft_queue_.begin());
+            fft_queue_.push_back(std::move(frm));
+        }
+        // 단일 프레임도 업데이트 (legacy 호환)
+        {
+            std::lock_guard<std::mutex> lk(fft_mtx);
+            cf_hz        = fh->center_freq_hz;
+            sr           = fh->sample_rate;
+            fft_sz       = (uint16_t)fh->fft_size;
+            pmin         = fh->power_min;
+            pmax         = fh->power_max;
+            fft_wall_time= fh->wall_time;
+        }
         fft_seq.fetch_add(1, std::memory_order_release);
         break;
     }
