@@ -1046,6 +1046,10 @@ void run_streaming_viewer(){
     bool do_logout = false;
     bool do_chassis_reset = false;
     int  chassis_reset_mode = 0; // 0=LOCAL, 1=HOST
+    // HOST 모드 로컬 채팅 로그 (do-while 외부에서 선언해야 콜백 람다에서 접근 가능)
+    struct LocalChatMsg { char from[32]; char msg[256]; bool is_error=false; };
+    std::vector<LocalChatMsg> host_chat_log;
+    std::mutex host_chat_mtx;
     // 함수 레벨 파일 목록 (스코프 공유 필요)
     // Record 탭: 세션 중 실시간 녹음 (record/iq, record/audio)
     static std::vector<std::string> rec_iq_files;
@@ -2148,7 +2152,13 @@ void run_streaming_viewer(){
                 v.autoscale_active=true; v.autoscale_init=false; v.autoscale_accum.clear();
             };
             srv->cb.on_chassis_reset = [&](){
-                // 재시작 전에 CHASSIS_RESETTING 상태 브로드캐스트
+                // JOIN→HOST 경유 chassis 1 reset: HOST 로컬 + JOIN 전체 채팅 알림 후 재시작
+                { std::lock_guard<std::mutex> lk(host_chat_mtx);
+                  LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
+                  strncpy(lm.msg,"Chassis 1 reset ...",255);
+                  if((int)host_chat_log.size()>=200) host_chat_log.erase(host_chat_log.begin());
+                  host_chat_log.push_back(lm); }
+                srv->broadcast_chat("BEWE", "Chassis 1 reset ...");
                 srv->broadcast_heartbeat(1);
                 chassis_reset_mode = 1;
                 do_chassis_reset   = true;
@@ -2156,18 +2166,31 @@ void run_streaming_viewer(){
             };
             // JOIN이 /chassis 2 reset 전송 → 네트워크 브로드캐스트 일시 중단 후 재개
             srv->cb.on_net_reset = [&](){
-                // 즉시 노란불 heartbeat 전송
+                // JOIN→HOST 경유 chassis 2 reset: HOST 로컬 + JOIN 전체 채팅 알림 후 방송 중단 → 재개
+                { std::lock_guard<std::mutex> lk(host_chat_mtx);
+                  LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
+                  strncpy(lm.msg,"Chassis 2 reset ...",255);
+                  if((int)host_chat_log.size()>=200) host_chat_log.erase(host_chat_log.begin());
+                  host_chat_log.push_back(lm); }
+                srv->broadcast_chat("BEWE", "Chassis 2 reset ...");
                 srv->broadcast_heartbeat(2);
                 v.net_bcast_pause.store(true, std::memory_order_relaxed);
                 srv->pause_broadcast();
                 NetServer* srv_ptr = v.net_srv;
                 std::atomic<bool>* bcast_pause_ptr = &v.net_bcast_pause;
-                std::thread([srv_ptr, bcast_pause_ptr](){
+                std::mutex* log_mtx_ptr2 = &host_chat_mtx;
+                std::vector<LocalChatMsg>* log_ptr2 = &host_chat_log;
+                std::thread([srv_ptr, bcast_pause_ptr, log_mtx_ptr2, log_ptr2](){
                     std::this_thread::sleep_for(std::chrono::seconds(1));
                     srv_ptr->resume_broadcast();
                     bcast_pause_ptr->store(false, std::memory_order_relaxed);
-                    // 재개 후 즉시 정상 heartbeat
                     srv_ptr->broadcast_heartbeat(0);
+                    srv_ptr->broadcast_chat("BEWE", "Chassis 2 stable ...");
+                    std::lock_guard<std::mutex> lk(*log_mtx_ptr2);
+                    LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
+                    strncpy(lm.msg,"Chassis 2 stable ...",255);
+                    if((int)log_ptr2->size()>=200) log_ptr2->erase(log_ptr2->begin());
+                    log_ptr2->push_back(lm);
                 }).detach();
             };
             // JOIN이 public 파일 삭제 요청 → 소유자 확인 후 삭제 + 브로드캐스트
@@ -2315,10 +2338,13 @@ void run_streaming_viewer(){
         bool is_public=false; // Public 탭 파일 (소유자만 삭제)
     } file_ctx;
 
-    // HOST 모드 로컬 채팅 로그 (JOIN은 net_cli->chat_log 사용)
-    struct LocalChatMsg { char from[32]; char msg[256]; bool is_error=false; };
-    std::vector<LocalChatMsg> host_chat_log;
-    std::mutex host_chat_mtx;
+    // chassis 1 reset 후 HOST 재시작: stable 메시지 (JOIN 재접속 전이므로 로컬만)
+    if(mode_sel == 1 && chassis_reset_mode == 1 && v.net_srv){
+        LocalChatMsg lm{}; lm.is_error = false;
+        strncpy(lm.from, "BEWE", 31);
+        strncpy(lm.msg,  "Chassis 1 stable ...", 255);
+        host_chat_log.push_back(lm);
+    }
 
     // HOST 모드: 수신 채팅을 로컬 로그에도 저장
     if(v.net_srv){
@@ -2609,7 +2635,6 @@ void run_streaming_viewer(){
         }
 
         ImGui_ImplOpenGL3_NewFrame(); ImGui_ImplGlfw_NewFrame(); ImGui::NewFrame();
-        v.topbar_sel_this_frame=false;
         // TM 모드: freeze_idx는 스페이스바 진입 시점에만 세팅 (매 프레임 갱신 금지)
         // Ctrl+휠로 tm_offset 변경 시 tm_update_display()가 display_idx를 재계산함
         if(v.texture_needs_recreate){ v.texture_needs_recreate=false; v.create_waterfall_texture(); }
@@ -3091,102 +3116,6 @@ void run_streaming_viewer(){
                 dl->AddText(ImVec2(rx,ty2),IM_COL32(255,180,0,255),ps);
             }
 
-            // Per-channel labels (right to left)
-            for(int i=MAX_CHANNELS-1;i>=0;i--){
-                Channel& ch=v.channels[i]; if(!ch.filter_active) continue;
-                float ss_mhz=std::min(ch.s,ch.e), se_mhz=std::max(ch.s,ch.e);
-                float cf_mhz=(ss_mhz+se_mhz)/2.0f;
-                float bw_khz=(se_mhz-ss_mhz)*1000.0f;
-                const char* mname[5]={"","AM","FM","M","DMR"};
-                const char* magic_names[]={"","AM","FM","DSB","SSB","CW"};
-                const char* pname[3]={" L"," L+R"," R"};
-                // JOIN은 dem_run 없음 → mode로 활성 판단
-                bool dem_active = v.remote_mode
-                    ? (ch.mode != Channel::DM_NONE)
-                    : ch.dem_run.load();
-                int pi=ch.pan+1; if(pi<0)pi=0; if(pi>2)pi=2;
-                char cb[96];
-                const char* mname2[5]={"","AM","FM","MAG","DMR"};
-                if(dem_active && ch.mode==Channel::DM_MAGIC){
-                    int mdet=ch.magic_det.load(std::memory_order_relaxed);
-                    const char* ms=(mdet>0&&mdet<=5)?magic_names[mdet]:"";
-                    if(ms[0])
-                        snprintf(cb,sizeof(cb),"[%d] %s %.3f MHz @ %.0f kHz  ",
-                                 i+1,ms,cf_mhz,bw_khz);
-                    else
-                        snprintf(cb,sizeof(cb),"[%d] %.3f MHz @ %.0f kHz  ",
-                                 i+1,cf_mhz,bw_khz);
-                } else if(dem_active && ch.mode!=Channel::DM_NONE){
-                    snprintf(cb,sizeof(cb),"[%d] %s %.3f MHz @ %.0f kHz  ",
-                             i+1,mname2[(int)ch.mode],cf_mhz,bw_khz);
-                } else {
-                    snprintf(cb,sizeof(cb),"[%d] %.3f MHz @ %.0f kHz  ",
-                             i+1,cf_mhz,bw_khz);
-                }
-                ImVec2 cs2=ImGui::CalcTextSize(cb); rx-=cs2.x;
-                bool is_selected=(v.selected_ch==i);
-                bool gate_open = v.remote_mode
-                    ? (ch.audio_mask.load() & 0x1u)!=0  // JOIN: 내 오디오 수신 여부
-                    : ch.sq_gate.load();
-                bool tb_dem = v.remote_mode
-                    ? (ch.mode != Channel::DM_NONE)
-                    : ch.dem_run.load();
-                bool tb_rec=(v.rec_on.load()&&v.rec_ch==i);
-
-                // 모드별 기본 색상 (필터 오버레이와 동일 계열)
-                ImU32 mode_col;
-                if(tb_rec)
-                    mode_col=IM_COL32(255, 60, 60,255);
-                else if(!tb_dem || ch.mode==Channel::DM_NONE)
-                    mode_col=IM_COL32(160,160,160,255);
-                else if(ch.mode==Channel::DM_AM)
-                    mode_col=IM_COL32( 80,200,255,255);
-                else if(ch.mode==Channel::DM_FM)
-                    mode_col=IM_COL32(255,220, 50,255);
-                else if(ch.mode==Channel::DM_MAGIC)
-                    mode_col=IM_COL32(180, 80,255,255);
-                else if(ch.mode==Channel::DM_DMR)
-                    mode_col=IM_COL32(180, 80,255,255);
-                else
-                    mode_col=IM_COL32(160,160,160,255);
-
-                ImU32 tc;
-                if(is_selected)
-                    // 선택: 신호 있으면 모드색, 없으면 흰색
-                    tc=gate_open ? mode_col : IM_COL32(255,255,255,255);
-                else
-                    // 비선택: 신호 있으면 모드색, 없으면 어두운 모드색
-                    tc=gate_open ? mode_col : IM_COL32(
-                        (uint8_t)(((mode_col>>IM_COL32_R_SHIFT)&0xFF)*0.5f),
-                        (uint8_t)(((mode_col>>IM_COL32_G_SHIFT)&0xFF)*0.5f),
-                        (uint8_t)(((mode_col>>IM_COL32_B_SHIFT)&0xFF)*0.5f),
-                        200);
-
-                ImVec2 mpos=ImGui::GetIO().MousePos;
-                bool hovered=(mpos.x>=rx&&mpos.x<rx+cs2.x&&mpos.y>=0&&mpos.y<TOPBAR_H);
-                if(hovered){
-                    tc=IM_COL32(255,255,255,255);
-                    if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
-                        v.stop_dem(i);
-                        v.channels[i].filter_active=false;
-                        v.channels[i].selected=false;
-                        v.channels[i].mode=Channel::DM_NONE;
-                        if(v.selected_ch==i) v.selected_ch=-1;
-                    } else if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
-                        if(v.selected_ch>=0) v.channels[v.selected_ch].selected=false;
-                        v.selected_ch=i; v.channels[i].selected=true;
-                        v.topbar_sel_this_frame=true;
-                    }
-                }
-                // 선택 채널: bold (1px offset 이중 렌더링)
-                if(is_selected){
-                    dl->AddText(ImVec2(rx+1,ty2),IM_COL32(0,0,0,100),cb);
-                    dl->AddText(ImVec2(rx+1,ty2),tc,cb);
-                }
-                dl->AddText(ImVec2(rx,ty2),tc,cb);
-
-
-            }
         }
         ImGui::PopStyleVar(); // ItemSpacing
 
@@ -4886,17 +4815,15 @@ void run_streaming_viewer(){
             // LINK: HOST=클라이언트 연결 중, JOIN=서버 연결 상태, LOCAL=꺼짐
             int link_state = 0; // 0=빨간, 1=초록, 2=노란
             if(v.net_srv){
-                bool has_clients = v.net_srv->client_count() > 0;
-                bool relay_ok    = relay_cli.is_relay_connected();
-                if(has_clients)   link_state = 1; // 초록: 실제 JOIN 클라이언트 있음
-                else if(relay_ok) link_state = 2; // 노란: relay 연결됨 (JOIN 없음)
-                else              link_state = 0; // 빨간: 연결 없음
+                // HOST: 서버가 동작 중이면 항상 초록 (JOIN 유무·relay 유무 무관)
+                // 노란불은 chassis 리셋 등 실제 이상 상태에서만 표현
+                link_state = 1;
             } else if(v.net_cli){
                 bool connected = v.net_cli->is_connected();
                 int  hs        = v.net_cli->host_state.load();
-                if(!connected)           link_state = 0;
-                else if(hs==1||hs==2)    link_state = 2;
-                else                     link_state = 1;
+                if(!connected) link_state = 0;
+                else if(hs==1) link_state = 2; // 노란: HOST chassis 리셋 중
+                else           link_state = 1; // 초록: 연결됨 (HOST FFT 중단 여부 무관)
             }
 
             // ── AUD LED: 오디오 출력 상태 ────────────────────────────────
@@ -5311,17 +5238,20 @@ void run_streaming_viewer(){
 
                     } else if(chat_str == "/chassis 1 reset"){
                         if(v.net_srv){
-                            // HOST: 재시작 전 CHASSIS_RESETTING 브로드캐스트
+                            // HOST: 전체 채팅 알림 → CHASSIS_RESETTING 브로드캐스트 → 재시작
+                            push_local("BEWE", "Chassis 1 reset ...", false);
+                            v.net_srv->broadcast_chat("BEWE", "Chassis 1 reset ...");
                             v.net_srv->broadcast_heartbeat(1);
                             chassis_reset_mode = 1;
                             do_chassis_reset   = true;
                             do_main_menu       = true;
                         } else if(v.net_cli){
-                            // JOIN: HOST에 원격 명령 전송
+                            // JOIN: HOST에 명령 전달 + 로컬에 메시지 표시
+                            push_local("BEWE", "Chassis 1 reset ...", false);
                             v.net_cli->cmd_chassis_reset();
-                            push_local("System", "Chassis reset command sent to HOST.", false);
                         } else {
-                            // LOCAL: SDR 재시작
+                            // LOCAL: 로컬 메시지 후 SDR 재시작
+                            push_local("BEWE", "Chassis 1 reset ...", false);
                             chassis_reset_mode = 0;
                             do_chassis_reset   = true;
                             do_main_menu       = true;
@@ -5329,8 +5259,9 @@ void run_streaming_viewer(){
 
                     } else if(chat_str == "/chassis 2 reset"){
                         if(v.net_srv){
-                            // HOST: 방송 중단 → 1초 대기 → 재개 (버퍼 플러시)
-                            push_local("System", "Network broadcast reset...", false);
+                            // HOST: JOIN 전체에 reset 알림 → 방송 중단 → 1초 대기 → 재개
+                            push_local("BEWE", "Chassis 2 reset ...", false);
+                            v.net_srv->broadcast_chat("BEWE", "Chassis 2 reset ...");
                             v.net_srv->broadcast_heartbeat(2); // JOIN에게 노란불
                             v.net_bcast_pause.store(true, std::memory_order_relaxed);
                             v.net_srv->pause_broadcast();
@@ -5342,18 +5273,19 @@ void run_streaming_viewer(){
                                 std::this_thread::sleep_for(std::chrono::seconds(1));
                                 srv_ptr->resume_broadcast();
                                 bcast_pause_ptr->store(false, std::memory_order_relaxed);
-                                srv_ptr->broadcast_heartbeat(0); // 정상 복귀
+                                srv_ptr->broadcast_heartbeat(0);
+                                srv_ptr->broadcast_chat("BEWE", "Chassis 2 stable ...");
                                 std::lock_guard<std::mutex> lk(*log_mtx_ptr);
                                 LocalChatMsg lm{}; lm.is_error = false;
-                                strncpy(lm.from, "System", 31);
-                                strncpy(lm.msg,  "Broadcast resumed.", 255);
+                                strncpy(lm.from, "BEWE", 31);
+                                strncpy(lm.msg,  "Chassis 2 stable ...", 255);
                                 if((int)log_ptr->size() >= 200) log_ptr->erase(log_ptr->begin());
                                 log_ptr->push_back(lm);
                             }).detach();
                         } else if(v.net_cli){
-                            // JOIN: HOST에게 명령 전달
+                            // JOIN: HOST에게 명령 전달 + 로컬에 메시지 표시
+                            push_local("BEWE", "Chassis 2 reset ...", false);
                             v.net_cli->cmd_net_reset();
-                            push_local("System", "Net reset command sent to HOST.", false);
                         } else {
                             push_local("System", "/chassis 2 reset: not in HOST/JOIN mode.", true);
                         }

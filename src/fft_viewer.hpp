@@ -291,7 +291,6 @@ public:
     // ── Channels ──────────────────────────────────────────────────────────
     Channel channels[MAX_CHANNELS];
     int     selected_ch=-1;
-    bool    topbar_sel_this_frame=false;
 
     struct NewDrag{ bool active=false; float anch=0,s=0,e=0; } new_drag;
 
