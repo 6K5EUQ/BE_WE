@@ -3,9 +3,11 @@
 #include "channel.hpp"
 #include <string>
 #include <vector>
+#include <deque>
 #include <tuple>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
 #include <atomic>
 #include <memory>
 #include <functional>
@@ -18,9 +20,56 @@ struct ClientConn {
     uint8_t tier     = 0;
     char    name[32] = {};
     bool    authed   = false;
-    std::mutex      send_mtx;
     std::atomic<bool> alive{false};
     std::thread     thr;
+
+    // ── 비동기 송신 큐 ────────────────────────────────────────────────────
+    // 느린 클라이언트가 broadcast를 블로킹하지 않도록 전용 큐 + 송신 스레드
+    static constexpr size_t SEND_QUEUE_MAX = 256; // 초과 시 oldest 드롭 (FFT)
+    std::deque<std::vector<uint8_t>> send_queue;
+    std::mutex              send_mtx;
+    std::condition_variable send_cv;
+    std::thread             send_thr;
+    std::atomic<bool>       send_stop{false};
+
+    void send_worker(){
+        while(true){
+            std::vector<uint8_t> pkt;
+            {
+                std::unique_lock<std::mutex> lk(send_mtx);
+                send_cv.wait(lk, [this]{ return !send_queue.empty() || send_stop.load(); });
+                if(send_stop.load() && send_queue.empty()) break;
+                pkt = std::move(send_queue.front());
+                send_queue.pop_front();
+            }
+            if(fd < 0 || !alive.load()) continue;
+            // 블로킹 send — 이 스레드만 블로킹됨
+            size_t sent = 0;
+            while(sent < pkt.size()){
+                ssize_t r = ::send(fd, pkt.data()+sent, pkt.size()-sent, MSG_NOSIGNAL);
+                if(r <= 0){ alive.store(false); break; }
+                sent += (size_t)r;
+            }
+        }
+    }
+
+    void start_send_worker(){ send_thr = std::thread(&ClientConn::send_worker, this); }
+    void stop_send_worker(){
+        send_stop.store(true);
+        send_cv.notify_all();
+        if(send_thr.joinable()) send_thr.join();
+    }
+
+    // 큐에 패킷 추가 (is_fft=true이면 큐 포화 시 oldest 드롭)
+    void enqueue(std::vector<uint8_t> pkt, bool is_fft = false){
+        std::lock_guard<std::mutex> lk(send_mtx);
+        if(send_queue.size() >= SEND_QUEUE_MAX){
+            if(is_fft) send_queue.pop_front(); // oldest FFT 드롭
+            else return;                        // 제어 패킷: 드롭 대신 무시 (큐 포화 시)
+        }
+        send_queue.push_back(std::move(pkt));
+        send_cv.notify_one();
+    }
 
     // 업로드 수신 상태 (SHARE_UPLOAD_META/DATA)
     struct UploadRecv {

@@ -54,6 +54,7 @@ void NetServer::stop(){
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
         c->alive.store(false);
+        c->stop_send_worker();
         if(c->fd >= 0){ shutdown(c->fd, SHUT_RDWR); close(c->fd); c->fd=-1; }
         if(c->thr.joinable()) c->thr.join();
     }
@@ -85,6 +86,7 @@ void NetServer::accept_loop(){
         auto conn = std::make_shared<ClientConn>();
         conn->fd = cfd;
         conn->alive.store(true);
+        conn->start_send_worker();
 
         {
             std::lock_guard<std::mutex> lk(clients_mtx_);
@@ -100,6 +102,7 @@ void NetServer::inject_fd(int fd){
     auto conn = std::make_shared<ClientConn>();
     conn->fd = fd;
     conn->alive.store(true);
+    conn->start_send_worker();
     {
         std::lock_guard<std::mutex> lk(clients_mtx_);
         clients_.push_back(conn);
@@ -353,6 +356,7 @@ void NetServer::drop_client(std::shared_ptr<ClientConn> c){
     char name[32]; strncpy(name, c->name, 31);
 
     c->alive.store(false);
+    c->stop_send_worker();
     if(c->fd >= 0){ shutdown(c->fd, SHUT_RDWR); close(c->fd); c->fd=-1; }
 
     {
@@ -373,11 +377,7 @@ void NetServer::drop_client(std::shared_ptr<ClientConn> c){
 void NetServer::send_to(ClientConn& c, PacketType type,
                          const void* payload, uint32_t len){
     if(!c.alive.load() || c.fd < 0) return;
-    auto pkt = make_packet(type, payload, len);
-    std::lock_guard<std::mutex> lk(c.send_mtx);
-    if(!send_all(c.fd, pkt.data(), pkt.size())){
-        c.alive.store(false);
-    }
+    c.enqueue(make_packet(type, payload, len), false);
 }
 
 // ── Broadcast FFT ─────────────────────────────────────────────────────────
@@ -402,9 +402,7 @@ void NetServer::broadcast_fft(const int8_t* data, int fft_size,
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
         if(!c->authed || !c->alive.load()) continue;
-        auto pkt = make_packet(PacketType::FFT_FRAME, payload.data(), total);
-        std::lock_guard<std::mutex> slk(c->send_mtx);
-        send_all(c->fd, pkt.data(), pkt.size());
+        c->enqueue(make_packet(PacketType::FFT_FRAME, payload.data(), total), true);
     }
 }
 
@@ -425,11 +423,8 @@ void NetServer::send_audio(uint32_t op_mask, uint8_t ch_idx, int8_t pan,
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
         if(!c->authed || !c->alive.load()) continue;
-        // bit (op_index) set → send to this operator
         if(!(op_mask & (1u << c->op_index))) continue;
-        auto pkt = make_packet(PacketType::AUDIO_FRAME, payload.data(), payload_size);
-        std::lock_guard<std::mutex> slk(c->send_mtx);
-        send_all(c->fd, pkt.data(), pkt.size());
+        c->enqueue(make_packet(PacketType::AUDIO_FRAME, payload.data(), payload_size), false);
     }
 }
 
@@ -530,9 +525,7 @@ void NetServer::broadcast_wf_event(int32_t fft_offset, int64_t wall_time,
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& cli : clients_){
         if(!cli->authed || !cli->alive.load()) continue;
-        auto pkt = make_packet(PacketType::WF_EVENT, &ev, sizeof(ev));
-        std::lock_guard<std::mutex> slk(cli->send_mtx);
-        send_all(cli->fd, pkt.data(), pkt.size());
+        cli->enqueue(make_packet(PacketType::WF_EVENT, &ev, sizeof(ev)), false);
     }
 }
 
@@ -541,9 +534,7 @@ void NetServer::send_region_response(int op_index, bool allowed){
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& cli : clients_){
         if(cli->authed && cli->alive.load() && cli->op_index==(uint8_t)op_index){
-            auto pkt = make_packet(PacketType::REGION_RESPONSE, &resp, sizeof(resp));
-            std::lock_guard<std::mutex> slk(cli->send_mtx);
-            send_all(cli->fd, pkt.data(), pkt.size());
+            cli->enqueue(make_packet(PacketType::REGION_RESPONSE, &resp, sizeof(resp)), false);
             break;
         }
     }
