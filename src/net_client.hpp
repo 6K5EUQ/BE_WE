@@ -67,7 +67,7 @@ public:
     std::atomic<int>     fft_seq{0};   // incremented each new buffered frame
 
     // Buffer queue: recv thread enqueues, UI dequeues after DISPLAY_DELAY_US
-    static constexpr int64_t DISPLAY_DELAY_US = 1'000'000;  // 1 second
+    static constexpr int64_t DISPLAY_DELAY_US = 50'000;  // 50ms
     static constexpr size_t  FFT_QUEUE_MAX     = 512;        // max buffered frames
 
     // Returns true if a frame was dequeued (ready to display)

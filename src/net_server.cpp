@@ -9,6 +9,7 @@
 #include <thread>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -76,6 +77,8 @@ void NetServer::accept_loop(){
             if(running_.load()) perror("accept");
             break;
         }
+        // TCP_NODELAY: Nagle 알고리즘 비활성화 → FFT 스트림 지연 방지
+        int nd=1; setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
         // set TCP keepalive
         int ka=1; setsockopt(cfd, SOL_SOCKET, SO_KEEPALIVE, &ka, sizeof(ka));
 

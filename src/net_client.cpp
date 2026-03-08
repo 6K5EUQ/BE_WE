@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 
 // ── connect ───────────────────────────────────────────────────────────────
@@ -33,6 +34,9 @@ bool NetClient::connect(const char* host, int port,
         close(fd_); fd_=-1; freeaddrinfo(res); return false;
     }
     freeaddrinfo(res);
+
+    // TCP_NODELAY: Nagle 비활성화 → 실시간 스트림 지연 방지
+    int nd=1; setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
 
     // Send AUTH_REQ
     PktAuthReq req{};

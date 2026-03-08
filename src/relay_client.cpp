@@ -7,6 +7,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
+#include <netinet/tcp.h>
 #include <chrono>
 
 // ── TCP 연결 (5초 타임아웃) ───────────────────────────────────────────────
@@ -28,6 +29,7 @@ int RelayClient::tcp_connect(const std::string& host, int port){
     timeval tv0{0,0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv0, sizeof(tv0));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv0, sizeof(tv0));
+    int nd = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
     return fd;
 }
 
@@ -212,7 +214,7 @@ void RelayClient::mux_loop(int relay_fd,
                 while(jp->local_fd >= 0){
                     ssize_t n = recv(jp->remote_fd, tbuf.data(), tbuf.size(), 0);
                     if(n <= 0) break;
-                    RelayMuxHdr mh{}; mh.conn_id=0xFFFF;
+                    RelayMuxHdr mh{}; mh.conn_id=cid;  // 특정 JOIN conn_id (0xFFFF=브로드캐스트 아님)
                     mh.type = static_cast<uint8_t>(RelayMuxType::DATA);
                     mh.len  = (uint32_t)n;
                     // relay_fd write: mux_loop(HB)와 동시 접근 방지 → mutex
