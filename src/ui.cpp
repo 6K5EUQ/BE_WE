@@ -2889,6 +2889,20 @@ void run_streaming_viewer(){
             }
         }
 
+        // ── 우측 패널 토글 (S키) ──────────────────────────────────────────────
+        // saved_ratio: 사용자가 마지막으로 설정한 패널 너비 (0=초기상태 미설정)
+        static float right_panel_saved_ratio = 0.0f;
+        if(ImGui::IsKeyPressed(ImGuiKey_S, false) && !ImGui::GetIO().WantTextInput){
+            if(v.right_panel_ratio > 0.01f){
+                // 열려있음 → 저장 후 닫기
+                right_panel_saved_ratio = v.right_panel_ratio;
+                v.right_panel_ratio = 0.0f;
+            } else {
+                // 닫혀있음 → 마지막 저장값으로 열기 (미설정시 기본값 0.3)
+                v.right_panel_ratio = (right_panel_saved_ratio > 0.01f) ? right_panel_saved_ratio : 0.3f;
+            }
+        }
+
         // ── 채팅창 토글 / 빠른 명령 입력 (항상 우선 처리, editing 무관) ─────
         if(ImGui::IsKeyPressed(ImGuiKey_RightShift, false) && !ImGui::GetIO().WantTextInput){
             chat_open = !chat_open;
@@ -3283,6 +3297,8 @@ void run_streaming_viewer(){
             if(vdiv_dragging){
                 v.right_panel_ratio -= io.MouseDelta.x / disp_w;
                 v.right_panel_ratio = std::max(0.0f, std::min(1.0f, v.right_panel_ratio));
+                // 드래그 중 실시간으로 열린 상태의 너비를 기억 (닫힘 상태 제외)
+                if(v.right_panel_ratio > 0.01f) right_panel_saved_ratio = v.right_panel_ratio;
                 ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
             } else if(vdiv_hov){
                 ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
