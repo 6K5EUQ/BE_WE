@@ -2347,6 +2347,7 @@ void run_streaming_viewer(){
         bool open=false; float x=0,y=0;
         std::string filepath, filename;
         bool is_public=false; // Public 탭 파일 (소유자만 삭제)
+        bool selected=false;  // 좌클릭 선택 상태
     } file_ctx;
 
     // chassis 1 reset 후 HOST 재시작: stable 메시지 (JOIN 재접속 전이므로 로컬만)
@@ -2840,6 +2841,50 @@ void run_streaming_viewer(){
                         if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
                     }
                     v.selected_ch=-1;
+                } else if(file_ctx.selected && !file_ctx.filepath.empty()){
+                    // 선택된 파일 DEL 키로 삭제
+                    bool can_delete = true;
+                    if(file_ctx.is_public){
+                        auto it = pub_owners.find(file_ctx.filename);
+                        if(it != pub_owners.end()){
+                            const char* my_id = login_get_id();
+                            can_delete = (it->second == std::string(my_id));
+                        }
+                    }
+                    if(can_delete){
+                        remove(file_ctx.filepath.c_str());
+                        auto rm_from = [&](std::vector<std::string>& v2){
+                            v2.erase(std::remove(v2.begin(),v2.end(),file_ctx.filename),v2.end());
+                        };
+                        rm_from(rec_iq_files); rm_from(rec_audio_files);
+                        rm_from(priv_iq_files); rm_from(priv_audio_files);
+                        rm_from(pub_iq_files); rm_from(pub_audio_files);
+                        rm_from(share_iq_files); rm_from(share_audio_files);
+                        rm_from(priv_files); rm_from(shared_files); rm_from(downloaded_files);
+                        priv_extra_paths.erase(file_ctx.filename);
+                        pub_owners.erase(file_ctx.filename);
+                        pub_listeners.erase(file_ctx.filename);
+                        {
+                            std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                            v.rec_entries.erase(std::remove_if(v.rec_entries.begin(),v.rec_entries.end(),
+                                [&](const FFTViewer::RecEntry& e){return e.path==file_ctx.filepath;}),
+                                v.rec_entries.end());
+                        }
+                        if(v.net_srv && file_ctx.is_public){
+                            std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
+                            for(auto& sf : shared_files){
+                                bool siq = (sf.size()>3&&sf.substr(0,3)=="IQ_")||(sf.size()>3&&sf.substr(0,3)=="sa_");
+                                std::string sfp = (siq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+sf;
+                                struct stat sst{}; uint64_t fsz=0;
+                                if(stat(sfp.c_str(),&sst)==0) fsz=(uint64_t)sst.st_size;
+                                std::string upl;
+                                auto oit=pub_owners.find(sf); if(oit!=pub_owners.end()) upl=oit->second;
+                                slist.push_back({sf,fsz,upl});
+                            }
+                            v.net_srv->send_share_list(-1, slist);
+                        }
+                        file_ctx.selected=false; file_ctx.filepath=""; file_ctx.filename="";
+                    }
                 }
             }
         }
@@ -3766,9 +3811,19 @@ void run_streaming_viewer(){
                                                 const std::string szstr=(it_rz!=fsz_cache.end())?it_rz->second:fmt_filesize("",re.path);
                                                 std::string lbl = std::string("[Done]  ")+re.filename;
                                                 if(!szstr.empty()) lbl += "  "+szstr;
-                                                ImGui::Selectable(lbl.c_str(), false);
-                                                if(ImGui::IsItemHovered()&&ImGui::IsMouseClicked(ImGuiMouseButton_Right))
-                                                    file_ctx={true,io.MousePos.x,io.MousePos.y,re.path,re.filename};
+                                                bool is_sel_r = file_ctx.selected && file_ctx.filepath==re.path;
+                                                ImGui::Selectable(lbl.c_str(), is_sel_r);
+                                                if(ImGui::IsItemHovered()){
+                                                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                                                        file_ctx.selected=true; file_ctx.open=false;
+                                                        file_ctx.filepath=re.path; file_ctx.filename=re.filename;
+                                                        file_ctx.is_public=false;
+                                                    }
+                                                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                                                        file_ctx={true,io.MousePos.x,io.MousePos.y,re.path,re.filename};
+                                                        file_ctx.selected=true;
+                                                    }
+                                                }
                                             } else {
                                                 float elapsed=std::chrono::duration<float>(
                                                     std::chrono::steady_clock::now()-re.t_start).count();
@@ -3952,9 +4007,19 @@ void run_streaming_viewer(){
                                             const std::string szstr=(it_az!=fsz_cache.end())?it_az->second:fmt_filesize("",re.path);
                                             std::string lbl = std::string("[Done]  ")+re.filename;
                                             if(!szstr.empty()) lbl += "  "+szstr;
-                                            ImGui::Selectable(lbl.c_str(), false);
-                                            if(ImGui::IsItemHovered()&&ImGui::IsMouseClicked(ImGuiMouseButton_Right))
-                                                file_ctx={true,io.MousePos.x,io.MousePos.y,re.path,re.filename};
+                                            bool is_sel_a = file_ctx.selected && file_ctx.filepath==re.path;
+                                            ImGui::Selectable(lbl.c_str(), is_sel_a);
+                                            if(ImGui::IsItemHovered()){
+                                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                                                    file_ctx.selected=true; file_ctx.open=false;
+                                                    file_ctx.filepath=re.path; file_ctx.filename=re.filename;
+                                                    file_ctx.is_public=false;
+                                                }
+                                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                                                    file_ctx={true,io.MousePos.x,io.MousePos.y,re.path,re.filename};
+                                                    file_ctx.selected=true;
+                                                }
+                                            }
                                         } else {
                                             float elapsed=std::chrono::duration<float>(
                                                 std::chrono::steady_clock::now()-re.t_start).count();
@@ -4008,12 +4073,19 @@ void run_streaming_viewer(){
                                 const std::string& szstr=(it_sz!=fsz_cache.end())?it_sz->second:fmt_filesize("",fp);
                                 std::string display = "  "+iq_files[fi];
                                 if(!szstr.empty()) display += "  "+szstr;
-                                ImGui::Selectable(display.c_str(), false);
+                                bool is_sel = file_ctx.selected && file_ctx.filepath==fp;
+                                ImGui::Selectable(display.c_str(), is_sel);
                                 if(ImGui::IsItemHovered()){
                                     if(on_hover) on_hover(fp, iq_files[fi]);
+                                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                                        file_ctx.selected=true; file_ctx.open=false;
+                                        file_ctx.filepath=fp; file_ctx.filename=iq_files[fi];
+                                        file_ctx.is_public=is_public_section;
+                                    }
                                     if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
                                         file_ctx={true,io.MousePos.x,io.MousePos.y,fp,iq_files[fi]};
                                         file_ctx.is_public=is_public_section;
+                                        file_ctx.selected=true;
                                     }
                                 }
                                 ImGui::PopID();
@@ -4028,12 +4100,19 @@ void run_streaming_viewer(){
                                 const std::string& szstr=(it_sz2!=fsz_cache.end())?it_sz2->second:fmt_filesize("",fp);
                                 std::string display = "  "+audio_files[fi];
                                 if(!szstr.empty()) display += "  "+szstr;
-                                ImGui::Selectable(display.c_str(), false);
+                                bool is_sel2 = file_ctx.selected && file_ctx.filepath==fp;
+                                ImGui::Selectable(display.c_str(), is_sel2);
                                 if(ImGui::IsItemHovered()){
                                     if(on_hover) on_hover(fp, audio_files[fi]);
+                                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                                        file_ctx.selected=true; file_ctx.open=false;
+                                        file_ctx.filepath=fp; file_ctx.filename=audio_files[fi];
+                                        file_ctx.is_public=is_public_section;
+                                    }
                                     if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
                                         file_ctx={true,io.MousePos.x,io.MousePos.y,fp,audio_files[fi]};
                                         file_ctx.is_public=is_public_section;
+                                        file_ctx.selected=true;
                                     }
                                 }
                                 ImGui::PopID();
@@ -4173,8 +4252,14 @@ void run_streaming_viewer(){
                                         const std::string& szstr=(it_psz!=fsz_cache.end())?it_psz->second:fmt_filesize("",fp);
                                         std::string display = "  " + fn;
                                         if(!szstr.empty()) display += "  " + szstr;
-                                        ImGui::Selectable(display.c_str(), false);
+                                        bool is_sel_p = file_ctx.selected && file_ctx.filepath==fp;
+                                        ImGui::Selectable(display.c_str(), is_sel_p);
                                         if(ImGui::IsItemHovered()){
+                                            if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                                                file_ctx.selected=true; file_ctx.open=false;
+                                                file_ctx.filepath=fp; file_ctx.filename=fn;
+                                                file_ctx.is_public=true;
+                                            }
                                             // 소유자 + 다운로드한 사람 툴팁
                                             auto oit = pub_owners.find(fn);
                                             auto it2 = pub_listeners.find(fn);
@@ -4195,6 +4280,7 @@ void run_streaming_viewer(){
                                             if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
                                                 file_ctx={true,io.MousePos.x,io.MousePos.y,fp,fn};
                                                 file_ctx.is_public=true;
+                                                file_ctx.selected=true;
                                             }
                                         }
                                         ImGui::PopID();

@@ -182,10 +182,12 @@ void FFTViewer::capture_and_process_rtl(){
             continue;
         }
 
-        // 주파수 변경
+        // 주파수 변경 — set 후 한 사이클 쉬고 read_sync 재개 (RTL-SDR v4 USB 안정화)
         if(freq_req && !freq_prog){
             freq_prog=true;
             rtlsdr_set_center_freq(dev_rtl, (uint32_t)(pending_cf*1e6));
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            rx_pos=0; rx_avail=0;
             {std::lock_guard<std::mutex> lk(data_mtx);
              header.center_frequency=(uint64_t)(pending_cf*1e6);}
             printf("Freq → %.2f MHz\n", pending_cf);
@@ -193,6 +195,7 @@ void FFTViewer::capture_and_process_rtl(){
             warmup_cnt=0;
             update_dem_by_freq(pending_cf);
             freq_req=false; freq_prog=false;
+            continue; // read_sync 호출을 다음 사이클로 미룸
         }
 
         // ── RX: 고정 청크(min 8192)로 읽기 → USB 오버헤드 최소화 ──────────
