@@ -33,11 +33,46 @@ int RelayClient::tcp_connect(const std::string& host, int port){
     return fd;
 }
 
+// ── 여러 후보 IP를 순차 시도해 첫 번째 성공한 fd 반환 ────────────────────
+// candidates: {primary_host, lan_ip1, lan_ip2, ...} 순서
+// LAN IP가 먼저 성공하면 더 빠른 경로로 접속됨
+int RelayClient::tcp_connect_any(const std::vector<std::string>& candidates, int port){
+    for(const auto& h : candidates){
+        if(h.empty()) continue;
+        int fd = tcp_connect(h, port);
+        if(fd >= 0){
+            printf("[RelayClient] connected via %s:%d\n", h.c_str(), port);
+            return fd;
+        }
+    }
+    return -1;
+}
+
+// 현재 캐시된 LAN IP + 고정 host를 합친 후보 목록 반환
+// LAN IP를 앞에 배치해 같은 망이면 우선 시도
+std::vector<std::string> RelayClient::make_candidates(const std::string& primary_host){
+    std::vector<std::string> cands;
+    // 로컬호스트 우선 (relay가 같은 머신이면 가장 빠름)
+    cands.push_back("127.0.0.1");
+    {
+        std::lock_guard<std::mutex> lk(relay_lan_ips_mtx);
+        for(const auto& ip : relay_lan_ips)
+            if(ip != "127.0.0.1" && ip != primary_host)
+                cands.push_back(ip);
+    }
+    // 고정 공인 IP는 마지막 (WAN fallback)
+    if(primary_host != "127.0.0.1")
+        cands.push_back(primary_host);
+    return cands;
+}
+
 // ── 목록 조회 ─────────────────────────────────────────────────────────────
 std::vector<RelayClient::Station>
 RelayClient::fetch_stations(const std::string& host, int port){
     std::vector<Station> out;
-    int fd = tcp_connect(host, port);
+    // 후보 IP 순서로 접속 시도 (LAN → WAN)
+    auto cands = make_candidates(host);
+    int fd = tcp_connect_any(cands, port);
     if(fd < 0) return out;
     timeval tv{5,0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -49,6 +84,17 @@ RelayClient::fetch_stations(const std::string& host, int port){
     if(static_cast<RelayPktType>(hdr.type) != RelayPktType::LIST_RESP) return out;
     if(payload.size() < sizeof(RelayListResp)) return out;
     auto* resp = reinterpret_cast<const RelayListResp*>(payload.data());
+
+    // LAN IP 캐시 업데이트 (relay 서버가 자신의 LAN IP를 알려줌)
+    {
+        std::lock_guard<std::mutex> lk(relay_lan_ips_mtx);
+        relay_lan_ips.clear();
+        for(int li = 0; li < (int)resp->lan_ip_count && li < RELAY_MAX_LAN_IPS; li++){
+            std::string ip(resp->lan_ips[li], strnlen(resp->lan_ips[li], 15));
+            if(!ip.empty()) relay_lan_ips.push_back(ip);
+        }
+    }
+
     uint16_t cnt = resp->count;
     const RelayStation* arr = reinterpret_cast<const RelayStation*>(
         payload.data() + sizeof(RelayListResp));
@@ -95,7 +141,8 @@ void RelayClient::poll_loop(std::string host, int port,
 int RelayClient::open_room(const std::string& relay_host, int relay_port,
                             const std::string& station_id, const std::string& station_name,
                             float lat, float lon, uint8_t host_tier){
-    int fd = tcp_connect(relay_host, relay_port);
+    auto cands = make_candidates(relay_host);
+    int fd = tcp_connect_any(cands, relay_port);
     if(fd < 0){ printf("[RelayClient] open_room: connect failed\n"); return -1; }
 
     RelayHostOpen op{};
@@ -259,7 +306,8 @@ void RelayClient::mux_loop(int relay_fd,
 // ── JOIN 모드: 룸 입장 ────────────────────────────────────────────────────
 int RelayClient::join_room(const std::string& relay_host, int relay_port,
                             const std::string& station_id){
-    int fd = tcp_connect(relay_host, relay_port);
+    auto cands = make_candidates(relay_host);
+    int fd = tcp_connect_any(cands, relay_port);
     if(fd < 0){ printf("[RelayClient] join_room: connect failed\n"); return -1; }
 
     RelayJoinRoom jr{};

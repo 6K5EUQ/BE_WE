@@ -34,6 +34,11 @@ public:
         uint8_t     user_count = 0;
     };
 
+    // relay 서버의 LAN IP 캐시 (LIST_RESP에서 수신)
+    // 같은 망에 있으면 LAN IP로 직접 접속 가능
+    std::vector<std::string> relay_lan_ips;
+    std::mutex               relay_lan_ips_mtx;
+
     // ── 목록 조회 ─────────────────────────────────────────────────────────
     std::vector<Station> fetch_stations(const std::string& host, int port);
     void start_polling(const std::string& host, int port,
@@ -61,6 +66,10 @@ public:
                   const std::string& station_id);
 
     static int tcp_connect(const std::string& host, int port);
+    // 여러 후보 IP 중 첫 번째 성공한 연결 반환 (LAN 우선)
+    int tcp_connect_any(const std::vector<std::string>& candidates, int port);
+    // primary_host + 캐시된 LAN IP를 합친 후보 목록 생성
+    std::vector<std::string> make_candidates(const std::string& primary_host);
 
 private:
     // 폴링

@@ -223,7 +223,7 @@ public:
     // ── Globe / Station Discovery ─────────────────────────────────────────
     struct DiscoveredStation {
         std::string name;
-        std::string station_id; // relay 모드: 룸 ID; LAN 모드: ""
+        std::string station_id;    // relay 모드: 룸 ID; LAN 모드: ""
         float       lat        = 0.f;
         float       lon        = 0.f;
         uint16_t    tcp_port   = 0;
@@ -231,6 +231,7 @@ public:
         uint8_t     user_count = 0;
         uint8_t     host_tier  = 1;
         double      last_seen  = 0.0; // glfwGetTime()
+        uint16_t    local_relay_port = 0; // LAN local relay 포트 (0=없음)
     };
     std::vector<DiscoveredStation> discovered_stations;
     std::mutex                     discovered_stations_mtx;
@@ -245,6 +246,7 @@ public:
     // JOIN에서 M이면 cmd_toggle_recv(ch, false) 전송
     int  local_ch_out[5] = {1,1,1,1,1}; // 기본: L+R
     bool ch_created_by_me[MAX_CHANNELS] = {}; // JOIN: 내가 생성한 채널 여부
+    bool digi_panel_on[MAX_CHANNELS] = {};   // 채널별 디지털 버튼 패널 표시 여부 (D키 토글)
     // JOIN: 서버에서 수신한 전체 audio_mask (리스너 표시용)
     uint32_t srv_audio_mask[MAX_CHANNELS] = {};
     // JOIN: 오디오 녹음 시작 전 뮤트 상태 저장 (녹음 후 복원용)
@@ -343,9 +345,13 @@ public:
 
     // ── demod.cpp ─────────────────────────────────────────────────────────
     void dem_worker(int ch_idx);
-    void dmr_worker(int ch_idx);
     void start_dem(int ch_idx, Channel::DemodMode mode);
     void stop_dem(int ch_idx);
+
+    // ── ais.cpp ───────────────────────────────────────────────────────────
+    void ais_worker(int ch_idx);
+    void start_digi(int ch_idx, Channel::DigitalMode mode);
+    void stop_digi(int ch_idx);
     void stop_all_dem();
     void update_dem_by_freq(float new_cf_mhz); // 주파수 변경 시 복조 pause/resume
 
@@ -381,3 +387,7 @@ public:
 
 // ── Entry point ───────────────────────────────────────────────────────────
 void run_streaming_viewer();
+
+// ── BladeRF USB 소프트 리셋 (sudo 불필요, udev rule 권한 사용) ─────────────
+// USBDEVFS_RESET ioctl: 물리적으로 뽑았다 꽂는 것과 동일한 효과
+bool bladerf_usb_reset();

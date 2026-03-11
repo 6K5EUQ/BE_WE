@@ -71,7 +71,10 @@ struct Channel {
     char  owner[32]={};   // creator ID (empty = unknown)
 
     // Demodulation mode
-    enum DemodMode{ DM_NONE=0, DM_AM, DM_FM, DM_MAGIC, DM_DMR } mode=DM_NONE;
+    enum DemodMode{ DM_NONE=0, DM_AM, DM_FM, DM_MAGIC } mode=DM_NONE;
+
+    // Digital decode mode (D키로 토글, 음성 복조와 독립)
+    enum DigitalMode{ DIGI_NONE=0, DIGI_AIS, DIGI_ADSB, DIGI_DMR } digital_mode=DIGI_NONE;
 
     // Magic mode: detected modulation (0=analyzing, 1=AM, 2=FM, 3=DSB, 4=SSB, 5=CW)
     std::atomic<int> magic_det{0};
@@ -79,13 +82,19 @@ struct Channel {
     // audio_mask: bit0=host local, bit_i=operator_i gets audio
     std::atomic<uint32_t> audio_mask{0x1};  // default: host only
 
-    // Demod thread
+    // Demod thread (음성)
     std::atomic<bool>   dem_run{false};
     std::atomic<bool>   dem_stop_req{false};
     std::thread         dem_thr;
     std::atomic<size_t> dem_rp{0};
     bool                dem_paused=false;         // 주파수 범위 벗어나 자동 pause됨
     DemodMode           dem_paused_mode=DM_NONE;  // pause 직전 mode 보존
+
+    // Digital decode thread (AIS 등)
+    std::atomic<bool>   digi_run{false};
+    std::atomic<bool>   digi_stop_req{false};
+    std::thread         digi_thr;
+    std::atomic<size_t> digi_rp{0};
 
     // Per-channel audio ring (float mono)
     static constexpr size_t AR_SZ   = 16384;

@@ -12,6 +12,44 @@
 #include <chrono>
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Kaiser FIR LPF 생성
+// cutoff_norm: 정규화 컷오프 (0~0.5, 0.5=Nyquist)
+// beta: Kaiser 윈도우 파라미터 (6=~44dB, 8=~58dB, 10=~74dB stopband)
+// ─────────────────────────────────────────────────────────────────────────────
+static std::vector<float> make_kaiser_lpf(int ntaps, double cutoff_norm, double beta)
+{
+    // Modified Bessel function I0
+    auto I0 = [](double x) -> double {
+        double sum = 1.0, term = 1.0;
+        for(int k = 1; k <= 30; k++){
+            term *= (x/2.0/k) * (x/2.0/k);
+            sum += term;
+            if(term < 1e-12 * sum) break;
+        }
+        return sum;
+    };
+
+    int M = ntaps - 1;
+    double I0b = I0(beta);
+    std::vector<float> h(ntaps);
+    double sum = 0.0;
+    for(int n = 0; n < ntaps; n++){
+        double nd = n - M/2.0;
+        // Sinc (LPF ideal)
+        double sinc = (nd == 0.0) ? 2.0*cutoff_norm
+                                  : sin(2.0*M_PI*cutoff_norm*nd) / (M_PI*nd);
+        // Kaiser window
+        double r = 2.0*n/M - 1.0;
+        double w = I0(beta * sqrt(std::max(0.0, 1.0 - r*r))) / I0b;
+        h[n] = (float)(sinc * w);
+        sum += h[n];
+    }
+    // 정규화
+    for(auto& v : h) v /= (float)sum;
+    return h;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // WAV 헤더 작성 (stereo int16: L=I, R=Q)
 // bewe 커스텀 청크: center_freq_hz(uint64) + start_time(int64) + sample_rate(uint32) = 20바이트
 // ─────────────────────────────────────────────────────────────────────────────
@@ -115,6 +153,21 @@ void FFTViewer::do_region_save_work(){
     int decim = std::max(1, (int)((float)sr / (float)bw_hz));
     uint32_t out_sr = sr / decim;
 
+    // Kaiser FIR LPF (데시메이션 비율에 따라 탭 수·beta 결정)
+    // 컷오프: 0.45/decim (Nyquist의 90% → alias 억압 충분)
+    // 탭 수: 최소 31, 데시메이션이 클수록 더 많은 탭 필요
+    std::vector<float> fir_taps;
+    std::vector<float> fir_state; // 지연 라인
+    if(decim > 1){
+        int ntaps = std::max(31, decim * 8 + 1);
+        if(ntaps % 2 == 0) ntaps++;              // 홀수 탭 유지
+        ntaps = std::min(ntaps, 1023);           // 상한 제한
+        double cutoff_norm = 0.45 / decim;
+        double beta = 8.0;                       // ~58dB stopband
+        fir_taps  = make_kaiser_lpf(ntaps, cutoff_norm, beta);
+        fir_state.assign((ntaps - 1) * 2, 0.0f); // 지연 라인 초기화 (I,Q 쌍)
+    }
+
     // ── fft 행 인덱스 → 롤링 파일 샘플 위치 직접 참조 ──────────────────
     // row_write_pos[fi % MAX_FFTS_MEMORY] = 그 행이 끝나는 IQ 샘플 위치
     // time_t 기반 변환(초단위 오차)을 제거하고 row_write_pos 직접 사용
@@ -196,9 +249,10 @@ void FFTViewer::do_region_save_work(){
     int64_t actual_out = 0;
     int64_t pos = samp_start;
 
-    // 박스필터 누산기
-    double box_i = 0, box_q = 0;
-    int    box_cnt = 0;
+    // FIR 지연 라인 인덱스 및 입력 카운터 (데시메이션용)
+    int fir_ntaps   = fir_taps.empty() ? 0 : (int)fir_taps.size();
+    int fir_dly_pos = 0;  // 순환 버퍼 인덱스
+    int decim_cnt   = 0;  // 데시메이션 카운터
 
     while(pos < samp_end){
         int64_t file_pos = pos % max_total;
@@ -228,18 +282,41 @@ void FFTViewer::do_region_save_work(){
             if(phase >  M_PI) phase -= 2.0*M_PI;
             if(phase < -M_PI) phase += 2.0*M_PI;
 
-            // 박스필터 누산
-            box_i += mi; box_q += mq; box_cnt++;
-            if(box_cnt >= decim){
-                float oi = (float)(box_i / decim);
-                float oq = (float)(box_q / decim);
-                box_i = 0; box_q = 0; box_cnt = 0;
-
-                int16_t wi = (int16_t)(std::max(-1.0f,std::min(1.0f,oi))*32767.0f);
-                int16_t wq = (int16_t)(std::max(-1.0f,std::min(1.0f,oq))*32767.0f);
+            if(decim <= 1){
+                // 데시메이션 없음 → 그대로 출력
+                int16_t wi = (int16_t)(std::max(-1.0f,std::min(1.0f,mi))*32767.0f);
+                int16_t wq = (int16_t)(std::max(-1.0f,std::min(1.0f,mq))*32767.0f);
                 out_buf.push_back(wi);
                 out_buf.push_back(wq);
                 actual_out++;
+            } else {
+                // Kaiser FIR LPF → 데시메이션
+                // 지연 라인에 새 복소수 샘플 삽입 (I와 Q 각각 별도 처리, 같은 지연 라인 공유 불가)
+                // → 지연 라인을 복소수(I,Q 쌍)로 관리
+                // fir_state: [I0,Q0, I1,Q1, ...] 크기 = (ntaps-1)*2
+                int dly_idx = fir_dly_pos * 2;
+                fir_state[dly_idx    ] = mi;
+                fir_state[dly_idx + 1] = mq;
+                fir_dly_pos = (fir_dly_pos + 1) % (fir_ntaps - 1);
+
+                decim_cnt++;
+                if(decim_cnt >= decim){
+                    decim_cnt = 0;
+                    // FIR 합성: 현재 샘플 포함 ntaps개
+                    float oi = mi * fir_taps[0];
+                    float oq = mq * fir_taps[0];
+                    int dly_sz = fir_ntaps - 1;
+                    for(int t = 1; t < fir_ntaps; t++){
+                        int idx = ((fir_dly_pos - t + dly_sz * 2) % dly_sz) * 2;
+                        oi += fir_state[idx    ] * fir_taps[t];
+                        oq += fir_state[idx + 1] * fir_taps[t];
+                    }
+                    int16_t wi = (int16_t)(std::max(-1.0f,std::min(1.0f,oi))*32767.0f);
+                    int16_t wq = (int16_t)(std::max(-1.0f,std::min(1.0f,oq))*32767.0f);
+                    out_buf.push_back(wi);
+                    out_buf.push_back(wq);
+                    actual_out++;
+                }
             }
         }
         if(!out_buf.empty())

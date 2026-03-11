@@ -4,6 +4,61 @@
 #include <cstring>
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <dirent.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <linux/usbdevice_fs.h>
+
+// ── BladeRF USB 소프트 리셋 (USBDEVFS_RESET ioctl) ───────────────────────
+// vendor=2cf0, product=5250 장치를 /dev/bus/usb에서 찾아 리셋
+// 효과: 물리적으로 뽑았다 꽂는 것과 동일 (드라이버 unbind→reenumerate)
+// sudo 불필요 — udev rule로 plugdev 그룹에 rw 권한 부여됨
+bool bladerf_usb_reset(){
+    // /dev/bus/usb/NNN/MMM 파일 순회해서 vendor/product 매칭
+    DIR* bus_dir = opendir("/dev/bus/usb");
+    if(!bus_dir){ perror("[USBreset] opendir /dev/bus/usb"); return false; }
+
+    struct dirent* bus_ent;
+    bool found = false;
+    while(!found && (bus_ent = readdir(bus_dir))){
+        if(bus_ent->d_name[0] == '.') continue;
+        char bus_path[64];
+        snprintf(bus_path, sizeof(bus_path), "/dev/bus/usb/%s", bus_ent->d_name);
+        DIR* dev_dir = opendir(bus_path);
+        if(!dev_dir) continue;
+        struct dirent* dev_ent;
+        while(!found && (dev_ent = readdir(dev_dir))){
+            if(dev_ent->d_name[0] == '.') continue;
+            char dev_path[128];
+            snprintf(dev_path, sizeof(dev_path), "%s/%s", bus_path, dev_ent->d_name);
+            int fd = open(dev_path, O_RDWR);
+            if(fd < 0) continue;
+
+            // USB descriptor: byte 8=vendor(LE16), byte 10=product(LE16)
+            uint8_t desc[18] = {};
+            if(read(fd, desc, sizeof(desc)) == (ssize_t)sizeof(desc)){
+                uint16_t vid = (uint16_t)(desc[8]  | (desc[9]  << 8));
+                uint16_t pid = (uint16_t)(desc[10] | (desc[11] << 8));
+                if(vid == 0x2cf0 && pid == 0x5250){
+                    printf("[USBreset] found BladeRF at %s — issuing USBDEVFS_RESET\n", dev_path);
+                    if(ioctl(fd, USBDEVFS_RESET, nullptr) == 0){
+                        printf("[USBreset] reset OK\n");
+                        found = true;
+                    } else {
+                        perror("[USBreset] ioctl USBDEVFS_RESET");
+                    }
+                }
+            }
+            close(fd);
+        }
+        closedir(dev_dir);
+    }
+    closedir(bus_dir);
+    if(!found) printf("[USBreset] BladeRF not found in /dev/bus/usb\n");
+    return found;
+}
 
 bool FFTViewer::initialize_bladerf(float cf_mhz, float sr_msps){
     int s=bladerf_open(&dev_blade,nullptr);

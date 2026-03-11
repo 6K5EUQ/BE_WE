@@ -657,10 +657,11 @@ void NetServer::start_discovery_broadcast(const char* station_name,
                                            float lat, float lon,
                                            uint16_t tcp_port,
                                            const char* host_ip,
-                                           uint8_t host_tier) {
+                                           uint8_t host_tier,
+                                           uint16_t local_relay_port) {
     stop_discovery_broadcast();
     auto* b = new DiscoveryBroadcaster();
-    b->set_info(station_name, lat, lon, tcp_port, host_ip, host_tier);
+    b->set_info(station_name, lat, lon, tcp_port, host_ip, host_tier, local_relay_port);
     b->set_user_count((uint8_t)client_count());
     if (b->start())
         discovery_bcast_ = b;

@@ -5,24 +5,45 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <ifaddrs.h>
 #include <unistd.h>
 #include <sys/select.h>
+
+// 현재 머신의 모든 인터페이스에서 서브넷 브로드캐스트 주소 수집
+static std::vector<uint32_t> get_subnet_broadcasts() {
+    std::vector<uint32_t> addrs;
+    ifaddrs* ifa = nullptr;
+    if (getifaddrs(&ifa) != 0) return addrs;
+    for (ifaddrs* p = ifa; p; p = p->ifa_next) {
+        if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET) continue;
+        if (!p->ifa_broadaddr) continue;
+        uint32_t ip = ntohl(reinterpret_cast<sockaddr_in*>(p->ifa_addr)->sin_addr.s_addr);
+        if ((ip >> 24) == 127) continue; // 루프백 제외
+        uint32_t bcast = ntohl(reinterpret_cast<sockaddr_in*>(p->ifa_broadaddr)->sin_addr.s_addr);
+        if (bcast == 0) continue;
+        addrs.push_back(htonl(bcast));
+    }
+    freeifaddrs(ifa);
+    return addrs;
+}
 
 // ── DiscoveryBroadcaster ──────────────────────────────────────────────────
 
 void DiscoveryBroadcaster::set_info(const char* name, float lat, float lon,
-                                     uint16_t port, const char* ip, uint8_t host_tier) {
+                                     uint16_t port, const char* ip, uint8_t host_tier,
+                                     uint16_t local_relay_port) {
     std::lock_guard<std::mutex> lk(pkt_mtx_);
     memset(&pkt_, 0, sizeof(pkt_));
     pkt_.magic[0]='B'; pkt_.magic[1]='E'; pkt_.magic[2]='W'; pkt_.magic[3]='G';
     strncpy(pkt_.station_name, name, 63);
-    pkt_.lat       = lat;
-    pkt_.lon       = lon;
-    pkt_.tcp_port  = port;
-    pkt_.host_tier = host_tier;
+    pkt_.lat               = lat;
+    pkt_.lon               = lon;
+    pkt_.tcp_port          = port;
+    pkt_.host_tier         = host_tier;
+    pkt_.local_relay_port  = local_relay_port;
     strncpy(pkt_.host_ip, ip, 15);
-    printf("[Discovery] TX: station='%s' lat=%.4f lon=%.4f port=%u ip=%s\n",
-           name, lat, lon, (unsigned)port, ip);
+    printf("[Discovery] TX: station='%s' lat=%.4f lon=%.4f port=%u ip=%s local_relay=%u\n",
+           name, lat, lon, (unsigned)port, ip, (unsigned)local_relay_port);
 }
 
 void DiscoveryBroadcaster::set_user_count(uint8_t n) {
@@ -52,13 +73,17 @@ void DiscoveryBroadcaster::stop() {
 
 void DiscoveryBroadcaster::broadcast_loop() {
     sockaddr_in dest{};
-    dest.sin_family      = AF_INET;
-    dest.sin_port        = htons(BEWE_DISCOVERY_PORT);
-    dest.sin_addr.s_addr = INADDR_BROADCAST;
+    dest.sin_family = AF_INET;
+    dest.sin_port   = htons(BEWE_DISCOVERY_PORT);
 
     while (running_.load()) {
-        {
-            std::lock_guard<std::mutex> lk(pkt_mtx_);
+        // 255.255.255.255 (limited broadcast) + 각 인터페이스 서브넷 브로드캐스트
+        auto bcasts = get_subnet_broadcasts();
+        bcasts.insert(bcasts.begin(), INADDR_BROADCAST); // 255.255.255.255 항상 포함
+
+        std::lock_guard<std::mutex> lk(pkt_mtx_);
+        for (uint32_t baddr : bcasts) {
+            dest.sin_addr.s_addr = baddr;
             sendto(sock_, &pkt_, sizeof(pkt_), 0,
                    reinterpret_cast<sockaddr*>(&dest), sizeof(dest));
         }

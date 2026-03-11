@@ -257,11 +257,8 @@ void FFTViewer::start_dem(int ch_idx, Channel::DemodMode mode){
     ch.dem_rp.store(ring_wp.load());
     ch.dem_stop_req.store(false);
     ch.dem_run.store(true);
-    if(mode == Channel::DM_DMR)
-        ch.dem_thr=std::thread(&FFTViewer::dmr_worker,this,ch_idx);
-    else
-        ch.dem_thr=std::thread(&FFTViewer::dem_worker,this,ch_idx);
-    const char* n[]={"NONE","AM","FM","MAGIC","DMR"};
+    ch.dem_thr=std::thread(&FFTViewer::dem_worker,this,ch_idx);
+    const char* n[]={"NONE","AM","FM","MAGIC"};
     bewe_log("DEM[%d] start: %s  %.4f-%.4f MHz\n",ch_idx,n[(int)mode],ch.s,ch.e);
 }
 
@@ -275,7 +272,10 @@ void FFTViewer::stop_dem(int ch_idx){
 }
 
 void FFTViewer::stop_all_dem(){
-    for(int i=0;i<MAX_CHANNELS;i++) stop_dem(i);
+    for(int i=0;i<MAX_CHANNELS;i++){
+        stop_dem(i);
+        stop_digi(i);
+    }
 }
 
 // ── Magic mode: modulation classifier ────────────────────────────────────
