@@ -227,7 +227,7 @@ void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float 
                 net_cli->cmd_delete_ch(ci);
             }
             // 로컬 즉시 반영 (서버 sync가 확인해줌)
-            stop_dem(ci);
+            stop_dem(ci); stop_digi(ci); digi_panel_on[ci]=false;
             channels[ci].filter_active=false;
             channels[ci].selected=false;
             channels[ci].mode=Channel::DM_NONE;
@@ -2007,7 +2007,7 @@ void run_streaming_viewer(){
             };
             srv->cb.on_delete_ch  = [&](int idx){
                 if(idx<0||idx>=MAX_CHANNELS) return;
-                v.stop_dem(idx);
+                v.stop_dem(idx); v.stop_digi(idx); v.digi_panel_on[idx]=false;
                 v.channels[idx].filter_active=false;
                 v.channels[idx].mode=Channel::DM_NONE;
                 v.local_ch_out[idx] = 1; // 슬롯 재사용 대비 기본값 복원
@@ -2966,7 +2966,7 @@ void run_streaming_viewer(){
                     if(v.remote_mode && v.net_cli){
                         v.net_cli->cmd_delete_ch(sci);
                     } else {
-                        v.stop_dem(sci);
+                        v.stop_dem(sci); v.stop_digi(sci); v.digi_panel_on[sci]=false;
                         v.channels[sci].filter_active=false;
                         v.channels[sci].selected=false;
                         v.channels[sci].mode=Channel::DM_NONE;
@@ -3853,11 +3853,12 @@ void run_streaming_viewer(){
                                 }
                                 auto delete_ch = [&](){
                                     if(v.net_cli) v.net_cli->cmd_delete_ch(ci);
-                                    v.stop_dem(ci);
+                                    v.stop_dem(ci); v.stop_digi(ci);
                                     v.channels[ci].filter_active=false;
                                     v.channels[ci].selected=false;
                                     v.local_ch_out[ci]=1;
                                     v.ch_created_by_me[ci]=false;
+                                    v.digi_panel_on[ci]=false;
                                     if(v.selected_ch==ci) v.selected_ch=-1;
                                     if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
                                 };
@@ -3871,11 +3872,12 @@ void run_streaming_viewer(){
                             // Del 키 (선택된 채널)
                             if(ch.selected && ImGui::IsKeyPressed(ImGuiKey_Delete,false)){
                                 if(v.net_cli) v.net_cli->cmd_delete_ch(ci);
-                                v.stop_dem(ci);
+                                v.stop_dem(ci); v.stop_digi(ci);
                                 v.channels[ci].filter_active=false;
                                 v.channels[ci].selected=false;
                                 v.local_ch_out[ci]=1;
                                 v.ch_created_by_me[ci]=false;
+                                v.digi_panel_on[ci]=false;
                                 if(v.selected_ch==ci) v.selected_ch=-1;
                                 if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
                                 ImGui::PopID();
