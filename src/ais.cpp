@@ -169,23 +169,39 @@ void FFTViewer::ais_worker(int ch_idx){
     float bw_hz=fabsf(ch.e-ch.s)*1e6f;
     if(bw_hz<20000.f) bw_hz=20000.f;
 
-    uint32_t cap_decim=msr/AIS_WORK_SR;
-    if(cap_decim<1) cap_decim=1;
-    uint32_t work_sr=msr/cap_decim;
-    float    sps=(float)work_sr/(float)AIS_BAUD;
+    // 1단계: 채널 BW 기반 decimation (demod_rates와 동일 방식)
+    // inter_sr = AIS 신호를 충분히 담을 수 있는 중간 SR (최소 BW*3, AIS_WORK_SR 이상)
+    uint32_t inter_sr = AIS_WORK_SR;
+    while(inter_sr < (uint32_t)(bw_hz * 3.f) && inter_sr < msr) inter_sr *= 2;
+    uint32_t cap_decim = msr / inter_sr;
+    if(cap_decim < 1) cap_decim = 1;
+    uint32_t actual_inter = msr / cap_decim;
+
+    // 2단계: inter_sr → AIS_WORK_SR decimation
+    uint32_t fine_decim = actual_inter / AIS_WORK_SR;
+    if(fine_decim < 1) fine_decim = 1;
+    uint32_t work_sr = actual_inter / fine_decim;
+    float    sps = (float)work_sr / (float)AIS_BAUD;
 
     const size_t MAX_LAG=(size_t)(msr*0.08);
     const size_t BATCH  =(size_t)cap_decim*AIS_BAUD/10;
 
-    printf("[AIS ch%d] start cf=%.4fMHz off=%.0fHz decim=%u work_sr=%u sps=%.2f bw=%.0fHz\n",
-           ch_idx,(ch.s+ch.e)/2.f,off_hz,cap_decim,work_sr,sps,bw_hz);
+    printf("[AIS ch%d] start cf=%.4fMHz off=%.0fHz decim=%u inter=%u fine=%u work_sr=%u sps=%.2f\n",
+           ch_idx,(ch.s+ch.e)/2.f,off_hz,cap_decim,actual_inter,fine_decim,work_sr,sps);
     fflush(stdout);
 
     Oscillator osc; osc.set_freq((double)off_hz,(double)msr);
     double cap_i=0,cap_q=0; int cap_cnt=0;
+
+    // 1단계 LPF: inter_sr 기준, cutoff = bw_hz*0.5 / actual_inter
     IIR1 lpi,lpq;
-    // LPF: AIS BW = 16kHz (ITU), cutoff = 9600*1.1 / work_sr
-    { double cn=9600.0*1.2/(double)work_sr; if(cn>0.45)cn=0.45; lpi.set(cn); lpq.set(cn); }
+    { double cn=(double)bw_hz*0.5/(double)actual_inter; if(cn>0.45)cn=0.45; lpi.set(cn); lpq.set(cn); }
+
+    // 2단계 LPF+decimation: inter → work_sr, cutoff = 9600*1.2 / work_sr
+    IIR1 lpi2,lpq2;
+    { double cn=9600.0*1.2/(double)work_sr; if(cn>0.45)cn=0.45; lpi2.set(cn); lpq2.set(cn); }
+    int fine_cnt=0;
+
     float prev_i=0,prev_q=0;
 
     // 타이밍 복원 (M&M)
@@ -201,6 +217,7 @@ void FFTViewer::ais_worker(int ch_idx){
     // 진단 카운터
     uint64_t sym_count=0;
     float disc_min=1e9f, disc_max=-1e9f;
+    float iq_max=0.f;
     int diag_interval=work_sr*5;  // 5초마다 진단 출력
     int diag_cnt=0;
 
@@ -212,8 +229,8 @@ void FFTViewer::ais_worker(int ch_idx){
         if(lag>MAX_LAG){
             rp=(wp-(size_t)(msr*0.02f))&IQ_RING_MASK;
             ch.digi_rp.store(rp,std::memory_order_release);
-            cap_i=cap_q=0; cap_cnt=0;
-            lpi.s=lpq.s=0; prev_i=prev_q=0;
+            cap_i=cap_q=0; cap_cnt=0; fine_cnt=0;
+            lpi.s=lpq.s=0; lpi2.s=lpq2.s=0; prev_i=prev_q=0;
             sym_phase=mu=p_sym=0.f;
             lag=(wp-rp)&IQ_RING_MASK;
         }
@@ -230,16 +247,23 @@ void FFTViewer::ais_worker(int ch_idx){
             cap_i+=mi; cap_q+=mq; cap_cnt++;
             if(cap_cnt<(int)cap_decim) continue;
 
+            // 1단계: inter_sr로 decimation + LPF
             float fi=(float)(cap_i/cap_cnt);
             float fq=(float)(cap_q/cap_cnt);
             cap_i=cap_q=0; cap_cnt=0;
             fi=lpi.p(fi); fq=lpq.p(fq);
 
-            // FM discriminator: cross-product (부호만 필요, atan2 포화 없음)
-            // cross = Im(conj(prev) * cur) = fi*prev_q - fq*prev_i
-            // AIS FSK deviation ±2.4kHz / work_sr → cross 크기는 작지만 부호는 정확
+            // 2단계: work_sr로 추가 decimation + narrow LPF
+            fine_cnt++;
+            if(fine_cnt<(int)fine_decim) continue;
+            fine_cnt=0;
+            fi=lpi2.p(fi); fq=lpq2.p(fq);
+
+            // FM discriminator: cross-product
             float cross=fi*prev_q-fq*prev_i;
-            float disc=cross;  // 부호만 사용하므로 정규화 불필요
+            float disc=cross;
+            float iq_amp=fi*fi+fq*fq;
+            if(iq_amp>iq_max) iq_max=iq_amp;
             prev_i=fi; prev_q=fq;
 
             // 진단
@@ -247,11 +271,11 @@ void FFTViewer::ais_worker(int ch_idx){
             if(disc>disc_max) disc_max=disc;
             diag_cnt++;
             if(diag_cnt>=diag_interval){
-                printf("[AIS ch%d] diag: syms=%llu disc=[%.4f,%.4f] flags0=%d flags1=%d\n",
+                printf("[AIS ch%d] diag: syms=%llu disc=[%.6f,%.6f] iq_max=%.6f flags0=%d flags1=%d\n",
                        ch_idx,(unsigned long long)sym_count,
-                       disc_min,disc_max,hdlc[0].flag_cnt,hdlc[1].flag_cnt);
+                       disc_min,disc_max,iq_max,hdlc[0].flag_cnt,hdlc[1].flag_cnt);
                 fflush(stdout);
-                disc_min=1e9f; disc_max=-1e9f;
+                disc_min=1e9f; disc_max=-1e9f; iq_max=0.f;
                 diag_cnt=0;
             }
 
