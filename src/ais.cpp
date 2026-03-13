@@ -117,6 +117,8 @@ struct Hdlc {
         else reset();
     }
 
+    int decode_cnt=0, fcs_ok=0, fcs_fail=0;
+
     void try_decode(int ch_idx){
         // nb = 페이로드 비트 + FCS 16비트
         int plen = nb - 16;
@@ -124,6 +126,8 @@ struct Hdlc {
 
         int nbytes = (plen + 7) / 8;
         if(nbytes > 64) return;
+
+        decode_cnt++;
 
         // raw[] (LSB-first) → 바이트 배열
         uint8_t bytes[64]={};
@@ -138,7 +142,8 @@ struct Hdlc {
         int fcs_bytes = (plen + 7) / 8;
         uint16_t calcfcs = crc_ccitt(bytes, fcs_bytes);
 
-        if(calcfcs != rxfcs) return;  // FCS 불일치
+        if(calcfcs != rxfcs){ fcs_fail++; return; }  // FCS 불일치
+        fcs_ok++;
 
         // raw[] (LSB-first per byte) → AIS 비트스트림 (MSB-first per field/byte)
         // AIS에서 첫 번째 전송 비트 = 첫 바이트의 LSB = raw[0]
@@ -169,10 +174,12 @@ void FFTViewer::ais_worker(int ch_idx){
     float bw_hz=fabsf(ch.e-ch.s)*1e6f;
     if(bw_hz<20000.f) bw_hz=20000.f;
 
-    // 1단계: 채널 BW 기반 decimation (demod_rates와 동일 방식)
-    // inter_sr = AIS 신호를 충분히 담을 수 있는 중간 SR (최소 BW*3, AIS_WORK_SR 이상)
+    // 1단계: off_hz와 BW를 모두 커버하는 중간 SR 계산
+    // inter_sr은 off_hz*2 와 bw_hz*3 중 큰 값 이상이어야 함
+    float need_sr = std::max(fabsf(off_hz) * 2.2f, bw_hz * 3.f);
+    if(need_sr < (float)AIS_WORK_SR) need_sr = (float)AIS_WORK_SR;
     uint32_t inter_sr = AIS_WORK_SR;
-    while(inter_sr < (uint32_t)(bw_hz * 3.f) && inter_sr < msr) inter_sr *= 2;
+    while((float)inter_sr < need_sr && inter_sr < msr) inter_sr *= 2;
     uint32_t cap_decim = msr / inter_sr;
     if(cap_decim < 1) cap_decim = 1;
     uint32_t actual_inter = msr / cap_decim;
@@ -191,13 +198,14 @@ void FFTViewer::ais_worker(int ch_idx){
     fflush(stdout);
 
     Oscillator osc; osc.set_freq((double)off_hz,(double)msr);
-    double cap_i=0,cap_q=0; int cap_cnt=0;
 
-    // 1단계 LPF: inter_sr 기준, cutoff = bw_hz*0.5 / actual_inter
+    // LPF를 각 샘플에 적용 후 서브샘플링 (decimation-after-LPF)
+    // cutoff = (AIS BW/2) / msr, AIS BW ≈ 16kHz → cutoff = 8000/msr
     IIR1 lpi,lpq;
-    { double cn=(double)bw_hz*0.5/(double)actual_inter; if(cn>0.45)cn=0.45; lpi.set(cn); lpq.set(cn); }
+    { double cn=8000.0/(double)msr; if(cn>0.45)cn=0.45; lpi.set(cn); lpq.set(cn); }
+    int cap_cnt=0;
 
-    // 2단계 LPF+decimation: inter → work_sr, cutoff = 9600*1.2 / work_sr
+    // 2단계: work_sr로 추가 decimation + narrow LPF
     IIR1 lpi2,lpq2;
     { double cn=9600.0*1.2/(double)work_sr; if(cn>0.45)cn=0.45; lpi2.set(cn); lpq2.set(cn); }
     int fine_cnt=0;
@@ -218,7 +226,7 @@ void FFTViewer::ais_worker(int ch_idx){
     uint64_t sym_count=0;
     float disc_min=1e9f, disc_max=-1e9f;
     float iq_max=0.f;
-    int diag_interval=work_sr*5;  // 5초마다 진단 출력
+    int diag_interval=work_sr/2;  // 0.5초마다 진단 출력
     int diag_cnt=0;
 
     while(!ch.digi_stop_req.load(std::memory_order_relaxed)){
@@ -229,7 +237,7 @@ void FFTViewer::ais_worker(int ch_idx){
         if(lag>MAX_LAG){
             rp=(wp-(size_t)(msr*0.02f))&IQ_RING_MASK;
             ch.digi_rp.store(rp,std::memory_order_release);
-            cap_i=cap_q=0; cap_cnt=0; fine_cnt=0;
+            cap_cnt=0; fine_cnt=0;
             lpi.s=lpq.s=0; lpi2.s=lpq2.s=0; prev_i=prev_q=0;
             sym_phase=mu=p_sym=0.f;
             lag=(wp-rp)&IQ_RING_MASK;
@@ -244,26 +252,23 @@ void FFTViewer::ais_worker(int ch_idx){
             float sq=ring[pos*2+1]/2048.f;
 
             float mi,mq; osc.mix(si,sq,mi,mq);
-            cap_i+=mi; cap_q+=mq; cap_cnt++;
-            if(cap_cnt<(int)cap_decim) continue;
 
-            // 1단계: inter_sr로 decimation + LPF
-            float fi=(float)(cap_i/cap_cnt);
-            float fq=(float)(cap_q/cap_cnt);
-            cap_i=cap_q=0; cap_cnt=0;
-            fi=lpi.p(fi); fq=lpq.p(fq);
+            // 1단계: 각 샘플마다 LPF 적용 → cap_decim마다 서브샘플링
+            float fi=lpi.p(mi); float fq=lpq.p(mq);
+            if(++cap_cnt<(int)cap_decim) continue;
+            cap_cnt=0;
 
             // 2단계: work_sr로 추가 decimation + narrow LPF
-            fine_cnt++;
-            if(fine_cnt<(int)fine_decim) continue;
+            if(++fine_cnt<(int)fine_decim) continue;
             fine_cnt=0;
             fi=lpi2.p(fi); fq=lpq2.p(fq);
 
-            // FM discriminator: cross-product
-            float cross=fi*prev_q-fq*prev_i;
-            float disc=cross;
+            // FM discriminator: atan2 (진폭 독립적, SNR 낮아도 부호 정확)
             float iq_amp=fi*fi+fq*fq;
             if(iq_amp>iq_max) iq_max=iq_amp;
+            float cross=fi*prev_q-fq*prev_i;
+            float dot  =fi*prev_i+fq*prev_q;
+            float disc=atan2f(cross, dot+1e-30f);
             prev_i=fi; prev_q=fq;
 
             // 진단
@@ -271,9 +276,12 @@ void FFTViewer::ais_worker(int ch_idx){
             if(disc>disc_max) disc_max=disc;
             diag_cnt++;
             if(diag_cnt>=diag_interval){
-                printf("[AIS ch%d] diag: syms=%llu disc=[%.6f,%.6f] iq_max=%.6f flags0=%d flags1=%d\n",
+                printf("[AIS ch%d] diag: syms=%llu disc=[%.6f,%.6f] iq_max=%.6f "
+                       "flags0=%d dec0=%d ok0=%d fail0=%d | flags1=%d dec1=%d ok1=%d fail1=%d\n",
                        ch_idx,(unsigned long long)sym_count,
-                       disc_min,disc_max,iq_max,hdlc[0].flag_cnt,hdlc[1].flag_cnt);
+                       disc_min,disc_max,iq_max,
+                       hdlc[0].flag_cnt,hdlc[0].decode_cnt,hdlc[0].fcs_ok,hdlc[0].fcs_fail,
+                       hdlc[1].flag_cnt,hdlc[1].decode_cnt,hdlc[1].fcs_ok,hdlc[1].fcs_fail);
                 fflush(stdout);
                 disc_min=1e9f; disc_max=-1e9f; iq_max=0.f;
                 diag_cnt=0;
