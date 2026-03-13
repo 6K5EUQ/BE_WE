@@ -3192,6 +3192,14 @@ void run_streaming_viewer(){
                             // autoscale 리셋
                             v.autoscale_active=true; v.autoscale_init=false;
                             v.autoscale_accum.clear();
+                            // SR 변경 시 digi 워커 재시작 (새 SR 파라미터로)
+                            for(int ci=0;ci<MAX_CHANNELS;ci++){
+                                if(v.channels[ci].digi_run.load()){
+                                    Channel::DigitalMode dm=v.channels[ci].digital_mode;
+                                    v.stop_digi(ci);
+                                    // SR 실제 적용은 다음 프레임이므로 지연 재시작은 사용자가 버튼 재클릭
+                                }
+                            }
                             } // end local/host branch
                         }
                     }

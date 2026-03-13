@@ -208,6 +208,8 @@ void FFTViewer::capture_and_process(){
                 tm_iq_open();
                 tm_iq_on.store(true);
             }
+            // SR 변경 후 게인 재적용 (BladeRF가 SR 변경 시 게인을 리셋할 수 있음)
+            set_gain(gain_db);
             bewe_log("SR → %.2f MSPS  BW → %.2f MHz\n", actual_sr/1e6f, actual_bw/1e6f);
             continue;
         }
