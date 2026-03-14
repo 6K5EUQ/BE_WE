@@ -1,0 +1,125 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    background: #000;
+    overflow: hidden;
+    font-family: 'Segoe UI', 'Noto Sans KR', sans-serif;
+    color: #e0e0e0;
+}
+
+#globe {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+}
+
+/* ── Title Bar ──────────────────────────────────────────────────────────── */
+.title-bar {
+    position: fixed;
+    top: 24px;
+    left: 32px;
+    pointer-events: none;
+    z-index: 10;
+}
+.title-text {
+    font-size: 32px;
+    font-weight: 700;
+    letter-spacing: 6px;
+    color: #fff;
+    text-shadow: 0 0 20px rgba(80,160,255,0.6);
+}
+.title-sub {
+    display: block;
+    font-size: 13px;
+    letter-spacing: 2px;
+    color: rgba(140,180,220,0.7);
+    margin-top: 4px;
+}
+
+/* ── Station Count ──────────────────────────────────────────────────────── */
+.station-count {
+    position: fixed;
+    bottom: 24px;
+    left: 32px;
+    font-size: 14px;
+    letter-spacing: 1px;
+    color: rgba(100,180,255,0.8);
+    pointer-events: none;
+    z-index: 10;
+}
+
+/* ── Tooltip ────────────────────────────────────────────────────────────── */
+.tooltip {
+    position: fixed;
+    padding: 6px 12px;
+    background: rgba(10,20,40,0.92);
+    border: 1px solid rgba(80,140,220,0.5);
+    border-radius: 6px;
+    font-size: 13px;
+    color: #c8ddf0;
+    pointer-events: none;
+    white-space: nowrap;
+    z-index: 20;
+    backdrop-filter: blur(6px);
+}
+.tooltip .tier-tag {
+    font-size: 11px;
+    margin-left: 8px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(60,120,200,0.3);
+    color: rgba(120,180,255,0.9);
+}
+
+/* ── Station Info Popup ─────────────────────────────────────────────────── */
+.popup {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 340px;
+    padding: 28px 24px 24px;
+    background: rgba(8,16,32,0.95);
+    border: 1px solid rgba(60,120,200,0.4);
+    border-radius: 12px;
+    z-index: 30;
+    backdrop-filter: blur(12px);
+    box-shadow: 0 8px 40px rgba(0,0,0,0.6), 0 0 60px rgba(40,100,200,0.15);
+}
+.popup-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid rgba(60,120,200,0.25);
+}
+.popup-coords {
+    font-size: 13px;
+    color: rgba(140,180,220,0.8);
+    margin-bottom: 8px;
+    font-family: 'Consolas', 'Courier New', monospace;
+}
+.popup-info {
+    font-size: 14px;
+    color: rgba(180,210,240,0.9);
+    margin-bottom: 6px;
+}
+.popup-tier {
+    font-size: 13px;
+    margin-top: 4px;
+}
+.popup-tier.tier1 { color: #4CAF50; }
+.popup-tier.tier2 { color: #FF9800; }
+.popup-close {
+    position: absolute;
+    top: 8px;
+    right: 12px;
+    font-size: 22px;
+    color: rgba(160,180,200,0.6);
+    cursor: pointer;
+    line-height: 1;
+}
+.popup-close:hover { color: #fff; }
+
+.hidden { display: none !important; }

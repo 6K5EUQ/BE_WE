@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BEWE - Global SDR Network</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <canvas id="globe"></canvas>
+
+    <!-- Station Info Popup -->
+    <div id="popup" class="popup hidden">
+        <div class="popup-title" id="popup-name"></div>
+        <div class="popup-coords" id="popup-coords"></div>
+        <div class="popup-info" id="popup-users"></div>
+        <div class="popup-tier" id="popup-tier"></div>
+        <div class="popup-close" onclick="closePopup()">&times;</div>
+    </div>
+
+    <!-- Hover Tooltip -->
+    <div id="tooltip" class="tooltip hidden"></div>
+
+    <!-- Logo / Title -->
+    <div class="title-bar">
+        <span class="title-text">BEWE</span>
+        <span class="title-sub">Global SDR Monitoring Network</span>
+    </div>
+
+    <!-- Station count -->
+    <div class="station-count" id="station-count">0 Stations Online</div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
