@@ -2560,6 +2560,9 @@ void run_streaming_viewer(){
             static std::atomic<bool> cap_joined{false};
             static bool     usb_reset_done = false;
             static std::atomic<bool> usb_reset_in_progress{false};
+            // BladeRF IO 오류 시 자동으로 USB reset 트리거 (chassis reset 명령 없이도)
+            if(!bg_join_started && v.hw.type == HWType::BLADERF)
+                usb_reset_pending = true;
             if(!bg_join_started && cap.joinable()){
                 bg_join_started = true;
                 cap_joined.store(false);

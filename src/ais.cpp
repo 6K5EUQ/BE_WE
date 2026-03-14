@@ -70,13 +70,25 @@ struct Hdlc {
         if(nb<(int)sizeof(raw)*8) raw[nb++]=bit; else reset();
     }
     void try_decode(int ch_idx){
-        int plen=nb-16; if(plen<56) return;
-        int nbytes=(plen+7)/8; if(nbytes>64) return;
+        int plen=nb-16;
+        if(plen<56){
+            printf("[AIS ch%d] HDLC too_short nb=%d plen=%d\n",ch_idx,nb,plen);
+            fflush(stdout); return;
+        }
+        int nbytes=(plen+7)/8;
+        if(nbytes>64){
+            printf("[AIS ch%d] HDLC too_long nbytes=%d\n",ch_idx,nbytes);
+            fflush(stdout); return;
+        }
         uint8_t bytes[64]={};
         for(int i=0;i<nbytes*8&&i<nb;i++) bytes[i/8]|=(raw[i]<<(i%8));
         uint16_t rxfcs=0;
         for(int i=0;i<16;i++) rxfcs|=((uint16_t)raw[plen+i]<<i);
-        if(crc_ccitt(bytes,(plen+7)/8)!=rxfcs) return;
+        uint16_t calcfcs=crc_ccitt(bytes,(plen+7)/8);
+        if(calcfcs!=rxfcs){
+            printf("[AIS ch%d] HDLC crc_fail nb=%d calc=0x%04X rx=0x%04X\n",ch_idx,nb,calcfcs,rxfcs);
+            fflush(stdout); return;
+        }
         fcs_ok++;
         uint8_t bits[512]={};
         for(int i=0;i<plen;i++) bits[(i/8)*8+(7-(i%8))]=raw[i];
@@ -89,46 +101,44 @@ void FFTViewer::ais_worker(int ch_idx){
     Channel& ch=channels[ch_idx];
     uint32_t msr=header.sample_rate;
     float off_hz=(((ch.s+ch.e)/2.0f)-(float)(header.center_frequency/1e6f))*1e6f;
-    float bw_hz=fabsf(ch.e-ch.s)*1e6f;
 
-    // 목표 work_sr: AIS_BAUD*8 = 76800, sps=8
-    const uint32_t TARGET_SR = (uint32_t)(AIS_BAUD * 8);
-
-    // 전체 decimation 비율 (msr → TARGET_SR)
-    uint32_t total_decim = msr / TARGET_SR;
+    // work_sr: AIS_BAUD * sps_target (sps=8)
+    // decimation을 한 단계로 단순화: msr → work_sr
+    uint32_t total_decim = msr / (AIS_BAUD * 8);
     if(total_decim < 1) total_decim = 1;
     uint32_t work_sr = msr / total_decim;
     float sps = (float)work_sr / (float)AIS_BAUD;
 
-    // 2단계로 분할: 1단계는 최대 64배, 나머지는 2단계
-    uint32_t cap_decim  = total_decim > 64 ? total_decim / 8 : total_decim;
-    if(cap_decim < 1) cap_decim = 1;
-    uint32_t actual_inter = msr / cap_decim;
-    uint32_t fine_decim = total_decim / cap_decim;
-    if(fine_decim < 1) fine_decim = 1;
-    work_sr = actual_inter / fine_decim;
-    sps = (float)work_sr / (float)AIS_BAUD;
-
     const size_t MAX_LAG = (size_t)(msr*0.08);
     const size_t BATCH   = (size_t)(msr / 50);
 
-    printf("[AIS ch%d] start cf=%.4fMHz off=%.0fHz bw=%.0fHz cap_dec=%u fine_dec=%u work_sr=%u sps=%.2f\n",
-           ch_idx,(ch.s+ch.e)/2.f,off_hz,bw_hz,cap_decim,fine_decim,work_sr,sps);
+    printf("[AIS ch%d] start cf=%.4fMHz off=%.0fHz decim=%u work_sr=%u sps=%.2f\n",
+           ch_idx,(ch.s+ch.e)/2.f,off_hz,total_decim,work_sr,sps);
     fflush(stdout);
 
+    // 믹서: off_hz 만큼 주파수 이동
     Oscillator osc; osc.set_freq((double)off_hz,(double)msr);
+
+    // decimation: 단순 누적 평균 (sinc 등가, aliasing 억제)
     double cap_i=0,cap_q=0; int cap_cnt=0;
-    // 1단계 LPF: actual_inter 기준, BW/2 통과 (최소 AIS ±10kHz)
-    IIR1 lpi,lpq;
-    { float bw_cut = (bw_hz*0.5f > 10000.f) ? bw_hz*0.5f : 10000.f;
-      float cn = bw_cut / (float)actual_inter;
-      if(cn > 0.45f) cn = 0.45f; if(cn < 1e-4f) cn = 1e-4f;
-      lpi.set(cn); lpq.set(cn); }
-    // 2단계 LPF: work_sr 기준, AIS BW(±10kHz) 통과
-    IIR1 lpi2,lpq2;
-    { float cn=10000.f/(float)work_sr; if(cn>0.45f)cn=0.45f; lpi2.set(cn); lpq2.set(cn); }
-    int fine_cnt=0;
+
+    // work_sr 기준 LPF: ±15kHz (오실레이터 오차 여유 포함)
+    // 2단 IIR1
+    IIR1 lpi1,lpq1,lpi2,lpq2;
+    { float cn = 15000.f/(float)work_sr;
+      if(cn>0.45f) cn=0.45f;
+      lpi1.set(cn); lpq1.set(cn);
+      lpi2.set(cn); lpq2.set(cn); }
+
     float prev_i=0,prev_q=0;
+    // disc DC 제거: 시상수 약 5ms (gate 열린 직후 빠르게 수렴)
+    // AIS FSK: +2.4kHz/-2.4kHz 대칭이므로 장기 평균은 0에 가까워야 함
+    float disc_dc=0.f;
+    const float DC_ALPHA = 1.f / (0.005f * (float)work_sr);
+
+    // AGC: disc 진폭 정규화
+    float agc_peak=0.1f;
+    const float AGC_ATTACK=0.01f, AGC_DECAY=0.0001f;
 
     // ── Squelch + auto-calibration (demod.cpp와 동일한 방식) ─────────────
     const float SQL_ALPHA  = 0.05f;
@@ -158,8 +168,9 @@ void FFTViewer::ais_worker(int ch_idx){
             size_t keep=(size_t)(msr*0.02);
             rp=(wp-keep)&IQ_RING_MASK;
             ch.digi_rp.store(rp,std::memory_order_release);
-            cap_i=cap_q=0; cap_cnt=0; fine_cnt=0;
-            lpi.s=lpq.s=0; lpi2.s=lpq2.s=0; prev_i=prev_q=0;
+            cap_i=cap_q=0; cap_cnt=0;
+            lpi1.s=lpq1.s=lpi2.s=lpq2.s=0; prev_i=prev_q=0;
+            disc_dc=0.f; agc_peak=0.1f;
             sym_phase=mu=p_sym=0.f;
             lag=(wp-rp)&IQ_RING_MASK;
         }
@@ -172,18 +183,14 @@ void FFTViewer::ais_worker(int ch_idx){
 
             float mi,mq; osc.mix(si,sq,mi,mq);
             cap_i+=mi; cap_q+=mq; cap_cnt++;
-            if(cap_cnt<(int)cap_decim) continue;
+            if(cap_cnt<(int)total_decim) continue;
 
             float fi=(float)(cap_i/cap_cnt), fq=(float)(cap_q/cap_cnt);
             cap_i=cap_q=0; cap_cnt=0;
-            fi=lpi.p(fi); fq=lpq.p(fq);
 
-            // 2단계 decimation
-            if(fine_decim>1){
-                if(++fine_cnt<(int)fine_decim) continue;
-                fine_cnt=0;
-                fi=lpi2.p(fi); fq=lpq2.p(fq);
-            }
+            // 2단 LPF (work_sr 기준, ±6kHz)
+            fi=lpi1.p(fi); fq=lpq1.p(fq);
+            fi=lpi2.p(fi); fq=lpq2.p(fq);
 
             // ── Squelch ───────────────────────────────────────────────────
             float p_inst=fi*fi+fq*fq;
@@ -214,25 +221,21 @@ void FFTViewer::ais_worker(int ch_idx){
                     sym_phase=0.f; mu=0.f; p_sym=0.f;
                     nrzi_prev[0]=nrzi_prev[1]=0;
                     prev_i=0.f; prev_q=0.f;
+                    disc_dc=0.f; agc_peak=0.1f;
                 }
             }
             if(gate_open!=prev_gate){
                 printf("[AIS ch%d] gate %s sql=%.1fdB thr=%.1fdB\n",
                        ch_idx,gate_open?"OPEN":"CLOSE",sql_avg,thr);
                 fflush(stdout);
+                if(gate_open){
+                    // gate 열릴 때 disc_dc 즉시 리셋 (이전 노이즈 편향 제거)
+                    disc_dc=0.f; agc_peak=0.1f;
+                }
             }
             if(++sq_ui_tick>=256){ sq_ui_tick=0;
                 ch.sq_sig .store(sql_avg,  std::memory_order_relaxed);
                 ch.sq_gate.store(gate_open,std::memory_order_relaxed);
-            }
-
-            diag_cnt++;
-            if(diag_cnt>=DIAG_INTERVAL){
-                printf("[AIS ch%d] diag sql=%.1fdB thr=%.1fdB gate=%d f0=%d ok0=%d f1=%d ok1=%d\n",
-                       ch_idx,sql_avg,thr,(int)gate_open,
-                       hdlc[0].flag_cnt,hdlc[0].fcs_ok,hdlc[1].flag_cnt,hdlc[1].fcs_ok);
-                fflush(stdout);
-                diag_cnt=0;
             }
 
             // ── AIS FSK 복조 (squelch 열릴 때만) ─────────────────────────
@@ -243,6 +246,27 @@ void FFTViewer::ais_worker(int ch_idx){
             float dot  =fi*prev_i+fq*prev_q;
             float disc=(prev_i!=0.f||prev_q!=0.f)?atan2f(cross,dot+1e-30f):0.f;
             prev_i=fi; prev_q=fq;
+
+            // DC 제거: 잔류 주파수 오프셋 제거
+            disc_dc = DC_ALPHA*disc + (1.f-DC_ALPHA)*disc_dc;
+            disc -= disc_dc;
+
+            // AGC: disc 진폭 정규화 → 비트 결정 임계 0 고정
+            float aabs=fabsf(disc);
+            if(aabs>agc_peak) agc_peak=aabs*AGC_ATTACK+(1.f-AGC_ATTACK)*agc_peak;
+            else              agc_peak=aabs*AGC_DECAY +(1.f-AGC_DECAY )*agc_peak;
+            if(agc_peak<1e-6f) agc_peak=1e-6f;
+            disc/=agc_peak;
+
+            // 진단: gate 열린 구간에서 200샘플마다 출력
+            diag_cnt++;
+            if(diag_cnt>=200){
+                printf("[AIS ch%d] D fi=%.5f disc=%.3f dc=%.3f agc=%.4f sps=%.2f f0=%d ok0=%d\n",
+                       ch_idx,fi,disc,disc_dc,agc_peak,sps,
+                       hdlc[0].flag_cnt,hdlc[0].fcs_ok);
+                fflush(stdout);
+                diag_cnt=0;
+            }
 
             // M&M 타이밍
             sym_phase+=1.f;
@@ -256,7 +280,8 @@ void FFTViewer::ais_worker(int ch_idx){
                 uint8_t rf=(cur>0.f)?1:0;
                 for(int d=0;d<2;d++){
                     uint8_t rf_d=(d==0)?rf:(rf^1);
-                    uint8_t nrz=(rf_d!=nrzi_prev[d])?1:0;
+                    // AIS NRZI: 천이=0(space), 유지=1(mark)
+                    uint8_t nrz=(rf_d==nrzi_prev[d])?1:0;
                     nrzi_prev[d]=rf_d;
                     hdlc[d].push(nrz,ch_idx);
                 }
