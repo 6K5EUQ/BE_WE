@@ -174,18 +174,37 @@ void FFTViewer::capture_and_process(){
                 if(access(old_path, F_OK)==0){ remove(old_path); }
             }
 
-            uint32_t actual_sr=0, actual_bw=0;
-            bladerf_set_sample_rate(dev_blade,BLADERF_CHANNEL_RX(0),new_sr,&actual_sr);
-            // BW = SR * 80% (BladeRF 권장: 나이퀴스트의 80%)
-            bladerf_set_bandwidth(dev_blade,BLADERF_CHANNEL_RX(0),(uint32_t)(actual_sr*0.8f),&actual_bw);
+            // 122.88M 이상 → SC8_Q7 (8bit) + OVERSAMPLE, 그 외 → SC16_Q11 (16bit)
+            bool was_sc8 = sc8_mode;
+            sc8_mode = (new_sr >= 122880000);
+            bladerf_format fmt = sc8_mode ? BLADERF_FORMAT_SC8_Q7 : BLADERF_FORMAT_SC16_Q11;
 
-            // 스트림 재설정 (새 SR에 맞춰)
             bladerf_enable_module(dev_blade,BLADERF_CHANNEL_RX(0),false);
-            bladerf_sync_config(dev_blade,BLADERF_RX_X1,BLADERF_FORMAT_SC16_Q11,512,16384,128,5000);
+
+            // OVERSAMPLE 피쳐: SC8 진입 시 enable, 복귀 시 disable
+            if(sc8_mode != was_sc8){
+                int fe = bladerf_enable_feature(dev_blade, BLADERF_FEATURE_OVERSAMPLE, sc8_mode);
+                if(fe) bewe_log("enable_feature(OVERSAMPLE,%d): %s\n", sc8_mode, bladerf_strerror(fe));
+            }
+
+            uint32_t actual_sr=0, actual_bw=0;
+            int sr_err = bladerf_set_sample_rate(dev_blade,BLADERF_CHANNEL_RX(0),new_sr,&actual_sr);
+            if(sr_err) bewe_log("set_sr(%u): %s\n", new_sr, bladerf_strerror(sr_err));
+
+            // BW: 최대한 열기 (AD9361이 지원하는 범위로 자동 클램프됨)
+            uint32_t req_bw = (uint32_t)(actual_sr*0.8f);
+            int bw_err = bladerf_set_bandwidth(dev_blade,BLADERF_CHANNEL_RX(0),req_bw,&actual_bw);
+            if(bw_err) bewe_log("set_bw(%u): %s\n", req_bw, bladerf_strerror(bw_err));
+
             bladerf_enable_module(dev_blade,BLADERF_CHANNEL_RX(0),true);
+            int sc_err = bladerf_sync_config(dev_blade,BLADERF_RX_X1,fmt,512,16384,128,5000);
+            if(sc_err) bewe_log("sync_config(fmt=%d): %s\n", (int)fmt, bladerf_strerror(sc_err));
+
+            bewe_log("SC8=%d req=%u actual_sr=%u actual_bw=%u\n", sc8_mode, new_sr, actual_sr, actual_bw);
 
             // HW 파라미터 갱신
             hw = make_bladerf_config(actual_sr);
+            if(sc8_mode) hw.iq_scale = 128.0f; // SC8_Q7: 7bit → 128
             time_average = hw.compute_time_average(fft_size);
 
             {std::lock_guard<std::mutex> lk(data_mtx);
@@ -203,8 +222,8 @@ void FFTViewer::capture_and_process(){
             rx_pos=0; rx_avail=0;
             pacc.assign(fft_size,0.0f); fcnt=0; warmup_cnt=0;
             texture_needs_recreate=true;
-            // TM IQ가 켜져 있었으면 새 SR로 롤링 파일 재시작
-            if(tm_was_on){
+            // TM IQ: SC8 모드(122.88M)에서는 롤링 IQ 비활성화
+            if(tm_was_on && !sc8_mode){
                 tm_iq_open();
                 tm_iq_on.store(true);
             }
@@ -248,10 +267,18 @@ void FFTViewer::capture_and_process(){
                 }
                 continue;
             }
+            // SC8_Q7: int8 샘플을 int16으로 확장 (뒤에서부터 → in-place 안전)
+            if(sc8_mode){
+                int8_t* i8 = (int8_t*)iq_buf;
+                for(int k = rx_chunk*2 - 1; k >= 0; k--)
+                    iq_buf[k] = (int16_t)i8[k];
+            }
             // IQ Ring write: 전체 청크를 한 번에 ring에 추가
             bool need_ring=rec_on.load(std::memory_order_relaxed);
-            if(!need_ring) for(int i=0;i<MAX_CHANNELS;i++) if(channels[i].dem_run.load()){need_ring=true;break;}
-            bool need_tm=tm_iq_on.load(std::memory_order_relaxed)&&(warmup_cnt>=WARMUP_FFTS);
+            if(!need_ring) for(int i=0;i<MAX_CHANNELS;i++){
+                if(channels[i].dem_run.load()||channels[i].digi_run.load()){need_ring=true;break;}
+            }
+            bool need_tm=!sc8_mode&&tm_iq_on.load(std::memory_order_relaxed)&&(warmup_cnt>=WARMUP_FFTS);
             if(need_ring||need_tm){
                 size_t wp=ring_wp.load(std::memory_order_relaxed);
                 size_t n=(size_t)rx_chunk, cap=IQ_RING_CAPACITY;

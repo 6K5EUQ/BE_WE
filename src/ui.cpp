@@ -3151,8 +3151,8 @@ void run_streaming_viewer(){
         if((v.dev_blade || v.dev_rtl) || v.remote_mode){
             // BladeRF: 2.5/5/10/20/30.72/61.44 MSPS
             // RTL-SDR: 0.25/0.96/1.44/2.56 MSPS
-            static const float blade_srs[]  = {2.5f,5.0f,10.0f,20.0f,30.72f,61.44f};
-            static const char* blade_lbls[] = {"2.5M","5M","10M","20M","30.72M","61.44M"};
+            static const float blade_srs[]  = {2.5f,5.0f,10.0f,20.0f,30.72f,61.44f,122.88f};
+            static const char* blade_lbls[] = {"2.5M","5M","10M","20M","30.72M","61.44M","122.88M"};
             static const float rtl_srs[]    = {0.25f,0.96f,1.44f,2.56f};
             static const char* rtl_lbls[]   = {"0.25M","0.96M","1.44M","2.56M"};
             // JOIN: HOST hw_type으로 SR 리스트 결정
@@ -3160,7 +3160,7 @@ void run_streaming_viewer(){
                                            : (v.dev_blade != nullptr);
             const float* sr_list  = use_blade ? blade_srs  : rtl_srs;
             const char** sr_lbls  = use_blade ? blade_lbls : rtl_lbls;
-            int          sr_count = use_blade ? 6 : 4;
+            int          sr_count = use_blade ? 7 : 4;
 
             // 현재 SR에 맞는 인덱스 선택
             static int sr_si = -1;
@@ -3931,9 +3931,9 @@ void run_streaming_viewer(){
                                             v.stop_digi(ci);
                                         } else {
                                             v.stop_digi(ci);
-                                            if(dm == Channel::DIGI_AIS)
+                                            if(dm == Channel::DIGI_AIS || dm == Channel::DIGI_DMR)
                                                 v.start_digi(ci, dm);
-                                            // ADS-B, DMR: 미구현
+                                            // ADS-B: 미구현
                                         }
                                     }
                                     ImGui::PopStyleColor();

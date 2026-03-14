@@ -25,7 +25,7 @@ void FFTViewer::rec_worker(){
         size_t avail=std::min((wp-rp)&IQ_RING_MASK,(size_t)65536);
         for(size_t s=0;s<avail;s++){
             size_t pos=(rp+s)&IQ_RING_MASK;
-            float si=ring[pos*2]/2048.0f, sq=ring[pos*2+1]/2048.0f;
+            float si=ring[pos*2]/hw.iq_scale, sq=ring[pos*2+1]/hw.iq_scale;
             float mi,mq; osc.mix(si,sq,mi,mq);
             ai+=mi; aq+=mq; cnt++;
             if(cnt>=(int)decim){

@@ -95,7 +95,7 @@ void FFTViewer::dem_worker(int ch_idx){
         size_t avail=std::min(lag,BATCH);
         for(size_t s=0;s<avail;s++){
             size_t pos=(rp+s)&IQ_RING_MASK;
-            float si=ring[pos*2]/2048.0f, sq=ring[pos*2+1]/2048.0f;
+            float si=ring[pos*2]/hw.iq_scale, sq=ring[pos*2+1]/hw.iq_scale;
             float mi,mq; osc.mix(si,sq,mi,mq);
             cap_i+=mi; cap_q+=mq; cap_cnt++;
             if(cap_cnt<(int)cap_decim) continue;

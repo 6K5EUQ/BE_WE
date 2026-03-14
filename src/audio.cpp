@@ -44,7 +44,8 @@ void FFTViewer::mix_worker(){
             } else {
                 // ── LOCAL / HOST 모드: 로컬 채널 오디오 ──────────────────
                 for(int c=0;c<MAX_CHANNELS;c++){
-                    if(!channels[c].dem_run.load(std::memory_order_relaxed)) continue;
+                    if(!channels[c].dem_run.load(std::memory_order_relaxed)
+                    && !channels[c].digi_run.load(std::memory_order_relaxed)) continue;
                     if(net_srv && !(channels[c].audio_mask.load() & 0x1u)) continue;
                     if(local_ch_out[c]==3) {
                         float dummy; channels[c].pop_audio(dummy); continue;

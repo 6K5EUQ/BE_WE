@@ -179,7 +179,7 @@ void FFTViewer::ais_worker(int ch_idx){
         size_t avail=std::min(lag,BATCH);
         for(size_t s=0;s<avail;s++){
             size_t pos=(rp+s)&IQ_RING_MASK;
-            float si=ring[pos*2]/2048.0f, sq=ring[pos*2+1]/2048.0f;
+            float si=ring[pos*2]/hw.iq_scale, sq=ring[pos*2+1]/hw.iq_scale;
 
             float mi,mq; osc.mix(si,sq,mi,mq);
             cap_i+=mi; cap_q+=mq; cap_cnt++;
@@ -299,11 +299,14 @@ void FFTViewer::start_digi(int ch_idx, Channel::DigitalMode mode){
     if(ch.digi_run.load()||!ch.filter_active) return;
     ch.digital_mode=mode;
     ch.sq_calibrated.store(false);   // 재시작 시 auto-calibration 재수행
+    ch.sq_threshold.store(-50.0f);   // threshold 초기화 → calibration 후 실제값으로 덮어씀
     ch.digi_rp.store(ring_wp.load());
     ch.digi_stop_req.store(false);
     ch.digi_run.store(true);
     if(mode==Channel::DIGI_AIS)
         ch.digi_thr=std::thread(&FFTViewer::ais_worker,this,ch_idx);
+    else if(mode==Channel::DIGI_DMR)
+        ch.digi_thr=std::thread(&FFTViewer::dmr_worker,this,ch_idx);
     printf("[DIGI ch%d] start mode=%d\n",ch_idx,(int)mode); fflush(stdout);
 }
 

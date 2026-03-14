@@ -285,6 +285,7 @@ public:
     std::string window_title;
     std::mutex  data_mtx;
     float pending_cf=0; bool freq_req=false, freq_prog=false;
+    bool  sc8_mode=false; // SC8_Q7 모드 (122.88 MSPS)
 
     // ── IQ Ring ───────────────────────────────────────────────────────────
     std::vector<int16_t> ring;
@@ -350,6 +351,7 @@ public:
 
     // ── ais.cpp ───────────────────────────────────────────────────────────
     void ais_worker(int ch_idx);
+    void dmr_worker(int ch_idx);
     void start_digi(int ch_idx, Channel::DigitalMode mode);
     void stop_digi(int ch_idx);
     void stop_all_dem();
