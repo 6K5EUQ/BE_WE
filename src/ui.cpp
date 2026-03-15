@@ -677,6 +677,38 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
             }
         }
     }
+
+    // ── 주파수 축 드래그 → center frequency 이동 (SDR++ 스타일) ──────────
+    {
+        float fax_y = gy + gh;  // 주파수 레이블 영역 상단
+        float fax_h = BOTTOM_LABEL_HEIGHT;
+        ImGui::SetCursorScreenPos(ImVec2(gx, fax_y));
+        ImGui::InvisibleButton("freq_axis_drag", ImVec2(gw, fax_h));
+        bool fax_hov = ImGui::IsItemHovered();
+        if(fax_hov) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+
+        if(fax_hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+            freq_drag_active = true;
+            freq_drag_start_x = ImGui::GetIO().MousePos.x;
+            freq_drag_start_cf = (float)(header.center_frequency / 1e6);
+        }
+        if(freq_drag_active){
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            if(ImGui::IsMouseDown(ImGuiMouseButton_Left)){
+                float dx = ImGui::GetIO().MousePos.x - freq_drag_start_x;
+                // 화면 픽셀 → MHz 변환: 현재 표시 범위 기준
+                float ds2, de2; get_disp(ds2, de2);
+                float mhz_per_px = (de2 - ds2) / gw;
+                float new_cf = freq_drag_start_cf - dx * mhz_per_px;
+                if(new_cf < 0.1f) new_cf = 0.1f;
+                // 캡처 스레드에 주파수 변경 요청 (블로킹 방지)
+                pending_cf = new_cf;
+                freq_req = true;
+            } else {
+                freq_drag_active = false;
+            }
+        }
+    }
 }
 
 void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, float total_w, float total_h){

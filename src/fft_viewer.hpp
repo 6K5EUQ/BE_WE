@@ -387,6 +387,11 @@ public:
     void draw_freq_axis(ImDrawList* dl, float gx, float gw, float gy, float gh, bool ticks_only=false);
     void handle_zoom_scroll(float gx, float gw, float mouse_x);
     void draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, float total_w, float total_h);
+
+    // ── 주파수 축 드래그 (center frequency 이동) ────────────────────────
+    bool   freq_drag_active = false;
+    float  freq_drag_start_x = 0;     // 드래그 시작 시 마우스 x
+    float  freq_drag_start_cf = 0;    // 드래그 시작 시 center_frequency (MHz)
     void draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, float total_w, float total_h);
 };
 

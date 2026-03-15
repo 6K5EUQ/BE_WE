@@ -51,9 +51,8 @@ void FFTViewer::update_wf_row(int fi){
         idx=idx<0?0:idx>255?255:idx;
         return lut[idx];
     };
-    for(int i=0;i<half;i++) wf_row_buf[i]=map(half+1+i);
-    wf_row_buf[half]=map(0);
-    for(int i=1;i<=half;i++) wf_row_buf[half+i]=map(i);
+    for(int i=0;i<half;i++) wf_row_buf[i]=map(half+i);
+    for(int i=0;i<half;i++) wf_row_buf[half+i]=map(i);
     glBindTexture(GL_TEXTURE_2D,waterfall_texture);
     glTexSubImage2D(GL_TEXTURE_2D,0,0,mi,fft_size,1,GL_RGBA,GL_UNSIGNED_BYTE,wf_row_buf.data());
     glBindTexture(GL_TEXTURE_2D,0);

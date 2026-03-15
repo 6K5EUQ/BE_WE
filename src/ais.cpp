@@ -118,6 +118,7 @@ void FFTViewer::ais_worker(int ch_idx){
 
     // 믹서: off_hz 만큼 주파수 이동
     Oscillator osc; osc.set_freq((double)off_hz,(double)msr);
+    uint64_t prev_cf = header.center_frequency;
 
     // decimation: 단순 누적 평균 (sinc 등가, aliasing 억제)
     double cap_i=0,cap_q=0; int cap_cnt=0;
@@ -153,6 +154,14 @@ void FFTViewer::ais_worker(int ch_idx){
     const int DIAG_INTERVAL=(int)work_sr*5;
 
     while(!ch.digi_stop_req.load(std::memory_order_relaxed)){
+        // center frequency 변경 감지 → 오실레이터 재설정
+        { uint64_t cur_cf=header.center_frequency;
+          if(cur_cf!=prev_cf){
+              off_hz=(((ch.s+ch.e)/2.0f)-(float)(cur_cf/1e6))*1e6f;
+              osc.set_freq((double)off_hz,(double)msr);
+              prev_cf=cur_cf;
+          }
+        }
         size_t wp=ring_wp.load(std::memory_order_acquire);
         size_t rp=ch.digi_rp.load(std::memory_order_relaxed);
         size_t lag=(wp-rp)&IQ_RING_MASK;
