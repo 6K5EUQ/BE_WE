@@ -61,17 +61,8 @@ void FFTViewer::dem_worker(int ch_idx){
     double aac=0; int acnt=0;
     size_t aac_detect_pos=0;
 
-    // ── Squelch ───────────────────────────────────────────────────────────
-    const float SQL_ALPHA     = 0.05f;
-    const int   SQL_HOLD_SAMP = 0;
-    const int   CALIB_SAMP    = (int)(actual_inter * 0.500f);
-    float sql_avg=-120.0f;
-    std::vector<float> calib_buf;
-    bool calibrated=ch.sq_calibrated.load(std::memory_order_relaxed);
-    if(!calibrated) calib_buf.reserve(CALIB_SAMP);
+    // 스컬치는 UI 스레드에서 FFT 기반으로 중앙 관리 (sq_gate 읽기만)
     bool gate_open=false;
-    int  gate_hold=0;
-    int  sq_ui_tick=0;
 
     const size_t MAX_LAG=(size_t)(msr*0.08);
     const size_t BATCH  =(size_t)cap_decim*actual_asr/50;
@@ -103,37 +94,9 @@ void FFTViewer::dem_worker(int ch_idx){
             cap_i=cap_q=0; cap_cnt=0;
             fi=lpi.p(fi); fq=lpq.p(fq);
 
-            // ── Squelch ───────────────────────────────────────────────────
+            // 스컬치 게이트 읽기 (UI 스레드에서 FFT 기반으로 관리)
             float p_inst=fi*fi+fq*fq;
-            float db_inst=(p_inst>1e-12f)?10.0f*log10f(p_inst):-120.0f;
-            sql_avg=SQL_ALPHA*db_inst+(1.0f-SQL_ALPHA)*sql_avg;
-
-            if(!calibrated){
-                if((int)calib_buf.size()<CALIB_SAMP) calib_buf.push_back(db_inst);
-                if((int)calib_buf.size()>=CALIB_SAMP){
-                    std::vector<float> tmp=calib_buf;
-                    size_t p20=tmp.size()/5;
-                    std::nth_element(tmp.begin(),tmp.begin()+p20,tmp.end());
-                    float noise_floor=tmp[p20];
-                    ch.sq_threshold.store(noise_floor+10.0f,std::memory_order_relaxed);
-                    calibrated=true;
-                    ch.sq_calibrated.store(true,std::memory_order_relaxed);
-                    calib_buf.clear(); calib_buf.shrink_to_fit();
-                }
-            }
-            float thr=ch.sq_threshold.load(std::memory_order_relaxed);
-            const float HYS=3.0f;
-            if(calibrated){
-                if(!gate_open&&sql_avg>=thr){ gate_open=true; gate_hold=SQL_HOLD_SAMP; }
-                if( gate_open){
-                    if(sql_avg>=thr-HYS) gate_hold=SQL_HOLD_SAMP;
-                    else if(--gate_hold<=0){ gate_open=false; gate_hold=0; }
-                }
-            }
-            if(++sq_ui_tick>=256){ sq_ui_tick=0;
-                ch.sq_sig .store(sql_avg,  std::memory_order_relaxed);
-                ch.sq_gate.store(gate_open,std::memory_order_relaxed);
-            }
+            gate_open = ch.sq_gate.load(std::memory_order_relaxed);
 
             // ── Demodulate ────────────────────────────────────────────────
             if(mode==Channel::DM_MAGIC){

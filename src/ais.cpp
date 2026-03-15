@@ -140,15 +140,8 @@ void FFTViewer::ais_worker(int ch_idx){
     float agc_peak=0.1f;
     const float AGC_ATTACK=0.01f, AGC_DECAY=0.0001f;
 
-    // ── Squelch + auto-calibration (demod.cpp와 동일한 방식) ─────────────
-    const float SQL_ALPHA  = 0.05f;
-    const int   CALIB_SAMP = (int)(work_sr * 0.5f);   // 500ms 분량
-    float sql_avg=-120.0f;
-    std::vector<float> calib_buf;
-    bool calibrated = ch.sq_calibrated.load(std::memory_order_relaxed);
-    if(!calibrated) calib_buf.reserve(CALIB_SAMP);
+    // 스컬치는 UI 스레드에서 FFT 기반으로 중앙 관리 (sq_gate 읽기만)
     bool gate_open=false;
-    int  sq_ui_tick=0;
 
     // ── AIS FSK 복조 상태 ──────────────────────────────────────────────────
     float sym_phase=0.f, mu=0.f, p_sym=0.f;
@@ -192,50 +185,21 @@ void FFTViewer::ais_worker(int ch_idx){
             fi=lpi1.p(fi); fq=lpq1.p(fq);
             fi=lpi2.p(fi); fq=lpq2.p(fq);
 
-            // ── Squelch ───────────────────────────────────────────────────
-            float p_inst=fi*fi+fq*fq;
-            float db_inst=(p_inst>1e-12f)?10.0f*log10f(p_inst):-120.0f;
-            sql_avg=SQL_ALPHA*db_inst+(1.0f-SQL_ALPHA)*sql_avg;
-
-            // auto-calibration: 첫 500ms 샘플로 노이즈 플로어 추정 → thr 설정
-            if(!calibrated){
-                calib_buf.push_back(db_inst);
-                if((int)calib_buf.size()>=CALIB_SAMP){
-                    std::vector<float> tmp=calib_buf;
-                    size_t p20=tmp.size()/5;
-                    std::nth_element(tmp.begin(),tmp.begin()+p20,tmp.end());
-                    ch.sq_threshold.store(tmp[p20]+10.0f,std::memory_order_relaxed);
-                    calibrated=true;
-                    ch.sq_calibrated.store(true,std::memory_order_relaxed);
-                    calib_buf.clear(); calib_buf.shrink_to_fit();
-                }
-            }
-
-            float thr=ch.sq_threshold.load(std::memory_order_relaxed);
-            bool prev_gate=gate_open;
-            if(calibrated){
-                if(!gate_open && sql_avg>=thr) gate_open=true;
-                if( gate_open && sql_avg< thr-3.0f){
-                    gate_open=false;
+            // 스컬치: UI 스레드 FFT 기반 sq_gate 읽기
+            {
+                bool prev_gate=gate_open;
+                gate_open=ch.sq_gate.load(std::memory_order_relaxed);
+                if(!gate_open && prev_gate){
+                    // gate 닫힘 → 디코더 상태 리셋
                     hdlc[0].reset(); hdlc[1].reset();
                     sym_phase=0.f; mu=0.f; p_sym=0.f;
                     nrzi_prev[0]=nrzi_prev[1]=0;
                     prev_i=0.f; prev_q=0.f;
                     disc_dc=0.f; agc_peak=0.1f;
                 }
-            }
-            if(gate_open!=prev_gate){
-                printf("[AIS ch%d] gate %s sql=%.1fdB thr=%.1fdB\n",
-                       ch_idx,gate_open?"OPEN":"CLOSE",sql_avg,thr);
-                fflush(stdout);
-                if(gate_open){
-                    // gate 열릴 때 disc_dc 즉시 리셋 (이전 노이즈 편향 제거)
+                if(gate_open && !prev_gate){
                     disc_dc=0.f; agc_peak=0.1f;
                 }
-            }
-            if(++sq_ui_tick>=256){ sq_ui_tick=0;
-                ch.sq_sig .store(sql_avg,  std::memory_order_relaxed);
-                ch.sq_gate.store(gate_open,std::memory_order_relaxed);
             }
 
             // ── AIS FSK 복조 (squelch 열릴 때만) ─────────────────────────
@@ -298,8 +262,6 @@ void FFTViewer::start_digi(int ch_idx, Channel::DigitalMode mode){
     Channel& ch=channels[ch_idx];
     if(ch.digi_run.load()||!ch.filter_active) return;
     ch.digital_mode=mode;
-    ch.sq_calibrated.store(false);   // 재시작 시 auto-calibration 재수행
-    ch.sq_threshold.store(-50.0f);   // threshold 초기화 → calibration 후 실제값으로 덮어씀
     ch.digi_rp.store(ring_wp.load());
     ch.digi_stop_req.store(false);
     ch.digi_run.store(true);

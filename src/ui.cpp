@@ -68,6 +68,102 @@ static std::string fmt_filesize(const std::string& dir, const std::string& fname
     return buf;
 }
 
+// ── 채널 스컬치: FFT 스펙트럼에서 직접 채널 파워 계산 ─────────────────────
+// filter_active인 모든 채널에 대해 동작 (복조 없어도 회색 상태에서 작동)
+// dB값이 FFT 스펙트럼과 동일한 스케일 (-100~0)
+void FFTViewer::update_channel_squelch(){
+    if(total_ffts < 1 || fft_size < 1) return;
+    float cf_mhz = (float)(header.center_frequency / 1e6);
+    float nyq_mhz = header.sample_rate / 2e6f;
+    if(nyq_mhz < 0.001f) return;
+    int hf = fft_size / 2;
+    float pscale = (header.power_max - header.power_min) / 127.0f;
+    float pbase  = header.power_min;
+
+    // 최신 FFT 행 읽기
+    int fi = (total_ffts > 0 ? total_ffts - 1 : 0) % MAX_FFTS_MEMORY;
+    const int8_t* rowp = fft_data.data() + fi * fft_size;
+
+    auto freq_to_bin = [&](float rel_mhz) -> int {
+        int bin = (rel_mhz >= 0)
+            ? (int)((rel_mhz / nyq_mhz) * hf)
+            : fft_size + (int)((rel_mhz / nyq_mhz) * hf);
+        return std::max(0, std::min(fft_size - 1, bin));
+    };
+
+    for(int c = 0; c < MAX_CHANNELS; c++){
+        Channel& ch = channels[c];
+        if(!ch.filter_active) continue;
+
+        // 채널 주파수 범위 → FFT 빈
+        float s_mhz = std::min(ch.s, ch.e) - cf_mhz;
+        float e_mhz = std::max(ch.s, ch.e) - cf_mhz;
+        int bin_s = freq_to_bin(s_mhz);
+        int bin_e = freq_to_bin(e_mhz);
+
+        // 채널 대역 내 피크 파워 (FFT dB 그대로)
+        float peak_db = -120.0f;
+        if(bin_s <= bin_e){
+            for(int b = bin_s; b <= bin_e; b++){
+                float db = rowp[b] * pscale + pbase;
+                if(db > peak_db) peak_db = db;
+            }
+        } else {
+            // DC 경계를 넘는 경우
+            for(int b = bin_s; b < fft_size; b++){
+                float db = rowp[b] * pscale + pbase;
+                if(db > peak_db) peak_db = db;
+            }
+            for(int b = 0; b <= bin_e; b++){
+                float db = rowp[b] * pscale + pbase;
+                if(db > peak_db) peak_db = db;
+            }
+        }
+
+        // IIR 스무딩 (UI 프레임 기반, ~60fps)
+        float prev = ch.sq_sig.load(std::memory_order_relaxed);
+        float sig = 0.3f * peak_db + 0.7f * prev;
+        ch.sq_sig.store(sig, std::memory_order_relaxed);
+
+        // 캘리브레이션: 처음 60프레임(~1초) 수집 후 20th percentile + 10dB
+        if(!ch.sq_calibrated.load(std::memory_order_relaxed)){
+            if(ch.sq_calib_cnt < 60){
+                ch.sq_calib_buf[ch.sq_calib_cnt++] = peak_db;
+            }
+            if(ch.sq_calib_cnt >= 60){
+                // 20th percentile
+                float tmp[60];
+                memcpy(tmp, ch.sq_calib_buf, sizeof(tmp));
+                std::nth_element(tmp, tmp + 12, tmp + 60);  // 12/60 = 20%
+                float noise_floor = tmp[12];
+                ch.sq_threshold.store(noise_floor + 10.0f, std::memory_order_relaxed);
+                ch.sq_calibrated.store(true, std::memory_order_relaxed);
+                ch.sq_calib_cnt = 0;
+            }
+        }
+
+        // 게이트 로직 (히스테리시스 + 홀드)
+        float thr = ch.sq_threshold.load(std::memory_order_relaxed);
+        bool gate = ch.sq_gate.load(std::memory_order_relaxed);
+        const float HYS = 3.0f;
+        const int HOLD_FRAMES = 18;  // ~0.3초 @ 60fps
+
+        if(ch.sq_calibrated.load(std::memory_order_relaxed)){
+            if(!gate && sig >= thr){
+                gate = true;
+                ch.sq_gate_hold = HOLD_FRAMES;
+            }
+            if(gate){
+                if(sig >= thr - HYS)
+                    ch.sq_gate_hold = HOLD_FRAMES;
+                else if(--ch.sq_gate_hold <= 0)
+                    gate = false;
+            }
+        }
+        ch.sq_gate.store(gate, std::memory_order_relaxed);
+    }
+}
+
 // ── Channel overlays ──────────────────────────────────────────────────────
 void FFTViewer::handle_new_channel_drag(float gx, float gw){
     ImVec2 m=ImGui::GetIO().MousePos;
@@ -3265,7 +3361,7 @@ void run_streaming_viewer(){
             ImVec2 sp=ImGui::GetCursorScreenPos();
             sp.y=ImGui::GetWindowPos().y+(TOPBAR_H-SLIDER_H)/2.0f;
             ImDrawList* bdl=ImGui::GetWindowDrawList();
-            const float DB_MIN=v.display_power_min, DB_MAX=v.display_power_max;
+            const float DB_MIN=-100.0f, DB_MAX=0.0f;
             const float DB_RNG=std::max(1.0f,DB_MAX-DB_MIN);
             float thr_db=sch.sq_threshold.load(std::memory_order_relaxed);
             auto to_x=[&](float db)->float{
@@ -3376,6 +3472,9 @@ void run_streaming_viewer(){
         // ── 파워스펙트럼 ──────────────────────────────────────────────────
         if(left_visible && sp_h > 1.0f)
             v.draw_spectrum_area(dl, 0, content_y, left_w, sp_h);
+
+        // ── 채널 스컬치 업데이트 (FFT 기반, 필터만 있으면 동작) ──────────
+        v.update_channel_squelch();
 
         // ── 가로 구분선 (항상 드래그 가능하도록 클램프) ──────────────────
         // div_y를 content_y+1 ~ content_y+content_h-div_h-1 사이로 클램프

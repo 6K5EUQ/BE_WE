@@ -23,6 +23,14 @@ bool FFTViewer::initialize_rtlsdr(float cf_mhz){
     if(r < 0){ fprintf(stderr,"RTL-SDR: set_sample_rate failed\n"); rtlsdr_close(dev_rtl); dev_rtl=nullptr; return false; }
     uint32_t actual_sr = rtlsdr_get_sample_rate(dev_rtl);
 
+    // Direct Sampling: HF (<24MHz) 시 Q-branch 자동 전환
+    if(cf_mhz < 24.0f){
+        rtlsdr_set_direct_sampling(dev_rtl, 2);  // Q-branch
+        printf("RTL-SDR: Direct Sampling ON (Q-branch) for HF\n");
+    } else {
+        rtlsdr_set_direct_sampling(dev_rtl, 0);  // 일반 모드
+    }
+
     // 주파수 설정
     r = rtlsdr_set_center_freq(dev_rtl, (uint32_t)(cf_mhz * 1e6));
     if(r < 0){ fprintf(stderr,"RTL-SDR: set_center_freq failed\n"); rtlsdr_close(dev_rtl); dev_rtl=nullptr; return false; }
@@ -70,6 +78,11 @@ void FFTViewer::set_frequency(float cf_mhz){
     if(hw.type == HWType::BLADERF){
         bladerf_set_frequency(dev_blade, BLADERF_CHANNEL_RX(0), (uint64_t)(cf_mhz*1e6));
     } else if(hw.type == HWType::RTLSDR){
+        // Direct Sampling 자동 전환
+        if(cf_mhz < 24.0f)
+            rtlsdr_set_direct_sampling(dev_rtl, 2);
+        else
+            rtlsdr_set_direct_sampling(dev_rtl, 0);
         rtlsdr_set_center_freq(dev_rtl, (uint32_t)(cf_mhz*1e6));
     }
     {std::lock_guard<std::mutex> lk(data_mtx);
@@ -185,6 +198,11 @@ void FFTViewer::capture_and_process_rtl(){
         // 주파수 변경 — set 후 한 사이클 쉬고 read_sync 재개 (RTL-SDR v4 USB 안정화)
         if(freq_req && !freq_prog){
             freq_prog=true;
+            // Direct Sampling 자동 전환
+            if(pending_cf < 24.0f)
+                rtlsdr_set_direct_sampling(dev_rtl, 2);
+            else
+                rtlsdr_set_direct_sampling(dev_rtl, 0);
             rtlsdr_set_center_freq(dev_rtl, (uint32_t)(pending_cf*1e6));
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             rx_pos=0; rx_avail=0;

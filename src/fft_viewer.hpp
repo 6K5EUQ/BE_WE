@@ -344,6 +344,9 @@ public:
     void set_gain(float db);
     float gain_db = 0.0f;
 
+    // ── 채널 스컬치 (UI 스레드, FFT 기반) ──────────────────────────────────
+    void update_channel_squelch();
+
     // ── demod.cpp ─────────────────────────────────────────────────────────
     void dem_worker(int ch_idx);
     void start_dem(int ch_idx, Channel::DemodMode mode);

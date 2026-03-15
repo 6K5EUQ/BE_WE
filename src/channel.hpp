@@ -147,11 +147,15 @@ struct Channel {
         audio_rec_frames++;
     }
 
-    // Squelch
+    // Squelch (UI 스레드에서 FFT 기반으로 중앙 관리)
     std::atomic<float> sq_threshold{-50.0f};
     std::atomic<float> sq_sig{-120.0f}, sq_nf{0.0f};
     std::atomic<bool>  sq_gate{false};
     std::atomic<bool>  sq_calibrated{false};
+    // 캘리브레이션 (UI 스레드 전용)
+    int   sq_calib_cnt = 0;
+    float sq_calib_buf[60] = {};  // ~1초 @ 60fps
+    int   sq_gate_hold = 0;      // gate hold 카운터 (프레임 단위)
 
     // Filter move-drag state
     bool  move_drag=false;
