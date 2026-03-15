@@ -2642,25 +2642,39 @@ void run_streaming_viewer(){
         }
         if(v.net_srv && pending_chassis2_reset.load()){
             pending_chassis2_reset.store(false);
+            // 1) 채팅 로그
             { std::lock_guard<std::mutex> lk(host_chat_mtx);
               LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
               strncpy(lm.msg,"Chassis 2 reset ...",255);
               if((int)host_chat_log.size()>=200) host_chat_log.erase(host_chat_log.begin());
               host_chat_log.push_back(lm); }
+            // 2) JOIN 클라이언트에게 리셋 알림
             v.net_srv->broadcast_chat("BEWE", "Chassis 2 reset ...");
             v.net_srv->broadcast_heartbeat(2);
+            // 3) 브로드캐스트 중단 + 송신 큐 flush
             v.net_bcast_pause.store(true, std::memory_order_relaxed);
             v.net_srv->pause_broadcast();
+            v.net_srv->flush_clients();
+            // 4) 릴레이 서버에 NET_RESET 전송 (지구본 마커 사라짐)
+            if(relay_cli.is_relay_connected())
+                relay_cli.send_net_reset(0);  // 0 = reset start
+            // 5) 1초 후 재개
             NetServer* srv_ptr = v.net_srv;
             std::atomic<bool>* bcast_pause_ptr = &v.net_bcast_pause;
             std::mutex* log_mtx_ptr2 = &host_chat_mtx;
             std::vector<LocalChatMsg>* log_ptr2 = &host_chat_log;
-            std::thread([srv_ptr, bcast_pause_ptr, log_mtx_ptr2, log_ptr2](){
+            RelayClient* relay_ptr = &relay_cli;
+            std::thread([srv_ptr, bcast_pause_ptr, log_mtx_ptr2, log_ptr2, relay_ptr](){
                 std::this_thread::sleep_for(std::chrono::seconds(1));
+                // 재개 전 한번 더 큐 flush (1초간 쌓인 잔여)
+                srv_ptr->flush_clients();
                 srv_ptr->resume_broadcast();
                 bcast_pause_ptr->store(false, std::memory_order_relaxed);
                 srv_ptr->broadcast_heartbeat(0);
                 srv_ptr->broadcast_chat("BEWE", "Chassis 2 stable ...");
+                // 릴레이 서버에 NET_RESET open (지구본 마커 복원)
+                if(relay_ptr->is_relay_connected())
+                    relay_ptr->send_net_reset(1);  // 1 = open
                 std::lock_guard<std::mutex> lk(*log_mtx_ptr2);
                 LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
                 strncpy(lm.msg,"Chassis 2 stable ...",255);

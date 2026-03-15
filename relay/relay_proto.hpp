@@ -71,6 +71,7 @@ enum class RelayMuxType : uint8_t {
     DATA       = 0x01,  // BEWE 패킷 데이터
     CONN_OPEN  = 0x02,  // 새 JOIN 연결됨 (len=0)
     CONN_CLOSE = 0x03,  // JOIN 연결 끊김 (len=0)
+    NET_RESET  = 0x04,  // 네트워크 리셋 (len=1: 0=reset, 1=open)
 };
 
 // ── 스테이션 목록 ─────────────────────────────────────────────────────────

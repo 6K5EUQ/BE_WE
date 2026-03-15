@@ -20,6 +20,7 @@ struct HostRoom {
     RelayStation              info;
     int                       fd = -1;       // HOST ctrl+mux 소켓
     std::atomic<bool>         alive{true};
+    std::atomic<bool>         resetting{false};  // chassis 2 reset: LIST에서 제외
     std::chrono::steady_clock::time_point last_hb;
 
     mutable std::mutex                    host_send_mtx; // HOST fd write 직렬화

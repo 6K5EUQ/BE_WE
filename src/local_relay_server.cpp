@@ -174,6 +174,15 @@ void LocalRelayServer::host_mux_loop(std::shared_ptr<LocalHostRoom> room){
 
         room->last_hb = std::chrono::steady_clock::now();
 
+        // NET_RESET: 데이터 소비 후 skip (로컬 릴레이에서는 로그만)
+        if(mux.type == static_cast<uint8_t>(RelayMuxType::NET_RESET)){
+            if(mux.len > 0){
+                if(buf.size() < mux.len) buf.resize(mux.len);
+                if(!relay_recv_all(room->fd, buf.data(), mux.len)) break;
+            }
+            continue;
+        }
+
         if(mux.len > 4*1024*1024) break;
         if(buf.size() < mux.len) buf.resize(mux.len);
         if(mux.len > 0 && !relay_recv_all(room->fd, buf.data(), mux.len)) break;

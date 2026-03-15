@@ -199,6 +199,29 @@ void RelayServer::host_mux_loop(std::shared_ptr<HostRoom> room){
 
         room->last_hb = std::chrono::steady_clock::now();
 
+        // NET_RESET: 네트워크 리셋 신호
+        if(mux.type == static_cast<uint8_t>(RelayMuxType::NET_RESET)){
+            if(mux.len > 0){
+                uint8_t flag = 0;
+                if(!relay_recv_all(room->fd, &flag, 1)) break;
+                if(mux.len > 1){
+                    // 나머지 바이트 버리기
+                    std::vector<uint8_t> discard(mux.len - 1);
+                    if(!relay_recv_all(room->fd, discard.data(), mux.len - 1)) break;
+                }
+                if(flag == 0){
+                    room->resetting.store(true);
+                    printf("[Relay] room '%s' (%s) Server reset ...\n",
+                           room->station_id.c_str(), room->info.station_name);
+                } else {
+                    room->resetting.store(false);
+                    printf("[Relay] room '%s' (%s) Server open ...\n",
+                           room->station_id.c_str(), room->info.station_name);
+                }
+            }
+            continue;
+        }
+
         if(mux.len > 4*1024*1024){
             printf("[Relay] host_mux_loop oversized mux.len=%u room='%s'\n",
                    mux.len, room->station_id.c_str());
@@ -349,7 +372,7 @@ void RelayServer::handle_list_req(int fd){
     {
         std::lock_guard<std::mutex> lk(rooms_mtx_);
         for(auto& r : rooms_)
-            if(r->alive.load() && r->info.station_name[0] != '\0')
+            if(r->alive.load() && !r->resetting.load() && r->info.station_name[0] != '\0')
                 stations.push_back(r->info);
     }
     uint16_t cnt = (uint16_t)stations.size();

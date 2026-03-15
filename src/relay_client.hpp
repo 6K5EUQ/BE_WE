@@ -60,6 +60,13 @@ public:
     void stop_mux_adapter();
     bool is_relay_connected() const { return mux_running_.load(); }
 
+    // relay에 NET_RESET 신호 전송 (0=reset start, 1=open)
+    void send_net_reset(uint8_t flag){
+        if(mux_relay_fd_ < 0) return;
+        std::lock_guard<std::mutex> lk(mux_relay_write_mtx_);
+        relay_send_mux(mux_relay_fd_, 0xFFFF, RelayMuxType::NET_RESET, &flag, 1);
+    }
+
     // ── JOIN 모드 ─────────────────────────────────────────────────────────
     // 성공 시 relay_fd 반환 (투명 BEWE 스트림), 실패 시 -1
     int join_room(const std::string& relay_host, int relay_port,

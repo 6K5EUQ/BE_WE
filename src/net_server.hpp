@@ -168,6 +168,15 @@ public:
     void pause_broadcast()  { bcast_pause_.store(true,  std::memory_order_relaxed); }
     void resume_broadcast() { bcast_pause_.store(false, std::memory_order_relaxed); }
 
+    // 모든 클라이언트 송신 큐 flush (쌓인 데이터 버리기)
+    void flush_clients(){
+        std::lock_guard<std::mutex> lk(clients_mtx_);
+        for(auto& c : clients_){
+            std::lock_guard<std::mutex> qlk(c->send_mtx);
+            c->send_queue.clear();
+        }
+    }
+
     // Chat → all clients
     void broadcast_chat(const char* from, const char* msg);
 
