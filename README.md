@@ -1,3 +1,3 @@
 # BE_WE
 
-![](assets/Screen.png)
+![](assets/BEWE.png)
