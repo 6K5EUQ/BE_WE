@@ -1,5 +1,5 @@
 #pragma once
-#include "../relay/relay_proto.hpp"
+#include "relay_proto.hpp"
 #include "net_protocol.hpp"
 #include <string>
 #include <vector>

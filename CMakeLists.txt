@@ -43,6 +43,7 @@ add_executable(BE_WE
     src/sa_compute.cpp
     src/rtlsdr_io.cpp
     src/hw_detect.cpp
+    src/ais.cpp
     src/dmr.cpp
     src/login.cpp
     src/net_server.cpp
@@ -50,6 +51,8 @@ add_executable(BE_WE
     src/net_stream.cpp
     src/globe.cpp
     src/udp_discovery.cpp
+    src/relay_client.cpp
+    src/local_relay_server.cpp
     ${IMGUI_SOURCES}
 )
 
