@@ -9,6 +9,7 @@
 ## Table of Contents
 
 - [Overview](#overview)
+- [Why BE_WE](#why-be_we)
 - [Screenshots](#screenshots)
 - [Features](#features)
 - [Supported Hardware](#supported-hardware)
@@ -24,6 +25,36 @@
 ## Overview
 
 BE_WE is a Linux-native SDR (Software Defined Radio) application built with C++17, OpenGL, and ImGui. A single HOST captures RF spectrum from an SDR device and streams it in real-time to multiple JOIN clients over TCP. Every operator sees the same live waterfall, can create channels, demodulate signals, chat, and share recordings — all from separate machines.
+
+---
+
+## Why BE_WE
+
+Most SDR applications are designed for a single operator sitting in front of a single machine. BE_WE is built from the ground up for **distributed, multi-operator environments** where the SDR hardware may be remote and bandwidth is limited.
+
+### Multi-User Real-Time Collaboration
+
+Unlike any other desktop SDR software, BE_WE supports multiple operators working on the same spectrum simultaneously. Each operator can independently create channels, tune demodulators, control audio routing, and record — all in real-time over the network. Built-in chat, file sharing, and an operator list with tier-based permissions make it a true **multiplayer SDR platform**.
+
+### 3D Globe Station Discovery
+
+Stations running BE_WE appear as markers on an interactive 3D globe. Operators can visually browse available stations worldwide and connect with a single click — no IP addresses or manual configuration needed. LAN stations are discovered automatically; WAN stations are reachable through an optional relay server.
+
+### Time Machine — Rewind the Spectrum
+
+BE_WE continuously records a 60-second rolling IQ buffer to disk. When something interesting appears on the waterfall, press `Space` to freeze and scroll back in time. Missed a signal 30 seconds ago? It's still there. Select a region and export the IQ — no need to have been "recording" at the time.
+
+### Selective Region IQ Export
+
+Instead of capturing the entire wideband IQ stream (which can be tens of MB/s), operators can `Ctrl+Right-drag` on the waterfall to select a specific time-frequency region and export only that portion. This is critical in bandwidth-constrained remote environments where full IQ transfer is impractical. Combined with Time Machine, operators can retroactively extract only the signal of interest — saving storage, network bandwidth, and analysis time.
+
+### Per-Operator Audio Routing
+
+Each demodulated channel can be routed to specific operators using a per-channel bitmask. Operator A monitors channel 1, operator B monitors channels 2 and 3 — each with independent pan and volume control. This enables team-based division of labor across the spectrum.
+
+### Distributed Architecture (HOST / JOIN / Relay)
+
+Any machine with an SDR can HOST a station. Any machine without an SDR can JOIN and operate as if the hardware were local. A relay server bridges stations across different networks. Local relay optimization minimizes latency on the same subnet. The entire system is designed for real-world deployment where operators and hardware are rarely in the same room.
 
 ---
 
