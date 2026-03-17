@@ -4056,31 +4056,27 @@ void run_streaming_viewer(){
                             for(int bi=0;bi<4;bi++){
                                 bool active=(lco==bi);
                                 if(active) ImGui::PushStyleColor(ImGuiCol_Button,
-                                    bi==3?ImVec4(0.6f,0.1f,0.1f,1.f):ImVec4(0.15f,0.45f,0.75f,1.f));
+                                    bi==3?ImVec4(0.6f,0.1f,0.1f,1.f):ImVec4(0.1f,0.55f,0.1f,1.f));
                                 if(ImGui::SmallButton(lbl_out[bi])) set_local_out(ci,bi);
                                 if(active) ImGui::PopStyleColor();
                                 if(bi<3) ImGui::SameLine(0,2);
                             }
 
-                            // SS / SG 노이즈제거 버튼 (채널별, 배타적)
+                            // 노이즈제거 버튼 (채널별, 배타적: SS/SG/WF/MS/LM)
                             ImGui::SameLine(0,6);
                             {
                                 int cur = v.nr_mode[ci];
-                                // SS 버튼
-                                bool ss_on = (cur==1);
-                                if(ss_on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f,0.55f,0.1f,1.f));
-                                char ss_id[32]; snprintf(ss_id,sizeof(ss_id),"SS##%d",ci);
-                                if(ImGui::SmallButton(ss_id))
-                                    v.nr_mode[ci] = ss_on ? 0 : 1;
-                                if(ss_on) ImGui::PopStyleColor();
-                                // SG 버튼
-                                ImGui::SameLine(0,2);
-                                bool sg_on = (cur==2);
-                                if(sg_on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f,0.55f,0.1f,1.f));
-                                char sg_id[32]; snprintf(sg_id,sizeof(sg_id),"SG##%d",ci);
-                                if(ImGui::SmallButton(sg_id))
-                                    v.nr_mode[ci] = sg_on ? 0 : 2;
-                                if(sg_on) ImGui::PopStyleColor();
+                                struct NRBtn { const char* lbl; int mode; };
+                                static const NRBtn nrb[]={{"SS",1},{"SG",2},{"WF",3},{"MS",4},{"LM",5}};
+                                for(int bi=0;bi<5;bi++){
+                                    if(bi>0) ImGui::SameLine(0,2);
+                                    bool on = (cur==nrb[bi].mode);
+                                    if(on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f,0.55f,0.1f,1.f));
+                                    char nid[32]; snprintf(nid,sizeof(nid),"%s##%d",nrb[bi].lbl,ci);
+                                    if(ImGui::SmallButton(nid))
+                                        v.nr_mode[ci] = on ? 0 : nrb[bi].mode;
+                                    if(on) ImGui::PopStyleColor();
+                                }
                             }
 
                             // ── 디지털 모드 버튼 (D키로 패널 열었을 때만 표시) ──
