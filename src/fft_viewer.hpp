@@ -333,8 +333,8 @@ public:
     // ── Audio mix ─────────────────────────────────────────────────────────
     std::atomic<bool> mix_stop{false};
     std::thread       mix_thr;
-    bool rnn_ch[MAX_CHANNELS]{};          // 채널별 RNNoise on/off
-    float rnn_wet = 0.7f;                 // RNNoise dry/wet (0=원본, 1=풀 디노이즈)
+    // 채널별 노이즈 제거 모드: 0=OFF, 1=SS(Spectral Subtraction), 2=SG(Spectral Gate)
+    int  nr_mode[MAX_CHANNELS]{};
 
     // ── hw_detect / bladerf_io / rtlsdr_io ───────────────────────────────
     bool initialize(float cf_mhz);          // HW 자동 감지 후 초기화

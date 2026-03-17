@@ -4062,15 +4062,25 @@ void run_streaming_viewer(){
                                 if(bi<3) ImGui::SameLine(0,2);
                             }
 
-                            // RNN 노이즈제거 버튼 (채널별)
+                            // SS / SG 노이즈제거 버튼 (채널별, 배타적)
                             ImGui::SameLine(0,6);
                             {
-                                bool rnn_on = v.rnn_ch[ci];
-                                if(rnn_on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f,0.55f,0.1f,1.f));
-                                char rnn_id[32]; snprintf(rnn_id,sizeof(rnn_id),"RNN##%d",ci);
-                                if(ImGui::SmallButton(rnn_id))
-                                    v.rnn_ch[ci] = !rnn_on;
-                                if(rnn_on) ImGui::PopStyleColor();
+                                int cur = v.nr_mode[ci];
+                                // SS 버튼
+                                bool ss_on = (cur==1);
+                                if(ss_on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f,0.55f,0.1f,1.f));
+                                char ss_id[32]; snprintf(ss_id,sizeof(ss_id),"SS##%d",ci);
+                                if(ImGui::SmallButton(ss_id))
+                                    v.nr_mode[ci] = ss_on ? 0 : 1;
+                                if(ss_on) ImGui::PopStyleColor();
+                                // SG 버튼
+                                ImGui::SameLine(0,2);
+                                bool sg_on = (cur==2);
+                                if(sg_on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f,0.55f,0.1f,1.f));
+                                char sg_id[32]; snprintf(sg_id,sizeof(sg_id),"SG##%d",ci);
+                                if(ImGui::SmallButton(sg_id))
+                                    v.nr_mode[ci] = sg_on ? 0 : 2;
+                                if(sg_on) ImGui::PopStyleColor();
                             }
 
                             // ── 디지털 모드 버튼 (D키로 패널 열었을 때만 표시) ──
