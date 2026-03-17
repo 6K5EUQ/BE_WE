@@ -1,4 +1,5 @@
 #pragma once
+#include "config.hpp"
 #include "net_protocol.hpp"
 #include "channel.hpp"
 #include <string>
@@ -121,7 +122,7 @@ public:
     std::atomic<bool>    op_list_updated{false};
 
     // ── Audio rings (one per channel) ─────────────────────────────────────
-    NetAudioRing audio[5];  // MAX_CHANNELS
+    NetAudioRing audio[MAX_CHANNELS];
 
     // ── Chat ──────────────────────────────────────────────────────────────
     struct ChatMsg { char from[32]; char msg[256]; };

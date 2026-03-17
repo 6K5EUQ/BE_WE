@@ -185,7 +185,7 @@ struct __attribute__((packed)) ChSyncEntry {
 };
 
 struct __attribute__((packed)) PktChannelSync {
-    ChSyncEntry ch[5];  // MAX_CHANNELS
+    ChSyncEntry ch[10]; // MAX_CHANNELS
 };
 
 // ── WF_EVENT ──────────────────────────────────────────────────────────────

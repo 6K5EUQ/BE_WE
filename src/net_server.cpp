@@ -440,7 +440,7 @@ void NetServer::send_audio(uint32_t op_mask, uint8_t ch_idx, int8_t pan,
 // ── Broadcast channel sync ────────────────────────────────────────────────
 void NetServer::broadcast_channel_sync(const Channel* chs, int n){
     PktChannelSync sync{};
-    for(int i=0; i<n && i<5; i++){
+    for(int i=0; i<n && i<MAX_CHANNELS; i++){
         sync.ch[i].idx        = (uint8_t)i;
         sync.ch[i].active     = chs[i].filter_active ? 1 : 0;
         sync.ch[i].s          = chs[i].s;

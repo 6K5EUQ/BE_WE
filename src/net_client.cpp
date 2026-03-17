@@ -263,7 +263,7 @@ void NetClient::handle_packet(PacketType type,
     case PacketType::AUDIO_FRAME: {
         if(len < sizeof(PktAudioFrame)) break;
         auto* ah = reinterpret_cast<const PktAudioFrame*>(payload);
-        if(ah->ch_idx >= 5) break;
+        if(ah->ch_idx >= MAX_CHANNELS) break;
         uint32_t n = ah->n_samples;
         if(len < sizeof(PktAudioFrame) + n*sizeof(float)) break;
         const float* pcm = reinterpret_cast<const float*>(
