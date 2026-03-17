@@ -59,7 +59,7 @@ struct __attribute__((packed)) PktAuthAck {
 };
 
 // ── FFT_FRAME ─────────────────────────────────────────────────────────────
-// header followed by int8_t[fft_size]
+// header followed by float[fft_size] (dB values)
 struct __attribute__((packed)) PktFftFrame {
     uint64_t center_freq_hz;
     uint32_t sample_rate;
@@ -67,7 +67,7 @@ struct __attribute__((packed)) PktFftFrame {
     float    power_min;
     float    power_max;
     int64_t  wall_time;  // unix timestamp (time_t), 0=none
-    // int8_t data[fft_size] follows
+    // float data[fft_size] follows (raw dB power per bin)
 };
 
 // ── AUDIO_FRAME ───────────────────────────────────────────────────────────

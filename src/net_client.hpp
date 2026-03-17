@@ -49,7 +49,7 @@ public:
     // ── Remote FFT data (written by recv thread, read by UI) ─────────────
     // UI calls pop_fft_frame() to get buffered frames (1s delay for smooth playback)
     struct FftFrame {
-        std::vector<int8_t> data;
+        std::vector<float> data;
         uint64_t cf_hz;
         uint32_t sr;
         uint16_t fft_sz;
@@ -60,7 +60,7 @@ public:
 
     mutable std::mutex   fft_mtx;
     // Legacy single-frame access (kept for compatibility)
-    std::vector<int8_t>  fft_data;
+    std::vector<float>   fft_data;
     uint64_t             cf_hz   = 0;
     uint32_t             sr      = 0;
     uint16_t             fft_sz  = 0;

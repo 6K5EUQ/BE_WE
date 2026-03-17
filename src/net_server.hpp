@@ -142,7 +142,7 @@ public:
 
     // ── Broadcast / Send ─────────────────────────────────────────────────
     // FFT frame → all clients
-    void broadcast_fft(const int8_t* data, int fft_size,
+    void broadcast_fft(const float* data, int fft_size,
                         int64_t wall_time,
                        uint64_t center_hz, uint32_t sr,
                        float pmin, float pmax);

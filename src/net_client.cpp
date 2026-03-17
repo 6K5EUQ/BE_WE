@@ -221,16 +221,17 @@ void NetClient::handle_packet(PacketType type,
         // 수직바가 왼쪽 끝으로 밀려있으면 FFT 패킷 드롭 (큐에 쌓지 않음)
         if(!fft_recv_enabled.load(std::memory_order_relaxed)) break;
         auto* fh = reinterpret_cast<const PktFftFrame*>(payload);
-        uint32_t data_len = len - (uint32_t)sizeof(PktFftFrame);
-        if(data_len != fh->fft_size) break;
+        uint32_t data_bytes = len - (uint32_t)sizeof(PktFftFrame);
+        if(data_bytes != fh->fft_size * sizeof(float)) break;
 
         // 수신 시각 (steady_clock μs)
         auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
 
+        const float* fft_floats = reinterpret_cast<const float*>(
+                                      payload + sizeof(PktFftFrame));
         FftFrame frm;
-        frm.data.assign(payload + sizeof(PktFftFrame),
-                        payload + sizeof(PktFftFrame) + data_len);
+        frm.data.assign(fft_floats, fft_floats + fh->fft_size);
         frm.cf_hz     = fh->center_freq_hz;
         frm.sr        = fh->sample_rate;
         frm.fft_sz    = (uint16_t)fh->fft_size;

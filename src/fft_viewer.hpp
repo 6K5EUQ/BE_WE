@@ -35,7 +35,7 @@ class FFTViewer {
 public:
     // ── FFT / waterfall data ──────────────────────────────────────────────
     FFTHeader            header;
-    std::vector<int8_t>  fft_data;
+    std::vector<float>   fft_data;
     GLuint               waterfall_texture=0;
     std::vector<uint32_t> wf_row_buf;
 

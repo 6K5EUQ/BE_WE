@@ -283,12 +283,11 @@ void FFTViewer::capture_and_process_rtl(){
                     continue;
                 }
                 int fi=total_ffts%MAX_FFTS_MEMORY;
-                int8_t* rowp=fft_data.data()+fi*fft_size;
+                float* rowp=fft_data.data()+fi*fft_size;
                 {std::lock_guard<std::mutex> lk(data_mtx);
                  for(int i=0;i<fft_size;i++){
                      float avg=10.0f*log10f(pacc[i]/fcnt);
-                     float nn=(avg-header.power_min)/(header.power_max-header.power_min);
-                     rowp[i]=(int8_t)(std::max(-1.0f,std::min(1.0f,nn))*127);
+                     rowp[i]=avg;
                      current_spectrum[i]=avg;
                  }
                  if(autoscale_active){

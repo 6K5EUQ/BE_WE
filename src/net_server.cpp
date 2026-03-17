@@ -390,7 +390,7 @@ void NetServer::send_to(ClientConn& c, PacketType type,
 }
 
 // ── Broadcast FFT ─────────────────────────────────────────────────────────
-void NetServer::broadcast_fft(const int8_t* data, int fft_size,
+void NetServer::broadcast_fft(const float* data, int fft_size,
                                int64_t wall_time,
                                uint64_t center_hz, uint32_t sr,
                                float pmin, float pmax){
@@ -403,10 +403,11 @@ void NetServer::broadcast_fft(const int8_t* data, int fft_size,
     hdr.power_max      = pmax;
     hdr.wall_time      = wall_time;
 
-    uint32_t total = (uint32_t)(sizeof(PktFftFrame) + fft_size);
+    uint32_t data_bytes = (uint32_t)(fft_size * sizeof(float));
+    uint32_t total = (uint32_t)(sizeof(PktFftFrame) + data_bytes);
     std::vector<uint8_t> payload(total);
     memcpy(payload.data(), &hdr, sizeof(PktFftFrame));
-    memcpy(payload.data() + sizeof(PktFftFrame), data, fft_size);
+    memcpy(payload.data() + sizeof(PktFftFrame), data, data_bytes);
 
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){

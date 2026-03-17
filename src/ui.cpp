@@ -77,12 +77,10 @@ void FFTViewer::update_channel_squelch(){
     float nyq_mhz = header.sample_rate / 2e6f;
     if(nyq_mhz < 0.001f) return;
     int hf = fft_size / 2;
-    float pscale = (header.power_max - header.power_min) / 127.0f;
-    float pbase  = header.power_min;
 
-    // 최신 FFT 행 읽기
+    // 최신 FFT 행 읽기 (float dB 값 직접)
     int fi = (total_ffts > 0 ? total_ffts - 1 : 0) % MAX_FFTS_MEMORY;
-    const int8_t* rowp = fft_data.data() + fi * fft_size;
+    const float* rowp = fft_data.data() + fi * fft_size;
 
     auto freq_to_bin = [&](float rel_mhz) -> int {
         int bin = (rel_mhz >= 0)
@@ -101,22 +99,19 @@ void FFTViewer::update_channel_squelch(){
         int bin_s = freq_to_bin(s_mhz);
         int bin_e = freq_to_bin(e_mhz);
 
-        // 채널 대역 내 피크 파워 (FFT dB 그대로)
+        // 채널 대역 내 피크 파워 (float dB 직접)
         float peak_db = -120.0f;
         if(bin_s <= bin_e){
             for(int b = bin_s; b <= bin_e; b++){
-                float db = rowp[b] * pscale + pbase;
-                if(db > peak_db) peak_db = db;
+                if(rowp[b] > peak_db) peak_db = rowp[b];
             }
         } else {
             // DC 경계를 넘는 경우
             for(int b = bin_s; b < fft_size; b++){
-                float db = rowp[b] * pscale + pbase;
-                if(db > peak_db) peak_db = db;
+                if(rowp[b] > peak_db) peak_db = rowp[b];
             }
             for(int b = 0; b <= bin_e; b++){
-                float db = rowp[b] * pscale + pbase;
-                if(db > peak_db) peak_db = db;
+                if(rowp[b] > peak_db) peak_db = rowp[b];
             }
         }
 
@@ -511,14 +506,12 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         // assign() 대신 resize() — fill 불필요 (아래 루프가 전부 덮어씀)
         if((int)current_spectrum.size() != np) current_spectrum.resize(np, -80.0f);
         float nyq=sr_mhz/2.0f; int hf=header.fft_size/2;
-        float pscale=(header.power_max-header.power_min)/127.0f;
-        float pbase=header.power_min;
         int mi=sp_idx%MAX_FFTS_MEMORY;
-        const int8_t* rowp=fft_data.data()+mi*fft_size;
+        const float* rowp=fft_data.data()+mi*fft_size;
         for(int px=0;px<np;px++){
             float fd=ds+((float)px+0.5f)/np*(de-ds);
             int bin=(fd>=0)?(int)((fd/nyq)*hf+0.5f):fft_size+(int)((fd/nyq)*hf-0.5f);
-            current_spectrum[px]=(bin>=0&&bin<fft_size) ? rowp[bin]*pscale+pbase : -80.0f;
+            current_spectrum[px]=(bin>=0&&bin<fft_size) ? rowp[bin] : -80.0f;
         }
         cached_sp_idx=sp_idx; cached_pan=freq_pan; cached_zoom=freq_zoom;
         cached_px=np; cached_pmin=display_power_min; cached_pmax=display_power_max;
@@ -2866,8 +2859,8 @@ void run_streaming_viewer(){
                 {
                     std::lock_guard<std::mutex> dlk(v.data_mtx);
                     int fi = v.total_ffts % MAX_FFTS_MEMORY;
-                    int8_t* dst = v.fft_data.data() + (size_t)fi * fsz;
-                    memcpy(dst, frm.data.data(), fsz);
+                    float* dst = v.fft_data.data() + (size_t)fi * fsz;
+                    memcpy(dst, frm.data.data(), fsz * sizeof(float));
                     v.total_ffts++;
                     v.current_fft_idx = v.total_ffts - 1;
                     // wall_time 기반 워터폴 시간태그
@@ -2898,8 +2891,7 @@ void run_streaming_viewer(){
                             v.autoscale_init = true;
                         }
                         for(int _i=1;_i<fsz;_i++){
-                            float val = frm.pmin + (dst[_i]/127.0f)*(frm.pmax - frm.pmin);
-                            v.autoscale_accum.push_back(val);
+                            v.autoscale_accum.push_back(dst[_i]);
                         }
                         float _el=std::chrono::duration<float>(
                             std::chrono::steady_clock::now()-v.autoscale_last).count();

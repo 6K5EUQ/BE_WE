@@ -36,17 +36,13 @@ void FFTViewer::create_waterfall_texture(){
 void FFTViewer::update_wf_row(int fi){
     if((int)wf_row_buf.size()!=fft_size) wf_row_buf.resize(fft_size);
     int mi=fi%MAX_FFTS_MEMORY;
-    const int8_t* row=fft_data.data()+mi*fft_size;
+    const float* row=fft_data.data()+mi*fft_size;
     float wmin=display_power_min, wmax=display_power_max;
     float wrng_inv=1.0f/std::max(1.0f,wmax-wmin);
-    float pscale=(header.power_max-header.power_min)/127.0f;
-    float pbase=header.power_min;
     int half=fft_size/2;
     const uint32_t* lut=jet_lut();
-    // norm → LUT 인덱스 변환 (float→int 1회, fabsf 연산 제거)
     auto map=[&](int bin)->uint32_t{
-        float p=row[bin]*pscale+pbase;
-        float v=(p-wmin)*wrng_inv;
+        float v=(row[bin]-wmin)*wrng_inv;
         int idx=(int)(v*255.0f);
         idx=idx<0?0:idx>255?255:idx;
         return lut[idx];

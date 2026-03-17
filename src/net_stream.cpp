@@ -8,7 +8,7 @@
 void FFTViewer::net_bcast_worker(){
     int last_seq = -1;
     // 전송 버퍼 (로컬 복사 → send 중 data_mtx 불필요)
-    std::vector<int8_t> local_fft;
+    std::vector<float> local_fft;
     uint64_t local_cf  = 0;
     uint32_t local_sr  = 0;
     float    local_min = -80.f, local_max = 0.f;
@@ -44,10 +44,10 @@ void FFTViewer::net_bcast_worker(){
             local_max = header.power_max;
             local_wt  = (int64_t)time(nullptr);
             int fi    = (current_fft_idx) % MAX_FFTS_MEMORY;
-            const int8_t* rowp = fft_data.data() + fi * fft_size;
+            const float* rowp = fft_data.data() + fi * fft_size;
             // assign() 대신 resize()+memcpy: fft_size 불변 시 heap 재할당 없음
             if((int)local_fft.size() != fft_size) local_fft.resize(fft_size);
-            memcpy(local_fft.data(), rowp, (size_t)fft_size);
+            memcpy(local_fft.data(), rowp, (size_t)fft_size * sizeof(float));
         }
 
         // TCP 전송 (블로킹이어도 캡처 스레드와 무관)
