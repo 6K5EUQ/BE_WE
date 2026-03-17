@@ -40,9 +40,11 @@ public:
     bool start(int port = BEWE_LOCAL_RELAY_PORT);
     void stop();
     bool is_running() const { return running_.load(); }
+    int  listen_port() const { return listen_port_val_; }
 
 private:
     int               listen_fd_ = -1;
+    int               listen_port_val_ = 0;
     std::atomic<bool> running_{false};
 
     mutable std::mutex                         rooms_mtx_;

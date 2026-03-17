@@ -134,6 +134,7 @@ public:
     void stop();
     bool is_running() const { return running_.load(); }
     int  client_count() const;
+    int  listen_port() const { return listen_port_; }
 
     // relay MUX 모드: socketpair의 local_fd를 새 클라이언트로 inject
     void inject_fd(int fd);
@@ -215,6 +216,7 @@ private:
     char    host_name_[32] = {};
     uint8_t host_tier_     = 1;
     int  server_fd_ = -1;
+    int  listen_port_ = 0;
     std::atomic<bool> running_{false};
     std::thread accept_thr_;
 

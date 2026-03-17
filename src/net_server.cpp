@@ -36,13 +36,22 @@ bool NetServer::start(int port){
     if(bind(server_fd_, (sockaddr*)&addr, sizeof(addr)) < 0){
         perror("bind"); close(server_fd_); server_fd_=-1; return false;
     }
+    // port==0 이면 OS가 할당한 실제 포트를 가져옴
+    {
+        sockaddr_in bound{};
+        socklen_t blen = sizeof(bound);
+        if(getsockname(server_fd_, (sockaddr*)&bound, &blen) == 0)
+            listen_port_ = ntohs(bound.sin_port);
+        else
+            listen_port_ = port;
+    }
     if(listen(server_fd_, 8) < 0){
         perror("listen"); close(server_fd_); server_fd_=-1; return false;
     }
 
     running_.store(true);
     accept_thr_ = std::thread(&NetServer::accept_loop, this);
-    printf("[NetServer] listening on port %d\n", port);
+    printf("[NetServer] listening on port %d\n", listen_port_);
     return true;
 }
 

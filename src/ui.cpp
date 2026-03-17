@@ -516,8 +516,8 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         int mi=sp_idx%MAX_FFTS_MEMORY;
         const int8_t* rowp=fft_data.data()+mi*fft_size;
         for(int px=0;px<np;px++){
-            float fd=ds+(float)px/np*(de-ds);
-            int bin=(fd>=0)?(int)((fd/nyq)*hf):fft_size+(int)((fd/nyq)*hf);
+            float fd=ds+((float)px+0.5f)/np*(de-ds);
+            int bin=(fd>=0)?(int)((fd/nyq)*hf+0.5f):fft_size+(int)((fd/nyq)*hf-0.5f);
             current_spectrum[px]=(bin>=0&&bin<fft_size) ? rowp[bin]*pscale+pbase : -80.0f;
         }
         cached_sp_idx=sp_idx; cached_pan=freq_pan; cached_zoom=freq_zoom;
@@ -726,7 +726,8 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
         float ds,de; get_disp(ds,de);
         float nyq=header.sample_rate/2.0f/1e6f;
         int dr2=std::min(total_ffts,MAX_FFTS_MEMORY);
-        float us=(ds+nyq)/(2*nyq), ue=(de+nyq)/(2*nyq);
+        float half_texel=0.5f/fft_size;
+        float us=(ds+nyq)/(2*nyq)+half_texel, ue=(de+nyq)/(2*nyq)+half_texel;
         float dh=(dr2>=(int)gh)?gh:(float)dr2;
         // 타임머신: tm_display_fft_idx 기준, 일반: current_fft_idx 기준
         int disp_idx=tm_active.load() ? tm_display_fft_idx : current_fft_idx;
@@ -1226,7 +1227,7 @@ void run_streaming_viewer(){
     static float       s_station_lat = 0.f, s_station_lon = 0.f;
     static bool        s_station_set = false;
     // Relay 서버 설정 (세션 간 유지)
-    static char s_relay_host[128] = "124.56.147.40";
+    static char s_relay_host[128] = "144.24.86.137";
     static constexpr int s_relay_list_port = RELAY_PORT;
     // NAT hairpin 우회: relay 서버가 로컬(같은 머신)이면 127.0.0.1 사용
     static bool s_relay_host_resolved = false;
@@ -2368,10 +2369,12 @@ void run_streaming_viewer(){
                 srv->send_share_list(-1, slist);
             };
 
-            if(!srv->start(host_port)){
+            // port 0 → OS가 빈 포트 자동 할당
+            if(!srv->start(0)){
                 printf("Server start failed\n");
                 delete srv; srv=nullptr;
             } else {
+                host_port = srv->listen_port(); // 실제 할당된 포트 기록
                 v.net_srv = srv;
                 srv->set_host_info(login_get_id(), (uint8_t)login_get_tier());
                 // HOST station 정보를 static에 저장 (/reset 재진입 시 복원)
@@ -2384,12 +2387,13 @@ void run_streaming_viewer(){
                 // LAN local relay 서버 시작 (같은 망의 JOIN이 연결할 미니 relay)
                 uint16_t lrs_port = 0;
                 if(v.station_location_set){
-                    if(local_relay_srv.start(BEWE_LOCAL_RELAY_PORT)){
-                        lrs_port = BEWE_LOCAL_RELAY_PORT;
+                    // port 0 → OS가 빈 포트 자동 할당
+                    if(local_relay_srv.start(0)){
+                        lrs_port = (uint16_t)local_relay_srv.listen_port();
                         // local relay에 HOST 룸 등록
                         std::string sid = v.station_name + "_" + std::string(login_get_id());
                         RelayClient lrs_cli;
-                        int lfd = lrs_cli.open_room("127.0.0.1", BEWE_LOCAL_RELAY_PORT,
+                        int lfd = lrs_cli.open_room("127.0.0.1", lrs_port,
                                                     sid, v.station_name,
                                                     v.station_lat, v.station_lon,
                                                     (uint8_t)login_get_tier());
@@ -5679,12 +5683,16 @@ void run_streaming_viewer(){
                             push_local("BEWE", "Chassis 1 reset ...", false);
                             v.net_srv->broadcast_chat("BEWE", "Chassis 1 reset ...");
                             v.net_srv->broadcast_heartbeat(1);
-                            // 상태 표시 즉시 반영 + 캡처 스레드 종료 트리거
-                            v.is_running = false;
-                            v.sdr_stream_error.store(true);
-                            v.tm_iq_on.store(false);
-                            v.spectrum_pause.store(true);
-                            usb_reset_pending = true; // SDR 재시도 루프에서 USB reset 수행
+                            // SDR 연결 중일 때만 SDR 복구 경로 진입
+                            if(v.is_running || cap.joinable()){
+                                v.is_running = false;
+                                v.sdr_stream_error.store(true);
+                                v.tm_iq_on.store(false);
+                                v.spectrum_pause.store(true);
+                                usb_reset_pending = true;
+                            } else {
+                                push_local("BEWE", "No SDR connected — skip HW reset", false);
+                            }
                         } else if(v.net_cli){
                             // JOIN: HOST에 명령 전달 + 로컬에 메시지 표시
                             push_local("BEWE", "Chassis 1 reset ...", false);
@@ -5692,11 +5700,15 @@ void run_streaming_viewer(){
                         } else {
                             // LOCAL: SDR 백그라운드 리셋 (UI 유지)
                             push_local("BEWE", "Chassis 1 reset ...", false);
-                            v.is_running = false;
-                            v.sdr_stream_error.store(true);
-                            v.tm_iq_on.store(false);
-                            v.spectrum_pause.store(true);
-                            usb_reset_pending = true;
+                            if(v.is_running || cap.joinable()){
+                                v.is_running = false;
+                                v.sdr_stream_error.store(true);
+                                v.tm_iq_on.store(false);
+                                v.spectrum_pause.store(true);
+                                usb_reset_pending = true;
+                            } else {
+                                push_local("BEWE", "No SDR connected — skip HW reset", false);
+                            }
                         }
 
                     } else if(chat_str == "/chassis 2 reset"){
@@ -5707,16 +5719,25 @@ void run_streaming_viewer(){
                             v.net_srv->broadcast_heartbeat(2); // JOIN에게 노란불
                             v.net_bcast_pause.store(true, std::memory_order_relaxed);
                             v.net_srv->pause_broadcast();
+                            v.net_srv->flush_clients();
+                            // 릴레이 서버에 NET_RESET 전송
+                            if(relay_cli.is_relay_connected())
+                                relay_cli.send_net_reset(0);  // 0 = reset start
                             NetServer* srv_ptr = v.net_srv;
                             std::atomic<bool>* bcast_pause_ptr = &v.net_bcast_pause;
                             std::mutex* log_mtx_ptr = &host_chat_mtx;
                             std::vector<LocalChatMsg>* log_ptr = &host_chat_log;
-                            std::thread([srv_ptr, bcast_pause_ptr, log_mtx_ptr, log_ptr](){
+                            RelayClient* relay_ptr = &relay_cli;
+                            std::thread([srv_ptr, bcast_pause_ptr, log_mtx_ptr, log_ptr, relay_ptr](){
                                 std::this_thread::sleep_for(std::chrono::seconds(1));
+                                srv_ptr->flush_clients();
                                 srv_ptr->resume_broadcast();
                                 bcast_pause_ptr->store(false, std::memory_order_relaxed);
                                 srv_ptr->broadcast_heartbeat(0);
                                 srv_ptr->broadcast_chat("BEWE", "Chassis 2 stable ...");
+                                // 릴레이 서버에 NET_RESET open
+                                if(relay_ptr->is_relay_connected())
+                                    relay_ptr->send_net_reset(1);  // 1 = open
                                 std::lock_guard<std::mutex> lk(*log_mtx_ptr);
                                 LocalChatMsg lm{}; lm.is_error = false;
                                 strncpy(lm.from, "BEWE", 31);

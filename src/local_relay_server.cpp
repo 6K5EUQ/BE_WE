@@ -22,8 +22,17 @@ int LocalRelayServer::make_listen_sock(int port){
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port        = htons((uint16_t)port);
     if(bind(fd, (sockaddr*)&addr, sizeof(addr)) < 0){ perror("bind"); close(fd); return -1; }
+    // port==0 이면 OS가 할당한 실제 포트를 가져옴
+    {
+        sockaddr_in bound{};
+        socklen_t blen = sizeof(bound);
+        if(getsockname(fd, (sockaddr*)&bound, &blen) == 0)
+            listen_port_val_ = ntohs(bound.sin_port);
+        else
+            listen_port_val_ = port;
+    }
     if(listen(fd, 64) < 0){ perror("listen"); close(fd); return -1; }
-    printf("[LocalRelay] listening on port %d\n", port);
+    printf("[LocalRelay] listening on port %d\n", listen_port_val_);
     return fd;
 }
 
