@@ -4062,6 +4062,17 @@ void run_streaming_viewer(){
                                 if(bi<3) ImGui::SameLine(0,2);
                             }
 
+                            // RNN 노이즈제거 버튼 (채널별)
+                            ImGui::SameLine(0,6);
+                            {
+                                bool rnn_on = v.rnn_ch[ci];
+                                if(rnn_on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f,0.55f,0.1f,1.f));
+                                char rnn_id[32]; snprintf(rnn_id,sizeof(rnn_id),"RNN##%d",ci);
+                                if(ImGui::SmallButton(rnn_id))
+                                    v.rnn_ch[ci] = !rnn_on;
+                                if(rnn_on) ImGui::PopStyleColor();
+                            }
+
                             // ── 디지털 모드 버튼 (D키로 패널 열었을 때만 표시) ──
                             if(v.digi_panel_on[ci]){
                                 ImGui::SameLine(0,10);
