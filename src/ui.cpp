@@ -3091,18 +3091,25 @@ void run_streaming_viewer(){
                         if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
                     }
                 }
-                if(ImGui::IsKeyPressed(ImGuiKey_LeftArrow,false)){
-                    if(v.remote_mode && v.net_cli) v.net_cli->cmd_set_ch_pan(sci,-1);
-                    else { v.channels[sci].pan=-1; if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS); }
-                }
-                if(ImGui::IsKeyPressed(ImGuiKey_RightArrow,false)){
-                    if(v.remote_mode && v.net_cli) v.net_cli->cmd_set_ch_pan(sci, 1);
-                    else { v.channels[sci].pan= 1; if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS); }
-                }
-                if(ImGui::IsKeyPressed(ImGuiKey_UpArrow,false)){
-                    if(v.remote_mode && v.net_cli) v.net_cli->cmd_set_ch_pan(sci, 0);
-                    else { v.channels[sci].pan= 0; if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS); }
-                }
+                // ── 방향키: 로컬 오디오 출력 전환 (L/R/L+R/M) ──────────
+                auto arrow_set_out = [&](int ci, int lco){
+                    int prev=v.local_ch_out[ci]; v.local_ch_out[ci]=lco;
+                    if(v.net_cli && v.remote_mode){
+                        bool now_mute=(lco==3), was_mute=(prev==3);
+                        if(now_mute&&!was_mute) v.net_cli->cmd_toggle_recv(ci,false);
+                        else if(!now_mute&&was_mute) v.net_cli->cmd_toggle_recv(ci,true);
+                    }
+                    if(v.net_srv){
+                        uint32_t mask=v.channels[ci].audio_mask.load();
+                        if(lco==3) mask&=~0x1u; else mask|=0x1u;
+                        v.channels[ci].audio_mask.store(mask);
+                        v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
+                    }
+                };
+                if(ImGui::IsKeyPressed(ImGuiKey_LeftArrow,false))  arrow_set_out(sci, 0); // L
+                if(ImGui::IsKeyPressed(ImGuiKey_RightArrow,false)) arrow_set_out(sci, 2); // R
+                if(ImGui::IsKeyPressed(ImGuiKey_UpArrow,false))    arrow_set_out(sci, 1); // L+R
+                if(ImGui::IsKeyPressed(ImGuiKey_DownArrow,false))  arrow_set_out(sci, 3); // M(뮤트)
             }
             if(ImGui::IsKeyPressed(ImGuiKey_O,false) && !editing){
                 ops_open = !ops_open;
@@ -3905,9 +3912,7 @@ void run_streaming_viewer(){
                             bool dem = v.remote_mode
                                 ? (ch.mode!=Channel::DM_NONE)
                                 : ch.dem_run.load();
-                            bool gate = v.remote_mode
-                                ? (ch.audio_mask.load()&0x1u)!=0
-                                : ch.sq_gate.load();
+                            bool gate = ch.sq_gate.load();
 
                             ImU32 mode_col;
                             if(is_irec||is_arec)
