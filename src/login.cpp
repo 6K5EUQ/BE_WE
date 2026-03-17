@@ -179,11 +179,11 @@ bool draw_login_screen(int win_w, int win_h){
                    ImGui::CalcTextSize("Tier 3").x+64.0f))*0.5f;
     if(rx<4)rx=4;
     ImGui::SetCursorPosX(rx);
-    if(ImGui::RadioButton("Tier 1",tier==1)) tier=1;
+    if(ImGui::RadioButton("Tier 1",tier==1) || ImGui::Shortcut(ImGuiMod_Ctrl|ImGuiKey_1)) tier=1;
     ImGui::SameLine();
-    if(ImGui::RadioButton("Tier 2",tier==2)) tier=2;
+    if(ImGui::RadioButton("Tier 2",tier==2) || ImGui::Shortcut(ImGuiMod_Ctrl|ImGuiKey_2)) tier=2;
     ImGui::SameLine();
-    if(ImGui::RadioButton("Tier 3",tier==3)) tier=3;
+    if(ImGui::RadioButton("Tier 3",tier==3) || ImGui::Shortcut(ImGuiMod_Ctrl|ImGuiKey_3)) tier=3;
 
     ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
 
