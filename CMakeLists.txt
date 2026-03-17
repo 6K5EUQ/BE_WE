@@ -17,12 +17,11 @@ find_package(OpenGL REQUIRED)
 find_package(GLEW   REQUIRED)
 find_package(glfw3  REQUIRED)
 
-set(IMGUI_PATH          /usr/include/imgui)
+set(IMGUI_PATH          ${CMAKE_SOURCE_DIR}/libs/imgui)
 set(IMGUI_BACKENDS_PATH ${IMGUI_PATH}/backends)
 
 set(IMGUI_SOURCES
     ${IMGUI_PATH}/imgui.cpp
-    ${IMGUI_PATH}/imgui_demo.cpp
     ${IMGUI_PATH}/imgui_draw.cpp
     ${IMGUI_PATH}/imgui_tables.cpp
     ${IMGUI_PATH}/imgui_widgets.cpp
