@@ -381,6 +381,7 @@ public:
     float x_to_abs(float x, float gx, float gw) const;
     float abs_to_x(float abs_mhz, float gx, float gw) const;
     int   channel_at_x(float mx, float gx, float gw) const;
+    int   freq_sorted_display_num(int arr_idx) const;
 
     // ── ui.cpp ────────────────────────────────────────────────────────────
     void handle_new_channel_drag(float gx, float gw);

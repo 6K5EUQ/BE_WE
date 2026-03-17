@@ -364,6 +364,19 @@ void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float 
     }
 }
 
+// 배열 인덱스 → 주파수 순 표시 번호 (1-based). 비활성 채널은 0 반환.
+int FFTViewer::freq_sorted_display_num(int arr_idx) const {
+    if(arr_idx<0||arr_idx>=MAX_CHANNELS||!channels[arr_idx].filter_active) return 0;
+    float my_cf=(channels[arr_idx].s+channels[arr_idx].e)*0.5f;
+    int rank=1;
+    for(int i=0;i<MAX_CHANNELS;i++){
+        if(!channels[i].filter_active||i==arr_idx) continue;
+        float cf_i=(channels[i].s+channels[i].e)*0.5f;
+        if(cf_i<my_cf||(cf_i==my_cf&&i<arr_idx)) rank++;
+    }
+    return rank;
+}
+
 void FFTViewer::draw_all_channels(ImDrawList* dl, float gx, float gw, float gy, float gh, bool show_label){
     float cf=header.center_frequency/1e6f;
     float ds,de; get_disp(ds,de); float dw=de-ds;
@@ -437,7 +450,7 @@ void FFTViewer::draw_all_channels(ImDrawList* dl, float gx, float gw, float gy, 
             dl->AddLine(ImVec2(std::min(gx+gw,x1),gy),ImVec2(std::min(gx+gw,x1),gy+gh),bord,2.0f);
         }
         if(!show_label) continue;
-        char lb[16]; snprintf(lb,sizeof(lb),"[%d]",i+1);
+        char lb[16]; snprintf(lb,sizeof(lb),"[%d]",freq_sorted_display_num(i));
         ImVec2 ts=ImGui::CalcTextSize(lb);
         float cx=std::max(gx,std::min(gx+gw-ts.x,(c0+c1)/2-ts.x/2));
         float ly=gy+4;
@@ -3953,7 +3966,7 @@ void run_streaming_viewer(){
                             // 텍스트
                             char label[64];
                             snprintf(label,sizeof(label),"[%d] %s  %.3f MHz  %.0fkHz",
-                                ci+1,mnames[mi],cf_mhz,bw_khz);
+                                v.freq_sorted_display_num(ci),mnames[mi],cf_mhz,bw_khz);
                             ImGui::PushID(ci*1000+700);
                             ImGui::PushStyleColor(ImGuiCol_Text,tc_v);
                             // gate open이면 볼드 효과 (1px offset)
@@ -4939,7 +4952,7 @@ void run_streaming_viewer(){
                         ImGui::PushStyleColor(ImGuiCol_Text, col);
                         char ch_line[80];
                         snprintf(ch_line,sizeof(ch_line),"CH%d  %.4f MHz  %.0f kHz  [%s]",
-                                 ci, (double)cf, (double)bw, mode_str);
+                                 v.freq_sorted_display_num(ci), (double)cf, (double)bw, mode_str);
                         ImGui::TextUnformatted(ch_line);
                         ImGui::PopStyleColor();
                         // 생성자
@@ -4989,7 +5002,7 @@ void run_streaming_viewer(){
                         const char* sig_str = has_signal ? "SIG" : "---";
                         ImGui::PushID(ci+41000);
                         ImGui::PushStyleColor(ImGuiCol_Text, sig_col);
-                        ImGui::Text("CH%d  [%s]  %.4f MHz", ci, sig_str, (double)(ch.s+ch.e)*0.5f);
+                        ImGui::Text("CH%d  [%s]  %.4f MHz", v.freq_sorted_display_num(ci), sig_str, (double)(ch.s+ch.e)*0.5f);
                         ImGui::PopStyleColor();
                         ImGui::PopID();
                     }
