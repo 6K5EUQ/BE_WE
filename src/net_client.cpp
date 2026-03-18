@@ -9,6 +9,7 @@
 #include <netdb.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
@@ -37,6 +38,11 @@ bool NetClient::connect(const char* host, int port,
 
     // TCP_NODELAY: Nagle 비활성화 → 실시간 스트림 지연 방지
     int nd=1; setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
+
+    // SO_RCVTIMEO: recv() 3초 타임아웃 → Host 무응답 시 UI 멈춤 방지
+    // AUTH 핸드셰이크 후 recv_loop에서만 효과 (recv_all_ex가 EAGAIN 처리)
+    timeval tv{3, 0};
+    setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     // Send AUTH_REQ
     PktAuthReq req{};
@@ -83,6 +89,10 @@ bool NetClient::connect(const char* host, int port,
 // ── relay 모드: 이미 연결된 fd로 AUTH만 수행 ─────────────────────────────
 bool NetClient::connect_fd(int fd, const char* id, const char* pw, uint8_t tier){
     fd_ = fd;
+
+    // SO_RCVTIMEO: recv() 3초 타임아웃 (relay 모드도 동일)
+    timeval tv{3, 0};
+    setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     PktAuthReq req{};
     strncpy(req.id, id, 31);
@@ -172,7 +182,9 @@ void NetClient::recv_loop(){
     const char* disc_reason = "unknown";
     while(connected_.load()){
         PktHdr hdr{};
-        if(!recv_all(fd_, &hdr, PKT_HDR_SIZE)){
+        int rc = recv_all_ex(fd_, &hdr, PKT_HDR_SIZE, connected_);
+        if(rc == 0) continue;   // timeout → Host 무응답, 소켓 유지하고 재시도
+        if(rc < 0){
             int e = errno;
             if(connected_.load()){
                 printf("[NetClient] recv hdr failed: errno=%d(%s) pkts=%llu\n",
@@ -196,12 +208,16 @@ void NetClient::recv_loop(){
             break;
         }
         std::vector<uint8_t> payload(len);
-        if(len > 0 && !recv_all(fd_, payload.data(), len)){
-            int e = errno;
-            printf("[NetClient] recv payload failed: type=0x%02x len=%u errno=%d(%s)\n",
-                   hdr.type, len, e, strerror(e));
-            disc_reason = "recv_payload_fail";
-            break;
+        if(len > 0){
+            int rc2 = recv_all_ex(fd_, payload.data(), len, connected_);
+            if(rc2 == 0) continue;  // timeout mid-packet → retry
+            if(rc2 < 0){
+                int e = errno;
+                printf("[NetClient] recv payload failed: type=0x%02x len=%u errno=%d(%s)\n",
+                       hdr.type, len, e, strerror(e));
+                disc_reason = "recv_payload_fail";
+                break;
+            }
         }
         pkt_count++;
         handle_packet(static_cast<PacketType>(hdr.type), payload.data(), len);
