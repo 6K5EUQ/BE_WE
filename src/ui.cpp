@@ -1806,11 +1806,11 @@ void run_streaming_viewer(){
                     v.file_xfers.push_back(xf);
                 }
             }
-            // JOIN: REQ_PENDING region IQ → REQ_TRANSFERRING
+            // JOIN: REQ_CONFIRMED region IQ → REQ_TRANSFERRING
             {
                 std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                 for(auto& e : v.rec_entries)
-                    if(e.is_region && e.req_state==FFTViewer::RecEntry::REQ_PENDING){
+                    if(e.is_region && e.req_state==FFTViewer::RecEntry::REQ_CONFIRMED){
                         e.req_state=FFTViewer::RecEntry::REQ_TRANSFERRING;
                         e.filename=name; e.xfer_total=total; e.xfer_done=0;
                         break;
@@ -1881,12 +1881,12 @@ void run_streaming_viewer(){
             }
         };
 
-        // JOIN: 호스트가 Deny한 경우 → REQ_PENDING 항목을 REQ_DENIED로
+        // JOIN: 호스트가 실패한 경우 → REQ_CONFIRMED 항목을 REQ_DENIED로
         cli->on_region_response = [&](bool allowed){
             if(!allowed){
                 std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                 for(auto& e : v.rec_entries)
-                    if(e.is_region && e.req_state==FFTViewer::RecEntry::REQ_PENDING){
+                    if(e.is_region && e.req_state==FFTViewer::RecEntry::REQ_CONFIRMED){
                         e.req_state=FFTViewer::RecEntry::REQ_DENIED;
                         e.req_deny_timer=30.f; break;
                     }
@@ -1921,12 +1921,12 @@ void run_streaming_viewer(){
         cli->on_get_save_dir = [&v](const std::string& filename) -> std::string {
             // region IQ 요청 여부 확인
             // on_get_save_dir은 on_file_meta보다 먼저 호출되므로 e.filename이 아직 비어있음.
-            // REQ_PENDING 상태의 region 항목이 있으면 이 파일이 region IQ 결과임.
+            // REQ_CONFIRMED/TRANSFERRING 상태의 region 항목이 있으면 이 파일이 region IQ 결과임.
             bool is_region = false;
             {
                 std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                 for(auto& e : v.rec_entries)
-                    if(e.is_region && (e.req_state==FFTViewer::RecEntry::REQ_PENDING
+                    if(e.is_region && (e.req_state==FFTViewer::RecEntry::REQ_CONFIRMED
                                     || e.req_state==FFTViewer::RecEntry::REQ_TRANSFERRING)){
                         // 파일명을 여기서 미리 기록 (on_file_meta에서도 덮어씀)
                         if(e.filename.empty()) e.filename = filename;
