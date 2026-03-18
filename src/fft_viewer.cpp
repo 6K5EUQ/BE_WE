@@ -1,15 +1,16 @@
 #include "fft_viewer.hpp"
 #include <algorithm>
 
-// ── Jet colormap LUT (256 entry, 한 번만 계산) ────────────────────────────
+// ── Jet colormap LUT (4096 entry, 한 번만 계산) ───────────────────────────
+static constexpr int JET_LUT_SIZE = 4096;
 static const uint32_t* jet_lut(){
-    static uint32_t lut[256];
+    static uint32_t lut[JET_LUT_SIZE];
     static bool init=false;
     if(!init){
         init=true;
         auto c=[](float v)->uint8_t{v=v<0?0:v>1?1:v;return(uint8_t)(v*255);};
-        for(int i=0;i<256;i++){
-            float t=i/255.0f;
+        for(int i=0;i<JET_LUT_SIZE;i++){
+            float t=i/(float)(JET_LUT_SIZE-1);
             float r=1.5f-fabsf(4*t-3);
             float g=1.5f-fabsf(4*t-2);
             float b=1.5f-fabsf(4*t-1);
@@ -43,8 +44,8 @@ void FFTViewer::update_wf_row(int fi){
     const uint32_t* lut=jet_lut();
     auto map=[&](int bin)->uint32_t{
         float v=(row[bin]-wmin)*wrng_inv;
-        int idx=(int)(v*255.0f);
-        idx=idx<0?0:idx>255?255:idx;
+        int idx=(int)(v*(JET_LUT_SIZE-1));
+        idx=idx<0?0:idx>=(JET_LUT_SIZE)?JET_LUT_SIZE-1:idx;
         return lut[idx];
     };
     for(int i=0;i<half;i++) wf_row_buf[i]=map(half+i);

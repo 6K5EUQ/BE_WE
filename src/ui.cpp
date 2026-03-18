@@ -1771,8 +1771,12 @@ void run_streaming_viewer(){
                 auto now_mode   = (Channel::DemodMode)sync.ch[i].mode;
 
                 v.channels[i].filter_active = now_active;
-                v.channels[i].s   = sync.ch[i].s;
-                v.channels[i].e   = sync.ch[i].e;
+                // 드래그 중인 채널은 s/e를 덮어쓰지 않음 (덜덜 떨림 방지)
+                bool dragging = v.channels[i].move_drag || v.channels[i].resize_drag;
+                if(!dragging){
+                    v.channels[i].s   = sync.ch[i].s;
+                    v.channels[i].e   = sync.ch[i].e;
+                }
                 v.channels[i].mode= now_mode;
                 v.channels[i].pan = sync.ch[i].pan;
 
