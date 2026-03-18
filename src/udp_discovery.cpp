@@ -30,8 +30,7 @@ static std::vector<uint32_t> get_subnet_broadcasts() {
 // ── DiscoveryBroadcaster ──────────────────────────────────────────────────
 
 void DiscoveryBroadcaster::set_info(const char* name, float lat, float lon,
-                                     uint16_t port, const char* ip, uint8_t host_tier,
-                                     uint16_t local_relay_port) {
+                                     uint16_t port, const char* ip, uint8_t host_tier) {
     std::lock_guard<std::mutex> lk(pkt_mtx_);
     memset(&pkt_, 0, sizeof(pkt_));
     pkt_.magic[0]='B'; pkt_.magic[1]='E'; pkt_.magic[2]='W'; pkt_.magic[3]='G';
@@ -40,10 +39,9 @@ void DiscoveryBroadcaster::set_info(const char* name, float lat, float lon,
     pkt_.lon               = lon;
     pkt_.tcp_port          = port;
     pkt_.host_tier         = host_tier;
-    pkt_.local_relay_port  = local_relay_port;
     strncpy(pkt_.host_ip, ip, 15);
-    printf("[Discovery] TX: station='%s' lat=%.4f lon=%.4f port=%u ip=%s local_relay=%u\n",
-           name, lat, lon, (unsigned)port, ip, (unsigned)local_relay_port);
+    printf("[Discovery] TX: station='%s' lat=%.4f lon=%.4f port=%u ip=%s\n",
+           name, lat, lon, (unsigned)port, ip);
 }
 
 void DiscoveryBroadcaster::set_user_count(uint8_t n) {

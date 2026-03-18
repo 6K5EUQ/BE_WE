@@ -51,7 +51,6 @@ add_executable(BE_WE
     src/globe.cpp
     src/udp_discovery.cpp
     src/relay_client.cpp
-    src/local_relay_server.cpp
     ${IMGUI_SOURCES}
 )
 

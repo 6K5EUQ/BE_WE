@@ -231,7 +231,6 @@ public:
         uint8_t     user_count = 0;
         uint8_t     host_tier  = 1;
         double      last_seen  = 0.0; // glfwGetTime()
-        uint16_t    local_relay_port = 0; // LAN local relay 포트 (0=없음)
     };
     std::vector<DiscoveredStation> discovered_stations;
     std::mutex                     discovered_stations_mtx;

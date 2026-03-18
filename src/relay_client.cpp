@@ -53,17 +53,13 @@ int RelayClient::tcp_connect_any(const std::vector<std::string>& candidates, int
 // LAN IP를 앞에 배치해 같은 망이면 우선 시도
 std::vector<std::string> RelayClient::make_candidates(const std::string& primary_host){
     std::vector<std::string> cands;
-    // 로컬호스트 우선 (relay가 같은 머신이면 가장 빠름)
-    cands.push_back("127.0.0.1");
     {
         std::lock_guard<std::mutex> lk(relay_lan_ips_mtx);
         for(const auto& ip : relay_lan_ips)
-            if(ip != "127.0.0.1" && ip != primary_host)
+            if(ip != primary_host)
                 cands.push_back(ip);
     }
-    // 고정 공인 IP는 마지막 (WAN fallback)
-    if(primary_host != "127.0.0.1")
-        cands.push_back(primary_host);
+    cands.push_back(primary_host);
     return cands;
 }
 

@@ -339,6 +339,5 @@ struct __attribute__((packed)) DiscoveryAnnounce {
     uint8_t  user_count;        // currently connected operator count
     uint8_t  host_tier;         // host operator tier (1=Tier1, 2=Tier2)
     char     host_ip[16];       // IPv4 dotted-decimal, null-terminated
-    uint16_t local_relay_port;  // LAN local relay port (0=없음)
-    uint8_t  _pad[6];           // reserved
+    uint8_t  _pad[8];           // reserved
 };                              // total: 104 bytes

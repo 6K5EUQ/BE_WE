@@ -6,7 +6,6 @@
 #include "globe.hpp"
 #include "udp_discovery.hpp"
 #include "relay_client.hpp"
-#include "local_relay_server.hpp"
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <algorithm>
@@ -1286,7 +1285,6 @@ void run_streaming_viewer(){
                 s.lon              = ann.lon;
                 s.user_count       = ann.user_count;
                 s.host_tier        = ann.host_tier ? ann.host_tier : 1;
-                s.local_relay_port = ann.local_relay_port;
                 s.last_seen        = now;
                 return;
             }
@@ -1299,14 +1297,11 @@ void run_streaming_viewer(){
         ns.ip               = ann.host_ip;
         ns.user_count       = ann.user_count;
         ns.host_tier        = ann.host_tier ? ann.host_tier : 1;
-        ns.local_relay_port = ann.local_relay_port;
         ns.last_seen        = now;
         v.discovered_stations.push_back(ns);
     };
     disc_listener.start();
 
-    // Local relay 서버: HOST 시 LAN 내 클라이언트를 위한 미니 relay
-    LocalRelayServer local_relay_srv;
 
     // Relay 클라이언트: Relay 주소가 설정돼 있으면 인터넷 스테이션 폴링
     RelayClient relay_cli;
@@ -1635,36 +1630,7 @@ void run_streaming_viewer(){
                 cli = new NetClient();
                 bool join_ok = false;
 
-                if(!pending_join.ip.empty() && pending_join.local_relay_port != 0){
-                    // ── LAN local relay 경유 JOIN (같은 망 우선) ─────────
-                    std::string sid = pending_join.name + "_"; // station_id 재구성 불가 → LIST_REQ로 조회
-                    // local relay에서 station 목록 조회해 station_id 확인
-                    RelayClient lrs_query;
-                    auto lrs_stations = lrs_query.fetch_stations(
-                        pending_join.ip.c_str(), pending_join.local_relay_port);
-                    std::string lrs_sid;
-                    for(auto& ls : lrs_stations)
-                        if(ls.name == pending_join.name){ lrs_sid = ls.station_id; break; }
-                    if(!lrs_sid.empty()){
-                        RelayClient lrs_join;
-                        int lfd = lrs_join.join_room(
-                            pending_join.ip.c_str(), pending_join.local_relay_port, lrs_sid);
-                        if(lfd >= 0){
-                            join_ok = cli->connect_fd(lfd, login_get_id(), login_get_pw(),
-                                                      (uint8_t)login_get_tier());
-                            if(!join_ok) close(lfd);
-                            else printf("[UI] joined via LAN local relay\n");
-                        }
-                    }
-                    // local relay 실패 시 직접 TCP fallback
-                    if(!join_ok && !pending_join.ip.empty() && pending_join.tcp_port != 0){
-                        join_ok = cli->connect(pending_join.ip.c_str(),
-                                               (int)pending_join.tcp_port,
-                                               login_get_id(), login_get_pw(),
-                                               (uint8_t)login_get_tier());
-                        if(join_ok) printf("[UI] joined via direct TCP (local relay fallback)\n");
-                    }
-                } else if(!pending_join.station_id.empty() && s_relay_host[0] != '\0'){
+                if(!pending_join.station_id.empty() && s_relay_host[0] != '\0'){
                     // ── 외부 relay 경유 JOIN ─────────────────────────────
                     int rfd = relay_cli.join_room(s_relay_host, s_relay_list_port,
                                                   pending_join.station_id);
@@ -1688,8 +1654,7 @@ void run_streaming_viewer(){
                     strncpy(connect_pw, login_get_pw(), 63); connect_pw[63]='\0';
                     connect_tier = (uint8_t)login_get_tier();
                     // 외부 relay 경유 JOIN이면 station_id 보존 (재연결용)
-                    if(!pending_join.station_id.empty() && s_relay_host[0] != '\0'
-                       && pending_join.local_relay_port == 0)
+                    if(!pending_join.station_id.empty() && s_relay_host[0] != '\0')
                         s_relay_join_station_id = pending_join.station_id;
                     else
                         s_relay_join_station_id.clear();
@@ -2394,34 +2359,7 @@ void run_streaming_viewer(){
                     s_station_lon  = v.station_lon;
                     s_station_set  = true;
                 }
-                // LAN local relay 서버 시작 (같은 망의 JOIN이 연결할 미니 relay)
-                uint16_t lrs_port = 0;
-                if(v.station_location_set){
-                    // port 0 → OS가 빈 포트 자동 할당
-                    if(local_relay_srv.start(0)){
-                        lrs_port = (uint16_t)local_relay_srv.listen_port();
-                        // local relay에 HOST 룸 등록
-                        std::string sid = v.station_name + "_" + std::string(login_get_id());
-                        RelayClient lrs_cli;
-                        int lfd = lrs_cli.open_room("127.0.0.1", lrs_port,
-                                                    sid, v.station_name,
-                                                    v.station_lat, v.station_lon,
-                                                    (uint8_t)login_get_tier());
-                        if(lfd >= 0){
-                            relay_cli.start_mux_adapter(lfd,
-                                [&v](int local_fd){ if(v.net_srv) v.net_srv->inject_fd(local_fd); },
-                                [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; });
-                            printf("[UI] local relay MUX adapter started (port=%u)\n", lrs_port);
-                        } else {
-                            printf("[UI] local relay open_room failed\n");
-                            local_relay_srv.stop();
-                            lrs_port = 0;
-                        }
-                    } else {
-                        printf("[UI] local relay server start failed\n");
-                    }
-                }
-                // LAN 브로드캐스트 시작 (local_relay_port 포함)
+                // LAN 브로드캐스트 시작
                 if(v.station_location_set){
                     std::string lip = get_local_ip();
                     srv->start_discovery_broadcast(
@@ -2429,8 +2367,7 @@ void run_streaming_viewer(){
                         v.station_lat, v.station_lon,
                         (uint16_t)host_port,
                         lip.c_str(),
-                        (uint8_t)login_get_tier(),
-                        lrs_port);
+                        (uint8_t)login_get_tier());
                 }
                 // relay MUX 어댑터 시작 (외부 relay)
                 if(s_relay_host[0] != '\0' && v.station_location_set){
@@ -5877,7 +5814,6 @@ void run_streaming_viewer(){
     if(v.net_bcast_thr.joinable()) v.net_bcast_thr.join();
     relay_cli.stop_mux_adapter();
     relay_cli.stop_polling();
-    local_relay_srv.stop();
     if(v.net_srv){ v.net_srv->stop_discovery_broadcast(); v.net_srv->stop(); delete v.net_srv; v.net_srv=nullptr; }
     if(v.net_cli){ v.net_cli->disconnect(); delete v.net_cli; v.net_cli=nullptr; }
     if(!v.remote_mode && cap.joinable()) cap.join();
