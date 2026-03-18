@@ -2170,23 +2170,101 @@ void run_streaming_viewer(){
                                              int32_t fft_top, int32_t fft_bot,
                                              float freq_lo, float freq_hi,
                                              int32_t time_start, int32_t time_end){
-                // 즉시 녹음 대신 승인 대기 항목으로 추가
-                std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
-                FFTViewer::RecEntry e{};
-                time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
-                char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
-                float cf_mhz = (freq_lo+freq_hi)/2.0f;
-                char fn[128]; snprintf(fn,sizeof(fn),"IQ_%.3fMHz_%s.wav",cf_mhz,dts);
-                e.filename = fn;
-                e.is_region = true;
-                e.req_state = FFTViewer::RecEntry::REQ_PENDING;
-                e.req_op_idx = op_idx;
-                strncpy(e.req_op_name, op_name?op_name:"?", 31);
-                e.req_fft_top=fft_top; e.req_fft_bot=fft_bot;
-                e.req_freq_lo=freq_lo; e.req_freq_hi=freq_hi;
-                e.req_time_start=time_start; e.req_time_end=time_end;
-                e.t_start=std::chrono::steady_clock::now();
-                v.rec_entries.push_back(e);
+                // 승인 없이 즉시 추출+전송 시작
+                std::string fname;
+                {
+                    std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                    FFTViewer::RecEntry e{};
+                    time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
+                    char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
+                    float cf_mhz = (freq_lo+freq_hi)/2.0f;
+                    char fn[128]; snprintf(fn,sizeof(fn),"IQ_%.3fMHz_%s.wav",cf_mhz,dts);
+                    e.filename = fn;
+                    e.is_region = true;
+                    e.req_state = FFTViewer::RecEntry::REQ_CONFIRMED;
+                    e.req_op_idx = op_idx;
+                    strncpy(e.req_op_name, op_name?op_name:"?", 31);
+                    e.req_fft_top=fft_top; e.req_fft_bot=fft_bot;
+                    e.req_freq_lo=freq_lo; e.req_freq_hi=freq_hi;
+                    e.req_time_start=time_start; e.req_time_end=time_end;
+                    e.t_start=std::chrono::steady_clock::now();
+                    v.rec_entries.push_back(e);
+                    fname = fn;
+                }
+                // JOIN 요청 시각 → HOST fft 인덱스 변환
+                float rps=(float)v.header.sample_rate/(float)v.fft_size/(float)v.time_average;
+                if(rps<=0.f) rps=37.5f;
+                time_t now_h=time(nullptr);
+                int cur_fi=v.current_fft_idx;
+                int32_t ft=(int32_t)(cur_fi-(int32_t)((now_h-(time_t)time_end)*rps));
+                int32_t fb=(int32_t)(cur_fi-(int32_t)((now_h-(time_t)time_start)*rps));
+                float fl=freq_lo, fh=freq_hi;
+                int32_t ts=time_start, te=time_end;
+                uint8_t oidx=op_idx;
+                std::thread([&v,srv,ft,fb,fl,fh,ts,te,oidx,fname](){
+                    for(int w=0;w<200&&v.rec_busy_flag.load();w++)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    v.region.fft_top=ft; v.region.fft_bot=fb;
+                    v.region.freq_lo=fl; v.region.freq_hi=fh;
+                    v.region.time_start=(time_t)ts;
+                    v.region.time_end=(time_t)te;
+                    v.region.active=true;
+                    v.rec_busy_flag.store(true);
+                    v.rec_state = FFTViewer::REC_BUSY;
+                    v.rec_anim_timer = 0.0f;
+                    v.region.active = false;
+                    v.do_region_save_work();
+                    v.rec_state = FFTViewer::REC_SUCCESS;
+                    v.rec_success_timer = 3.0f;
+                    v.rec_busy_flag.store(false);
+                    std::string path;
+                    {
+                        std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
+                        for(auto it=v.rec_entries.rbegin();it!=v.rec_entries.rend();++it)
+                            if(it->is_region&&it->req_state==FFTViewer::RecEntry::REQ_NONE&&it->finished){
+                                path=it->path;
+                                v.rec_entries.erase(std::next(it).base());
+                                break;
+                            }
+                    }
+                    if(path.empty()){
+                        srv->send_region_response((int)oidx, false);
+                        {
+                            std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
+                            for(auto it2=v.rec_entries.begin();it2!=v.rec_entries.end();++it2)
+                                if(it2->filename==fname){ v.rec_entries.erase(it2); break; }
+                        }
+                        return;
+                    }
+                    uint64_t fsz=0;
+                    {FILE* f=fopen(path.c_str(),"rb");if(f){fseek(f,0,SEEK_END);fsz=(uint64_t)ftell(f);fclose(f);}}
+                    {
+                        std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
+                        for(auto& e:v.rec_entries)
+                            if(e.filename==fname){
+                                e.req_state=FFTViewer::RecEntry::REQ_TRANSFERRING;
+                                e.xfer_total=fsz; e.xfer_done=0;
+                                e.local_path_to_delete=path;
+                                break;
+                            }
+                    }
+                    uint8_t tid=v.next_transfer_id.fetch_add(1);
+                    srv->send_file_to((int)oidx,path.c_str(),tid,
+                        [&v,fname](uint64_t done, uint64_t total){
+                            std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
+                            for(auto& e:v.rec_entries)
+                                if(e.filename==fname){ e.xfer_done=done; break; }
+                        });
+                    {
+                        std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
+                        for(auto it2=v.rec_entries.begin();it2!=v.rec_entries.end();++it2)
+                            if(it2->filename==fname){
+                                v.rec_entries.erase(it2);
+                                break;
+                            }
+                    }
+                    remove(path.c_str());
+                }).detach();
             };
             srv->cb.on_toggle_recv = [&](int ch_idx, uint8_t op_idx, bool enable){
                 if(ch_idx<0||ch_idx>=MAX_CHANNELS) return;
@@ -2732,37 +2810,50 @@ void run_streaming_viewer(){
             }
         }
 
-        // ── CONNECT 모드: 연결 끊김 감지 → 자동 재연결 ─────────────────────
+        // ── CONNECT 모드: 연결 끊김 감지 → 자동 재연결 (백그라운드) ────────
         if(v.remote_mode && v.net_cli && !v.net_cli->is_connected()){
             static float reconn_timer = 0.f;
+            static std::atomic<bool> reconn_busy{false};
             reconn_timer -= ImGui::GetIO().DeltaTime;
-            if(reconn_timer <= 0.f){
-                reconn_timer = 2.f;
-                bool ok = false;
-                if(!s_relay_join_station_id.empty()){
-                    // relay 경유 재연결
-                    int rfd = relay_cli.join_room(s_relay_host, s_relay_list_port,
-                                                  s_relay_join_station_id);
-                    if(rfd >= 0){
-                        ok = v.net_cli->connect_fd(rfd, connect_id, connect_pw, connect_tier);
-                        if(!ok) close(rfd);
+            if(reconn_timer <= 0.f && !reconn_busy.load()){
+                reconn_timer = 3.f;
+                reconn_busy.store(true);
+                // 재연결을 백그라운드 스레드에서 수행 → UI 블로킹 방지
+                auto* cli_ptr = v.net_cli;
+                auto* v_ptr   = &v;
+                auto* relay_ptr = &relay_cli;
+                std::thread([cli_ptr, v_ptr, relay_ptr,
+                             relay_host  = s_relay_host,
+                             relay_port  = s_relay_list_port,
+                             station_id  = s_relay_join_station_id,
+                             c_host = std::string(connect_host),
+                             c_port = connect_port,
+                             c_id   = std::string(connect_id),
+                             c_pw   = std::string(connect_pw),
+                             c_tier = connect_tier](){
+                    bool ok = false;
+                    if(!station_id.empty()){
+                        int rfd = relay_ptr->join_room(relay_host, relay_port, station_id);
+                        if(rfd >= 0){
+                            ok = cli_ptr->connect_fd(rfd, c_id.c_str(), c_pw.c_str(), c_tier);
+                            if(!ok) close(rfd);
+                        }
+                    } else if(!c_host.empty()){
+                        ok = cli_ptr->connect(c_host.c_str(), c_port,
+                                              c_id.c_str(), c_pw.c_str(), c_tier);
                     }
-                } else if(connect_host[0]){
-                    // 직접 TCP 재연결
-                    ok = v.net_cli->connect(connect_host, connect_port,
-                                            connect_id, connect_pw, connect_tier);
-                }
-                if(ok){
-                    // 재연결 성공: 뮤트 채널 상태 복원
-                    for(int ci=0;ci<MAX_CHANNELS;ci++)
-                        if(v.local_ch_out[ci]==3) v.net_cli->cmd_toggle_recv(ci,false);
-                    // 재연결 후 오토스케일 트리거
-                    v.autoscale_active=true; v.autoscale_init=false; v.autoscale_accum.clear();
-                    v.join_manual_scale=false;
-                    // 워터폴 타임스탬프 초기화
-                    { std::lock_guard<std::mutex> wlk(v.wf_events_mtx); v.wf_events.clear(); }
-                    v.last_tagged_sec = -1;
-                }
+                    if(ok){
+                        for(int ci=0;ci<MAX_CHANNELS;ci++)
+                            if(v_ptr->local_ch_out[ci]==3) cli_ptr->cmd_toggle_recv(ci,false);
+                        v_ptr->autoscale_active=true; v_ptr->autoscale_init=false;
+                        v_ptr->autoscale_accum.clear();
+                        v_ptr->join_manual_scale=false;
+                        { std::lock_guard<std::mutex> wlk(v_ptr->wf_events_mtx);
+                          v_ptr->wf_events.clear(); }
+                        v_ptr->last_tagged_sec = -1;
+                    }
+                    reconn_busy.store(false);
+                }).detach();
             }
         }
 
@@ -2897,13 +2988,12 @@ void run_streaming_viewer(){
                                 v.region.time_start=now_r-(time_t)((v.current_fft_idx-v.region.fft_bot)/rps_r);
                             }
                         }
-                        // JOIN: 영역 IQ 녹음 요청 → 호스트 승인 필요
+                        // JOIN: 영역 IQ 녹음 요청 → HOST가 즉시 처리+전송
                         v.net_cli->cmd_request_region(
                             v.region.fft_top, v.region.fft_bot,
                             v.region.freq_lo, v.region.freq_hi,
                             (int32_t)v.region.time_start, (int32_t)v.region.time_end);
-                        v.region.active = false;  // 요청 후 선택영역 UI 해제
-                        // 요청 상태 추가 (Record 패널에 표시)
+                        v.region.active = false;
                         {
                             std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                             FFTViewer::RecEntry e{};
@@ -2913,7 +3003,7 @@ void run_streaming_viewer(){
                             char fn[128]; snprintf(fn,sizeof(fn),"IQ_%.3fMHz_%s.wav",cf_mhz,dts);
                             e.filename = fn;
                             e.is_region = true;
-                            e.req_state = FFTViewer::RecEntry::REQ_PENDING;
+                            e.req_state = FFTViewer::RecEntry::REQ_CONFIRMED;
                             e.t_start = std::chrono::steady_clock::now();
                             v.rec_entries.push_back(e);
                         }
@@ -4183,111 +4273,7 @@ void run_streaming_viewer(){
                                                 ImGui::Text("%s  %s", state_lbl, re.filename.c_str());
                                             ImGui::PopStyleColor();
 
-                                            // HOST 전용: 우클릭 메뉴 (PENDING 상태)
-                                            if(v.net_srv && re.req_state==RS::REQ_PENDING
-                                               && ImGui::IsItemHovered()
-                                               && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                                                ImGui::OpenPopup("##req_ctx");
-                                            }
-                                            char req_pop_id[32]; snprintf(req_pop_id,32,"##req_ctx");
-                                            if(ImGui::BeginPopup(req_pop_id)){
-                                                ImGui::TextDisabled("Request: %s", re.req_op_name);
-                                                ImGui::Separator();
-                                                if(ImGui::MenuItem("Allow")){
-                                                    // 요청 정보 복사 후 백그라운드 스레드 실행
-                                                    re.req_state = RS::REQ_CONFIRMED;
-                                                    float fl=re.req_freq_lo, fh=re.req_freq_hi;
-                                                    int32_t ts=re.req_time_start, te=re.req_time_end;
-                                                    uint8_t oidx=re.req_op_idx;
-                                                    std::string fname=re.filename;
-                                                    // JOIN 요청 시각 → HOST fft 인덱스 변환
-                                                    float rps=(float)v.header.sample_rate/(float)v.fft_size/(float)v.time_average;
-                                                    if(rps<=0.f) rps=37.5f;
-                                                    time_t now_h=time(nullptr);
-                                                    int cur_fi=v.current_fft_idx;
-                                                    int32_t ft=(int32_t)(cur_fi-(int32_t)((now_h-(time_t)te)*rps));
-                                                    int32_t fb=(int32_t)(cur_fi-(int32_t)((now_h-(time_t)ts)*rps));
-                                                    std::thread([&v,srv,ft,fb,fl,fh,ts,te,oidx,fname](){
-                                                        // rec_busy_flag가 해제될 때까지 대기 (이전 저장 완료 대기)
-                                                        for(int w=0;w<200&&v.rec_busy_flag.load();w++)
-                                                            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                                                        // region 파라미터 설정
-                                                        v.region.fft_top=ft; v.region.fft_bot=fb;
-                                                        v.region.freq_lo=fl; v.region.freq_hi=fh;
-                                                        v.region.time_start=(time_t)ts;
-                                                        v.region.time_end=(time_t)te;
-                                                        v.region.active=true;
-                                                        // region_save() 대신 do_region_save_work() 직접 호출
-                                                        // (region_save는 내부에서 detach 스레드를 띄우므로
-                                                        //  완료를 기다릴 수 없음)
-                                                        v.rec_busy_flag.store(true);
-                                                        v.rec_state = FFTViewer::REC_BUSY;
-                                                        v.rec_anim_timer = 0.0f;
-                                                        v.region.active = false;
-                                                        v.do_region_save_work();
-                                                        v.rec_state = FFTViewer::REC_SUCCESS;
-                                                        v.rec_success_timer = 3.0f;
-                                                        v.rec_busy_flag.store(false);
-                                                        // 저장 완료 후 경로 수집
-                                                        std::string path;
-                                                        {
-                                                            std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
-                                                            for(auto it=v.rec_entries.rbegin();it!=v.rec_entries.rend();++it)
-                                                                if(it->is_region&&it->req_state==FFTViewer::RecEntry::REQ_NONE&&it->finished){
-                                                                    path=it->path;
-                                                                    // 이 항목 제거 (request 항목이 대신 표시)
-                                                                    v.rec_entries.erase(std::next(it).base());
-                                                                    break;
-                                                                }
-                                                        }
-                                                        if(path.empty()){
-                                                            // region_save 실패 → JOIN에 Deny 전송, 항목 제거
-                                                            srv->send_region_response((int)oidx, false);
-                                                            {
-                                                                std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
-                                                                for(auto it2=v.rec_entries.begin();it2!=v.rec_entries.end();++it2)
-                                                                    if(it2->filename==fname){ v.rec_entries.erase(it2); break; }
-                                                            }
-                                                            return;
-                                                        }
-                                                        uint64_t fsz=0;
-                                                        {FILE* f=fopen(path.c_str(),"rb");if(f){fseek(f,0,SEEK_END);fsz=(uint64_t)ftell(f);fclose(f);}}
-                                                        {
-                                                            std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
-                                                            for(auto& e:v.rec_entries)
-                                                                if(e.filename==fname){
-                                                                    e.req_state=FFTViewer::RecEntry::REQ_TRANSFERRING;
-                                                                    e.xfer_total=fsz; e.xfer_done=0;
-                                                                    e.local_path_to_delete=path;
-                                                                    break;
-                                                                }
-                                                        }
-                                                        uint8_t tid=v.next_transfer_id.fetch_add(1);
-                                                        srv->send_file_to((int)oidx,path.c_str(),tid,
-                                                            [&v,fname](uint64_t done, uint64_t total){
-                                                                std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
-                                                                for(auto& e:v.rec_entries)
-                                                                    if(e.filename==fname){ e.xfer_done=done; break; }
-                                                            });
-                                                        // 전송 완료 → 항목 제거 + 로컬 파일 삭제
-                                                        {
-                                                            std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
-                                                            for(auto it2=v.rec_entries.begin();it2!=v.rec_entries.end();++it2)
-                                                                if(it2->filename==fname){
-                                                                    v.rec_entries.erase(it2);
-                                                                    break;
-                                                                }
-                                                        }
-                                                        remove(path.c_str());
-                                                    }).detach();
-                                                }
-                                                if(ImGui::MenuItem("Deny")){
-                                                    re.req_state = RS::REQ_DENIED;
-                                                    re.req_deny_timer = 30.f;
-                                                    srv->send_region_response((int)re.req_op_idx, false);
-                                                }
-                                                ImGui::EndPopup();
-                                            }
+                                            // (승인 불필요 — on_request_region에서 즉시 처리)
                                         }
                                         ImGui::PopID();
                                     }

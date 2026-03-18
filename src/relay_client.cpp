@@ -8,9 +8,11 @@
 #include <netdb.h>
 #include <unistd.h>
 #include <netinet/tcp.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <chrono>
 
-// ── TCP 연결 (5초 타임아웃) ───────────────────────────────────────────────
+// ── TCP 연결 (non-blocking connect, 3초 타임아웃) ─────────────────────────
 int RelayClient::tcp_connect(const std::string& host, int port){
     addrinfo hints{}, *res = nullptr;
     hints.ai_family   = AF_INET;
@@ -19,17 +21,27 @@ int RelayClient::tcp_connect(const std::string& host, int port){
     if(getaddrinfo(host.c_str(), ps, &hints, &res) != 0) return -1;
     int fd = socket(res->ai_family, res->ai_socktype, 0);
     if(fd < 0){ freeaddrinfo(res); return -1; }
-    timeval tv{5,0};
+
+    // non-blocking connect → poll로 3초 타임아웃
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    int cr = ::connect(fd, res->ai_addr, res->ai_addrlen);
+    freeaddrinfo(res);
+    if(cr < 0 && errno != EINPROGRESS){ close(fd); return -1; }
+    if(cr < 0){
+        pollfd pfd{fd, POLLOUT, 0};
+        int pr = poll(&pfd, 1, 3000);   // 3초 대기
+        if(pr <= 0){ close(fd); return -1; }
+        int so_err = 0; socklen_t sl = sizeof(so_err);
+        getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_err, &sl);
+        if(so_err != 0){ close(fd); return -1; }
+    }
+    // blocking 모드로 복원
+    fcntl(fd, F_SETFL, flags);
+
+    timeval tv{3,0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    if(connect(fd, res->ai_addr, res->ai_addrlen) < 0){
-        close(fd); freeaddrinfo(res); return -1;
-    }
-    freeaddrinfo(res);
-    // 연결 후에도 send/recv 타임아웃 유지 → 네트워크 장애 시 무한 블로킹 방지
-    timeval tv2{3,0};
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv2, sizeof(tv2));
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv2, sizeof(tv2));
     int nd = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
     return fd;
 }

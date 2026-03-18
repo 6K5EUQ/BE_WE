@@ -13,6 +13,8 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <fcntl.h>
+#include <poll.h>
 
 // ── connect ───────────────────────────────────────────────────────────────
 bool NetClient::connect(const char* host, int port,
@@ -30,11 +32,23 @@ bool NetClient::connect(const char* host, int port,
     fd_ = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if(fd_ < 0){ freeaddrinfo(res); return false; }
 
-    if(::connect(fd_, res->ai_addr, res->ai_addrlen) < 0){
-        perror("[NetClient] connect");
-        close(fd_); fd_=-1; freeaddrinfo(res); return false;
-    }
+    // non-blocking connect → poll 3초 타임아웃
+    int flags = fcntl(fd_, F_GETFL, 0);
+    fcntl(fd_, F_SETFL, flags | O_NONBLOCK);
+    int cr = ::connect(fd_, res->ai_addr, res->ai_addrlen);
     freeaddrinfo(res);
+    if(cr < 0 && errno != EINPROGRESS){
+        close(fd_); fd_=-1; return false;
+    }
+    if(cr < 0){
+        pollfd pfd{fd_, POLLOUT, 0};
+        int pr = poll(&pfd, 1, 3000);
+        if(pr <= 0){ close(fd_); fd_=-1; return false; }
+        int so_err = 0; socklen_t sl = sizeof(so_err);
+        getsockopt(fd_, SOL_SOCKET, SO_ERROR, &so_err, &sl);
+        if(so_err != 0){ close(fd_); fd_=-1; return false; }
+    }
+    fcntl(fd_, F_SETFL, flags);  // blocking 복원
 
     // TCP_NODELAY: Nagle 비활성화 → 실시간 스트림 지연 방지
     int nd=1; setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
