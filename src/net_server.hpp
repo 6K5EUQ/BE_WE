@@ -31,6 +31,7 @@ struct ClientConn {
     std::condition_variable send_cv;
     std::thread             send_thr;
     std::atomic<bool>       send_stop{false};
+    std::mutex              fd_write_mtx;  // fd write 직렬화 (send_worker + send_file_to)
 
     void send_worker(){
         while(true){
@@ -43,7 +44,8 @@ struct ClientConn {
                 send_queue.pop_front();
             }
             if(fd < 0 || !alive.load()) continue;
-            // 블로킹 send — 이 스레드만 블로킹됨
+            // 블로킹 send — fd_write_mtx로 send_file_to와 직렬화
+            std::lock_guard<std::mutex> wlk(fd_write_mtx);
             size_t sent = 0;
             while(sent < pkt.size()){
                 ssize_t r = ::send(fd, pkt.data()+sent, pkt.size()-sent, MSG_NOSIGNAL);

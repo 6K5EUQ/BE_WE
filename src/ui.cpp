@@ -2438,20 +2438,47 @@ void run_streaming_viewer(){
                 }
                 // relay MUX 어댑터 시작 (외부 relay)
                 if(s_relay_host[0] != '\0' && v.station_location_set){
-                    std::string sid = v.station_name + "_" + std::string(login_get_id());
-                    int rfd = relay_cli.open_room(
-                        s_relay_host, s_relay_list_port,
-                        sid, v.station_name,
-                        v.station_lat, v.station_lon,
-                        (uint8_t)login_get_tier());
-                    if(rfd >= 0){
-                        relay_cli.start_mux_adapter(rfd,
-                            [&v](int local_fd){ if(v.net_srv) v.net_srv->inject_fd(local_fd); },
-                            [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; });
-                        printf("[UI] relay MUX adapter started\n");
-                    } else {
-                        printf("[UI] relay open_room failed, relay unavailable\n");
-                    }
+                    auto relay_connect = [&v, &relay_cli,
+                                          rh = std::string(s_relay_host),
+                                          rp = s_relay_list_port](){
+                        std::string sid = v.station_name + "_" + std::string(login_get_id());
+                        int rfd = relay_cli.open_room(
+                            rh, rp, sid, v.station_name,
+                            v.station_lat, v.station_lon,
+                            (uint8_t)login_get_tier());
+                        if(rfd >= 0){
+                            relay_cli.start_mux_adapter(rfd,
+                                [&v](int local_fd){ if(v.net_srv) v.net_srv->inject_fd(local_fd); },
+                                [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; },
+                                [&v, &relay_cli, rh, rp](){
+                                    // relay 끊김 → 자동 재연결 (3초 후, 최대 5회)
+                                    std::thread([&v, &relay_cli, rh, rp](){
+                                        for(int attempt=0; attempt<5; attempt++){
+                                            std::this_thread::sleep_for(std::chrono::seconds(3));
+                                            if(!v.net_srv) return;  // HOST 모드 종료됨
+                                            printf("[UI] relay auto-reconnect attempt %d/5\n", attempt+1);
+                                            std::string sid = v.station_name + "_" + std::string(login_get_id());
+                                            int rfd2 = relay_cli.open_room(
+                                                rh, rp, sid, v.station_name,
+                                                v.station_lat, v.station_lon,
+                                                (uint8_t)login_get_tier());
+                                            if(rfd2 >= 0){
+                                                relay_cli.start_mux_adapter(rfd2,
+                                                    [&v](int fd2){ if(v.net_srv) v.net_srv->inject_fd(fd2); },
+                                                    [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; });
+                                                printf("[UI] relay auto-reconnected\n");
+                                                return;
+                                            }
+                                        }
+                                        printf("[UI] relay auto-reconnect failed after 5 attempts\n");
+                                    }).detach();
+                                });
+                            printf("[UI] relay MUX adapter started\n");
+                        } else {
+                            printf("[UI] relay open_room failed, relay unavailable\n");
+                        }
+                    };
+                    relay_connect();
                 }
                 // 브로드캐스트 전용 스레드 시작 (캡처 스레드 분리)
                 v.net_bcast_stop.store(false);

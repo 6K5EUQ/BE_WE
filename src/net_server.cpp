@@ -578,7 +578,7 @@ void NetServer::send_file_to(int op_index, const char* path, uint8_t transfer_id
     meta.transfer_id  = transfer_id;
     {
         auto pkt = make_packet(PacketType::FILE_META, &meta, sizeof(meta));
-        std::lock_guard<std::mutex> slk(target->send_mtx);
+        std::lock_guard<std::mutex> slk(target->fd_write_mtx);
         send_all(target->fd, pkt.data(), pkt.size());
     }
 
@@ -606,7 +606,7 @@ void NetServer::send_file_to(int op_index, const char* path, uint8_t transfer_id
         // send 에 걸리는 시간 측정 → 실 TCP throughput
         auto t0 = std::chrono::steady_clock::now();
         {
-            std::lock_guard<std::mutex> slk(target->send_mtx);
+            std::lock_guard<std::mutex> slk(target->fd_write_mtx);
             send_all(target->fd, pkt.data(), pkt.size());
         }
         double send_us = (double)std::chrono::duration_cast<std::chrono::microseconds>(

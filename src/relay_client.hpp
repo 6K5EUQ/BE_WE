@@ -56,7 +56,8 @@ public:
     // on_new_join(local_fd): 새 JOIN 연결 시 호출 → NetServer에 inject
     void start_mux_adapter(int relay_fd,
                            std::function<void(int local_fd)> on_new_join,
-                           std::function<uint8_t()> user_count_fn);
+                           std::function<uint8_t()> user_count_fn,
+                           std::function<void()> on_disconnect = nullptr);
     void stop_mux_adapter();
     bool is_relay_connected() const { return mux_running_.load(); }
 
@@ -98,6 +99,8 @@ private:
     };
     std::mutex mux_joins_mtx_;
     std::unordered_map<uint16_t, std::shared_ptr<JoinPair>> mux_joins_;
+
+    std::function<void()> on_mux_disconnect_;  // mux_loop 종료 시 호출
 
     void mux_loop(int relay_fd,
                   std::function<void(int)> on_new_join,

@@ -180,9 +180,11 @@ int RelayClient::open_room(const std::string& relay_host, int relay_port,
 // local_fd에서 JOIN이 보내는 데이터 → relay_fd로 MUX해서 전송
 void RelayClient::start_mux_adapter(int relay_fd,
                                      std::function<void(int)> on_new_join,
-                                     std::function<uint8_t()> user_count_fn){
+                                     std::function<uint8_t()> user_count_fn,
+                                     std::function<void()> on_disconnect){
     stop_mux_adapter();
     mux_relay_fd_ = relay_fd;
+    on_mux_disconnect_ = std::move(on_disconnect);
     mux_running_.store(true);
     mux_thr_ = std::thread(&RelayClient::mux_loop, this,
                             relay_fd, std::move(on_new_join), std::move(user_count_fn));
@@ -329,6 +331,7 @@ void RelayClient::mux_loop(int relay_fd,
         }
     }
     mux_running_.store(false);
+    if(on_mux_disconnect_) on_mux_disconnect_();
 }
 
 // ── JOIN 모드: 룸 입장 ────────────────────────────────────────────────────
