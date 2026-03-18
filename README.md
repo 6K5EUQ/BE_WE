@@ -64,9 +64,13 @@ Any machine with an SDR can HOST a station. Any machine without an SDR can JOIN 
 |:---:|:---:|
 | ![Login](assets/Login.png) | ![Globe](assets/Main_Page.png) |
 
-| Spectrum + Waterfall | Signal Analyzer |
+| Spectrum + Waterfall | Wideband Overview |
 |:---:|:---:|
 | ![Monitor](assets/Monitor.png) | ![Screen](assets/Screen.png) |
+
+| Time Machine + Region Export |
+|:---:|
+| ![Screen2](assets/Screen2.png) |
 
 ---
 
