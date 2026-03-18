@@ -2682,7 +2682,11 @@ void run_streaming_viewer(){
             std::mutex* log_mtx_ptr2 = &host_chat_mtx;
             std::vector<LocalChatMsg>* log_ptr2 = &host_chat_log;
             RelayClient* relay_ptr = &relay_cli;
-            std::thread([srv_ptr, bcast_pause_ptr, log_mtx_ptr2, log_ptr2, relay_ptr](){
+            FFTViewer* vp = &v;
+            std::string relay_host_str = s_relay_host;
+            int relay_port_val = s_relay_list_port;
+            std::thread([srv_ptr, bcast_pause_ptr, log_mtx_ptr2, log_ptr2,
+                         relay_ptr, vp, relay_host_str, relay_port_val](){
                 std::this_thread::sleep_for(std::chrono::seconds(1));
                 // 재개 전 한번 더 큐 flush (1초간 쌓인 잔여)
                 srv_ptr->flush_clients();
@@ -2690,9 +2694,26 @@ void run_streaming_viewer(){
                 bcast_pause_ptr->store(false, std::memory_order_relaxed);
                 srv_ptr->broadcast_heartbeat(0);
                 srv_ptr->broadcast_chat("BEWE", "Chassis 2 stable ...");
-                // 릴레이 서버에 NET_RESET open (지구본 마커 복원)
-                if(relay_ptr->is_relay_connected())
+                // relay가 끊겨있으면 재연결
+                if(!relay_ptr->is_relay_connected() && !relay_host_str.empty()){
+                    relay_ptr->stop_mux_adapter();
+                    std::string sid = vp->station_name + "_" + std::string(login_get_id());
+                    int rfd = relay_ptr->open_room(
+                        relay_host_str, relay_port_val,
+                        sid, vp->station_name,
+                        vp->station_lat, vp->station_lon,
+                        (uint8_t)login_get_tier());
+                    if(rfd >= 0){
+                        relay_ptr->start_mux_adapter(rfd,
+                            [vp](int local_fd){ if(vp->net_srv) vp->net_srv->inject_fd(local_fd); },
+                            [vp](){ return vp->net_srv ? (uint8_t)vp->net_srv->client_count() : (uint8_t)0; });
+                        printf("[UI] relay reconnected after chassis 2 reset\n");
+                    } else {
+                        printf("[UI] relay reconnect failed after chassis 2 reset\n");
+                    }
+                } else if(relay_ptr->is_relay_connected()){
                     relay_ptr->send_net_reset(1);  // 1 = open
+                }
                 std::lock_guard<std::mutex> lk(*log_mtx_ptr2);
                 LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
                 strncpy(lm.msg,"Chassis 2 stable ...",255);
@@ -5667,16 +5688,34 @@ void run_streaming_viewer(){
                             std::mutex* log_mtx_ptr = &host_chat_mtx;
                             std::vector<LocalChatMsg>* log_ptr = &host_chat_log;
                             RelayClient* relay_ptr = &relay_cli;
-                            std::thread([srv_ptr, bcast_pause_ptr, log_mtx_ptr, log_ptr, relay_ptr](){
+                            FFTViewer* vp = &v;
+                            std::string rh = s_relay_host;
+                            int rp = s_relay_list_port;
+                            std::thread([srv_ptr, bcast_pause_ptr, log_mtx_ptr, log_ptr,
+                                         relay_ptr, vp, rh, rp](){
                                 std::this_thread::sleep_for(std::chrono::seconds(1));
                                 srv_ptr->flush_clients();
                                 srv_ptr->resume_broadcast();
                                 bcast_pause_ptr->store(false, std::memory_order_relaxed);
                                 srv_ptr->broadcast_heartbeat(0);
                                 srv_ptr->broadcast_chat("BEWE", "Chassis 2 stable ...");
-                                // 릴레이 서버에 NET_RESET open
-                                if(relay_ptr->is_relay_connected())
-                                    relay_ptr->send_net_reset(1);  // 1 = open
+                                // relay 끊겨있으면 재연결
+                                if(!relay_ptr->is_relay_connected() && !rh.empty()){
+                                    relay_ptr->stop_mux_adapter();
+                                    std::string sid = vp->station_name + "_" + std::string(login_get_id());
+                                    int rfd = relay_ptr->open_room(
+                                        rh, rp, sid, vp->station_name,
+                                        vp->station_lat, vp->station_lon,
+                                        (uint8_t)login_get_tier());
+                                    if(rfd >= 0){
+                                        relay_ptr->start_mux_adapter(rfd,
+                                            [vp](int local_fd){ if(vp->net_srv) vp->net_srv->inject_fd(local_fd); },
+                                            [vp](){ return vp->net_srv ? (uint8_t)vp->net_srv->client_count() : (uint8_t)0; });
+                                        printf("[UI] relay reconnected after chassis 2 reset (chat)\n");
+                                    }
+                                } else if(relay_ptr->is_relay_connected()){
+                                    relay_ptr->send_net_reset(1);
+                                }
                                 std::lock_guard<std::mutex> lk(*log_mtx_ptr);
                                 LocalChatMsg lm{}; lm.is_error = false;
                                 strncpy(lm.from, "BEWE", 31);

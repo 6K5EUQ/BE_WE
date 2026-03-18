@@ -292,6 +292,8 @@ void RelayClient::mux_loop(int relay_fd,
                     if(!relay_send_all(rfd, &mh, RELAY_MUX_HDR_SIZE) ||
                        !relay_send_all(rfd, tbuf.data(), n)){
                         printf("[RelayClient] pump: send to relay failed conn_id=%u\n", cid);
+                        // relay_fd shutdown → mux_loop도 즉시 깨어남
+                        shutdown(rfd, SHUT_RDWR);
                         break;
                     }
                 }
