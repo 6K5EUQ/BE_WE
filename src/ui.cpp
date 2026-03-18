@@ -4222,13 +4222,13 @@ void run_streaming_viewer(){
                                 if(has_iq){
                                     ImGui::TextDisabled("  IQ");
                                     ImGui::Indent(6.f);
-                                    // region save 진행중
+                                    // region save 진행중 (HOST 본인 녹음)
                                     if(region_saving){
                                         float t2=(float)ImGui::GetTime();
                                         bool blink=(fmodf(t2,0.8f)<0.4f);
                                         ImGui::PushStyleColor(ImGuiCol_Text,
-                                            blink?IM_COL32(255,160,60,255):IM_COL32(200,120,40,255));
-                                        ImGui::Text("[REC]  Region saving...");
+                                            blink?IM_COL32(255,80,80,255):IM_COL32(200,60,60,255));
+                                        ImGui::Text("[REC]  IQ Recording ...");
                                         ImGui::PopStyleColor();
                                     }
                                     using RS = FFTViewer::RecEntry::ReqState;
@@ -4239,10 +4239,7 @@ void run_streaming_viewer(){
                                         if(re.req_state == RS::REQ_NONE){
                                             // 일반 IQ 녹음 항목
                                             if(re.finished){
-                                                auto it_rz=fsz_cache.find(re.filename);
-                                                const std::string szstr=(it_rz!=fsz_cache.end())?it_rz->second:fmt_filesize("",re.path);
                                                 std::string lbl = std::string("[Done]  ")+re.filename;
-                                                if(!szstr.empty()) lbl += "  "+szstr;
                                                 bool is_sel_r = file_ctx.selected && file_ctx.filepath==re.path;
                                                 ImGui::Selectable(lbl.c_str(), is_sel_r);
                                                 if(ImGui::IsItemHovered()){
@@ -4257,8 +4254,6 @@ void run_streaming_viewer(){
                                                     }
                                                 }
                                             } else {
-                                                float elapsed=std::chrono::duration<float>(
-                                                    std::chrono::steady_clock::now()-re.t_start).count();
                                                 float t2=(float)ImGui::GetTime();
                                                 bool blink=(fmodf(t2,0.8f)<0.4f);
                                                 ImGui::PushStyleColor(ImGuiCol_Text,
@@ -4268,9 +4263,9 @@ void run_streaming_viewer(){
                                                 auto& rc=rec_sz_cache[re.filename];
                                                 if(t2-rc.first >= 0.5f){ rc.first=t2; rc.second=fmt_filesize("",re.path); }
                                                 if(!rc.second.empty())
-                                                    ImGui::Text("[REC]  %s  [%ds]  %s", re.filename.c_str(), (int)elapsed, rc.second.c_str());
+                                                    ImGui::Text("[REC]  IQ Recording ...  %s", rc.second.c_str());
                                                 else
-                                                    ImGui::Text("[REC]  %s  [%ds]", re.filename.c_str(), (int)elapsed);
+                                                    ImGui::Text("[REC]  IQ Recording ...");
                                                 ImGui::PopStyleColor();
                                             }
                                         } else {
@@ -4278,39 +4273,39 @@ void run_streaming_viewer(){
                                             float t2=(float)ImGui::GetTime();
                                             bool blink=(fmodf(t2,0.8f)<0.4f);
                                             ImU32 col=IM_COL32(200,200,200,255);
-                                            char state_lbl[48]="";
-                                            switch(re.req_state){
-                                                case RS::REQ_PENDING:
-                                                    snprintf(state_lbl,sizeof(state_lbl),"[Request]");
-                                                    col=blink?IM_COL32(255,210,50,255):IM_COL32(200,160,40,255);
-                                                    break;
-                                                case RS::REQ_CONFIRMED:
-                                                    snprintf(state_lbl,sizeof(state_lbl),"[Confirm]");
-                                                    col=IM_COL32(80,220,80,255);
-                                                    break;
-                                                case RS::REQ_DENIED:
-                                                    snprintf(state_lbl,sizeof(state_lbl),"[Deny] %.0fs",re.req_deny_timer);
-                                                    col=IM_COL32(200,80,80,255);
-                                                    break;
-                                                case RS::REQ_TRANSFERRING:
-                                                    snprintf(state_lbl,sizeof(state_lbl),"[Transferring]");
-                                                    col=IM_COL32(80,180,255,255);
-                                                    break;
-                                                default:
-                                                    snprintf(state_lbl,sizeof(state_lbl),"[Done]");
-                                                    col=IM_COL32(120,200,120,255);
-                                                    break;
+                                            if(re.req_state==RS::REQ_CONFIRMED){
+                                                // 녹음 중
+                                                col=blink?IM_COL32(255,80,80,255):IM_COL32(200,60,60,255);
+                                                ImGui::PushStyleColor(ImGuiCol_Text,col);
+                                                ImGui::Text("[REC]  IQ Recording ...");
+                                                ImGui::PopStyleColor();
+                                            } else if(re.req_state==RS::REQ_TRANSFERRING){
+                                                // 전송 중
+                                                col=IM_COL32(80,180,255,255);
+                                                ImGui::PushStyleColor(ImGuiCol_Text,col);
+                                                if(re.xfer_total>0)
+                                                    ImGui::Text("[Transferring]  %s  (%.1f / %.1f MB)",
+                                                        re.filename.c_str(),
+                                                        re.xfer_done/1048576.0, re.xfer_total/1048576.0);
+                                                else
+                                                    ImGui::Text("[Transferring]  %s", re.filename.c_str());
+                                                ImGui::PopStyleColor();
+                                            } else if(re.req_state==RS::REQ_NONE && re.finished){
+                                                // 전송 완료
+                                                col=IM_COL32(120,200,120,255);
+                                                ImGui::PushStyleColor(ImGuiCol_Text,col);
+                                                ImGui::Text("[Done]  %s", re.filename.c_str());
+                                                ImGui::PopStyleColor();
+                                            } else if(re.req_state==RS::REQ_DENIED){
+                                                col=IM_COL32(200,80,80,255);
+                                                ImGui::PushStyleColor(ImGuiCol_Text,col);
+                                                ImGui::Text("[Denied]  %s  %.0fs", re.filename.c_str(), re.req_deny_timer);
+                                                ImGui::PopStyleColor();
+                                            } else {
+                                                ImGui::PushStyleColor(ImGuiCol_Text,col);
+                                                ImGui::Text("%s", re.filename.c_str());
+                                                ImGui::PopStyleColor();
                                             }
-                                            ImGui::PushStyleColor(ImGuiCol_Text,col);
-                                            if(re.req_state==RS::REQ_TRANSFERRING && re.xfer_total>0)
-                                                ImGui::Text("%s  %s  [%.1fM / %.1fM]",
-                                                    state_lbl, re.filename.c_str(),
-                                                    re.xfer_done/1048576.0, re.xfer_total/1048576.0);
-                                            else
-                                                ImGui::Text("%s  %s", state_lbl, re.filename.c_str());
-                                            ImGui::PopStyleColor();
-
-                                            // (승인 불필요 — on_request_region에서 즉시 처리)
                                         }
                                         ImGui::PopID();
                                     }
