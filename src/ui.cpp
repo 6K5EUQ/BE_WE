@@ -3905,9 +3905,19 @@ void run_streaming_viewer(){
                             }
                         };
                         bool any_ch = false;
-                        for(int ci=0;ci<MAX_CHANNELS;ci++){
+                        // 주파수 오름차순 정렬
+                        int ch_order[MAX_CHANNELS];
+                        int ch_count=0;
+                        for(int i=0;i<MAX_CHANNELS;i++)
+                            if(v.channels[i].filter_active) ch_order[ch_count++]=i;
+                        std::sort(ch_order, ch_order+ch_count, [&](int a, int b){
+                            float ca=(v.channels[a].s+v.channels[a].e)*0.5f;
+                            float cb=(v.channels[b].s+v.channels[b].e)*0.5f;
+                            return ca<cb;
+                        });
+                        for(int ci_idx=0;ci_idx<ch_count;ci_idx++){
+                            int ci=ch_order[ci_idx];
                             Channel& ch=v.channels[ci];
-                            if(!ch.filter_active) continue;
                             any_ch = true;
 
                             float cf_mhz=(ch.s+ch.e)/2.0f;
