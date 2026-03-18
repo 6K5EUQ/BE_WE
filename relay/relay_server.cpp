@@ -66,6 +66,9 @@ void RelayServer::accept_loop(){
         int cfd = accept(listen_fd_, (sockaddr*)&caddr, &clen);
         if(cfd < 0){ if(running_.load()) perror("accept"); break; }
         int ka = 1; setsockopt(cfd, SOL_SOCKET, SO_KEEPALIVE, &ka, sizeof(ka));
+        int bufsize = 512 * 1024;
+        setsockopt(cfd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
+        setsockopt(cfd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
         std::thread([this, cfd](){ handshake(cfd); }).detach();
     }
 }

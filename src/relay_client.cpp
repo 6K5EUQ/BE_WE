@@ -261,6 +261,12 @@ void RelayClient::mux_loop(int relay_fd,
             // 새 JOIN → socketpair 생성
             int sv[2];
             if(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) continue;
+            // socketpair 버퍼 확대 (relay 경유 시 burst 흡수)
+            int spbuf = 512 * 1024;
+            setsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &spbuf, sizeof(spbuf));
+            setsockopt(sv[0], SOL_SOCKET, SO_RCVBUF, &spbuf, sizeof(spbuf));
+            setsockopt(sv[1], SOL_SOCKET, SO_SNDBUF, &spbuf, sizeof(spbuf));
+            setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &spbuf, sizeof(spbuf));
             // sv[0]: NetServer가 accept 대신 직접 client_loop에 inject (local_fd)
             // sv[1]: relay로 데이터 보내는 쪽 (remote_fd)
             auto jp = std::make_shared<JoinPair>();
