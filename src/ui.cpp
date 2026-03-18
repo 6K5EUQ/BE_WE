@@ -4222,14 +4222,20 @@ void run_streaming_viewer(){
                                 if(has_iq){
                                     ImGui::TextDisabled("  IQ");
                                     ImGui::Indent(6.f);
-                                    // region save 진행중 (HOST 본인 녹음)
+                                    // region save 진행중 (HOST 본인 녹음만 — JOIN 요청은 REQ_CONFIRMED에서 표시)
                                     if(region_saving){
-                                        float t2=(float)ImGui::GetTime();
-                                        bool blink=(fmodf(t2,0.8f)<0.4f);
-                                        ImGui::PushStyleColor(ImGuiCol_Text,
-                                            blink?IM_COL32(255,80,80,255):IM_COL32(200,60,60,255));
-                                        ImGui::Text("[REC]  IQ Recording ...");
-                                        ImGui::PopStyleColor();
+                                        bool has_req_confirmed = false;
+                                        for(auto& re2 : v.rec_entries)
+                                            if(re2.is_region && re2.req_state==FFTViewer::RecEntry::REQ_CONFIRMED)
+                                                { has_req_confirmed=true; break; }
+                                        if(!has_req_confirmed){
+                                            float t2=(float)ImGui::GetTime();
+                                            bool blink=(fmodf(t2,0.8f)<0.4f);
+                                            ImGui::PushStyleColor(ImGuiCol_Text,
+                                                blink?IM_COL32(255,80,80,255):IM_COL32(200,60,60,255));
+                                            ImGui::Text("[REC]  IQ Recording ...");
+                                            ImGui::PopStyleColor();
+                                        }
                                     }
                                     using RS = FFTViewer::RecEntry::ReqState;
                                     for(int ri=(int)v.rec_entries.size()-1;ri>=0;ri--){
@@ -4239,7 +4245,10 @@ void run_streaming_viewer(){
                                         if(re.req_state == RS::REQ_NONE){
                                             // 일반 IQ 녹음 항목
                                             if(re.finished){
+                                                auto it_rz=fsz_cache.find(re.filename);
+                                                const std::string szstr=(it_rz!=fsz_cache.end())?it_rz->second:fmt_filesize("",re.path);
                                                 std::string lbl = std::string("[Done]  ")+re.filename;
+                                                if(!szstr.empty()) lbl += "  "+szstr;
                                                 bool is_sel_r = file_ctx.selected && file_ctx.filepath==re.path;
                                                 ImGui::Selectable(lbl.c_str(), is_sel_r);
                                                 if(ImGui::IsItemHovered()){
@@ -4292,9 +4301,14 @@ void run_streaming_viewer(){
                                                 ImGui::PopStyleColor();
                                             } else if(re.req_state==RS::REQ_NONE && re.finished){
                                                 // 전송 완료
+                                                auto it_rz2=fsz_cache.find(re.filename);
+                                                const std::string szstr2=(it_rz2!=fsz_cache.end())?it_rz2->second:fmt_filesize("",re.path);
                                                 col=IM_COL32(120,200,120,255);
                                                 ImGui::PushStyleColor(ImGuiCol_Text,col);
-                                                ImGui::Text("[Done]  %s", re.filename.c_str());
+                                                if(!szstr2.empty())
+                                                    ImGui::Text("[Done]  %s  %s", re.filename.c_str(), szstr2.c_str());
+                                                else
+                                                    ImGui::Text("[Done]  %s", re.filename.c_str());
                                                 ImGui::PopStyleColor();
                                             } else if(re.req_state==RS::REQ_DENIED){
                                                 col=IM_COL32(200,80,80,255);
@@ -5289,7 +5303,13 @@ void run_streaming_viewer(){
             // ── SDR 오류 시 FFT/WF/AUD/IQ 모두 빨간 (LINK/TM/SDR은 독립) ──
             if(!v.remote_mode && v.sdr_stream_error.load()){
                 fft_led = 0; wf_led = 0; aud_led = 0;
-                iq_on = false; // IQ도 빨간 (tm_iq_on 실제론 꺼져있을 것)
+                iq_on = false;
+            }
+
+            // ── JOIN: HOST 연결 끊김 시 AUD/IQ 빨간 ──
+            if(v.remote_mode && link_state == 0){
+                aud_led = 0;
+                iq_on = false;
             }
 
             // 인디케이터 그리기 헬퍼: state 0=빨간, 1=초록, 2=노란
