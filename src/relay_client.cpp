@@ -154,6 +154,11 @@ int RelayClient::open_room(const std::string& relay_host, int relay_port,
     int fd = tcp_connect_any(cands, relay_port);
     if(fd < 0){ printf("[RelayClient] open_room: connect failed\n"); return -1; }
 
+    // TCP send/recv 버퍼 확대 (MUX 스트림 안정성)
+    int bufsize = 512 * 1024;
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
+
     RelayHostOpen op{};
     strncpy(op.station_id,   station_id.c_str(),   sizeof(op.station_id)-1);
     strncpy(op.station_name, station_name.c_str(), sizeof(op.station_name)-1);
@@ -230,8 +235,11 @@ void RelayClient::mux_loop(int relay_fd,
                 RelayHostHb hbp{}; hbp.user_count = count_fn ? count_fn() : 0;
                 {
                     std::lock_guard<std::mutex> wlk(mux_relay_write_mtx_);
-                    relay_send_all(relay_fd, &hb, RELAY_MUX_HDR_SIZE);
-                    relay_send_all(relay_fd, &hbp, sizeof(hbp));
+                    if(!relay_send_all(relay_fd, &hb, RELAY_MUX_HDR_SIZE) ||
+                       !relay_send_all(relay_fd, &hbp, sizeof(hbp))){
+                        printf("[RelayClient] mux_loop: HB send failed\n");
+                        break;
+                    }
                 }
                 printf("[RelayClient] HB sent (users=%u)\n", hbp.user_count);
             }
@@ -275,8 +283,11 @@ void RelayClient::mux_loop(int relay_fd,
                     mh.len  = (uint32_t)n;
                     // relay_fd write: mux_loop(HB)와 동시 접근 방지 → mutex
                     std::lock_guard<std::mutex> wlk(mux_relay_write_mtx_);
-                    relay_send_all(rfd, &mh, RELAY_MUX_HDR_SIZE);
-                    relay_send_all(rfd, tbuf.data(), n);
+                    if(!relay_send_all(rfd, &mh, RELAY_MUX_HDR_SIZE) ||
+                       !relay_send_all(rfd, tbuf.data(), n)){
+                        printf("[RelayClient] pump: send to relay failed conn_id=%u\n", cid);
+                        break;
+                    }
                 }
             });
             jp->thr.detach();
