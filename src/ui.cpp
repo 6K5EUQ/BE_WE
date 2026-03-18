@@ -1234,17 +1234,6 @@ void run_streaming_viewer(){
     // Relay 서버 설정 (세션 간 유지)
     static char s_relay_host[128] = "144.24.86.137";
     static constexpr int s_relay_list_port = RELAY_PORT;
-    // NAT hairpin 우회: relay 서버가 로컬(같은 머신)이면 127.0.0.1 사용
-    static bool s_relay_host_resolved = false;
-    if(!s_relay_host_resolved){
-        s_relay_host_resolved = true;
-        int tfd = RelayClient::tcp_connect("127.0.0.1", s_relay_list_port);
-        if(tfd >= 0){
-            close(tfd);
-            strncpy(s_relay_host, "127.0.0.1", sizeof(s_relay_host)-1);
-            printf("[UI] Relay server is local — using 127.0.0.1\n");
-        }
-    }
     // relay 경유 JOIN 시 station_id 보존 (재연결용)
     static std::string s_relay_join_station_id;
     int  mode_sel     = do_chassis_reset ? chassis_reset_mode : 0;
