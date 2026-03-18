@@ -40,9 +40,12 @@ bool NetClient::connect(const char* host, int port,
     int nd=1; setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
 
     // SO_RCVTIMEO: recv() 3초 타임아웃 → Host 무응답 시 UI 멈춤 방지
-    // AUTH 핸드셰이크 후 recv_loop에서만 효과 (recv_all_ex가 EAGAIN 처리)
     timeval tv{3, 0};
     setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    // SO_SNDTIMEO: send() 2초 타임아웃 → 네트워크 장애 시 채팅/명령 전송 블로킹 방지
+    timeval stv{2, 0};
+    setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &stv, sizeof(stv));
 
     // Send AUTH_REQ
     PktAuthReq req{};
@@ -93,6 +96,10 @@ bool NetClient::connect_fd(int fd, const char* id, const char* pw, uint8_t tier)
     // SO_RCVTIMEO: recv() 3초 타임아웃 (relay 모드도 동일)
     timeval tv{3, 0};
     setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    // SO_SNDTIMEO: send() 2초 타임아웃 → 채팅/명령 전송 블로킹 방지
+    timeval stv{2, 0};
+    setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &stv, sizeof(stv));
 
     PktAuthReq req{};
     strncpy(req.id, id, 31);

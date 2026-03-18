@@ -256,15 +256,21 @@ void FFTViewer::capture_and_process(){
             int status=bladerf_sync_rx(dev_blade,iq_buf,rx_chunk,nullptr,3000);
             if(status){
                 if(status==BLADERF_ERR_TIMEOUT){
+                    // 타임아웃 중 장치 분리 확인
+                    if(!dev_blade || !bladerf_is_fpga_configured(dev_blade)){
+                        fprintf(stderr,"BladeRF: device lost during timeout\n");
+                        dev_blade = nullptr;
+                        sdr_stream_error.store(true);
+                        break;
+                    }
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     continue;
                 }
                 bewe_log("RX error: %s\n",bladerf_strerror(status));
-                if(status==BLADERF_ERR_IO || status==BLADERF_ERR_UNEXPECTED){
-                    // USB 뽑힘 → 장치 핸들 즉시 무효화 후 루프 종료
-                    // bladerf_close()는 이미 장치가 없어 블로킹되므로 호출 생략
-                    fprintf(stderr,"BladeRF: fatal RX IO error — SDR disconnected\n");
-                    dev_blade = nullptr;  // 핸들 무효화 (close 생략)
+                if(status==BLADERF_ERR_IO || status==BLADERF_ERR_UNEXPECTED
+                   || status==BLADERF_ERR_NODEV){
+                    fprintf(stderr,"BladeRF: fatal RX error (%d) — SDR disconnected\n", status);
+                    dev_blade = nullptr;
                     sdr_stream_error.store(true);
                     break;
                 }

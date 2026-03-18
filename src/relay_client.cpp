@@ -26,9 +26,10 @@ int RelayClient::tcp_connect(const std::string& host, int port){
         close(fd); freeaddrinfo(res); return -1;
     }
     freeaddrinfo(res);
-    timeval tv0{0,0};
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv0, sizeof(tv0));
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv0, sizeof(tv0));
+    // 연결 후에도 send/recv 타임아웃 유지 → 네트워크 장애 시 무한 블로킹 방지
+    timeval tv2{3,0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv2, sizeof(tv2));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv2, sizeof(tv2));
     int nd = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
     return fd;
 }
@@ -233,9 +234,9 @@ void RelayClient::mux_loop(int relay_fd,
             break;
         }
 
-        // 타임아웃 해제
-        timeval tv0{0,0};
-        setsockopt(relay_fd, SOL_SOCKET, SO_RCVTIMEO, &tv0, sizeof(tv0));
+        // payload 수신용 타임아웃 (5초) — 무한 블로킹 방지
+        timeval tvp{5,0};
+        setsockopt(relay_fd, SOL_SOCKET, SO_RCVTIMEO, &tvp, sizeof(tvp));
 
         auto mux_type = static_cast<RelayMuxType>(mux.type);
         uint16_t cid  = mux.conn_id;

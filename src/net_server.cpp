@@ -8,6 +8,7 @@
 #include <chrono>
 #include <thread>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <unistd.h>
@@ -91,6 +92,9 @@ void NetServer::accept_loop(){
         int nd=1; setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
         // set TCP keepalive
         int ka=1; setsockopt(cfd, SOL_SOCKET, SO_KEEPALIVE, &ka, sizeof(ka));
+        // SO_SNDTIMEO: 느린 클라이언트로 인한 send 블로킹 방지
+        timeval stv{2, 0};
+        setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &stv, sizeof(stv));
 
         auto conn = std::make_shared<ClientConn>();
         conn->fd = cfd;

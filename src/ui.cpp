@@ -5655,9 +5655,11 @@ void run_streaming_viewer(){
             };
 
             if(v.net_cli){
-                std::lock_guard<std::mutex> lk(v.net_cli->chat_mtx);
-                for(auto& m : v.net_cli->chat_log) print_chat(m.from, m.msg);
-                if(v.net_cli->chat_updated.exchange(false)) chat_scroll_bottom=true;
+                std::unique_lock<std::mutex> lk(v.net_cli->chat_mtx, std::try_to_lock);
+                if(lk.owns_lock()){
+                    for(auto& m : v.net_cli->chat_log) print_chat(m.from, m.msg);
+                    if(v.net_cli->chat_updated.exchange(false)) chat_scroll_bottom=true;
+                }
             } else {
                 std::lock_guard<std::mutex> lk(host_chat_mtx);
                 for(auto& m : host_chat_log){
@@ -5832,9 +5834,11 @@ void run_streaming_viewer(){
                 ops_display.insert(ops_display.end(), joins.begin(), joins.end());
             } else if(v.net_cli){
                 // JOIN 모드: op_list (index=0은 HOST, 나머지는 JOIN)
-                std::lock_guard<std::mutex> lk(v.net_cli->op_mtx);
-                for(int i=0;i<v.net_cli->op_list.count;i++)
-                    ops_display.push_back(v.net_cli->op_list.ops[i]);
+                std::unique_lock<std::mutex> lk(v.net_cli->op_mtx, std::try_to_lock);
+                if(lk.owns_lock()){
+                    for(int i=0;i<v.net_cli->op_list.count;i++)
+                        ops_display.push_back(v.net_cli->op_list.ops[i]);
+                }
             }
             float OH=60.f+(float)ops_display.size()*22.f;
             OH=std::max(OH,100.f);
