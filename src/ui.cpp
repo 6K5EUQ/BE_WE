@@ -4081,22 +4081,6 @@ void run_streaming_viewer(){
                                 if(bi<3) ImGui::SameLine(0,2);
                             }
 
-                            // 노이즈제거 버튼 (채널별, 배타적: SS/SG/WF/MS/LM)
-                            ImGui::SameLine(0,6);
-                            {
-                                int cur = v.nr_mode[ci];
-                                struct NRBtn { const char* lbl; int mode; };
-                                static const NRBtn nrb[]={{"SS",1},{"SG",2},{"WF",3},{"MS",4},{"LM",5}};
-                                for(int bi=0;bi<5;bi++){
-                                    if(bi>0) ImGui::SameLine(0,2);
-                                    bool on = (cur==nrb[bi].mode);
-                                    if(on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f,0.55f,0.1f,1.f));
-                                    char nid[32]; snprintf(nid,sizeof(nid),"%s##%d",nrb[bi].lbl,ci);
-                                    if(ImGui::SmallButton(nid))
-                                        v.nr_mode[ci] = on ? 0 : nrb[bi].mode;
-                                    if(on) ImGui::PopStyleColor();
-                                }
-                            }
 
                             // ── 디지털 모드 버튼 (D키로 패널 열었을 때만 표시) ──
                             if(v.digi_panel_on[ci]){
