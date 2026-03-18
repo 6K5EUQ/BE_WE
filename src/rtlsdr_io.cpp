@@ -42,8 +42,8 @@ bool FFTViewer::initialize_rtlsdr(float cf_mhz){
     rtlsdr_set_tuner_gain_mode(dev_rtl, 1);
     rtlsdr_set_tuner_gain(dev_rtl, RTLSDR_RX_GAIN_TENTHS);
 
-    // RTL AGC 켜기
-    rtlsdr_set_agc_mode(dev_rtl, 1);
+    // RTL AGC 끄기 (Manual Gain Control만 사용)
+    rtlsdr_set_agc_mode(dev_rtl, 0);
 
     // 버퍼 초기화
     rtlsdr_reset_buffer(dev_rtl);

@@ -75,6 +75,7 @@ bool FFTViewer::initialize_bladerf(float cf_mhz, float sr_msps){
     s=bladerf_set_bandwidth(dev_blade,BLADERF_CHANNEL_RX(0),(uint32_t)(sr_msps*1e6*0.8f),&actual_bw);
     if(s){ bewe_log("set_bw: %s\n",bladerf_strerror(s)); bladerf_close(dev_blade); return false; }
 
+    // Manual Gain Control (AGC 비활성화)
     s=bladerf_set_gain_mode(dev_blade,BLADERF_CHANNEL_RX(0),BLADERF_GAIN_MGC);
     if(s) bewe_log("set_gain_mode: %s\n",bladerf_strerror(s));
 
@@ -84,7 +85,6 @@ bool FFTViewer::initialize_bladerf(float cf_mhz, float sr_msps){
     s=bladerf_enable_module(dev_blade,BLADERF_CHANNEL_RX(0),true);
     if(s){ bewe_log("enable: %s\n",bladerf_strerror(s)); bladerf_close(dev_blade); return false; }
 
-    // num_transfers=128: USB DMA 큐 깊이 확보 (네트워크 부하 시 버퍼 여유)
     s=bladerf_sync_config(dev_blade,BLADERF_RX_X1,BLADERF_FORMAT_SC16_Q11,512,16384,128,5000);
     if(s){ bewe_log("sync: %s\n",bladerf_strerror(s)); bladerf_close(dev_blade); return false; }
 
