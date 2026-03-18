@@ -75,6 +75,9 @@ bool FFTViewer::initialize_bladerf(float cf_mhz, float sr_msps){
     s=bladerf_set_bandwidth(dev_blade,BLADERF_CHANNEL_RX(0),(uint32_t)(sr_msps*1e6*0.8f),&actual_bw);
     if(s){ bewe_log("set_bw: %s\n",bladerf_strerror(s)); bladerf_close(dev_blade); return false; }
 
+    s=bladerf_set_gain_mode(dev_blade,BLADERF_CHANNEL_RX(0),BLADERF_GAIN_MGC);
+    if(s) bewe_log("set_gain_mode: %s\n",bladerf_strerror(s));
+
     s=bladerf_set_gain(dev_blade,BLADERF_CHANNEL_RX(0),BLADERF_RX_GAIN);
     if(s){ bewe_log("set_gain: %s\n",bladerf_strerror(s)); bladerf_close(dev_blade); return false; }
 
