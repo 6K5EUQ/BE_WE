@@ -126,7 +126,7 @@ void FFTViewer::sa_start(const std::string& wav_path){
 
         // FFT size 자동 축소: n_samples에 맞는 가장 큰 2의 거듭제곱
         int actual_fft_n = fft_n;
-        while(actual_fft_n > 64 && n_samples < (int64_t)actual_fft_n)
+        while(actual_fft_n > 32 && n_samples < (int64_t)actual_fft_n)
             actual_fft_n >>= 1;
         if(n_samples < (int64_t)actual_fft_n){ fclose(f); sa_computing.store(false); return; }
 

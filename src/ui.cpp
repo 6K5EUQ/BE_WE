@@ -3752,9 +3752,9 @@ void run_streaming_viewer(){
 
             // ── FFT size 선택 (SA 활성화 시에만) ─────────────────────────
             if(v.sa_panel_open){
-                static const int fft_sizes[] = {256,512,1024,2048,4096,8192};
-                static const char* fft_labels[] = {"256","512","1024","2048","4096","8192"};
-                const int n_sizes = 6;
+                static const int fft_sizes[] = {32,64,128,256,512,1024,2048,4096,8192};
+                static const char* fft_labels[] = {"32","64","128","256","512","1024","2048","4096","8192"};
+                const int n_sizes = 9;
                 char cur_label[16]; snprintf(cur_label,16,"%d",v.sa_fft_size);
                 float combo_w = 62;
                 float combo_x = disp_w - combo_w - 6;
