@@ -9,9 +9,12 @@
 
 // ── FFT / Display ─────────────────────────────────────────────────────────
 #define DEFAULT_FFT_SIZE       8192
+#define FFT_PAD_FACTOR         4      // zero-padding 배수 (시각적 해상도 향상)
 #define TIME_AVERAGE           200
 #define MAX_FFTS_MEMORY        2500   // ~1분
 #define HANN_WINDOW_CORRECTION 2.67f
+#define NUTTALL_WINDOW_CORRECTION 3.91f  // 1/(a0²+(a1²+a2²+a3²)/2) for Nuttall
+#define COLORMAP_LUT_SIZE      65536  // 워터폴 컬러맵 해상도 (was 4096)
 #define AXIS_LABEL_WIDTH       50
 #define BOTTOM_LABEL_HEIGHT    30
 #define TOPBAR_H               32.0f

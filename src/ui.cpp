@@ -520,10 +520,19 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         float nyq=sr_mhz/2.0f; int hf=header.fft_size/2;
         int mi=sp_idx%MAX_FFTS_MEMORY;
         const float* rowp=fft_data.data()+mi*fft_size;
+        // Peak detection: 각 픽셀에 매핑되는 빈 범위의 최대값 사용
+        auto freq_to_bin=[&](float fd)->int{
+            int b=(fd>=0)?(int)((fd/nyq)*hf+0.5f):fft_size+(int)((fd/nyq)*hf-0.5f);
+            return std::max(0,std::min(fft_size-1,b));
+        };
         for(int px=0;px<np;px++){
-            float fd=ds+((float)px+0.5f)/np*(de-ds);
-            int bin=(fd>=0)?(int)((fd/nyq)*hf+0.5f):fft_size+(int)((fd/nyq)*hf-0.5f);
-            current_spectrum[px]=(bin>=0&&bin<fft_size) ? rowp[bin] : -80.0f;
+            float fd0=ds+(float)px/np*(de-ds);
+            float fd1=ds+(float)(px+1)/np*(de-ds);
+            int b0=freq_to_bin(fd0), b1=freq_to_bin(fd1);
+            if(b0>b1) std::swap(b0,b1);
+            float mx=-200.0f;
+            for(int b=b0;b<=b1;b++) if(rowp[b]>mx) mx=rowp[b];
+            current_spectrum[px]=mx;
         }
         cached_sp_idx=sp_idx; cached_pan=freq_pan; cached_zoom=freq_zoom;
         cached_px=np; cached_pmin=display_power_min; cached_pmax=display_power_max;
@@ -731,7 +740,9 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
         float ds,de; get_disp(ds,de);
         float nyq=header.sample_rate/2.0f/1e6f;
         int dr2=std::min(total_ffts,MAX_FFTS_MEMORY);
-        float half_texel=0.5f/fft_size;
+        int tex_w=std::min(fft_size, 16384);
+        if(tex_w<1) tex_w=1;
+        float half_texel=0.5f/tex_w;
         float us=(ds+nyq)/(2*nyq)+half_texel, ue=(de+nyq)/(2*nyq)+half_texel;
         float dh=(dr2>=(int)gh)?gh:(float)dr2;
         // 타임머신: tm_display_fft_idx 기준, 일반: current_fft_idx 기준
@@ -748,7 +759,7 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
 
     // ── 좌측 시간/이벤트 태그 렌더링 ─────────────────────────────────────
     {
-        float rps=(float)header.sample_rate/(float)fft_size/(float)time_average;
+        float rps=(float)header.sample_rate/(float)fft_input_size/(float)time_average;
         if(rps<=0) rps=37.5f;
         int disp_idx=tm_active.load() ? tm_display_fft_idx : current_fft_idx;
         float label_x=full_x; // AXIS_LABEL_WIDTH 영역 내
@@ -825,7 +836,7 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
                         region.time_start = wt_bot;
                     } else {
                         // fallback: rps 기반
-                        float rps=(float)header.sample_rate/(float)fft_size/(float)time_average;
+                        float rps=(float)header.sample_rate/(float)fft_input_size/(float)time_average;
                         if(rps<=0) rps=37.5f;
                         time_t now=time(nullptr);
                         region.time_end  =now-(time_t)((current_fft_idx-region.fft_top)/rps);
@@ -953,7 +964,7 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
             // 편집 종료: time_start/end 재계산
             if(region.edit_mode!=RegionSel::EDIT_NONE&&ImGui::IsMouseReleased(ImGuiMouseButton_Left)){
                 region.edit_mode=RegionSel::EDIT_NONE;
-                float rps2=(float)header.sample_rate/(float)fft_size/(float)time_average;
+                float rps2=(float)header.sample_rate/(float)fft_input_size/(float)time_average;
                 if(rps2<=0) rps2=37.5f;
                 time_t now2=time(nullptr);
                 region.time_end  =now2-(time_t)((current_fft_idx-region.fft_top)/rps2);
@@ -2181,7 +2192,7 @@ void run_streaming_viewer(){
                     fname = fn;
                 }
                 // JOIN 요청 시각 → HOST fft 인덱스 변환
-                float rps=(float)v.header.sample_rate/(float)v.fft_size/(float)v.time_average;
+                float rps=(float)v.header.sample_rate/(float)v.fft_input_size/(float)v.time_average;
                 if(rps<=0.f) rps=37.5f;
                 time_t now_h=time(nullptr);
                 int cur_fi=v.current_fft_idx;
@@ -2925,6 +2936,7 @@ void run_streaming_viewer(){
                 // FFT 크기 변경 시 재초기화
                 if(fsz != v.fft_size){
                     v.fft_size = fsz;
+                    v.fft_input_size = fsz / FFT_PAD_FACTOR;
                     v.header.fft_size = (uint32_t)fsz;
                     v.fft_data.assign((size_t)MAX_FFTS_MEMORY * fsz, 0);
                     v.current_spectrum.assign(fsz, -80.f);
@@ -3018,7 +3030,7 @@ void run_streaming_viewer(){
                                 v.region.time_end   = wt_top;
                                 v.region.time_start = wt_bot;
                             } else {
-                                float rps_r=(float)v.header.sample_rate/(float)v.fft_size/(float)v.time_average;
+                                float rps_r=(float)v.header.sample_rate/(float)v.fft_input_size/(float)v.time_average;
                                 if(rps_r<=0) rps_r=37.5f;
                                 time_t now_r=time(nullptr);
                                 v.region.time_end  =now_r-(time_t)((v.current_fft_idx-v.region.fft_top)/rps_r);
@@ -3348,9 +3360,9 @@ void run_streaming_viewer(){
             float px2=std::max(2.0f,(box_w2-tw2)*0.5f-12.0f);
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,ImVec2(px2,ImGui::GetStyle().FramePadding.y));
             ImGui::SetNextItemWidth(box_w2);
-            // JOIN: HOST fft_size로 콤보 동기화
+            // JOIN: HOST fft_input_size로 콤보 동기화
             if(v.remote_mode){
-                for(int i=0;i<6;i++) if(fft_sizes[i]==v.fft_size){ fft_si=i; break; }
+                for(int i=0;i<6;i++) if(fft_sizes[i]==v.fft_input_size){ fft_si=i; break; }
             }
             if(ImGui::BeginCombo("##fftsize",fft_lbls[fft_si],ImGuiComboFlags_HeightSmall)){
                 for(int i=0;i<6;i++){

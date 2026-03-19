@@ -39,7 +39,10 @@ public:
     GLuint               waterfall_texture=0;
     std::vector<uint32_t> wf_row_buf;
 
-    int   fft_size=DEFAULT_FFT_SIZE, time_average=TIME_AVERAGE;
+    int   fft_size=DEFAULT_FFT_SIZE*FFT_PAD_FACTOR, time_average=TIME_AVERAGE;
+    int   fft_input_size=DEFAULT_FFT_SIZE;  // 실제 입력 샘플 수 (윈도우 길이)
+    float* win_buf=nullptr;                 // pre-computed Nuttall window (fft_input_size)
+    float* mag_sq_buf=nullptr;              // VOLK magnitude squared buffer (fft_size)
     bool  fft_size_change_req=false; int pending_fft_size=DEFAULT_FFT_SIZE;
     bool  sr_change_req=false; float pending_sr_msps=61.44f; // 샘플레이트 변경 요청
     bool  texture_needs_recreate=false;

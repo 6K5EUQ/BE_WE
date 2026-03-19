@@ -1,57 +1,86 @@
 #include "fft_viewer.hpp"
 #include <algorithm>
+#include <cfloat>
 
-// ── Jet colormap LUT (4096 entry, 한 번만 계산) ───────────────────────────
-static constexpr int JET_LUT_SIZE = 4096;
+// ── Jet colormap LUT (COLORMAP_LUT_SIZE entry, 한 번만 계산) ────────────
+static uint32_t g_jet_lut[COLORMAP_LUT_SIZE];
+static bool g_jet_init=false;
 static const uint32_t* jet_lut(){
-    static uint32_t lut[JET_LUT_SIZE];
-    static bool init=false;
-    if(!init){
-        init=true;
+    if(!g_jet_init){
+        g_jet_init=true;
         auto c=[](float v)->uint8_t{v=v<0?0:v>1?1:v;return(uint8_t)(v*255);};
-        for(int i=0;i<JET_LUT_SIZE;i++){
-            float t=i/(float)(JET_LUT_SIZE-1);
+        for(int i=0;i<COLORMAP_LUT_SIZE;i++){
+            float t=i/(float)(COLORMAP_LUT_SIZE-1);
             float r=1.5f-fabsf(4*t-3);
             float g=1.5f-fabsf(4*t-2);
             float b=1.5f-fabsf(4*t-1);
-            lut[i]=IM_COL32(c(r),c(g),c(b),255);
+            g_jet_lut[i]=IM_COL32(c(r),c(g),c(b),255);
         }
     }
-    return lut;
+    return g_jet_lut;
 }
+
+// 텍스처 폭: GPU 한계(보통 16384) 이내로 제한
+static constexpr int WF_TEX_MAX = 16384;
 
 // ── Waterfall texture ─────────────────────────────────────────────────────
 void FFTViewer::create_waterfall_texture(){
     if(waterfall_texture) glDeleteTextures(1,&waterfall_texture);
+    int tex_w = std::min(fft_size, WF_TEX_MAX);
+    if(tex_w < 1) tex_w = 1;
     glGenTextures(1,&waterfall_texture);
     glBindTexture(GL_TEXTURE_2D,waterfall_texture);
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);
-    // nullptr로 초기화: 큰 fft_size(16384)에서 163MB 임시 벡터 생성 방지
-    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,fft_size,MAX_FFTS_MEMORY,0,GL_RGBA,GL_UNSIGNED_BYTE,nullptr);
+    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,tex_w,MAX_FFTS_MEMORY,0,GL_RGBA,GL_UNSIGNED_BYTE,nullptr);
     glBindTexture(GL_TEXTURE_2D,0);
 }
 
 void FFTViewer::update_wf_row(int fi){
-    if((int)wf_row_buf.size()!=fft_size) wf_row_buf.resize(fft_size);
+    int tex_w = std::min(fft_size, WF_TEX_MAX);
+    if(tex_w < 1) tex_w = 1;
+    if((int)wf_row_buf.size()!=tex_w) wf_row_buf.resize(tex_w);
     int mi=fi%MAX_FFTS_MEMORY;
     const float* row=fft_data.data()+mi*fft_size;
     float wmin=display_power_min, wmax=display_power_max;
     float wrng_inv=1.0f/std::max(1.0f,wmax-wmin);
-    int half=fft_size/2;
     const uint32_t* lut=jet_lut();
-    auto map=[&](int bin)->uint32_t{
-        float v=(row[bin]-wmin)*wrng_inv;
-        int idx=(int)(v*(JET_LUT_SIZE-1));
-        idx=idx<0?0:idx>=(JET_LUT_SIZE)?JET_LUT_SIZE-1:idx;
+
+    int fft_half=fft_size/2;
+    int tex_half=tex_w/2;
+
+    // fft_size → tex_w 매핑 (peak detection 다운샘플)
+    // ratio: 한 텍셀당 몇 개 빈 (fft_size > tex_w일 때 >1)
+    float ratio = (float)fft_half / (float)tex_half;
+
+    auto map_peak=[&](float bin_start_f, float bin_end_f)->uint32_t{
+        int bs=std::max(0, (int)bin_start_f);
+        int be=std::min(fft_size-1, (int)bin_end_f);
+        float mx=-200.0f;
+        for(int b=bs;b<=be;b++) if(row[b]>mx) mx=row[b];
+        float t=(mx-wmin)*wrng_inv;
+        int idx=(int)(t*(COLORMAP_LUT_SIZE-1));
+        idx=idx<0?0:idx>=(COLORMAP_LUT_SIZE)?COLORMAP_LUT_SIZE-1:idx;
         return lut[idx];
     };
-    for(int i=0;i<half;i++) wf_row_buf[i]=map(half+i);
-    for(int i=0;i<half;i++) wf_row_buf[half+i]=map(i);
+
+    // FFT shift: bin [fft_half..fft_size-1] → tex [0..tex_half-1]
+    //            bin [0..fft_half-1]         → tex [tex_half..tex_w-1]
+    for(int i=0;i<tex_half;i++){
+        float b0 = fft_half + i * ratio;
+        float b1 = fft_half + (i+1) * ratio - 1;
+        wf_row_buf[i]=map_peak(b0, b1);
+    }
+    for(int i=0;i<tex_half;i++){
+        float b0 = i * ratio;
+        float b1 = (i+1) * ratio - 1;
+        wf_row_buf[tex_half+i]=map_peak(b0, b1);
+    }
+
     glBindTexture(GL_TEXTURE_2D,waterfall_texture);
-    glTexSubImage2D(GL_TEXTURE_2D,0,0,mi,fft_size,1,GL_RGBA,GL_UNSIGNED_BYTE,wf_row_buf.data());
+    glTexSubImage2D(GL_TEXTURE_2D,0,0,mi,tex_w,1,GL_RGBA,GL_UNSIGNED_BYTE,wf_row_buf.data());
     glBindTexture(GL_TEXTURE_2D,0);
 }
 

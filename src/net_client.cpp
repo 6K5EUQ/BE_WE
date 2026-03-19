@@ -271,7 +271,7 @@ void NetClient::handle_packet(PacketType type,
         frm.data.assign(fft_floats, fft_floats + fh->fft_size);
         frm.cf_hz     = fh->center_freq_hz;
         frm.sr        = fh->sample_rate;
-        frm.fft_sz    = (uint16_t)fh->fft_size;
+        frm.fft_sz    = fh->fft_size;
         frm.pmin      = fh->power_min;
         frm.pmax      = fh->power_max;
         frm.wall_time = fh->wall_time;
@@ -289,7 +289,7 @@ void NetClient::handle_packet(PacketType type,
             std::lock_guard<std::mutex> lk(fft_mtx);
             cf_hz        = fh->center_freq_hz;
             sr           = fh->sample_rate;
-            fft_sz       = (uint16_t)fh->fft_size;
+            fft_sz       = fh->fft_size;
             pmin         = fh->power_min;
             pmax         = fh->power_max;
             fft_wall_time= fh->wall_time;

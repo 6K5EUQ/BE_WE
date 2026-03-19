@@ -1,5 +1,6 @@
 #include "fft_viewer.hpp"
 #include "net_server.hpp"
+#include <volk/volk.h>
 #include <cstring>
 #include <algorithm>
 #include <chrono>
@@ -56,9 +57,10 @@ bool FFTViewer::initialize_rtlsdr(float cf_mhz){
 
     // FFT 헤더
     std::memcpy(header.magic,"FFTD",4);
+    fft_input_size = fft_size / FFT_PAD_FACTOR;
     header.version=1; header.fft_size=fft_size; header.sample_rate=actual_sr;
     header.center_frequency=(uint64_t)(cf_mhz*1e6);
-    time_average=hw.compute_time_average(fft_size);
+    time_average=hw.compute_time_average(fft_input_size);
     header.time_average=time_average; header.power_min=-100; header.power_max=0; header.num_ffts=0;
     fft_data.resize(MAX_FFTS_MEMORY*fft_size);
     current_spectrum.resize(fft_size,-100.0f);
@@ -68,7 +70,15 @@ bool FFTViewer::initialize_rtlsdr(float cf_mhz){
     autoscale_active=true; autoscale_init=false;
     fft_in =fftwf_alloc_complex(fft_size);
     fft_out=fftwf_alloc_complex(fft_size);
-    fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_ESTIMATE);
+    memset(fft_in, 0, fft_size*sizeof(fftwf_complex));
+    fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_MEASURE);
+    memset(fft_in, 0, fft_size*sizeof(fftwf_complex));
+    // Pre-compute Nuttall window + VOLK mag_sq buffer
+    if(win_buf) free(win_buf);
+    win_buf=(float*)volk_malloc(fft_input_size*sizeof(float), volk_get_alignment());
+    fill_nuttall_window(win_buf, fft_input_size);
+    if(mag_sq_buf) volk_free(mag_sq_buf);
+    mag_sq_buf=(float*)volk_malloc(fft_size*sizeof(float), volk_get_alignment());
     ring.resize(IQ_RING_CAPACITY*2,0);
     return true;
 }
@@ -96,7 +106,7 @@ void FFTViewer::set_frequency(float cf_mhz){
 // 동기 read 방식 사용 (async보다 지연 제어 쉬움)
 void FFTViewer::capture_and_process_rtl(){
     static constexpr int RX_MIN = 8192; // 최소 RX 청크 (USB 오버헤드 최소화)
-    int rx_chunk = std::max(fft_size, RX_MIN);
+    int rx_chunk = std::max(fft_input_size, RX_MIN);
     size_t    n_bytes = (size_t)rx_chunk * 2;
     uint8_t*  raw     = new uint8_t[n_bytes];
     int16_t*  iq16    = new int16_t[rx_chunk * 2];
@@ -121,11 +131,19 @@ void FFTViewer::capture_and_process_rtl(){
         if(fft_size_change_req){
             fft_size_change_req=false; int ns=pending_fft_size;
             fftwf_destroy_plan(fft_plan); fftwf_free(fft_in); fftwf_free(fft_out);
-            fft_size=ns; time_average=hw.compute_time_average(ns);
+            fft_input_size=ns; fft_size=ns*FFT_PAD_FACTOR;
+            time_average=hw.compute_time_average(fft_input_size);
             fft_in =fftwf_alloc_complex(fft_size);
             fft_out=fftwf_alloc_complex(fft_size);
-            fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_ESTIMATE);
-            rx_chunk = std::max(fft_size, RX_MIN);
+            memset(fft_in, 0, fft_size*sizeof(fftwf_complex));
+            fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_MEASURE);
+    memset(fft_in, 0, fft_size*sizeof(fftwf_complex));
+            if(win_buf) volk_free(win_buf);
+            win_buf=(float*)volk_malloc(fft_input_size*sizeof(float), volk_get_alignment());
+            fill_nuttall_window(win_buf, fft_input_size);
+            if(mag_sq_buf) volk_free(mag_sq_buf);
+            mag_sq_buf=(float*)volk_malloc(fft_size*sizeof(float), volk_get_alignment());
+            rx_chunk = std::max(fft_input_size, RX_MIN);
             n_bytes = (size_t)rx_chunk * 2;
             delete[] raw;  raw  = new uint8_t[n_bytes];
             delete[] iq16; iq16 = new int16_t[rx_chunk*2];
@@ -164,7 +182,7 @@ void FFTViewer::capture_and_process_rtl(){
             uint32_t actual_sr = rtlsdr_get_sample_rate(dev_rtl);
 
             // RX 버퍼 크기 재계산 (rx_chunk * 2 bytes)
-            rx_chunk = std::max(fft_size, RX_MIN);
+            rx_chunk = std::max(fft_input_size, RX_MIN);
             n_bytes = (size_t)rx_chunk * 2;
             delete[] raw;  raw  = new uint8_t[n_bytes];
             delete[] iq16; iq16 = new int16_t[rx_chunk*2];
@@ -172,7 +190,7 @@ void FFTViewer::capture_and_process_rtl(){
 
             hw = make_rtlsdr_config(actual_sr);
             iq_scale  = hw.iq_scale;
-            time_average = hw.compute_time_average(fft_size);
+            time_average = hw.compute_time_average(fft_input_size);
 
             {std::lock_guard<std::mutex> lk(data_mtx);
              header.sample_rate = actual_sr;
@@ -251,27 +269,30 @@ void FFTViewer::capture_and_process_rtl(){
             rx_pos=0; rx_avail=rx_chunk;
         }
 
-        // ── FFT: 버퍼에서 fft_size씩 처리 ───────────────────────────────
-        if(rx_avail < fft_size){ rx_avail=0; rx_pos=0; continue; }
+        // ── FFT: 버퍼에서 fft_input_size씩 처리 ─────────────────────────
+        if(rx_avail < fft_input_size){ rx_avail=0; rx_pos=0; continue; }
 
         if(!render_visible.load(std::memory_order_relaxed)){
-            rx_pos+=fft_size; rx_avail-=fft_size;
+            rx_pos+=fft_input_size; rx_avail-=fft_input_size;
             std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
             continue;
         }
         if(!spectrum_pause.load(std::memory_order_relaxed)){
             const uint8_t* rp = raw + rx_pos*2;
-            for(int i=0;i<fft_size;i++){
+            for(int i=0;i<fft_input_size;i++){
                 fft_in[i][0] = ((float)rp[i*2  ] - iq_offset) / iq_scale;
                 fft_in[i][1] = ((float)rp[i*2+1] - iq_offset) / iq_scale;
             }
-            apply_hann(fft_in,fft_size);
+            // Nuttall window via VOLK SIMD
+            volk_32fc_32f_multiply_32fc((lv_32fc_t*)fft_in, (lv_32fc_t*)fft_in,
+                                        win_buf, fft_input_size);
+            // pad region은 init/resize 시 한 번만 0 초기화
             fftwf_execute(fft_plan);
             {
-                const float scale=HANN_WINDOW_CORRECTION/((float)fft_size*(float)fft_size);
+                volk_32fc_magnitude_squared_32f(mag_sq_buf, (lv_32fc_t*)fft_out, fft_size);
+                const float scale=NUTTALL_WINDOW_CORRECTION/((float)fft_input_size*(float)fft_input_size);
                 for(int i=0;i<fft_size;i++){
-                    float ms=(fft_out[i][0]*fft_out[i][0]+fft_out[i][1]*fft_out[i][1])*scale+1e-10f;
-                    pacc[i]+=ms;
+                    pacc[i] += mag_sq_buf[i]*scale + 1e-10f;
                 }
             }
             pacc[0]=(pacc[1]+pacc[fft_size-1])*0.5f; fcnt++;
@@ -279,7 +300,7 @@ void FFTViewer::capture_and_process_rtl(){
                 if(warmup_cnt < WARMUP_FFTS){
                     warmup_cnt++;
                     std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
-                    rx_pos+=fft_size; rx_avail-=fft_size;
+                    rx_pos+=fft_input_size; rx_avail-=fft_input_size;
                     continue;
                 }
                 int fi=total_ffts%MAX_FFTS_MEMORY;
@@ -330,7 +351,7 @@ void FFTViewer::capture_and_process_rtl(){
                 std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
             }
         } // end !spectrum_pause
-        rx_pos+=fft_size; rx_avail-=fft_size;
+        rx_pos+=fft_input_size; rx_avail-=fft_input_size;
     }
     delete[] raw;
     delete[] iq16;

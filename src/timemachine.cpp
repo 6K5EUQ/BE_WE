@@ -162,13 +162,13 @@ time_t FFTViewer::fft_idx_to_wall_time(int fft_idx) const {
     }
     if(prev){
         // prev만 있으면 rps로 외삽
-        float rps = (float)header.sample_rate / (float)fft_size / (float)time_average;
+        float rps = (float)header.sample_rate / (float)fft_input_size / (float)time_average;
         if(rps <= 0) rps = 37.5f;
         int64_t offset = fft_idx - prev->fft_idx;
         return (time_t)(prev->wall_time + (int64_t)(offset / rps));
     }
     if(next){
-        float rps = (float)header.sample_rate / (float)fft_size / (float)time_average;
+        float rps = (float)header.sample_rate / (float)fft_input_size / (float)time_average;
         if(rps <= 0) rps = 37.5f;
         int64_t offset = fft_idx - next->fft_idx; // 음수
         return (time_t)(next->wall_time + (int64_t)(offset / rps));
@@ -192,7 +192,7 @@ void FFTViewer::tm_update_display(){
         }
     }
     if(rps <= 0){
-        rps = (float)header.sample_rate / (float)fft_size / (float)time_average;
+        rps = (float)header.sample_rate / (float)fft_input_size / (float)time_average;
         if(rps <= 0) rps = 37.5f;
     }
 

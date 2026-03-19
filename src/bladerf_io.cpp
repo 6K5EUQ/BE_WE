@@ -1,6 +1,7 @@
 #include "fft_viewer.hpp"
 #include <thread>
 #include "net_server.hpp"
+#include <volk/volk.h>
 #include <cstring>
 #include <algorithm>
 #include <chrono>
@@ -93,9 +94,10 @@ bool FFTViewer::initialize_bladerf(float cf_mhz, float sr_msps){
     hw = make_bladerf_config(actual);
     gain_db = hw.gain_default;
     std::memcpy(header.magic,"FFTD",4);
+    fft_input_size = fft_size / FFT_PAD_FACTOR;  // fft_size is already padded in member init
     header.version=1; header.fft_size=fft_size; header.sample_rate=actual;
     header.center_frequency=(uint64_t)(cf_mhz*1e6);
-    time_average=hw.compute_time_average(fft_size);
+    time_average=hw.compute_time_average(fft_input_size);
     header.time_average=time_average; header.power_min=-100; header.power_max=0; header.num_ffts=0;
     fft_data.resize(MAX_FFTS_MEMORY*fft_size);
     current_spectrum.resize(fft_size,-100.0f);
@@ -105,7 +107,15 @@ bool FFTViewer::initialize_bladerf(float cf_mhz, float sr_msps){
     autoscale_active=true; autoscale_init=false;
     fft_in =fftwf_alloc_complex(fft_size);
     fft_out=fftwf_alloc_complex(fft_size);
-    fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_ESTIMATE);
+    memset(fft_in, 0, fft_size*sizeof(fftwf_complex));  // zero-pad region
+    fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_MEASURE);
+    memset(fft_in, 0, fft_size*sizeof(fftwf_complex)); // MEASURE가 입력 파괴 → 재초기화
+    // Pre-compute Nuttall window + allocate VOLK mag_sq buffer
+    if(win_buf) free(win_buf);
+    win_buf=(float*)volk_malloc(fft_input_size*sizeof(float), volk_get_alignment());
+    fill_nuttall_window(win_buf, fft_input_size);
+    if(mag_sq_buf) volk_free(mag_sq_buf);
+    mag_sq_buf=(float*)volk_malloc(fft_size*sizeof(float), volk_get_alignment());
     ring.resize(IQ_RING_CAPACITY*2,0);
     return true;
 }
@@ -113,7 +123,7 @@ bool FFTViewer::initialize_bladerf(float cf_mhz, float sr_msps){
 void FFTViewer::capture_and_process(){
     // RX 버퍼: fft_size와 무관하게 최소 8192 샘플 고정 → USB 오버헤드 최소화
     static constexpr int RX_MIN = 8192;
-    int rx_chunk = std::max(fft_size, RX_MIN);
+    int rx_chunk = std::max(fft_input_size, RX_MIN);
     int16_t* iq_buf=new int16_t[rx_chunk*2];
     // FFT 처리용 오프셋 (rx_chunk 내 슬라이딩)
     int rx_pos = 0; // iq_buf 내 현재 읽기 위치 (샘플 단위)
@@ -142,11 +152,20 @@ void FFTViewer::capture_and_process(){
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
             fftwf_destroy_plan(fft_plan); fftwf_free(fft_in); fftwf_free(fft_out);
-            fft_size=ns; time_average=hw.compute_time_average(ns);
+            fft_input_size=ns; fft_size=ns*FFT_PAD_FACTOR;
+            time_average=hw.compute_time_average(fft_input_size);
             fft_in =fftwf_alloc_complex(fft_size);
             fft_out=fftwf_alloc_complex(fft_size);
-            fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_ESTIMATE);
-            rx_chunk = std::max(fft_size, RX_MIN);
+            memset(fft_in, 0, fft_size*sizeof(fftwf_complex));
+            fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_MEASURE);
+    memset(fft_in, 0, fft_size*sizeof(fftwf_complex)); // MEASURE가 입력 파괴 → 재초기화
+            // Re-create window + mag_sq buffers
+            if(win_buf) volk_free(win_buf);
+            win_buf=(float*)volk_malloc(fft_input_size*sizeof(float), volk_get_alignment());
+            fill_nuttall_window(win_buf, fft_input_size);
+            if(mag_sq_buf) volk_free(mag_sq_buf);
+            mag_sq_buf=(float*)volk_malloc(fft_size*sizeof(float), volk_get_alignment());
+            rx_chunk = std::max(fft_input_size, RX_MIN);
             delete[] iq_buf; iq_buf=new int16_t[rx_chunk*2];
             rx_pos=0; rx_avail=0;
             pacc.assign(fft_size,0.0f); fcnt=0;
@@ -208,7 +227,7 @@ void FFTViewer::capture_and_process(){
             // HW 파라미터 갱신
             hw = make_bladerf_config(actual_sr);
             if(sc8_mode) hw.iq_scale = 128.0f; // SC8_Q7: 7bit → 128
-            time_average = hw.compute_time_average(fft_size);
+            time_average = hw.compute_time_average(fft_input_size);
 
             {std::lock_guard<std::mutex> lk(data_mtx);
              header.sample_rate = actual_sr;
@@ -220,7 +239,7 @@ void FFTViewer::capture_and_process(){
             {std::lock_guard<std::mutex> lk(wf_events_mtx);
              wf_events.clear(); last_tagged_sec=-1;}
 
-            rx_chunk = std::max(fft_size, RX_MIN);
+            rx_chunk = std::max(fft_input_size, RX_MIN);
             delete[] iq_buf; iq_buf = new int16_t[rx_chunk*2];
             rx_pos=0; rx_avail=0;
             pacc.assign(fft_size,0.0f); fcnt=0; warmup_cnt=0;
@@ -303,29 +322,34 @@ void FFTViewer::capture_and_process(){
             rx_pos=0; rx_avail=rx_chunk;
         }
 
-        // ── FFT: 버퍼에서 fft_size씩 처리 ───────────────────────────────
-        // 남은 샘플이 fft_size 미만이면 다음 RX로
-        if(rx_avail < fft_size){ rx_avail=0; rx_pos=0; continue; }
+        // ── FFT: 버퍼에서 fft_input_size씩 처리 ─────────────────────────
+        // 남은 샘플이 fft_input_size 미만이면 다음 RX로
+        if(rx_avail < fft_input_size){ rx_avail=0; rx_pos=0; continue; }
 
         const int16_t* iq = iq_buf + rx_pos*2;
 
         if(!render_visible.load(std::memory_order_relaxed)){
-            rx_pos+=fft_size; rx_avail-=fft_size;
+            rx_pos+=fft_input_size; rx_avail-=fft_input_size;
             std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
             continue;
         }
         if(!spectrum_pause.load(std::memory_order_relaxed)){
-            for(int i=0;i<fft_size;i++){
+            // Fill input samples (first fft_input_size), rest stays zero (zero-padding)
+            for(int i=0;i<fft_input_size;i++){
                 fft_in[i][0]=iq[i*2]/hw.iq_scale;
                 fft_in[i][1]=iq[i*2+1]/hw.iq_scale;
             }
-            apply_hann(fft_in,fft_size);
+            // Nuttall window via VOLK SIMD (complex × real element-wise)
+            volk_32fc_32f_multiply_32fc((lv_32fc_t*)fft_in, (lv_32fc_t*)fft_in,
+                                        win_buf, fft_input_size);
+            // pad region은 init/resize 시 한 번만 0 초기화 (out-of-place FFT → fft_in 불변)
             fftwf_execute(fft_plan);
             {
-                const float scale=HANN_WINDOW_CORRECTION/((float)fft_size*(float)fft_size);
+                // VOLK magnitude squared: |X[k]|² for all bins
+                volk_32fc_magnitude_squared_32f(mag_sq_buf, (lv_32fc_t*)fft_out, fft_size);
+                const float scale=NUTTALL_WINDOW_CORRECTION/((float)fft_input_size*(float)fft_input_size);
                 for(int i=0;i<fft_size;i++){
-                    float ms=(fft_out[i][0]*fft_out[i][0]+fft_out[i][1]*fft_out[i][1])*scale+1e-10f;
-                    pacc[i]+=ms;
+                    pacc[i] += mag_sq_buf[i]*scale + 1e-10f;
                 }
             }
             pacc[0]=(pacc[1]+pacc[fft_size-1])*0.5f; fcnt++;
@@ -333,7 +357,7 @@ void FFTViewer::capture_and_process(){
                 if(warmup_cnt < WARMUP_FFTS){
                     warmup_cnt++;
                     std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
-                    rx_pos+=fft_size; rx_avail-=fft_size;
+                    rx_pos+=fft_input_size; rx_avail-=fft_input_size;
                     continue;
                 }
                 int fi=total_ffts%MAX_FFTS_MEMORY;
@@ -384,7 +408,7 @@ void FFTViewer::capture_and_process(){
                 std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
             }
         } // end !spectrum_pause
-        rx_pos+=fft_size; rx_avail-=fft_size;
+        rx_pos+=fft_input_size; rx_avail-=fft_input_size;
     }
     delete[] iq_buf;
     if(dev_blade){

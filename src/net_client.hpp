@@ -52,7 +52,7 @@ public:
         std::vector<float> data;
         uint64_t cf_hz;
         uint32_t sr;
-        uint16_t fft_sz;
+        uint32_t fft_sz;
         float    pmin, pmax;
         int64_t  wall_time;  // seconds since epoch
         int64_t  recv_us;    // steady_clock microseconds at receive time

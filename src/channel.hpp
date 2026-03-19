@@ -179,6 +179,25 @@ static inline void apply_hann(fftwf_complex* in, int n){
     }
 }
 
+// Nuttall window: -93dB sidelobe suppression (vs Hann -31dB)
+static inline void apply_nuttall(fftwf_complex* in, int n){
+    const double a0=0.355768, a1=0.487396, a2=0.144232, a3=0.012604;
+    for(int i=0;i<n;i++){
+        double x=2.0*M_PI*i/(n-1);
+        float w=(float)(a0 - a1*cos(x) + a2*cos(2*x) - a3*cos(3*x));
+        in[i][0]*=w; in[i][1]*=w;
+    }
+}
+
+// Pre-compute Nuttall window into float buffer (for VOLK multiply)
+static inline void fill_nuttall_window(float* buf, int n){
+    const double a0=0.355768, a1=0.487396, a2=0.144232, a3=0.012604;
+    for(int i=0;i<n;i++){
+        double x=2.0*M_PI*i/(n-1);
+        buf[i]=(float)(a0 - a1*cos(x) + a2*cos(2*x) - a3*cos(3*x));
+    }
+}
+
 static inline uint32_t optimal_iq_sr(uint32_t main_sr, float bw_hz){
     float target=bw_hz*2.8f; if(target<10000) target=10000;
     uint32_t decim=(uint32_t)(main_sr/target); if(decim<1) decim=1;

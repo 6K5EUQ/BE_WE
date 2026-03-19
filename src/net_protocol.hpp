@@ -65,7 +65,7 @@ struct __attribute__((packed)) PktAuthAck {
 struct __attribute__((packed)) PktFftFrame {
     uint64_t center_freq_hz;
     uint32_t sample_rate;
-    uint16_t fft_size;
+    uint32_t fft_size;
     float    power_min;
     float    power_max;
     int64_t  wall_time;  // unix timestamp (time_t), 0=none

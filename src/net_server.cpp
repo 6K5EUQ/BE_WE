@@ -402,7 +402,7 @@ void NetServer::broadcast_fft(const float* data, int fft_size,
     PktFftFrame hdr{};
     hdr.center_freq_hz = center_hz;
     hdr.sample_rate    = sr;
-    hdr.fft_size       = (uint16_t)fft_size;
+    hdr.fft_size       = (uint32_t)fft_size;
     hdr.power_min      = pmin;
     hdr.power_max      = pmax;
     hdr.wall_time      = wall_time;
