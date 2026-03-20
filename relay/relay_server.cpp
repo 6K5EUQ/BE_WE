@@ -474,7 +474,7 @@ bool RelayServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
 
         // OPERATOR_LIST 갱신 + broadcast
         build_and_broadcast_op_list(room);
-        return true;  // HOST에 포워드 안 함
+        return false;  // HOST에도 포워드 (HOST의 client_loop에서 authed=true 필요)
     }
 
     // ── CMD 패킷 인터셉트 ────────────────────────────────────────────
