@@ -269,6 +269,9 @@ void RelayClient::mux_loop(int relay_fd,
             setsockopt(sv[0], SOL_SOCKET, SO_RCVBUF, &spbuf, sizeof(spbuf));
             setsockopt(sv[1], SOL_SOCKET, SO_SNDBUF, &spbuf, sizeof(spbuf));
             setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &spbuf, sizeof(spbuf));
+            // remote_fd(sv[1])에 send 타임아웃: 느린 JOIN이 mux_loop를 블로킹하지 않도록
+            timeval sp_tv{0, 100000}; // 100ms
+            setsockopt(sv[1], SOL_SOCKET, SO_SNDTIMEO, &sp_tv, sizeof(sp_tv));
             // sv[0]: NetServer가 accept 대신 직접 client_loop에 inject (local_fd)
             // sv[1]: relay로 데이터 보내는 쪽 (remote_fd)
             auto jp = std::make_shared<JoinPair>();
@@ -311,11 +314,13 @@ void RelayClient::mux_loop(int relay_fd,
             if(mux.len > 0 && !relay_recv_all(relay_fd, buf.data(), mux.len)) break;
 
             // 특정 JOIN 또는 broadcast
+            // MSG_DONTWAIT: 느린 JOIN 1명이 다른 JOIN을 지연시키지 않도록
+            // 버퍼 가득 차면 패킷 드롭 (실시간 스트림이므로 재전송보다 드롭이 나음)
             std::lock_guard<std::mutex> lk(mux_joins_mtx_);
             for(auto& [id, jp] : mux_joins_){
                 if(cid != 0xFFFF && id != cid) continue;
                 if(jp->remote_fd >= 0)
-                    send(jp->remote_fd, buf.data(), mux.len, MSG_NOSIGNAL);
+                    send(jp->remote_fd, buf.data(), mux.len, MSG_NOSIGNAL | MSG_DONTWAIT);
             }
 
         } else if(mux_type == RelayMuxType::CONN_CLOSE){

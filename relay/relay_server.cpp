@@ -55,6 +55,7 @@ void RelayServer::stop(){
         for(auto& j : r->joins){
             j->alive.store(false);
             if(j->fd >= 0){ shutdown(j->fd, SHUT_RDWR); close(j->fd); j->fd=-1; }
+            j->stop_send_worker();
         }
     }
     rooms_.clear();
@@ -133,6 +134,7 @@ void RelayServer::handshake(int fd){
 
         auto je = std::make_shared<JoinEntry>();
         je->fd = fd;
+        je->start_send_worker();
         {
             std::lock_guard<std::mutex> lk(room->joins_mtx);
             je->conn_id = room->next_conn_id++;
@@ -242,12 +244,13 @@ void RelayServer::host_mux_loop(std::shared_ptr<HostRoom> room){
         auto mux_type = static_cast<RelayMuxType>(mux.type);
         if(mux_type != RelayMuxType::DATA || mux.len == 0) continue;
 
-        // JOIN들에게 전달
+        // JOIN들에게 전달: 각 JOIN의 send 큐에 push (non-blocking)
+        // 각 JOIN은 전용 send 스레드에서 병렬 전송
         std::lock_guard<std::mutex> jlk(room->joins_mtx);
         for(auto& je : room->joins){
             if(!je->alive.load() || je->fd < 0) continue;
             if(mux.conn_id != 0xFFFF && mux.conn_id != je->conn_id) continue;
-            send_to_join(je->fd, buf.data(), mux.len);
+            je->enqueue(buf.data(), mux.len);
         }
     }
 
@@ -259,6 +262,7 @@ void RelayServer::host_mux_loop(std::shared_ptr<HostRoom> room){
         for(auto& je : room->joins){
             je->alive.store(false);
             if(je->fd >= 0){ shutdown(je->fd, SHUT_RDWR); close(je->fd); je->fd=-1; }
+            je->stop_send_worker();
         }
         room->joins.clear();
     }
@@ -321,6 +325,7 @@ void RelayServer::join_loop(std::shared_ptr<JoinEntry> je, std::shared_ptr<HostR
            je->conn_id, disc_reason, (unsigned long long)pkt_count);
 
     je->alive.store(false);
+    je->stop_send_worker();
     if(je->fd >= 0){ shutdown(je->fd, SHUT_RDWR); close(je->fd); je->fd=-1; }
 
     // HOST에게 CONN_CLOSE 알림
@@ -338,15 +343,6 @@ void RelayServer::join_loop(std::shared_ptr<JoinEntry> je, std::shared_ptr<HostR
         printf("[Relay] JOIN conn_id=%u left room '%s' (%zu users)\n",
                je->conn_id, room->station_id.c_str(), room->joins.size());
     }
-}
-
-bool RelayServer::send_to_join(int fd, const uint8_t* buf, size_t len){
-    while(len > 0){
-        ssize_t r = send(fd, buf, len, MSG_NOSIGNAL);
-        if(r <= 0) return false;
-        buf += r; len -= r;
-    }
-    return true;
 }
 
 // 자신의 LAN IPv4 주소 목록 수집 (루프백·링크로컬 제외)
