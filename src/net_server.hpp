@@ -196,6 +196,10 @@ public:
     void send_audio(uint32_t op_mask, uint8_t ch_idx, int8_t pan,
                     const float* pcm, uint32_t n_samples);
 
+    // Audio → all clients unconditionally (릴레이 서버가 per-JOIN 필터링)
+    void broadcast_audio_all(uint8_t ch_idx, int8_t pan,
+                             const float* pcm, uint32_t n_samples);
+
 
 
     void broadcast_wf_event(int32_t fft_offset, int64_t wall_time,

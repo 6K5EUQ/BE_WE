@@ -16,12 +16,18 @@ struct JoinEntry {
     std::atomic<bool> alive{true};
     std::thread       thr;      // JOIN→HOST recv 스레드
 
+    // ── per-JOIN 상태 ──────────────────────────────────────────────────
+    // 뮤트 테이블: true = 이 JOIN이 해당 채널 오디오를 수신함
+    bool     recv_audio[MAX_CHANNELS_RELAY] = {};
+    // 인증 정보 (릴레이가 관리)
+    char     name[32]  = {};
+    uint8_t  tier      = 0;
+    uint8_t  op_index  = 0;   // 1-based (릴레이가 할당)
+    bool     authed    = false;
+
     // ── 독립 송신 큐: FFT/제어 + 오디오 각각 전용 스레드 ─────────────────
     static constexpr size_t SEND_QUEUE_MAX  = 512;
     static constexpr size_t AUDIO_QUEUE_MAX = 256;
-
-    // BEWE PacketType (relay는 net_protocol.hpp를 include하지 않으므로 상수만)
-    static constexpr uint8_t BEWE_TYPE_AUDIO = 0x04;
 
     // FFT/제어 큐
     std::deque<std::vector<uint8_t>> send_queue;
@@ -38,7 +44,6 @@ struct JoinEntry {
     std::atomic<bool>       send_stop{false};
     std::mutex              fd_write_mtx;  // fd write 직렬화
 
-    // fd로 패킷 전송 (공통)
     void send_raw(const std::vector<uint8_t>& pkt){
         if(fd < 0 || !alive.load()) return;
         std::lock_guard<std::mutex> wlk(fd_write_mtx);
@@ -88,25 +93,22 @@ struct JoinEntry {
         if(audio_thr.joinable()) audio_thr.join();
     }
 
-    // BEWE 패킷 데이터를 받아 타입에 따라 적절한 큐에 push
-    // BEWE 패킷 형식: magic[4] + type[1] + len[4] + payload
-    void enqueue(const uint8_t* data, size_t len){
-        // BEWE 헤더에서 type 판별 (offset 4)
-        bool is_audio = (len >= 5 && data[4] == BEWE_TYPE_AUDIO);
+    // FFT/제어 큐에 push
+    void enqueue_data(const uint8_t* data, size_t len){
+        std::lock_guard<std::mutex> lk(send_mtx);
+        if(send_queue.size() >= SEND_QUEUE_MAX)
+            send_queue.pop_front();
+        send_queue.emplace_back(data, data + len);
+        send_cv.notify_one();
+    }
 
-        if(is_audio){
-            std::lock_guard<std::mutex> lk(audio_mtx);
-            if(audio_queue.size() >= AUDIO_QUEUE_MAX)
-                audio_queue.pop_front();
-            audio_queue.emplace_back(data, data + len);
-            audio_cv.notify_one();
-        } else {
-            std::lock_guard<std::mutex> lk(send_mtx);
-            if(send_queue.size() >= SEND_QUEUE_MAX)
-                send_queue.pop_front();
-            send_queue.emplace_back(data, data + len);
-            send_cv.notify_one();
-        }
+    // 오디오 큐에 push
+    void enqueue_audio(const uint8_t* data, size_t len){
+        std::lock_guard<std::mutex> lk(audio_mtx);
+        if(audio_queue.size() >= AUDIO_QUEUE_MAX)
+            audio_queue.pop_front();
+        audio_queue.emplace_back(data, data + len);
+        audio_cv.notify_one();
     }
 };
 
@@ -122,6 +124,21 @@ struct HostRoom {
     mutable std::mutex                    joins_mtx;
     std::vector<std::shared_ptr<JoinEntry>> joins;
     uint16_t                              next_conn_id = 1;
+
+    // ── 중앙 상태 캐시 (새 JOIN 접속 시 즉시 전송) ────────────────────
+    uint32_t ch_audio_mask[MAX_CHANNELS_RELAY] = {};  // 서버 기준 audio_mask
+
+    // 최신 패킷 캐시 (HOST가 보낸 원본 BEWE 패킷)
+    std::mutex                cache_mtx;
+    std::vector<uint8_t>      cached_heartbeat;
+    std::vector<uint8_t>      cached_status;
+    std::vector<uint8_t>      cached_ch_sync;
+    std::vector<uint8_t>      cached_op_list;     // 릴레이가 빌드
+
+    // 인증/오퍼레이터 관리 (릴레이가 중앙 관리)
+    uint8_t                   next_op_idx = 1;
+    char                      host_name[32] = {};
+    uint8_t                   host_tier = 1;
 };
 
 class RelayServer {
@@ -145,12 +162,27 @@ private:
     void watchdog_loop();
     void handshake(int fd);
 
-    // HOST: mux 스트림 수신 루프 (HOST→relay→JOIN fanout)
     void host_mux_loop(std::shared_ptr<HostRoom> room);
-
-    // JOIN: BEWE 스트림 수신 루프 (JOIN→relay→HOST forward)
     void join_loop(std::shared_ptr<JoinEntry> je, std::shared_ptr<HostRoom> room);
 
     void handle_list_req(int fd);
     std::shared_ptr<HostRoom> find_room(const std::string& id) const;
+
+    // ── BEWE 패킷 인터셉트 (중앙 제어) ──────────────────────────────────
+    // HOST→JOIN 방향: 오디오 필터링, 상태 캐시, CHANNEL_SYNC 인터셉트
+    void dispatch_to_joins(std::shared_ptr<HostRoom> room,
+                           uint16_t conn_id,
+                           const uint8_t* bewe_pkt, size_t bewe_len);
+
+    // JOIN→HOST 방향: 릴레이가 처리할 패킷 인터셉트
+    // 반환값: true=릴레이가 소비 (HOST에 포워드 안 함)
+    bool intercept_join_cmd(std::shared_ptr<JoinEntry> je,
+                            std::shared_ptr<HostRoom> room,
+                            const uint8_t* bewe_pkt, size_t bewe_len);
+
+    // 릴레이가 OPERATOR_LIST 빌드 + broadcast
+    void build_and_broadcast_op_list(std::shared_ptr<HostRoom> room);
+
+    // BEWE 패킷 빌드 헬퍼 (magic + type + len + payload)
+    static std::vector<uint8_t> make_bewe_packet(uint8_t type, const void* payload, uint32_t plen);
 };

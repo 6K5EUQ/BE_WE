@@ -74,6 +74,45 @@ enum class RelayMuxType : uint8_t {
     NET_RESET  = 0x04,  // 네트워크 리셋 (len=1: 0=reset, 1=open)
 };
 
+// ── BEWE 패킷 타입 상수 (릴레이가 내부 파싱에 사용) ─────────────────────
+// BEWE 패킷 형식: magic[4] + type[1] + len[4] + payload
+static constexpr int    BEWE_HDR_SIZE       = 9;
+static constexpr uint8_t BEWE_TYPE_AUTH_REQ  = 0x01;
+static constexpr uint8_t BEWE_TYPE_AUTH_ACK  = 0x02;
+static constexpr uint8_t BEWE_TYPE_FFT      = 0x03;
+static constexpr uint8_t BEWE_TYPE_AUDIO    = 0x04;
+static constexpr uint8_t BEWE_TYPE_CMD      = 0x05;
+static constexpr uint8_t BEWE_TYPE_STATUS   = 0x08;
+static constexpr uint8_t BEWE_TYPE_OP_LIST  = 0x09;
+static constexpr uint8_t BEWE_TYPE_CH_SYNC  = 0x0A;
+static constexpr uint8_t BEWE_TYPE_HEARTBEAT = 0x14;
+
+static constexpr uint8_t BEWE_TYPE_CHAT     = 0x07;
+
+// AUTH_REQ payload: id[32] + pw[64] + tier[1] = 97 bytes
+static constexpr int BEWE_AUTH_REQ_SIZE = 97;
+// AUTH_ACK payload: ok[1] + op_index[1] + reason[48] = 50 bytes
+static constexpr int BEWE_AUTH_ACK_SIZE = 50;
+
+// OPERATOR_LIST: count[1] + OpEntry[16]
+// OpEntry: index[1] + tier[1] + name[32] = 34 bytes
+static constexpr int BEWE_OP_ENTRY_SIZE = 34;
+static constexpr int BEWE_MAX_OPERATORS = 16;
+
+// CMD subtypes (BEWE payload offset 0 = cmd byte)
+static constexpr uint8_t BEWE_CMD_TOGGLE_RECV = 0x0C;
+
+// AUDIO_FRAME header: ch_idx[1] + pan[1] + n_samples[4]
+// → ch_idx is at BEWE payload offset 0
+static constexpr int BEWE_AUDIO_HDR_SIZE = 6;
+
+// CHANNEL_SYNC: ChSyncEntry[10], each 56 bytes
+// ChSyncEntry layout: idx[1] active[1] s[4] e[4] mode[1] pan[1] audio_mask[4] ...
+static constexpr int CH_SYNC_ENTRY_SIZE = 60;
+static constexpr int CH_SYNC_MASK_OFFSET = 12;  // audio_mask offset within ChSyncEntry
+static constexpr int CH_SYNC_OWNER_OFFSET = 28; // owner_name offset within ChSyncEntry
+static constexpr int MAX_CHANNELS_RELAY = 10;
+
 // ── 스테이션 목록 ─────────────────────────────────────────────────────────
 struct __attribute__((packed)) RelayStation {
     char    station_id[32];

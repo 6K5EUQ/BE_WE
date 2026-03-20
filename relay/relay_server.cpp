@@ -106,6 +106,9 @@ void RelayServer::handshake(int fd){
         room->info.lon        = op->lon;
         room->info.host_tier  = op->host_tier;
         room->info.user_count = 0;
+        // 중앙 서버: HOST 정보 저장
+        strncpy(room->host_name, op->station_name, 31);
+        room->host_tier = op->host_tier;
 
         {
             std::lock_guard<std::mutex> lk(rooms_mtx_);
@@ -151,6 +154,19 @@ void RelayServer::handshake(int fd){
 
         printf("[Relay] JOIN conn_id=%u entered room '%s' (%zu users)\n",
                je->conn_id, sid.c_str(), room->joins.size());
+
+        // 캐시된 최신 상태를 새 JOIN에게 즉시 전송
+        {
+            std::lock_guard<std::mutex> clk(room->cache_mtx);
+            if(!room->cached_heartbeat.empty())
+                je->enqueue_data(room->cached_heartbeat.data(), room->cached_heartbeat.size());
+            if(!room->cached_status.empty())
+                je->enqueue_data(room->cached_status.data(), room->cached_status.size());
+            if(!room->cached_ch_sync.empty())
+                je->enqueue_data(room->cached_ch_sync.data(), room->cached_ch_sync.size());
+            if(!room->cached_op_list.empty())
+                je->enqueue_data(room->cached_op_list.data(), room->cached_op_list.size());
+        }
 
         join_loop(je, room);
 
@@ -244,14 +260,8 @@ void RelayServer::host_mux_loop(std::shared_ptr<HostRoom> room){
         auto mux_type = static_cast<RelayMuxType>(mux.type);
         if(mux_type != RelayMuxType::DATA || mux.len == 0) continue;
 
-        // JOIN들에게 전달: 각 JOIN의 send 큐에 push (non-blocking)
-        // 각 JOIN은 전용 send 스레드에서 병렬 전송
-        std::lock_guard<std::mutex> jlk(room->joins_mtx);
-        for(auto& je : room->joins){
-            if(!je->alive.load() || je->fd < 0) continue;
-            if(mux.conn_id != 0xFFFF && mux.conn_id != je->conn_id) continue;
-            je->enqueue(buf.data(), mux.len);
-        }
+        // BEWE 패킷 중앙 처리: 오디오 필터링, CHANNEL_SYNC 인터셉트
+        dispatch_to_joins(room, mux.conn_id, buf.data(), mux.len);
     }
 
     // 룸 닫기
@@ -307,7 +317,11 @@ void RelayServer::join_loop(std::shared_ptr<JoinEntry> je, std::shared_ptr<HostR
             break;
         }
 
-        // HOST에게 MUX 헤더 + BEWE 패킷 전달
+        // JOIN→HOST: 릴레이가 처리할 명령은 인터셉트
+        bool consumed = intercept_join_cmd(je, room, buf.data(), 9 + bewe_len);
+        if(consumed) { pkt_count++; continue; }  // 릴레이에서 처리 완료, HOST에 포워드 안 함
+
+        // HOST에게 MUX 헤더 + BEWE 패킷 전달 (하드웨어 제어 명령 등)
         std::lock_guard<std::mutex> lk(room->host_send_mtx);
         if(!room->alive.load() || room->fd < 0){
             disc_reason = "host_room_closed";
@@ -340,8 +354,219 @@ void RelayServer::join_loop(std::shared_ptr<JoinEntry> je, std::shared_ptr<HostR
             [&](const std::shared_ptr<JoinEntry>& j){ return j.get()==je.get(); }),
             room->joins.end());
         room->info.user_count = (uint8_t)room->joins.size();
-        printf("[Relay] JOIN conn_id=%u left room '%s' (%zu users)\n",
-               je->conn_id, room->station_id.c_str(), room->joins.size());
+        printf("[Relay] JOIN conn_id=%u '%s' left room '%s' (%zu users)\n",
+               je->conn_id, je->name, room->station_id.c_str(), room->joins.size());
+    }
+    // OPERATOR_LIST 갱신 (JOIN 나간 후)
+    if(room->alive.load() && je->authed)
+        build_and_broadcast_op_list(room);
+}
+
+// ── BEWE 패킷 중앙 처리: HOST→JOIN 방향 ──────────────────────────────────
+void RelayServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
+                                     uint16_t conn_id,
+                                     const uint8_t* bewe_pkt, size_t bewe_len){
+    if(bewe_len < BEWE_HDR_SIZE) return;
+    uint8_t bewe_type = bewe_pkt[4]; // BEWE 패킷 타입
+
+    // ── OPERATOR_LIST: HOST가 보내는 것은 무시 (릴레이가 관리) ──────
+    if(bewe_type == BEWE_TYPE_OP_LIST) return;
+
+    // ── AUTH_ACK: HOST가 보내는 것은 무시 (릴레이가 처리) ─────────────
+    if(bewe_type == BEWE_TYPE_AUTH_ACK) return;
+
+    // ── 상태 패킷 캐시 (새 JOIN 접속 시 즉시 전송용) ────────────────
+    if(bewe_type == BEWE_TYPE_HEARTBEAT || bewe_type == BEWE_TYPE_STATUS ||
+       bewe_type == BEWE_TYPE_CH_SYNC){
+        std::lock_guard<std::mutex> clk(room->cache_mtx);
+        auto& cache = (bewe_type == BEWE_TYPE_HEARTBEAT) ? room->cached_heartbeat :
+                      (bewe_type == BEWE_TYPE_STATUS)    ? room->cached_status :
+                                                           room->cached_ch_sync;
+        cache.assign(bewe_pkt, bewe_pkt + bewe_len);
+    }
+
+    // ── CHANNEL_SYNC 인터셉트: 서버 기준 audio_mask 캐시 ──────────────
+    if(bewe_type == BEWE_TYPE_CH_SYNC){
+        uint32_t payload_len = bewe_len - BEWE_HDR_SIZE;
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        if(payload_len >= (size_t)(CH_SYNC_ENTRY_SIZE * MAX_CHANNELS_RELAY)){
+            for(int i = 0; i < MAX_CHANNELS_RELAY; i++){
+                const uint8_t* entry = payload + i * CH_SYNC_ENTRY_SIZE;
+                uint32_t mask;
+                memcpy(&mask, entry + CH_SYNC_MASK_OFFSET, sizeof(mask));
+                room->ch_audio_mask[i] = mask;
+            }
+        }
+        // CHANNEL_SYNC는 모든 JOIN에게 그대로 전달
+        std::lock_guard<std::mutex> jlk(room->joins_mtx);
+        for(auto& je : room->joins){
+            if(!je->alive.load() || je->fd < 0) continue;
+            je->enqueue_data(bewe_pkt, bewe_len);
+        }
+        return;
+    }
+
+    // ── AUDIO_FRAME: 릴레이가 뮤트 테이블 기반으로 필터링 ─────────────
+    if(bewe_type == BEWE_TYPE_AUDIO){
+        if(bewe_len < BEWE_HDR_SIZE + 1) return;
+        uint8_t ch_idx = bewe_pkt[BEWE_HDR_SIZE]; // PktAudioFrame.ch_idx
+        if(ch_idx >= MAX_CHANNELS_RELAY) return;
+
+        std::lock_guard<std::mutex> jlk(room->joins_mtx);
+        for(auto& je : room->joins){
+            if(!je->alive.load() || je->fd < 0) continue;
+            if(conn_id != 0xFFFF && conn_id != je->conn_id) continue;
+            // 뮤트 테이블 체크: 이 JOIN이 이 채널을 수신하는가?
+            if(!je->recv_audio[ch_idx]) continue;
+            je->enqueue_audio(bewe_pkt, bewe_len);
+        }
+        return;
+    }
+
+    // ── 기타 패킷 (FFT, STATUS, HEARTBEAT 등): 그대로 전달 ───────────
+    std::lock_guard<std::mutex> jlk(room->joins_mtx);
+    for(auto& je : room->joins){
+        if(!je->alive.load() || je->fd < 0) continue;
+        if(conn_id != 0xFFFF && conn_id != je->conn_id) continue;
+        je->enqueue_data(bewe_pkt, bewe_len);
+    }
+}
+
+// ── JOIN→HOST 방향: 릴레이 인터셉트 ──────────────────────────────────────
+bool RelayServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
+                                      std::shared_ptr<HostRoom> room,
+                                      const uint8_t* bewe_pkt, size_t bewe_len){
+    if(bewe_len < BEWE_HDR_SIZE) return false;
+    uint8_t bewe_type = bewe_pkt[4];
+
+    // ── AUTH_REQ: 릴레이가 직접 처리 ─────────────────────────────────
+    if(bewe_type == BEWE_TYPE_AUTH_REQ){
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        if(plen < (size_t)BEWE_AUTH_REQ_SIZE) return true;
+
+        // AUTH_REQ: id[32] + pw[64] + tier[1]
+        char id[32]={}; memcpy(id, payload, 32);
+        uint8_t tier = payload[96];
+
+        // op_index 할당
+        uint8_t idx;
+        {
+            std::lock_guard<std::mutex> jlk(room->joins_mtx);
+            idx = room->next_op_idx++;
+            if(room->next_op_idx > BEWE_MAX_OPERATORS) room->next_op_idx = 1;
+        }
+        je->op_index = idx;
+        je->tier     = tier;
+        strncpy(je->name, id, 31);
+        je->authed   = true;
+
+        // AUTH_ACK 응답 (릴레이 → JOIN 직접)
+        uint8_t ack_buf[BEWE_AUTH_ACK_SIZE] = {};
+        ack_buf[0] = 1;    // ok
+        ack_buf[1] = idx;  // op_index
+        memcpy(ack_buf + 2, "OK", 2);  // reason
+        auto ack_pkt = make_bewe_packet(BEWE_TYPE_AUTH_ACK, ack_buf, BEWE_AUTH_ACK_SIZE);
+        je->enqueue_data(ack_pkt.data(), ack_pkt.size());
+
+        printf("[Relay] AUTH op=%u '%s' (Tier%u) room='%s'\n",
+               idx, id, tier, room->station_id.c_str());
+
+        // OPERATOR_LIST 갱신 + broadcast
+        build_and_broadcast_op_list(room);
+        return true;  // HOST에 포워드 안 함
+    }
+
+    // ── CMD 패킷 인터셉트 ────────────────────────────────────────────
+    if(bewe_type == BEWE_TYPE_CMD){
+        const uint8_t* cmd_payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t cmd_len = bewe_len - BEWE_HDR_SIZE;
+        if(cmd_len < 4) return false;
+
+        uint8_t cmd_type = cmd_payload[0];
+
+        // TOGGLE_RECV: 릴레이에서 처리, HOST에 포워드 안 함
+        if(cmd_type == BEWE_CMD_TOGGLE_RECV && cmd_len >= 6){
+            uint8_t ch_idx = cmd_payload[4];
+            uint8_t enable = cmd_payload[5];
+            if(ch_idx < MAX_CHANNELS_RELAY){
+                je->recv_audio[ch_idx] = (enable != 0);
+                printf("[Relay] JOIN '%s' toggle_recv ch=%u %s\n",
+                       je->name, ch_idx, enable ? "ON" : "OFF");
+            }
+            return true;
+        }
+        return false;  // 다른 CMD는 HOST에 포워드
+    }
+
+    // ── CHAT: 릴레이가 broadcast, HOST에도 포워드 ────────────────────
+    if(bewe_type == BEWE_TYPE_CHAT){
+        // 모든 JOIN에게 broadcast
+        std::lock_guard<std::mutex> jlk(room->joins_mtx);
+        for(auto& j : room->joins){
+            if(!j->alive.load() || !j->authed || j->fd < 0) continue;
+            j->enqueue_data(bewe_pkt, bewe_len);
+        }
+        return false;  // HOST에도 포워드 (HOST UI에 표시)
+    }
+
+    return false;
+}
+
+// ── BEWE 패킷 빌드 ──────────────────────────────────────────────────────
+std::vector<uint8_t> RelayServer::make_bewe_packet(uint8_t type,
+                                                     const void* payload, uint32_t plen){
+    std::vector<uint8_t> pkt(BEWE_HDR_SIZE + plen);
+    // magic
+    pkt[0]='B'; pkt[1]='E'; pkt[2]='W'; pkt[3]='E';
+    pkt[4] = type;
+    memcpy(pkt.data()+5, &plen, 4);
+    if(plen > 0 && payload)
+        memcpy(pkt.data()+BEWE_HDR_SIZE, payload, plen);
+    return pkt;
+}
+
+// ── OPERATOR_LIST 빌드 + broadcast ───────────────────────────────────────
+void RelayServer::build_and_broadcast_op_list(std::shared_ptr<HostRoom> room){
+    // OpEntry[]: index(1) + tier(1) + name(32) = 34 bytes each
+    // PktOperatorList: count(1) + OpEntry[16]
+    uint8_t buf[1 + BEWE_MAX_OPERATORS * BEWE_OP_ENTRY_SIZE] = {};
+    int count = 0;
+
+    // HOST를 index=0으로 첫 번째 엔트리
+    uint8_t* p = buf + 1;
+    p[0] = 0;  // index=0 (HOST)
+    p[1] = room->host_tier;
+    strncpy((char*)(p+2), room->host_name, 31);
+    p += BEWE_OP_ENTRY_SIZE;
+    count++;
+
+    // JOIN들
+    std::lock_guard<std::mutex> jlk(room->joins_mtx);
+    for(auto& je : room->joins){
+        if(!je->authed || !je->alive.load()) continue;
+        if(count >= BEWE_MAX_OPERATORS) break;
+        p[0] = je->op_index;
+        p[1] = je->tier;
+        strncpy((char*)(p+2), je->name, 31);
+        p += BEWE_OP_ENTRY_SIZE;
+        count++;
+    }
+    buf[0] = (uint8_t)count;
+
+    uint32_t plen = 1 + count * BEWE_OP_ENTRY_SIZE;
+    auto pkt = make_bewe_packet(BEWE_TYPE_OP_LIST, buf, plen);
+
+    // 캐시 갱신
+    {
+        std::lock_guard<std::mutex> clk(room->cache_mtx);
+        room->cached_op_list = pkt;
+    }
+
+    // 모든 JOIN에게 broadcast
+    for(auto& je : room->joins){
+        if(!je->alive.load() || je->fd < 0) continue;
+        je->enqueue_data(pkt.data(), pkt.size());
     }
 }
 

@@ -448,6 +448,27 @@ void NetServer::send_audio(uint32_t op_mask, uint8_t ch_idx, int8_t pan,
     }
 }
 
+void NetServer::broadcast_audio_all(uint8_t ch_idx, int8_t pan,
+                                     const float* pcm, uint32_t n_samples){
+    if(!n_samples) return;
+    if(bcast_pause_.load(std::memory_order_relaxed)) return;
+
+    uint32_t payload_size = (uint32_t)(sizeof(PktAudioFrame) + n_samples*sizeof(float));
+    std::vector<uint8_t> payload(payload_size);
+    auto* ah = reinterpret_cast<PktAudioFrame*>(payload.data());
+    ah->ch_idx    = ch_idx;
+    ah->pan       = (uint8_t)(int8_t)pan;
+    ah->n_samples = n_samples;
+    memcpy(payload.data() + sizeof(PktAudioFrame), pcm, n_samples*sizeof(float));
+
+    auto pkt = make_packet(PacketType::AUDIO_FRAME, payload.data(), payload_size);
+    std::lock_guard<std::mutex> lk(clients_mtx_);
+    for(auto& c : clients_){
+        if(!c->authed || !c->alive.load()) continue;
+        c->enqueue(pkt, false, true);
+    }
+}
+
 
 // ── Broadcast channel sync ────────────────────────────────────────────────
 void NetServer::broadcast_channel_sync(const Channel* chs, int n){
