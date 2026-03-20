@@ -11,13 +11,19 @@
 #include <functional>
 #include <netinet/in.h>
 
-// ── Net audio ring per channel ────────────────────────────────────────────
+// ── Net audio ring per channel (with jitter buffer) ──────────────────────
 struct NetAudioRing {
     static constexpr size_t SZ   = 32768;
     static constexpr size_t MASK = SZ - 1;
+    // 재생 시작 전 최소 축적량 (48kHz 기준 ~100ms)
+    static constexpr size_t JITTER_FILL = 4800;
+    // 언더런 발생 시 재축적 임계값 (JITTER_FILL의 절반)
+    static constexpr size_t JITTER_RESUME = JITTER_FILL / 2;
+
     float                   buf[SZ]{};
     int8_t                  pan[SZ]{};
     std::atomic<size_t>     wp{0}, rp{0};
+    bool                    primed = false; // jitter buffer 축적 완료 여부
 
     void push(float v, int8_t p){
         size_t w = wp.load(std::memory_order_relaxed);
@@ -25,14 +31,33 @@ struct NetAudioRing {
         pan[w & MASK] = p;
         wp.store(w+1, std::memory_order_release);
     }
+
+    // jitter buffer를 거쳐 pop
+    // primed 전: 데이터가 JITTER_FILL 이상 쌓일 때까지 false 반환
+    // primed 후: 정상 pop. 언더런 시 primed 해제 → 재축적
     bool pop(float& v, int8_t& p){
+        size_t w = wp.load(std::memory_order_acquire);
         size_t r = rp.load(std::memory_order_relaxed);
-        if(r == wp.load(std::memory_order_acquire)) return false;
+        size_t avail = w - r;
+
+        if(!primed){
+            if(avail < JITTER_FILL) return false;
+            primed = true;
+        }
+        if(avail == 0){
+            // 언더런: 재축적 모드로 전환
+            primed = false;
+            return false;
+        }
         v = buf[r & MASK]; p = pan[r & MASK];
         rp.store(r+1, std::memory_order_release);
         return true;
     }
-    void clear(){ rp.store(wp.load(std::memory_order_acquire)); }
+
+    void clear(){
+        rp.store(wp.load(std::memory_order_acquire));
+        primed = false;
+    }
 };
 
 // ── NetClient ─────────────────────────────────────────────────────────────
