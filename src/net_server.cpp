@@ -426,7 +426,7 @@ void NetServer::broadcast_fft(const float* data, int fft_size,
     }
 }
 
-// ── Send audio to specific operators ─────────────────────────────────────
+// ── Send audio to specific operators (legacy, mask-based) ────────────────
 void NetServer::send_audio(uint32_t op_mask, uint8_t ch_idx, int8_t pan,
                             const float* pcm, uint32_t n_samples){
     if(!op_mask || !n_samples) return;
@@ -447,6 +447,7 @@ void NetServer::send_audio(uint32_t op_mask, uint8_t ch_idx, int8_t pan,
         c->enqueue(make_packet(PacketType::AUDIO_FRAME, payload.data(), payload_size), false, true);
     }
 }
+
 
 // ── Broadcast channel sync ────────────────────────────────────────────────
 void NetServer::broadcast_channel_sync(const Channel* chs, int n){

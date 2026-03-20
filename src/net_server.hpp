@@ -23,72 +23,95 @@ struct ClientConn {
     std::atomic<bool> alive{false};
     std::thread     thr;
 
-    // ── 비동기 송신 큐 (오디오 우선) ─────────────────────────────────────
-    // 오디오 큐: 작지만 우선 전송 → 끊김 방지
-    // FFT 큐: 포화 시 oldest 드롭 → 워터폴 갱신 지연은 체감 미미
+    // ── 독립 송신 큐: FFT/제어 + 오디오 각각 전용 스레드 ─────────────────
     static constexpr size_t SEND_QUEUE_MAX     = 256;
     static constexpr size_t AUDIO_QUEUE_MAX    = 128;
+
+    // FFT/제어 큐 + 스레드
     std::deque<std::vector<uint8_t>> send_queue;
-    std::deque<std::vector<uint8_t>> audio_queue;
     std::mutex              send_mtx;
     std::condition_variable send_cv;
     std::thread             send_thr;
-    std::atomic<bool>       send_stop{false};
-    std::mutex              fd_write_mtx;  // fd write 직렬화 (send_worker + send_file_to)
 
+    // 오디오 큐 + 스레드
+    std::deque<std::vector<uint8_t>> audio_queue;
+    std::mutex              audio_mtx;
+    std::condition_variable audio_cv;
+    std::thread             audio_thr;
+
+    std::atomic<bool>       send_stop{false};
+    std::mutex              fd_write_mtx;  // fd write 직렬화 (send/audio/send_file_to)
+
+    // fd로 패킷 전송 (공통)
+    void send_raw(const std::vector<uint8_t>& pkt){
+        if(fd < 0 || !alive.load()) return;
+        std::lock_guard<std::mutex> wlk(fd_write_mtx);
+        size_t sent = 0;
+        while(sent < pkt.size()){
+            ssize_t r = ::send(fd, pkt.data()+sent, pkt.size()-sent, MSG_NOSIGNAL);
+            if(r <= 0){ alive.store(false); break; }
+            sent += (size_t)r;
+        }
+    }
+
+    // FFT/제어 전용 스레드
     void send_worker(){
         while(true){
             std::vector<uint8_t> pkt;
             {
                 std::unique_lock<std::mutex> lk(send_mtx);
-                send_cv.wait(lk, [this]{
-                    return !audio_queue.empty() || !send_queue.empty() || send_stop.load();
-                });
-                if(send_stop.load() && audio_queue.empty() && send_queue.empty()) break;
-                // 오디오 우선 전송
-                if(!audio_queue.empty()){
-                    pkt = std::move(audio_queue.front());
-                    audio_queue.pop_front();
-                } else {
-                    pkt = std::move(send_queue.front());
-                    send_queue.pop_front();
-                }
+                send_cv.wait(lk, [this]{ return !send_queue.empty() || send_stop.load(); });
+                if(send_stop.load() && send_queue.empty()) break;
+                pkt = std::move(send_queue.front());
+                send_queue.pop_front();
             }
-            if(fd < 0 || !alive.load()) continue;
-            std::lock_guard<std::mutex> wlk(fd_write_mtx);
-            size_t sent = 0;
-            while(sent < pkt.size()){
-                ssize_t r = ::send(fd, pkt.data()+sent, pkt.size()-sent, MSG_NOSIGNAL);
-                if(r <= 0){ alive.store(false); break; }
-                sent += (size_t)r;
-            }
+            send_raw(pkt);
         }
     }
 
-    void start_send_worker(){ send_thr = std::thread(&ClientConn::send_worker, this); }
+    // 오디오 전용 스레드
+    void audio_worker(){
+        while(true){
+            std::vector<uint8_t> pkt;
+            {
+                std::unique_lock<std::mutex> lk(audio_mtx);
+                audio_cv.wait(lk, [this]{ return !audio_queue.empty() || send_stop.load(); });
+                if(send_stop.load() && audio_queue.empty()) break;
+                pkt = std::move(audio_queue.front());
+                audio_queue.pop_front();
+            }
+            send_raw(pkt);
+        }
+    }
+
+    void start_send_worker(){
+        send_thr  = std::thread(&ClientConn::send_worker, this);
+        audio_thr = std::thread(&ClientConn::audio_worker, this);
+    }
     void stop_send_worker(){
         send_stop.store(true);
         send_cv.notify_all();
-        if(send_thr.joinable()) send_thr.join();
+        audio_cv.notify_all();
+        if(send_thr.joinable())  send_thr.join();
+        if(audio_thr.joinable()) audio_thr.join();
     }
 
-    // is_fft: FFT 큐에 추가 (포화 시 oldest 드롭)
-    // is_audio: 오디오 큐에 추가 (포화 시 oldest 드롭)
-    // 기타: FFT 큐에 추가 (포화 시 무시)
     void enqueue(std::vector<uint8_t> pkt, bool is_fft = false, bool is_audio = false){
-        std::lock_guard<std::mutex> lk(send_mtx);
         if(is_audio){
+            std::lock_guard<std::mutex> lk(audio_mtx);
             if(audio_queue.size() >= AUDIO_QUEUE_MAX)
                 audio_queue.pop_front();
             audio_queue.push_back(std::move(pkt));
+            audio_cv.notify_one();
         } else {
+            std::lock_guard<std::mutex> lk(send_mtx);
             if(send_queue.size() >= SEND_QUEUE_MAX){
                 if(is_fft) send_queue.pop_front();
                 else return;
             }
             send_queue.push_back(std::move(pkt));
+            send_cv.notify_one();
         }
-        send_cv.notify_one();
     }
 
     // 업로드 수신 상태 (SHARE_UPLOAD_META/DATA)
@@ -173,6 +196,8 @@ public:
     void send_audio(uint32_t op_mask, uint8_t ch_idx, int8_t pan,
                     const float* pcm, uint32_t n_samples);
 
+
+
     void broadcast_wf_event(int32_t fft_offset, int64_t wall_time,
                             uint8_t type, const char* label);
     void send_file_to(int op_index, const char* path, uint8_t transfer_id,
@@ -195,8 +220,8 @@ public:
     void flush_clients(){
         std::lock_guard<std::mutex> lk(clients_mtx_);
         for(auto& c : clients_){
-            std::lock_guard<std::mutex> qlk(c->send_mtx);
-            c->send_queue.clear();
+            { std::lock_guard<std::mutex> qlk(c->send_mtx);  c->send_queue.clear();  }
+            { std::lock_guard<std::mutex> qlk(c->audio_mtx); c->audio_queue.clear(); }
         }
     }
 

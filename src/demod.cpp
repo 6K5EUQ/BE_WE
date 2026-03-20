@@ -166,12 +166,13 @@ void FFTViewer::dem_worker(int ch_idx){
                         ch.maybe_rec_audio(out);
                         ch.push_audio(out);
                         // ── 네트워크 오디오 전송 ────────────────────
-                        if(net_srv && (ch.audio_mask.load() & ~0x1u)){
+                        if(net_srv && net_srv->client_count() > 0){
                             net_audio_buf.push_back(out);
                             if((int)net_audio_buf.size()>=NET_AUDIO_BATCH){
                                 uint32_t mask=(ch.audio_mask.load()>>1);
-                                net_srv->send_audio(mask,(uint8_t)ch_idx,(int8_t)ch.pan,
-                                    net_audio_buf.data(),(uint32_t)net_audio_buf.size());
+                                if(mask)
+                                    net_srv->send_audio(mask,(uint8_t)ch_idx,(int8_t)ch.pan,
+                                        net_audio_buf.data(),(uint32_t)net_audio_buf.size());
                                 net_audio_buf.clear();
                             }
                         }
