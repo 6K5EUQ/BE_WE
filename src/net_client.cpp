@@ -533,6 +533,14 @@ bool NetClient::cmd_net_reset(){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::NET_RESET;
     return send_cmd(c);
 }
+bool NetClient::cmd_rx_stop(){
+    PktCmd c{}; c.cmd=(uint8_t)CmdType::RX_STOP;
+    return send_cmd(c);
+}
+bool NetClient::cmd_rx_start(){
+    PktCmd c{}; c.cmd=(uint8_t)CmdType::RX_START;
+    return send_cmd(c);
+}
 bool NetClient::cmd_set_fft_size(uint32_t size){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::SET_FFT_SIZE;
     c.set_fft_size.size=size;

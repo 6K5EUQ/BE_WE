@@ -121,6 +121,8 @@ struct ServerCallbacks {
     std::function<void(uint8_t op_idx, const char* op_name, const char* saved_path)> on_share_upload_done;
     std::function<void()> on_chassis_reset;  // JOIN이 /chassis 1 reset 명령 전송
     std::function<void()> on_net_reset;      // JOIN이 /chassis 2 reset 명령 전송
+    std::function<void()> on_rx_stop;        // JOIN이 /rx stop 명령 전송
+    std::function<void()> on_rx_start;       // JOIN이 /rx start 명령 전송
     std::function<void(uint32_t size)>       on_set_fft_size; // JOIN → HOST: FFT 크기 변경
     std::function<void(float msps)>          on_set_sr;       // JOIN → HOST: SR 변경
     // JOIN이 public 파일 삭제 요청: op_name, filename (소유자 검증은 ui.cpp에서)

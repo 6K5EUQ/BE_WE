@@ -105,6 +105,8 @@ enum class CmdType : uint8_t {
     SET_FFT_SIZE    = 0x14,  // bidirectional: change FFT size
     SET_SR          = 0x15,  // bidirectional: change sample rate
     NET_RESET       = 0x16,  // JOIN → server: trigger chassis 2 (net-only) reset
+    RX_STOP         = 0x17,  // JOIN → server: /rx stop
+    RX_START        = 0x18,  // JOIN → server: /rx start
 };
 
 struct __attribute__((packed)) PktCmd {

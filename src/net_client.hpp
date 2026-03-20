@@ -166,6 +166,8 @@ public:
     bool cmd_chassis_reset();            // JOIN → HOST: trigger chassis 1 reset
     bool cmd_net_reset();               // JOIN → HOST: trigger chassis 2 (net-only) reset
     bool cmd_delete_pub_file(const char* filename);  // JOIN → HOST: delete public file
+    bool cmd_rx_stop();                   // JOIN → HOST: /rx stop
+    bool cmd_rx_start();                  // JOIN → HOST: /rx start
     bool cmd_set_fft_size(uint32_t size); // JOIN → HOST: FFT 크기 변경
     bool cmd_set_sr(float msps);          // JOIN → HOST: SR 변경
 

@@ -508,6 +508,8 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
     float gx=full_x+AXIS_LABEL_WIDTH, gy=full_y;
     float gw=total_w-AXIS_LABEL_WIDTH, gh=total_h-BOTTOM_LABEL_HEIGHT;
     dl->AddRectFilled(ImVec2(full_x,full_y),ImVec2(full_x+total_w,full_y+total_h),IM_COL32(10,10,10,255));
+    // /rx stop 시 검은 화면만 표시
+    if(rx_stopped.load()) { draw_freq_axis(dl,gx,gw,gy,gh,false); return; }
 
     float ds,de; get_disp(ds,de);
     float sr_mhz=header.sample_rate/1e6f; int np=(int)gw;
@@ -732,6 +734,8 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
     float gx=full_x+AXIS_LABEL_WIDTH, gy=full_y;
     float gw=total_w-AXIS_LABEL_WIDTH, gh=total_h;
     dl->AddRectFilled(ImVec2(full_x,full_y),ImVec2(full_x+total_w,full_y+total_h),IM_COL32(10,10,10,255));
+    // /rx stop 시 검은 화면만 표시
+    if(rx_stopped.load()) { draw_freq_axis(dl,gx,gw,gy,gh,true); return; }
     if(!waterfall_texture) create_waterfall_texture();
     // 타임머신 모드 아닐 때만 텍스처 업데이트
     // 워터폴 텍스처 업데이트: TM 모드 중에도 계속 갱신 (복귀 시 검은화면 방지)
@@ -1197,6 +1201,8 @@ void run_streaming_viewer(){
     bool usb_reset_pending = false; // chassis 1 reset 시 USB reset 수행 플래그
     std::atomic<bool> pending_chassis1_reset{false}; // 네트워크 스레드 → 메인 루프 전달
     std::atomic<bool> pending_chassis2_reset{false}; // 네트워크 스레드 → 메인 루프 전달
+    std::atomic<bool> pending_rx_stop{false};        // JOIN → HOST: /rx stop
+    std::atomic<bool> pending_rx_start{false};       // JOIN → HOST: /rx start
     // HOST 모드 로컬 채팅 로그 (do-while 외부에서 선언해야 콜백 람다에서 접근 가능)
     struct LocalChatMsg { char from[32]; char msg[256]; bool is_error=false; };
     std::vector<LocalChatMsg> host_chat_log;
@@ -2394,6 +2400,8 @@ void run_streaming_viewer(){
                 // 네트워크 스레드에서 호출 → 플래그만 세팅, 실제 처리는 메인 루프
                 pending_chassis2_reset.store(true);
             };
+            srv->cb.on_rx_stop = [&](){ pending_rx_stop.store(true); };
+            srv->cb.on_rx_start = [&](){ pending_rx_start.store(true); };
             // JOIN이 public 파일 삭제 요청 → 소유자 확인 후 삭제 + 브로드캐스트
             srv->cb.on_pub_delete_req = [&](const char* op_name, const char* filename){
                 std::string fname(filename);
@@ -2762,6 +2770,84 @@ void run_streaming_viewer(){
             }).detach();
         }
 
+        // ── JOIN→HOST /rx stop/start: 네트워크 스레드 플래그 → 메인 루프 처리 ──
+        if(v.net_srv && pending_rx_stop.load()){
+            pending_rx_stop.store(false);
+            if(!v.rx_stopped.load() && (v.is_running || cap.joinable())){
+                { std::lock_guard<std::mutex> lk(host_chat_mtx);
+                  LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
+                  strncpy(lm.msg,"RX stop (remote) — shutting down SDR ...",255);
+                  if((int)host_chat_log.size()>=200) host_chat_log.erase(host_chat_log.begin());
+                  host_chat_log.push_back(lm); }
+                v.net_srv->broadcast_chat("BEWE", "RX stop — SDR offline");
+                // 녹음/demod/TM 중지
+                if(v.rec_on.load()) v.stop_rec();
+                if(v.tm_iq_on.load()){ v.tm_iq_on.store(false); v.tm_iq_close(); }
+                v.stop_all_dem();
+                // 캡처 스레드 종료
+                v.is_running = false;
+                if(v.dev_rtl) rtlsdr_cancel_async(v.dev_rtl);
+                v.mix_stop.store(true);
+                if(v.mix_thr.joinable()) v.mix_thr.join();
+                if(cap.joinable()) cap.join();
+                // FFTW 정리
+                if(v.fft_plan){ fftwf_destroy_plan(v.fft_plan); v.fft_plan=nullptr; }
+                if(v.fft_in)  { fftwf_free(v.fft_in);   v.fft_in=nullptr; }
+                if(v.fft_out) { fftwf_free(v.fft_out);  v.fft_out=nullptr; }
+                // 디바이스 close
+                if(v.dev_blade){
+                    bladerf_enable_module(v.dev_blade, BLADERF_CHANNEL_RX(0), false);
+                    bladerf_close(v.dev_blade); v.dev_blade=nullptr;
+                }
+                if(v.dev_rtl){ rtlsdr_close(v.dev_rtl); v.dev_rtl=nullptr; }
+                v.rx_stopped.store(true);
+                v.sdr_stream_error.store(false);
+                v.spectrum_pause.store(false);
+                { std::lock_guard<std::mutex> lk(host_chat_mtx);
+                  LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
+                  strncpy(lm.msg,"RX stopped. SDR device released.",255);
+                  if((int)host_chat_log.size()>=200) host_chat_log.erase(host_chat_log.begin());
+                  host_chat_log.push_back(lm); }
+            }
+        }
+        if(v.net_srv && pending_rx_start.load()){
+            pending_rx_start.store(false);
+            if(v.rx_stopped.load()){
+                { std::lock_guard<std::mutex> lk(host_chat_mtx);
+                  LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
+                  strncpy(lm.msg,"RX start (remote) — initializing SDR ...",255);
+                  if((int)host_chat_log.size()>=200) host_chat_log.erase(host_chat_log.begin());
+                  host_chat_log.push_back(lm); }
+                v.rx_stopped.store(false);
+                float cur_cf = (float)(v.header.center_frequency / 1e6);
+                if(cur_cf < 0.1f) cur_cf = 100.f;
+                v.is_running = true;
+                if(v.initialize(cur_cf)){
+                    v.set_gain(v.gain_db);
+                    if(v.hw.type == HWType::BLADERF)
+                        cap = std::thread(&FFTViewer::capture_and_process, &v);
+                    else
+                        cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
+                    v.mix_stop.store(false);
+                    v.mix_thr = std::thread(&FFTViewer::mix_worker, &v);
+                    v.net_srv->broadcast_chat("BEWE", "RX start — SDR online");
+                    { std::lock_guard<std::mutex> lk(host_chat_mtx);
+                      LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
+                      strncpy(lm.msg,"RX started. SDR online.",255);
+                      if((int)host_chat_log.size()>=200) host_chat_log.erase(host_chat_log.begin());
+                      host_chat_log.push_back(lm); }
+                } else {
+                    v.is_running = false;
+                    v.rx_stopped.store(true);
+                    { std::lock_guard<std::mutex> lk(host_chat_mtx);
+                      LocalChatMsg lm{}; lm.is_error=true; strncpy(lm.from,"System",31);
+                      strncpy(lm.msg,"RX start failed — SDR not found.",255);
+                      if((int)host_chat_log.size()>=200) host_chat_log.erase(host_chat_log.begin());
+                      host_chat_log.push_back(lm); }
+                }
+            }
+        }
+
         // ── chassis 1 reset 후 스펙트럼 pause 자동 해제 (1초 딜레이) ──────────
         static float chassis_unpause_timer = -1.f;
         if(chassis_unpause_timer > 0.f){
@@ -2775,7 +2861,8 @@ void run_streaming_viewer(){
         }
 
         // ── LOCAL/HOST: SDR 뽑힘 감지 → 백그라운드 join + 주기적 재탐지 ──────
-        if(!v.remote_mode && v.sdr_stream_error.load()){
+        // /rx stop으로 의도적 중단 시 자동 재연결 하지 않음
+        if(!v.remote_mode && v.sdr_stream_error.load() && !v.rx_stopped.load()){
             // cap 스레드 종료를 백그라운드에서 대기 (메인 렌더 스레드 블로킹 방지)
             static bool     bg_join_started = false;
             static std::atomic<bool> cap_joined{false};
@@ -5785,6 +5872,76 @@ void run_streaming_viewer(){
                             v.net_cli->cmd_net_reset();
                         } else {
                             push_local("System", "/chassis 2 reset: not in HOST/JOIN mode.", true);
+                        }
+
+                    } else if(chat_str == "/rx stop"){
+                        if(v.net_cli){
+                            // JOIN: HOST에 명령 전달
+                            push_local("BEWE", "RX stop ...", false);
+                            v.net_cli->cmd_rx_stop();
+                        } else if(v.rx_stopped.load()){
+                            push_local("System", "RX already stopped.", true);
+                        } else if(!v.is_running && !cap.joinable()){
+                            push_local("System", "No SDR running.", true);
+                        } else {
+                            // HOST / LOCAL: 직접 실행
+                            push_local("BEWE", "RX stop — shutting down SDR ...", false);
+                            if(v.net_srv) v.net_srv->broadcast_chat("BEWE", "RX stop — SDR offline");
+                            // 녹음/demod/TM 중지
+                            if(v.rec_on.load()) v.stop_rec();
+                            if(v.tm_iq_on.load()){ v.tm_iq_on.store(false); v.tm_iq_close(); }
+                            v.stop_all_dem();
+                            // 캡처 스레드 종료
+                            v.is_running = false;
+                            if(v.dev_rtl) rtlsdr_cancel_async(v.dev_rtl);
+                            v.mix_stop.store(true);
+                            if(v.mix_thr.joinable()) v.mix_thr.join();
+                            if(cap.joinable()) cap.join();
+                            // FFTW 정리
+                            if(v.fft_plan){ fftwf_destroy_plan(v.fft_plan); v.fft_plan=nullptr; }
+                            if(v.fft_in)  { fftwf_free(v.fft_in);   v.fft_in=nullptr; }
+                            if(v.fft_out) { fftwf_free(v.fft_out);  v.fft_out=nullptr; }
+                            // 디바이스 close
+                            if(v.dev_blade){
+                                bladerf_enable_module(v.dev_blade, BLADERF_CHANNEL_RX(0), false);
+                                bladerf_close(v.dev_blade); v.dev_blade=nullptr;
+                            }
+                            if(v.dev_rtl){ rtlsdr_close(v.dev_rtl); v.dev_rtl=nullptr; }
+                            v.rx_stopped.store(true);
+                            v.sdr_stream_error.store(false);
+                            v.spectrum_pause.store(false);
+                            push_local("BEWE", "RX stopped. SDR device released.", false);
+                        }
+
+                    } else if(chat_str == "/rx start"){
+                        if(v.net_cli){
+                            // JOIN: HOST에 명령 전달
+                            push_local("BEWE", "RX start ...", false);
+                            v.net_cli->cmd_rx_start();
+                        } else if(!v.rx_stopped.load()){
+                            push_local("System", "RX already running.", true);
+                        } else {
+                            // HOST / LOCAL: 직접 실행
+                            push_local("BEWE", "RX start — initializing SDR ...", false);
+                            v.rx_stopped.store(false);
+                            float cur_cf = (float)(v.header.center_frequency / 1e6);
+                            if(cur_cf < 0.1f) cur_cf = 100.f;
+                            v.is_running = true;
+                            if(v.initialize(cur_cf)){
+                                v.set_gain(v.gain_db);
+                                if(v.hw.type == HWType::BLADERF)
+                                    cap = std::thread(&FFTViewer::capture_and_process, &v);
+                                else
+                                    cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
+                                v.mix_stop.store(false);
+                                v.mix_thr = std::thread(&FFTViewer::mix_worker, &v);
+                                push_local("BEWE", "RX started. SDR online.", false);
+                                if(v.net_srv) v.net_srv->broadcast_chat("BEWE", "RX start — SDR online");
+                            } else {
+                                v.is_running = false;
+                                v.rx_stopped.store(true);
+                                push_local("System", "RX start failed — SDR not found.", true);
+                            }
                         }
 
                     } else {

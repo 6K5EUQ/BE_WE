@@ -271,6 +271,12 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
             case CmdType::NET_RESET:
                 if(cb.on_net_reset) cb.on_net_reset();
                 break;
+            case CmdType::RX_STOP:
+                if(cb.on_rx_stop) cb.on_rx_stop();
+                break;
+            case CmdType::RX_START:
+                if(cb.on_rx_start) cb.on_rx_start();
+                break;
             case CmdType::SET_FFT_SIZE:
                 if(cb.on_set_fft_size) cb.on_set_fft_size(cmd->set_fft_size.size);
                 break;

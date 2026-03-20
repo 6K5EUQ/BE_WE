@@ -283,6 +283,7 @@ public:
     fftwf_plan      fft_plan=nullptr;
     fftwf_complex  *fft_in=nullptr, *fft_out=nullptr;
     bool  is_running=true;
+    std::atomic<bool> rx_stopped{false};  // /rx stop: SDR 의도적 중단 (자동 재연결 방지)
     int   total_ffts=0;
     std::string window_title;
     std::mutex  data_mtx;
