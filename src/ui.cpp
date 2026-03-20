@@ -2776,10 +2776,10 @@ void run_streaming_viewer(){
             if(!v.rx_stopped.load() && (v.is_running || cap.joinable())){
                 { std::lock_guard<std::mutex> lk(host_chat_mtx);
                   LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
-                  strncpy(lm.msg,"RX stop (remote) — shutting down SDR ...",255);
+                  strncpy(lm.msg,"RX stop (remote)",255);
                   if((int)host_chat_log.size()>=200) host_chat_log.erase(host_chat_log.begin());
                   host_chat_log.push_back(lm); }
-                v.net_srv->broadcast_chat("BEWE", "RX stop — SDR offline");
+                v.net_srv->broadcast_chat("BEWE", "RX stop");
                 // 녹음/demod/TM 중지
                 if(v.rec_on.load()) v.stop_rec();
                 if(v.tm_iq_on.load()){ v.tm_iq_on.store(false); v.tm_iq_close(); }
@@ -2805,7 +2805,7 @@ void run_streaming_viewer(){
                 v.spectrum_pause.store(false);
                 { std::lock_guard<std::mutex> lk(host_chat_mtx);
                   LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
-                  strncpy(lm.msg,"RX stopped. SDR device released.",255);
+                  strncpy(lm.msg,"RX stopped.",255);
                   if((int)host_chat_log.size()>=200) host_chat_log.erase(host_chat_log.begin());
                   host_chat_log.push_back(lm); }
             }
@@ -2815,7 +2815,7 @@ void run_streaming_viewer(){
             if(v.rx_stopped.load()){
                 { std::lock_guard<std::mutex> lk(host_chat_mtx);
                   LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
-                  strncpy(lm.msg,"RX start (remote) — initializing SDR ...",255);
+                  strncpy(lm.msg,"RX start (remote)",255);
                   if((int)host_chat_log.size()>=200) host_chat_log.erase(host_chat_log.begin());
                   host_chat_log.push_back(lm); }
                 v.rx_stopped.store(false);
@@ -2830,10 +2830,10 @@ void run_streaming_viewer(){
                         cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
                     v.mix_stop.store(false);
                     v.mix_thr = std::thread(&FFTViewer::mix_worker, &v);
-                    v.net_srv->broadcast_chat("BEWE", "RX start — SDR online");
+                    v.net_srv->broadcast_chat("BEWE", "RX start");
                     { std::lock_guard<std::mutex> lk(host_chat_mtx);
                       LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
-                      strncpy(lm.msg,"RX started. SDR online.",255);
+                      strncpy(lm.msg,"RX started.",255);
                       if((int)host_chat_log.size()>=200) host_chat_log.erase(host_chat_log.begin());
                       host_chat_log.push_back(lm); }
                 } else {
@@ -5406,6 +5406,11 @@ void run_streaming_viewer(){
                 fft_led = 0; wf_led = 0; aud_led = 0;
                 iq_on = false;
             }
+            // ── /rx stop: SDR/FFT/WF/AUD/IQ 모두 빨간 ──
+            if(!v.remote_mode && v.rx_stopped.load()){
+                sdr_on = false; fft_led = 0; wf_led = 0; aud_led = 0;
+                iq_on = false;
+            }
 
             // ── JOIN: HOST 연결 끊김 시 AUD/IQ 빨간 ──
             if(v.remote_mode && link_state == 0){
@@ -5885,8 +5890,8 @@ void run_streaming_viewer(){
                             push_local("System", "No SDR running.", true);
                         } else {
                             // HOST / LOCAL: 직접 실행
-                            push_local("BEWE", "RX stop — shutting down SDR ...", false);
-                            if(v.net_srv) v.net_srv->broadcast_chat("BEWE", "RX stop — SDR offline");
+                            push_local("BEWE", "RX stop", false);
+                            if(v.net_srv) v.net_srv->broadcast_chat("BEWE", "RX stop");
                             // 녹음/demod/TM 중지
                             if(v.rec_on.load()) v.stop_rec();
                             if(v.tm_iq_on.load()){ v.tm_iq_on.store(false); v.tm_iq_close(); }
@@ -5910,7 +5915,7 @@ void run_streaming_viewer(){
                             v.rx_stopped.store(true);
                             v.sdr_stream_error.store(false);
                             v.spectrum_pause.store(false);
-                            push_local("BEWE", "RX stopped. SDR device released.", false);
+                            push_local("BEWE", "RX stopped.", false);
                         }
 
                     } else if(chat_str == "/rx start"){
