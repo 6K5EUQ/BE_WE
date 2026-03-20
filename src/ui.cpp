@@ -72,6 +72,7 @@ static std::string fmt_filesize(const std::string& dir, const std::string& fname
 // dB값이 FFT 스펙트럼과 동일한 스케일 (-100~0)
 void FFTViewer::update_channel_squelch(){
     if(total_ffts < 1 || fft_size < 1) return;
+    std::lock_guard<std::mutex> lk(data_mtx);
     float cf_mhz = (float)(header.center_frequency / 1e6);
     float nyq_mhz = header.sample_rate / 2e6f;
     if(nyq_mhz < 0.001f) return;
@@ -517,6 +518,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
     if(!cv){
         // assign() 대신 resize() — fill 불필요 (아래 루프가 전부 덮어씀)
         if((int)current_spectrum.size() != np) current_spectrum.resize(np, -80.0f);
+        std::lock_guard<std::mutex> lk(data_mtx);
         float nyq=sr_mhz/2.0f; int hf=header.fft_size/2;
         int mi=sp_idx%MAX_FFTS_MEMORY;
         const float* rowp=fft_data.data()+mi*fft_size;

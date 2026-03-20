@@ -39,6 +39,7 @@ void FFTViewer::create_waterfall_texture(){
 }
 
 void FFTViewer::update_wf_row(int fi){
+    std::lock_guard<std::mutex> lk(data_mtx);
     int tex_w = std::min(fft_size, WF_TEX_MAX);
     if(tex_w < 1) tex_w = 1;
     if((int)wf_row_buf.size()!=tex_w) wf_row_buf.resize(tex_w);
