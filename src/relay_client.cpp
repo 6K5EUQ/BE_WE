@@ -323,7 +323,9 @@ void RelayClient::mux_loop(int relay_fd,
             auto it = mux_joins_.find(cid);
             if(it != mux_joins_.end()){
                 auto& jp = it->second;
-                if(jp->local_fd  >= 0){ shutdown(jp->local_fd,  SHUT_RDWR); close(jp->local_fd);  jp->local_fd=-1;  }
+                // local_fd는 shutdown만 — close는 NetServer::drop_client가 담당
+                // (이중 close 시 ALSA 등이 재사용한 fd를 닫아 abort 발생)
+                if(jp->local_fd  >= 0){ shutdown(jp->local_fd,  SHUT_RDWR); jp->local_fd=-1;  }
                 if(jp->remote_fd >= 0){ shutdown(jp->remote_fd, SHUT_RDWR); close(jp->remote_fd); jp->remote_fd=-1; }
                 mux_joins_.erase(it);
                 printf("[RelayClient] JOIN conn_id=%u disconnected\n", cid);
