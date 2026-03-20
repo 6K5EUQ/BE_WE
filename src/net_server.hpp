@@ -23,10 +23,13 @@ struct ClientConn {
     std::atomic<bool> alive{false};
     std::thread     thr;
 
-    // ── 비동기 송신 큐 ────────────────────────────────────────────────────
-    // 느린 클라이언트가 broadcast를 블로킹하지 않도록 전용 큐 + 송신 스레드
-    static constexpr size_t SEND_QUEUE_MAX = 256; // 초과 시 oldest 드롭 (FFT)
+    // ── 비동기 송신 큐 (오디오 우선) ─────────────────────────────────────
+    // 오디오 큐: 작지만 우선 전송 → 끊김 방지
+    // FFT 큐: 포화 시 oldest 드롭 → 워터폴 갱신 지연은 체감 미미
+    static constexpr size_t SEND_QUEUE_MAX     = 256;
+    static constexpr size_t AUDIO_QUEUE_MAX    = 128;
     std::deque<std::vector<uint8_t>> send_queue;
+    std::deque<std::vector<uint8_t>> audio_queue;
     std::mutex              send_mtx;
     std::condition_variable send_cv;
     std::thread             send_thr;
@@ -38,13 +41,20 @@ struct ClientConn {
             std::vector<uint8_t> pkt;
             {
                 std::unique_lock<std::mutex> lk(send_mtx);
-                send_cv.wait(lk, [this]{ return !send_queue.empty() || send_stop.load(); });
-                if(send_stop.load() && send_queue.empty()) break;
-                pkt = std::move(send_queue.front());
-                send_queue.pop_front();
+                send_cv.wait(lk, [this]{
+                    return !audio_queue.empty() || !send_queue.empty() || send_stop.load();
+                });
+                if(send_stop.load() && audio_queue.empty() && send_queue.empty()) break;
+                // 오디오 우선 전송
+                if(!audio_queue.empty()){
+                    pkt = std::move(audio_queue.front());
+                    audio_queue.pop_front();
+                } else {
+                    pkt = std::move(send_queue.front());
+                    send_queue.pop_front();
+                }
             }
             if(fd < 0 || !alive.load()) continue;
-            // 블로킹 send — fd_write_mtx로 send_file_to와 직렬화
             std::lock_guard<std::mutex> wlk(fd_write_mtx);
             size_t sent = 0;
             while(sent < pkt.size()){
@@ -62,14 +72,22 @@ struct ClientConn {
         if(send_thr.joinable()) send_thr.join();
     }
 
-    // 큐에 패킷 추가 (is_fft=true이면 큐 포화 시 oldest 드롭)
-    void enqueue(std::vector<uint8_t> pkt, bool is_fft = false){
+    // is_fft: FFT 큐에 추가 (포화 시 oldest 드롭)
+    // is_audio: 오디오 큐에 추가 (포화 시 oldest 드롭)
+    // 기타: FFT 큐에 추가 (포화 시 무시)
+    void enqueue(std::vector<uint8_t> pkt, bool is_fft = false, bool is_audio = false){
         std::lock_guard<std::mutex> lk(send_mtx);
-        if(send_queue.size() >= SEND_QUEUE_MAX){
-            if(is_fft) send_queue.pop_front(); // oldest FFT 드롭
-            else return;                        // 제어 패킷: 드롭 대신 무시 (큐 포화 시)
+        if(is_audio){
+            if(audio_queue.size() >= AUDIO_QUEUE_MAX)
+                audio_queue.pop_front();
+            audio_queue.push_back(std::move(pkt));
+        } else {
+            if(send_queue.size() >= SEND_QUEUE_MAX){
+                if(is_fft) send_queue.pop_front();
+                else return;
+            }
+            send_queue.push_back(std::move(pkt));
         }
-        send_queue.push_back(std::move(pkt));
         send_cv.notify_one();
     }
 

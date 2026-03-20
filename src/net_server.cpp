@@ -444,7 +444,7 @@ void NetServer::send_audio(uint32_t op_mask, uint8_t ch_idx, int8_t pan,
     for(auto& c : clients_){
         if(!c->authed || !c->alive.load()) continue;
         if(!(op_mask & (1u << c->op_index))) continue;
-        c->enqueue(make_packet(PacketType::AUDIO_FRAME, payload.data(), payload_size), false);
+        c->enqueue(make_packet(PacketType::AUDIO_FRAME, payload.data(), payload_size), false, true);
     }
 }
 
