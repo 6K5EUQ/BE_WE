@@ -206,9 +206,8 @@ void FFTViewer::sa_start(const std::string& wav_path){
         for(int i=0;i<BINS;i++) lut[i] = (cdf[i]-cdf_min)/cdf_rng;
 
         // ── 픽셀 버퍼 생성 (히스토그램 이퀄라이제이션 LUT 적용) ──────────
-        // OpenGL 최대 텍스처 크기 쿼리 (일반적으로 16384)
-        GLint max_tex = 16384;
-        glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_tex);
+        // GL 호출은 메인 스레드에서만 가능 — 기본 상한값 사용
+        int max_tex = 16384;
 
         // rows가 최대 텍스처 높이 초과 시 행 병합 (시간축 다운샘플)
         int64_t out_rows = rows;
