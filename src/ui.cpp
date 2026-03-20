@@ -2681,8 +2681,8 @@ void run_streaming_viewer(){
                 }
                 // host_state: 0=OK, 2=SPECTRUM_PAUSED (JOIN에게 노란 LINK 표시)
                 uint8_t hst = (v.spectrum_pause.load() || !v.render_visible.load()) ? 2 : 0;
-                // sdr_state: 0=OK, 1=stream error (SDR 뽑힘/초기화 실패)
-                uint8_t sdr_st = cur_sdr_err ? 1 : 0;
+                // sdr_state: 0=OK, 1=stream error/rx stopped (SDR 뽑힘/초기화 실패/의도적 정지)
+                uint8_t sdr_st = (cur_sdr_err || v.rx_stopped.load()) ? 1 : 0;
                 // iq_on: HOST IQ 롤링 상태
                 uint8_t iq_st = v.tm_iq_on.load() ? 1 : 0;
                 v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st, iq_st);
@@ -5338,7 +5338,9 @@ void run_streaming_viewer(){
             }
             bool sdr_on;
             if(v.remote_mode && v.net_cli){
-                bool hb_ok = (glfwGetTime() - v.net_cli->last_heartbeat_time.load()) < 10.0;
+                double lht = v.net_cli->last_heartbeat_time.load();
+                bool hb_received = (lht > 0.0);  // 한 번이라도 HB 수신
+                bool hb_ok = hb_received && (glfwGetTime() - lht) < 5.0;
                 bool sdr_ok = v.net_cli->remote_sdr_state.load() == 0;
                 sdr_on = v.net_cli->is_connected() && hb_ok && sdr_ok;
             } else {
@@ -5346,20 +5348,24 @@ void run_streaming_viewer(){
                 sdr_on = !v.remote_mode && !stream_err && capturing && (sdr_stall_timer < 2.0f);
             }
 
-            // LINK: HOST=클라이언트 연결 중, JOIN=서버 연결 상태, LOCAL=꺼짐
+            // LINK: HOST=relay 서버 연결 상태, JOIN=HOST 연결 상태, LOCAL=꺼짐
             int link_state = 0; // 0=빨간, 1=초록, 2=노란
             if(v.net_srv){
-                // HOST: chassis 2 reset(방송 일시 중단) 중이면 노란, 그 외 초록
+                // HOST: chassis 2 reset 중이면 노란, relay 연결 확인
                 if(v.net_bcast_pause.load(std::memory_order_relaxed))
                     link_state = 2;
-                else
+                else if(relay_cli.is_relay_connected())
                     link_state = 1;
+                else
+                    link_state = 0; // relay 미연결
             } else if(v.net_cli){
                 bool connected = v.net_cli->is_connected();
                 int  hs        = v.net_cli->host_state.load();
-                if(!connected) link_state = 0;
+                double lht2    = v.net_cli->last_heartbeat_time.load();
+                bool hb_ok     = (lht2 > 0.0) ? (glfwGetTime() - lht2) < 5.0 : connected;
+                if(!connected || !hb_ok) link_state = 0;
                 else if(hs==1) link_state = 2; // 노란: HOST chassis 리셋 중
-                else           link_state = 1; // 초록: 연결됨 (HOST FFT 중단 여부 무관)
+                else           link_state = 1; // 초록: 연결됨 + heartbeat 수신 중
             }
 
             // ── AUD LED: 오디오 출력 상태 ────────────────────────────────
