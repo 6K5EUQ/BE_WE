@@ -9,13 +9,15 @@
 #include <png.h>
 
 // ── 계정 getter ───────────────────────────────────────────────────────────
-static char g_login_id  [64] = {};
-static char g_login_pw  [64] = {};
-static int  g_login_tier     = 1;
+static char g_login_id    [64]  = {};
+static char g_login_pw    [64]  = {};
+static int  g_login_tier        = 1;
+static char g_login_server[128] = "144.24.86.137";
 
-const char* login_get_id()   { return g_login_id; }
-const char* login_get_pw()   { return g_login_pw; }
-int         login_get_tier() { return g_login_tier; }
+const char* login_get_id()     { return g_login_id; }
+const char* login_get_pw()     { return g_login_pw; }
+int         login_get_tier()   { return g_login_tier; }
+const char* login_get_server() { return g_login_server; }
 
 // ── 배경 텍스처 (티어별) ──────────────────────────────────────────────────
 static GLuint bg_tex[3] = {0,0,0};
@@ -144,8 +146,10 @@ bool draw_login_screen(int win_w, int win_h){
     ImGui::PopStyleVar(2);
 
     // ── 로그인 패널 ──────────────────────────────────────────────────────
+    static char server_buf[128] = "144.24.86.137";
+
     bool is_t3 = (tier == 3);
-    const float PW_=290.0f,PH_=262.0f,PAD=28.0f;
+    const float PW_=290.0f,PH_=318.0f,PAD=28.0f;
     ImGui::SetNextWindowPos(ImVec2((float)win_w-PW_-PAD,(float)win_h-PH_-PAD));
     ImGui::SetNextWindowSize(ImVec2(PW_,PH_));
     ImGui::SetNextWindowBgAlpha(0.88f);
@@ -224,12 +228,18 @@ bool draw_login_screen(int win_w, int win_h){
         if(id_buf[0]=='\0'){ failed=true; fail_timer=2.5f; }
         else if(!is_t3 && pw_buf[0]=='\0'){ failed=true; fail_timer=2.5f; }
         else {
-            strncpy(g_login_id, id_buf, 63);
-            strncpy(g_login_pw, pw_buf, 63);
+            strncpy(g_login_id,     id_buf,     63);
+            strncpy(g_login_pw,     pw_buf,     63);
+            strncpy(g_login_server, server_buf, 127);
             g_login_tier=tier;
             login_done=true;
         }
     }
+
+    ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+    ImGui::TextColored(ImVec4(0.45f,0.55f,0.75f,1.0f),"Central Server");
+    ImGui::SetNextItemWidth(PW_-16.0f);
+    ImGui::InputText("##server", server_buf, sizeof(server_buf));
 
     ImGui::End();
     ImGui::PopStyleColor(9);

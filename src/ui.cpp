@@ -5,7 +5,7 @@
 #include "bewe_paths.hpp"
 #include "globe.hpp"
 #include "udp_discovery.hpp"
-#include "relay_client.hpp"
+#include "central_client.hpp"
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <algorithm>
@@ -1251,11 +1251,13 @@ void run_streaming_viewer(){
     static std::string s_station_name;
     static float       s_station_lat = 0.f, s_station_lon = 0.f;
     static bool        s_station_set = false;
-    // Relay 서버 설정 (세션 간 유지)
-    static char s_relay_host[128] = "144.24.86.137";
-    static constexpr int s_relay_list_port = RELAY_PORT;
-    // relay 경유 JOIN 시 station_id 보존 (재연결용)
-    static std::string s_relay_join_station_id;
+    // Central Server 설정 (로그인 화면에서 입력한 값으로 초기화)
+    static char s_central_host[128] = {};
+    if(s_central_host[0] == '\0')
+        strncpy(s_central_host, login_get_server(), 127);
+    static constexpr int s_central_port = CENTRAL_PORT;
+    // Central Server 경유 JOIN 시 station_id 보존 (재연결용)
+    static std::string s_central_join_station_id;
     int  mode_sel     = do_chassis_reset ? chassis_reset_mode : 0;
     int& host_port    = s_host_port;
     char (&connect_host)[128] = s_connect_host;
@@ -1313,14 +1315,14 @@ void run_streaming_viewer(){
 
 
     // Relay 클라이언트: Relay 주소가 설정돼 있으면 인터넷 스테이션 폴링
-    RelayClient relay_cli;
-    if(s_relay_host[0] != '\0'){
-        relay_cli.start_polling(s_relay_host, s_relay_list_port,
-            [&](const std::vector<RelayClient::Station>& stations){
+    CentralClient central_cli;
+    if(s_central_host[0] != '\0'){
+        central_cli.start_polling(s_central_host, s_central_port,
+            [&](const std::vector<CentralClient::Station>& stations){
                 std::lock_guard<std::mutex> lk(v.discovered_stations_mtx);
                 double now = glfwGetTime();
                 for(auto& rs : stations){
-                    // station_id 기반 upsert (relay 모드: ip/port 없음)
+                    // station_id 기반 upsert (Central Server 모드: ip/port 없음)
                     bool found = false;
                     for(auto& s : v.discovered_stations){
                         if(!s.station_id.empty() && s.station_id == rs.station_id){
@@ -1339,8 +1341,8 @@ void run_streaming_viewer(){
                         ns.name       = rs.name;
                         ns.lat        = rs.lat;
                         ns.lon        = rs.lon;
-                        ns.tcp_port   = 0;  // relay 모드: 포트 직접 연결 없음
-                        ns.ip         = ""; // relay 모드: IP 직접 연결 없음
+                        ns.tcp_port   = 0;  // Central Server 모드: 포트 직접 연결 없음
+                        ns.ip         = ""; // Central Server 모드: IP 직접 연결 없음
                         ns.user_count = rs.user_count;
                         ns.host_tier  = rs.host_tier ? rs.host_tier : 1;
                         ns.last_seen  = now + 12.0;
@@ -1639,9 +1641,9 @@ void run_streaming_viewer(){
                 cli = new NetClient();
                 bool join_ok = false;
 
-                if(!pending_join.station_id.empty() && s_relay_host[0] != '\0'){
-                    // ── 외부 relay 경유 JOIN ─────────────────────────────
-                    int rfd = relay_cli.join_room(s_relay_host, s_relay_list_port,
+                if(!pending_join.station_id.empty() && s_central_host[0] != '\0'){
+                    // ── 외부 Central Server 경유 JOIN ─────────────────────────────
+                    int rfd = central_cli.join_room(s_central_host, s_central_port,
                                                   pending_join.station_id);
                     if(rfd >= 0){
                         join_ok = cli->connect_fd(rfd, login_get_id(), login_get_pw(),
@@ -1662,11 +1664,11 @@ void run_streaming_viewer(){
                     strncpy(connect_id, login_get_id(), 31); connect_id[31]='\0';
                     strncpy(connect_pw, login_get_pw(), 63); connect_pw[63]='\0';
                     connect_tier = (uint8_t)login_get_tier();
-                    // 외부 relay 경유 JOIN이면 station_id 보존 (재연결용)
-                    if(!pending_join.station_id.empty() && s_relay_host[0] != '\0')
-                        s_relay_join_station_id = pending_join.station_id;
+                    // 외부 Central Server 경유 JOIN이면 station_id 보존 (재연결용)
+                    if(!pending_join.station_id.empty() && s_central_host[0] != '\0')
+                        s_central_join_station_id = pending_join.station_id;
                     else
-                        s_relay_join_station_id.clear();
+                        s_central_join_station_id.clear();
                     mode_sel=2; pop_state=POP_NONE; mode_done=true;
                 } else {
                     delete cli; cli=nullptr;
@@ -1700,7 +1702,7 @@ void run_streaming_viewer(){
     }
 
     disc_listener.stop();
-    relay_cli.stop_polling();
+    central_cli.stop_polling();
     globe.destroy();
 
     if(glfwWindowShouldClose(win)){
@@ -2462,19 +2464,19 @@ void run_streaming_viewer(){
                         lip.c_str(),
                         (uint8_t)login_get_tier());
                 }
-                // relay MUX 어댑터 시작 (외부 relay)
-                if(s_relay_host[0] != '\0' && v.station_location_set){
-                    auto relay_connect = [&v, &relay_cli,
-                                          rh = std::string(s_relay_host),
-                                          rp = s_relay_list_port](){
+                // Central MUX 어댑터 시작 (Central Server)
+                if(s_central_host[0] != '\0' && v.station_location_set){
+                    auto central_connect = [&v, &central_cli,
+                                          rh = std::string(s_central_host),
+                                          rp = s_central_port](){
                         std::string sid = v.station_name + "_" + std::string(login_get_id());
-                        int rfd = relay_cli.open_room(
+                        int rfd = central_cli.open_room(
                             rh, rp, sid, v.station_name,
                             v.station_lat, v.station_lon,
                             (uint8_t)login_get_tier());
                         if(rfd >= 0){
                             // 릴레이가 재작성한 CHANNEL_SYNC → HOST의 audio_mask 갱신
-                            relay_cli.set_on_relay_ch_sync([&v](const uint8_t* pkt, size_t len){
+                            central_cli.set_on_central_ch_sync([&v](const uint8_t* pkt, size_t len){
                                 if(len < 9 + 60*10) return;  // BEWE_HDR + 10 entries
                                 const uint8_t* payload = pkt + 9;
                                 for(int i=0; i<MAX_CHANNELS && i<10; i++){
@@ -2483,38 +2485,38 @@ void run_streaming_viewer(){
                                     v.channels[i].audio_mask.store(mask);
                                 }
                             });
-                            relay_cli.start_mux_adapter(rfd,
+                            central_cli.start_mux_adapter(rfd,
                                 [&v](int local_fd){ if(v.net_srv) v.net_srv->inject_fd(local_fd); },
                                 [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; },
-                                [&v, &relay_cli, rh, rp](){
-                                    // relay 끊김 → 자동 재연결 (3초 후, 최대 5회)
-                                    std::thread([&v, &relay_cli, rh, rp](){
+                                [&v, &central_cli, rh, rp](){
+                                    // Central Server 끊김 → 자동 재연결 (3초 후, 최대 5회)
+                                    std::thread([&v, &central_cli, rh, rp](){
                                         for(int attempt=0; attempt<5; attempt++){
                                             std::this_thread::sleep_for(std::chrono::seconds(3));
                                             if(!v.net_srv) return;  // HOST 모드 종료됨
-                                            printf("[UI] relay auto-reconnect attempt %d/5\n", attempt+1);
+                                            printf("[UI] Central auto-reconnect attempt %d/5\n", attempt+1);
                                             std::string sid = v.station_name + "_" + std::string(login_get_id());
-                                            int rfd2 = relay_cli.open_room(
+                                            int rfd2 = central_cli.open_room(
                                                 rh, rp, sid, v.station_name,
                                                 v.station_lat, v.station_lon,
                                                 (uint8_t)login_get_tier());
                                             if(rfd2 >= 0){
-                                                relay_cli.start_mux_adapter(rfd2,
+                                                central_cli.start_mux_adapter(rfd2,
                                                     [&v](int fd2){ if(v.net_srv) v.net_srv->inject_fd(fd2); },
                                                     [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; });
-                                                printf("[UI] relay auto-reconnected\n");
+                                                printf("[UI] Central auto-reconnected\n");
                                                 return;
                                             }
                                         }
-                                        printf("[UI] relay auto-reconnect failed after 5 attempts\n");
+                                        printf("[UI] Central auto-reconnect failed after 5 attempts\n");
                                     }).detach();
                                 });
-                            printf("[UI] relay MUX adapter started\n");
+                            printf("[UI] Central MUX adapter started\n");
                         } else {
-                            printf("[UI] relay open_room failed, relay unavailable\n");
+                            printf("[UI] Central open_room failed, Central unavailable\n");
                         }
                     };
-                    relay_connect();
+                    central_connect();
                 }
                 // 브로드캐스트 전용 스레드 시작 (캡처 스레드 분리)
                 v.net_bcast_stop.store(false);
@@ -2736,20 +2738,20 @@ void run_streaming_viewer(){
             v.net_bcast_pause.store(true, std::memory_order_relaxed);
             v.net_srv->pause_broadcast();
             v.net_srv->flush_clients();
-            // 4) 릴레이 서버에 NET_RESET 전송 (지구본 마커 사라짐)
-            if(relay_cli.is_relay_connected())
-                relay_cli.send_net_reset(0);  // 0 = reset start
+            // 4) Central Server에 NET_RESET 전송 (지구본 마커 사라짐)
+            if(central_cli.is_central_connected())
+                central_cli.send_net_reset(0);  // 0 = reset start
             // 5) 1초 후 재개
             NetServer* srv_ptr = v.net_srv;
             std::atomic<bool>* bcast_pause_ptr = &v.net_bcast_pause;
             std::mutex* log_mtx_ptr2 = &host_chat_mtx;
             std::vector<LocalChatMsg>* log_ptr2 = &host_chat_log;
-            RelayClient* relay_ptr = &relay_cli;
+            CentralClient* central_ptr = &central_cli;
             FFTViewer* vp = &v;
-            std::string relay_host_str = s_relay_host;
-            int relay_port_val = s_relay_list_port;
+            std::string central_host_str = s_central_host;
+            int central_port_val = s_central_port;
             std::thread([srv_ptr, bcast_pause_ptr, log_mtx_ptr2, log_ptr2,
-                         relay_ptr, vp, relay_host_str, relay_port_val](){
+                         central_ptr, vp, central_host_str, central_port_val](){
                 std::this_thread::sleep_for(std::chrono::seconds(1));
                 // 재개 전 한번 더 큐 flush (1초간 쌓인 잔여)
                 srv_ptr->flush_clients();
@@ -2758,24 +2760,24 @@ void run_streaming_viewer(){
                 srv_ptr->broadcast_heartbeat(0);
                 srv_ptr->broadcast_chat("BEWE", "Chassis 2 stable ...");
                 // relay가 끊겨있으면 재연결
-                if(!relay_ptr->is_relay_connected() && !relay_host_str.empty()){
-                    relay_ptr->stop_mux_adapter();
+                if(!central_ptr->is_central_connected() && !central_host_str.empty()){
+                    central_ptr->stop_mux_adapter();
                     std::string sid = vp->station_name + "_" + std::string(login_get_id());
-                    int rfd = relay_ptr->open_room(
-                        relay_host_str, relay_port_val,
+                    int rfd = central_ptr->open_room(
+                        central_host_str, central_port_val,
                         sid, vp->station_name,
                         vp->station_lat, vp->station_lon,
                         (uint8_t)login_get_tier());
                     if(rfd >= 0){
-                        relay_ptr->start_mux_adapter(rfd,
+                        central_ptr->start_mux_adapter(rfd,
                             [vp](int local_fd){ if(vp->net_srv) vp->net_srv->inject_fd(local_fd); },
                             [vp](){ return vp->net_srv ? (uint8_t)vp->net_srv->client_count() : (uint8_t)0; });
-                        printf("[UI] relay reconnected after chassis 2 reset\n");
+                        printf("[UI] Central reconnected after chassis 2 reset\n");
                     } else {
-                        printf("[UI] relay reconnect failed after chassis 2 reset\n");
+                        printf("[UI] Central reconnect failed after chassis 2 reset\n");
                     }
-                } else if(relay_ptr->is_relay_connected()){
-                    relay_ptr->send_net_reset(1);  // 1 = open
+                } else if(central_ptr->is_central_connected()){
+                    central_ptr->send_net_reset(1);  // 1 = open
                 }
                 std::lock_guard<std::mutex> lk(*log_mtx_ptr2);
                 LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
@@ -2973,11 +2975,11 @@ void run_streaming_viewer(){
                 // 재연결을 백그라운드 스레드에서 수행 → UI 블로킹 방지
                 auto* cli_ptr = v.net_cli;
                 auto* v_ptr   = &v;
-                auto* relay_ptr = &relay_cli;
-                std::thread([cli_ptr, v_ptr, relay_ptr,
-                             relay_host  = s_relay_host,
-                             relay_port  = s_relay_list_port,
-                             station_id  = s_relay_join_station_id,
+                auto* central_ptr = &central_cli;
+                std::thread([cli_ptr, v_ptr, central_ptr,
+                             central_host  = s_central_host,
+                             central_port  = s_central_port,
+                             station_id  = s_central_join_station_id,
                              c_host = std::string(connect_host),
                              c_port = connect_port,
                              c_id   = std::string(connect_id),
@@ -2985,7 +2987,7 @@ void run_streaming_viewer(){
                              c_tier = connect_tier](){
                     bool ok = false;
                     if(!station_id.empty()){
-                        int rfd = relay_ptr->join_room(relay_host, relay_port, station_id);
+                        int rfd = central_ptr->join_room(central_host, central_port, station_id);
                         if(rfd >= 0){
                             ok = cli_ptr->connect_fd(rfd, c_id.c_str(), c_pw.c_str(), c_tier);
                             if(!ok) close(rfd);
@@ -5363,16 +5365,16 @@ void run_streaming_viewer(){
                 sdr_on = !v.remote_mode && !stream_err && capturing && (sdr_stall_timer < 2.0f);
             }
 
-            // LINK: HOST=relay 서버 연결 상태, JOIN=HOST 연결 상태, LOCAL=꺼짐
+            // LINK: HOST=Central Server 연결 상태, JOIN=HOST 연결 상태, LOCAL=꺼짐
             int link_state = 0; // 0=빨간, 1=초록, 2=노란
             if(v.net_srv){
-                // HOST: chassis 2 reset 중이면 노란, relay 연결 확인
+                // HOST: chassis 2 reset 중이면 노란, Central Server 연결 확인
                 if(v.net_bcast_pause.load(std::memory_order_relaxed))
                     link_state = 2;
-                else if(relay_cli.is_relay_connected())
+                else if(central_cli.is_central_connected())
                     link_state = 1;
                 else
-                    link_state = 0; // relay 미연결
+                    link_state = 0; // Central Server 미연결
             } else if(v.net_cli){
                 bool connected = v.net_cli->is_connected();
                 int  hs        = v.net_cli->host_state.load();
@@ -5852,41 +5854,41 @@ void run_streaming_viewer(){
                             v.net_bcast_pause.store(true, std::memory_order_relaxed);
                             v.net_srv->pause_broadcast();
                             v.net_srv->flush_clients();
-                            // 릴레이 서버에 NET_RESET 전송
-                            if(relay_cli.is_relay_connected())
-                                relay_cli.send_net_reset(0);  // 0 = reset start
+                            // Central Server에 NET_RESET 전송
+                            if(central_cli.is_central_connected())
+                                central_cli.send_net_reset(0);  // 0 = reset start
                             NetServer* srv_ptr = v.net_srv;
                             std::atomic<bool>* bcast_pause_ptr = &v.net_bcast_pause;
                             std::mutex* log_mtx_ptr = &host_chat_mtx;
                             std::vector<LocalChatMsg>* log_ptr = &host_chat_log;
-                            RelayClient* relay_ptr = &relay_cli;
+                            CentralClient* central_ptr = &central_cli;
                             FFTViewer* vp = &v;
-                            std::string rh = s_relay_host;
-                            int rp = s_relay_list_port;
+                            std::string rh = s_central_host;
+                            int rp = s_central_port;
                             std::thread([srv_ptr, bcast_pause_ptr, log_mtx_ptr, log_ptr,
-                                         relay_ptr, vp, rh, rp](){
+                                         central_ptr, vp, rh, rp](){
                                 std::this_thread::sleep_for(std::chrono::seconds(1));
                                 srv_ptr->flush_clients();
                                 srv_ptr->resume_broadcast();
                                 bcast_pause_ptr->store(false, std::memory_order_relaxed);
                                 srv_ptr->broadcast_heartbeat(0);
                                 srv_ptr->broadcast_chat("BEWE", "Chassis 2 stable ...");
-                                // relay 끊겨있으면 재연결
-                                if(!relay_ptr->is_relay_connected() && !rh.empty()){
-                                    relay_ptr->stop_mux_adapter();
+                                // Central Server 끊겨있으면 재연결
+                                if(!central_ptr->is_central_connected() && !rh.empty()){
+                                    central_ptr->stop_mux_adapter();
                                     std::string sid = vp->station_name + "_" + std::string(login_get_id());
-                                    int rfd = relay_ptr->open_room(
+                                    int rfd = central_ptr->open_room(
                                         rh, rp, sid, vp->station_name,
                                         vp->station_lat, vp->station_lon,
                                         (uint8_t)login_get_tier());
                                     if(rfd >= 0){
-                                        relay_ptr->start_mux_adapter(rfd,
+                                        central_ptr->start_mux_adapter(rfd,
                                             [vp](int local_fd){ if(vp->net_srv) vp->net_srv->inject_fd(local_fd); },
                                             [vp](){ return vp->net_srv ? (uint8_t)vp->net_srv->client_count() : (uint8_t)0; });
-                                        printf("[UI] relay reconnected after chassis 2 reset (chat)\n");
+                                        printf("[UI] Central reconnected after chassis 2 reset (chat)\n");
                                     }
-                                } else if(relay_ptr->is_relay_connected()){
-                                    relay_ptr->send_net_reset(1);
+                                } else if(central_ptr->is_central_connected()){
+                                    central_ptr->send_net_reset(1);
                                 }
                                 std::lock_guard<std::mutex> lk(*log_mtx_ptr);
                                 LocalChatMsg lm{}; lm.is_error = false;
@@ -6068,8 +6070,8 @@ void run_streaming_viewer(){
     v.net_bcast_stop.store(true);
     v.net_bcast_cv.notify_all();
     if(v.net_bcast_thr.joinable()) v.net_bcast_thr.join();
-    relay_cli.stop_mux_adapter();
-    relay_cli.stop_polling();
+    central_cli.stop_mux_adapter();
+    central_cli.stop_polling();
     if(v.net_srv){ v.net_srv->stop_discovery_broadcast(); v.net_srv->stop(); delete v.net_srv; v.net_srv=nullptr; }
     if(v.net_cli){ v.net_cli->disconnect(); delete v.net_cli; v.net_cli=nullptr; }
     if(!v.remote_mode && cap.joinable()) cap.join();

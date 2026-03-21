@@ -52,7 +52,7 @@ add_executable(BE_WE
     src/net_stream.cpp
     src/globe.cpp
     src/udp_discovery.cpp
-    src/relay_client.cpp
+    src/central_client.cpp
     ${IMGUI_SOURCES}
 )
 
