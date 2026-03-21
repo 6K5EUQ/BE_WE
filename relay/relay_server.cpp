@@ -10,7 +10,7 @@
 #include <ifaddrs.h>
 #include <unistd.h>
 
-static constexpr int HOST_TIMEOUT_SEC  = 15;
+static constexpr int HOST_TIMEOUT_SEC  = 10;
 static constexpr int HANDSHAKE_TIMEOUT = 10;
 static constexpr size_t PIPE_BUF       = 65536;
 
@@ -68,7 +68,7 @@ void RelayServer::accept_loop(){
         int cfd = accept(listen_fd_, (sockaddr*)&caddr, &clen);
         if(cfd < 0){ if(running_.load()) perror("accept"); break; }
         int ka = 1; setsockopt(cfd, SOL_SOCKET, SO_KEEPALIVE, &ka, sizeof(ka));
-        int bufsize = 2 * 1024 * 1024;  // 2MB
+        int bufsize = 1024 * 1024;  // 1MB
         setsockopt(cfd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
         setsockopt(cfd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
         int nd = 1; setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
@@ -617,7 +617,7 @@ std::shared_ptr<HostRoom> RelayServer::find_room(const std::string& id) const {
 
 void RelayServer::watchdog_loop(){
     while(running_.load()){
-        std::this_thread::sleep_for(std::chrono::seconds(5));
+        std::this_thread::sleep_for(std::chrono::seconds(3));
         auto now = std::chrono::steady_clock::now();
         std::lock_guard<std::mutex> lk(rooms_mtx_);
         for(auto& r : rooms_){

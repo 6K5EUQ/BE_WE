@@ -5362,7 +5362,10 @@ void run_streaming_viewer(){
                 bool connected = v.net_cli->is_connected();
                 int  hs        = v.net_cli->host_state.load();
                 double lht2    = v.net_cli->last_heartbeat_time.load();
-                bool hb_ok     = (lht2 > 0.0) ? (glfwGetTime() - lht2) < 5.0 : connected;
+                // steady_clock 기반으로 비교 (glfwGetTime과 시계 불일치 방지)
+                double now_sc  = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+                bool hb_ok     = (lht2 > 0.0) ? (now_sc - lht2) < 5.0 : connected;
                 if(!connected || !hb_ok) link_state = 0;
                 else if(hs==1) link_state = 2; // 노란: HOST chassis 리셋 중
                 else           link_state = 1; // 초록: 연결됨 + heartbeat 수신 중
