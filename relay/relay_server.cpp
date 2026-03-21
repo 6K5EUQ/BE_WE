@@ -68,7 +68,7 @@ void RelayServer::accept_loop(){
         int cfd = accept(listen_fd_, (sockaddr*)&caddr, &clen);
         if(cfd < 0){ if(running_.load()) perror("accept"); break; }
         int ka = 1; setsockopt(cfd, SOL_SOCKET, SO_KEEPALIVE, &ka, sizeof(ka));
-        int bufsize = 1024 * 1024;  // 1MB
+        int bufsize = 4 * 1024 * 1024;  // 4MB (HOST FFT 스트림 버스트 흡수)
         setsockopt(cfd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
         setsockopt(cfd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
         int nd = 1; setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));

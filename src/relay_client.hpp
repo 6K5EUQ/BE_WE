@@ -3,8 +3,10 @@
 #include "net_protocol.hpp"
 #include <string>
 #include <vector>
+#include <deque>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -63,9 +65,11 @@ public:
 
     // relay에 NET_RESET 신호 전송 (0=reset start, 1=open)
     void send_net_reset(uint8_t flag){
-        if(mux_relay_fd_ < 0) return;
-        std::lock_guard<std::mutex> lk(mux_relay_write_mtx_);
-        relay_send_mux(mux_relay_fd_, 0xFFFF, RelayMuxType::NET_RESET, &flag, 1);
+        if(!relay_sender_running_.load()) return;
+        RelayMuxHdr mh{}; mh.conn_id = 0xFFFF;
+        mh.type = static_cast<uint8_t>(RelayMuxType::NET_RESET);
+        mh.len = 1;
+        enqueue_relay(&mh, RELAY_MUX_HDR_SIZE, &flag, 1);
     }
 
     // ── JOIN 모드 ─────────────────────────────────────────────────────────
@@ -90,7 +94,23 @@ private:
     std::thread       mux_thr_;
     std::atomic<bool> mux_running_{false};
     int               mux_relay_fd_ = -1;
-    std::mutex        mux_relay_write_mtx_; // relay_fd write 직렬화 (mux_loop HB + pump thr)
+
+    // relay_fd 전용 송신 큐 + 스레드
+    // 펌프/HB 모두 여기 enqueue → relay_sender_thr_ 가 직렬로 write
+    // → 펌프가 relay_fd 블로킹으로 mutex 장시간 점유해 HB를 막는 문제 해결
+    std::thread              relay_sender_thr_;
+    std::atomic<bool>        relay_sender_running_{false};
+    std::mutex               relay_queue_mtx_;
+    std::condition_variable  relay_queue_cv_;
+    std::deque<std::vector<uint8_t>> relay_send_queue_;
+    size_t                   relay_queue_bytes_ = 0;
+    static constexpr size_t  RELAY_QUEUE_MAX_BYTES = 8 * 1024 * 1024; // 8MB
+
+    // (hdr, hdr_len) + (data, data_len) 을 합쳐 하나의 청크로 enqueue
+    // queue가 RELAY_QUEUE_MAX_BYTES 를 초과하면 가장 오래된 항목부터 삭제
+    void enqueue_relay(const void* hdr, size_t hdr_len,
+                       const void* data, size_t data_len);
+    void relay_sender_loop(int relay_fd);
 
     struct JoinPair {
         int local_fd  = -1;  // NetServer 쪽 (accept로 받음)

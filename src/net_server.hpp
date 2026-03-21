@@ -42,14 +42,19 @@ struct ClientConn {
     std::atomic<bool>       send_stop{false};
     std::mutex              fd_write_mtx;  // fd write 직렬화 (send/audio/send_file_to)
 
-    // fd로 패킷 전송 (공통)
+    // fd로 패킷 전송 (non-blocking: socketpair 버퍼 가득 차면 드롭)
     void send_raw(const std::vector<uint8_t>& pkt){
         if(fd < 0 || !alive.load()) return;
         std::lock_guard<std::mutex> wlk(fd_write_mtx);
         size_t sent = 0;
         while(sent < pkt.size()){
-            ssize_t r = ::send(fd, pkt.data()+sent, pkt.size()-sent, MSG_NOSIGNAL);
-            if(r <= 0){ alive.store(false); break; }
+            ssize_t r = ::send(fd, pkt.data()+sent, pkt.size()-sent, MSG_NOSIGNAL | MSG_DONTWAIT);
+            if(r < 0){
+                if(errno == EAGAIN || errno == EWOULDBLOCK)
+                    return;  // 버퍼 가득 → 이 패킷 드롭 (실시간 스트림)
+                alive.store(false); return;
+            }
+            if(r == 0){ alive.store(false); return; }
             sent += (size_t)r;
         }
     }

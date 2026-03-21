@@ -154,14 +154,11 @@ int RelayClient::open_room(const std::string& relay_host, int relay_port,
     int fd = tcp_connect_any(cands, relay_port);
     if(fd < 0){ printf("[RelayClient] open_room: connect failed\n"); return -1; }
 
-    // TCP send/recv 버퍼 확대 (MUX 스트림 안정성)
-    int bufsize = 1024 * 1024;
+    // TCP 최적화: send/recv 버퍼 확대 + Nagle 비활성화
+    int bufsize = 4 * 1024 * 1024;
     setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
     setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
-    // TCP_NODELAY + send 타임아웃 (buffer 가득 차도 무한 블록 방지)
     int nd = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
-    timeval stv{2, 0};  // 2초 타임아웃
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &stv, sizeof(stv));
 
     RelayHostOpen op{};
     strncpy(op.station_id,   station_id.c_str(),   sizeof(op.station_id)-1);
@@ -182,6 +179,50 @@ int RelayClient::open_room(const std::string& relay_host, int relay_port,
 // 데이터(DATA)        → 해당 join의 remote_fd로 전달
 // JOIN 종료(CONN_CLOSE) → socketpair 닫기
 // local_fd에서 JOIN이 보내는 데이터 → relay_fd로 MUX해서 전송
+// ── relay_fd 전용 송신 큐 ─────────────────────────────────────────────────
+void RelayClient::enqueue_relay(const void* hdr, size_t hdr_len,
+                                 const void* data, size_t data_len){
+    if(!relay_sender_running_.load()) return;
+    size_t total = hdr_len + data_len;
+    std::lock_guard<std::mutex> lk(relay_queue_mtx_);
+    // 큐 오버플로: 오래된 항목 드롭 (FFT 프레임은 스트리밍이라 일부 유실 허용)
+    while(relay_queue_bytes_ + total > RELAY_QUEUE_MAX_BYTES && !relay_send_queue_.empty()){
+        relay_queue_bytes_ -= relay_send_queue_.front().size();
+        relay_send_queue_.pop_front();
+    }
+    std::vector<uint8_t> pkt(total);
+    if(hdr_len && hdr)   memcpy(pkt.data(),           hdr,  hdr_len);
+    if(data_len && data) memcpy(pkt.data() + hdr_len, data, data_len);
+    relay_send_queue_.push_back(std::move(pkt));
+    relay_queue_bytes_ += total;
+    relay_queue_cv_.notify_one();
+}
+
+// relay_fd 단독 write 스레드: 큐를 드레인하여 순서 보장 + mutex 불필요
+void RelayClient::relay_sender_loop(int relay_fd){
+    while(relay_sender_running_.load()){
+        std::vector<uint8_t> pkt;
+        {
+            std::unique_lock<std::mutex> lk(relay_queue_mtx_);
+            relay_queue_cv_.wait_for(lk, std::chrono::milliseconds(200),
+                [this]{ return !relay_send_queue_.empty() || !relay_sender_running_.load(); });
+            if(relay_send_queue_.empty()) continue;
+            pkt = std::move(relay_send_queue_.front());
+            relay_send_queue_.pop_front();
+            relay_queue_bytes_ -= pkt.size();
+        }
+        if(!relay_send_all(relay_fd, pkt.data(), pkt.size())){
+            int e = errno;
+            printf("[RelayClient] relay_sender: send failed errno=%d(%s), closing relay_fd\n",
+                   e, strerror(e));
+            // relay_fd 닫기 → mux_loop recv 실패 → mux_loop 종료 → on_mux_disconnect_ 호출
+            shutdown(relay_fd, SHUT_RDWR);
+            break;
+        }
+    }
+    relay_sender_running_.store(false);
+}
+
 void RelayClient::start_mux_adapter(int relay_fd,
                                      std::function<void(int)> on_new_join,
                                      std::function<uint8_t()> user_count_fn,
@@ -189,6 +230,18 @@ void RelayClient::start_mux_adapter(int relay_fd,
     stop_mux_adapter();
     mux_relay_fd_ = relay_fd;
     on_mux_disconnect_ = std::move(on_disconnect);
+
+    // relay_fd 송신 타임아웃 해제 (relay_sender가 단독으로 블로킹 write)
+    // tcp_connect에서 설정된 3초 SNDTIMEO를 제거해 장기 스트림에 맞게 설정
+    timeval tv0{0, 0};
+    setsockopt(relay_fd, SOL_SOCKET, SO_SNDTIMEO, &tv0, sizeof(tv0));
+
+    // relay_sender 먼저 시작 (pump/HB enqueue 직전)
+    relay_queue_bytes_ = 0;
+    relay_send_queue_.clear();
+    relay_sender_running_.store(true);
+    relay_sender_thr_ = std::thread(&RelayClient::relay_sender_loop, this, relay_fd);
+
     mux_running_.store(true);
     mux_thr_ = std::thread(&RelayClient::mux_loop, this,
                             relay_fd, std::move(on_new_join), std::move(user_count_fn));
@@ -196,8 +249,16 @@ void RelayClient::start_mux_adapter(int relay_fd,
 
 void RelayClient::stop_mux_adapter(){
     mux_running_.store(false);
+    relay_sender_running_.store(false);
+    relay_queue_cv_.notify_all();  // relay_sender 대기 중이면 깨우기
     if(mux_relay_fd_ >= 0){ shutdown(mux_relay_fd_, SHUT_RDWR); }
     if(mux_thr_.joinable()) mux_thr_.join();
+    if(relay_sender_thr_.joinable()) relay_sender_thr_.join();
+    {
+        std::lock_guard<std::mutex> qlk(relay_queue_mtx_);
+        relay_send_queue_.clear();
+        relay_queue_bytes_ = 0;
+    }
     std::lock_guard<std::mutex> lk(mux_joins_mtx_);
     for(auto& [id, jp] : mux_joins_){
         if(jp->local_fd  >= 0){ shutdown(jp->local_fd,  SHUT_RDWR); close(jp->local_fd);  }
@@ -233,21 +294,15 @@ void RelayClient::mux_loop(int relay_fd,
                        errno, strerror(errno));
                 break;
             }
-            // EAGAIN/ETIMEDOUT → heartbeat 전송 후 계속
+            // EAGAIN/ETIMEDOUT → heartbeat enqueue 후 계속
+            // enqueue_relay는 블로킹 없음 (relay_sender_thr_가 실제 write)
             auto now = std::chrono::steady_clock::now();
             if(std::chrono::duration_cast<std::chrono::seconds>(now-last_hb).count() >= 3){
                 last_hb = now;
                 RelayMuxHdr hb{}; hb.type = 0x00; hb.len = sizeof(RelayHostHb);
                 RelayHostHb hbp{}; hbp.user_count = count_fn ? count_fn() : 0;
-                {
-                    std::lock_guard<std::mutex> wlk(mux_relay_write_mtx_);
-                    if(!relay_send_all(relay_fd, &hb, RELAY_MUX_HDR_SIZE) ||
-                       !relay_send_all(relay_fd, &hbp, sizeof(hbp))){
-                        printf("[RelayClient] mux_loop: HB send failed\n");
-                        break;
-                    }
-                }
-                printf("[RelayClient] HB sent (users=%u)\n", hbp.user_count);
+                enqueue_relay(&hb, RELAY_MUX_HDR_SIZE, &hbp, sizeof(hbp));
+                printf("[RelayClient] HB enqueued (users=%u)\n", hbp.user_count);
             }
             continue;
         }
@@ -268,7 +323,7 @@ void RelayClient::mux_loop(int relay_fd,
             int sv[2];
             if(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) continue;
             // socketpair 버퍼 확대 (relay 경유 시 burst 흡수)
-            int spbuf = 1024 * 1024;
+            int spbuf = 212992;
             setsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &spbuf, sizeof(spbuf));
             setsockopt(sv[0], SOL_SOCKET, SO_RCVBUF, &spbuf, sizeof(spbuf));
             setsockopt(sv[1], SOL_SOCKET, SO_SNDBUF, &spbuf, sizeof(spbuf));
@@ -287,8 +342,8 @@ void RelayClient::mux_loop(int relay_fd,
             }
 
             // sv[1] → relay_fd pump (JOIN이 local_fd에 쓰는 데이터를 relay로)
-            int rfd = relay_fd;
-            jp->thr = std::thread([jp, cid, rfd, this](){
+            // enqueue_relay 사용: relay_sender_thr_ 가 실제 write → 블로킹 없음
+            jp->thr = std::thread([jp, cid, this](){
                 std::vector<uint8_t> tbuf(65536);
                 while(jp->local_fd >= 0 && mux_running_.load()){
                     ssize_t n = recv(jp->remote_fd, tbuf.data(), tbuf.size(), 0);
@@ -296,17 +351,9 @@ void RelayClient::mux_loop(int relay_fd,
                     RelayMuxHdr mh{}; mh.conn_id=cid;
                     mh.type = static_cast<uint8_t>(RelayMuxType::DATA);
                     mh.len  = (uint32_t)n;
-                    std::lock_guard<std::mutex> wlk(mux_relay_write_mtx_);
-                    if(!relay_send_all(rfd, &mh, RELAY_MUX_HDR_SIZE) ||
-                       !relay_send_all(rfd, tbuf.data(), n)){
-                        int e = errno;
-                        printf("[RelayClient] pump: relay_fd write failed conn_id=%u errno=%d(%s)\n",
-                               cid, e, strerror(e));
-                        // relay_fd 에러 → mux_loop 종료시켜서 auto-reconnect 유도
-                        shutdown(rfd, SHUT_RDWR);
-                        break;
-                    }
+                    enqueue_relay(&mh, RELAY_MUX_HDR_SIZE, tbuf.data(), n);
                 }
+                printf("[RelayClient] pump exit conn_id=%u\n", cid);
             });
             jp->thr.detach();
 
