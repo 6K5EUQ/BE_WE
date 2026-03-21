@@ -369,11 +369,24 @@ void RelayServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
     if(bewe_len < BEWE_HDR_SIZE) return;
     uint8_t bewe_type = bewe_pkt[4]; // BEWE 패킷 타입
 
-    // ── OPERATOR_LIST: HOST가 보내는 것은 무시 (릴레이가 관리) ──────
-    if(bewe_type == BEWE_TYPE_OP_LIST) return;
-
-    // ── AUTH_ACK: HOST가 보내는 것은 무시 (릴레이가 처리) ─────────────
-    if(bewe_type == BEWE_TYPE_AUTH_ACK) return;
+    // ── AUTH_ACK: HOST → JOIN 통과. 릴레이는 op_index를 캐시 ─────────
+    if(bewe_type == BEWE_TYPE_AUTH_ACK && bewe_len >= BEWE_HDR_SIZE + 2){
+        uint8_t ok = bewe_pkt[BEWE_HDR_SIZE];
+        uint8_t op_idx = bewe_pkt[BEWE_HDR_SIZE + 1];
+        if(ok && conn_id != 0xFFFF){
+            std::lock_guard<std::mutex> jlk(room->joins_mtx);
+            for(auto& je : room->joins){
+                if(je->conn_id == conn_id){
+                    je->op_index = op_idx;
+                    je->authed   = true;
+                    printf("[Relay] AUTH_ACK op=%u '%s' room='%s'\n",
+                           op_idx, je->name, room->station_id.c_str());
+                    break;
+                }
+            }
+        }
+        // 그대로 JOIN에 전달 (아래 기타 패킷 경로로)
+    }
 
     // ── 상태 패킷 캐시 (새 JOIN 접속 시 즉시 전송용) ────────────────
     if(bewe_type == BEWE_TYPE_HEARTBEAT || bewe_type == BEWE_TYPE_STATUS ||
@@ -439,42 +452,15 @@ bool RelayServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
     if(bewe_len < BEWE_HDR_SIZE) return false;
     uint8_t bewe_type = bewe_pkt[4];
 
-    // ── AUTH_REQ: 릴레이가 직접 처리 ─────────────────────────────────
+    // ── AUTH_REQ: HOST에 포워드 (HOST가 처리), 릴레이는 이름만 캐시 ──
     if(bewe_type == BEWE_TYPE_AUTH_REQ){
         const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
         size_t plen = bewe_len - BEWE_HDR_SIZE;
-        if(plen < (size_t)BEWE_AUTH_REQ_SIZE) return true;
-
-        // AUTH_REQ: id[32] + pw[64] + tier[1]
-        char id[32]={}; memcpy(id, payload, 32);
-        uint8_t tier = payload[96];
-
-        // op_index 할당
-        uint8_t idx;
-        {
-            std::lock_guard<std::mutex> jlk(room->joins_mtx);
-            idx = room->next_op_idx++;
-            if(room->next_op_idx > BEWE_MAX_OPERATORS) room->next_op_idx = 1;
+        if(plen >= (size_t)BEWE_AUTH_REQ_SIZE){
+            memcpy(je->name, payload, 31);  // id
+            je->tier = payload[96];          // tier
         }
-        je->op_index = idx;
-        je->tier     = tier;
-        strncpy(je->name, id, 31);
-        je->authed   = true;
-
-        // AUTH_ACK 응답 (릴레이 → JOIN 직접)
-        uint8_t ack_buf[BEWE_AUTH_ACK_SIZE] = {};
-        ack_buf[0] = 1;    // ok
-        ack_buf[1] = idx;  // op_index
-        memcpy(ack_buf + 2, "OK", 2);  // reason
-        auto ack_pkt = make_bewe_packet(BEWE_TYPE_AUTH_ACK, ack_buf, BEWE_AUTH_ACK_SIZE);
-        je->enqueue_data(ack_pkt.data(), ack_pkt.size());
-
-        printf("[Relay] AUTH op=%u '%s' (Tier%u) room='%s'\n",
-               idx, id, tier, room->station_id.c_str());
-
-        // OPERATOR_LIST 갱신 + broadcast
-        build_and_broadcast_op_list(room);
-        return false;  // HOST에도 포워드 (HOST의 client_loop에서 authed=true 필요)
+        return false;  // HOST에 포워드
     }
 
     // ── CMD 패킷 인터셉트 ────────────────────────────────────────────
