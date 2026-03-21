@@ -64,7 +64,8 @@ static inline std::string data_dir(){
 }
 
 static inline std::string recordings_dir(){
-    return data_dir()+"/recordings";
+    const char* home=getenv("HOME");
+    return (home?std::string(home):std::string("/tmp"))+"/BE_WE/recordings";
 }
 
 // ── 세션 중 실시간 녹음 폴더 ─────────────────────────────────────────────
