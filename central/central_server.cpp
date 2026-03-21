@@ -10,7 +10,7 @@
 #include <ifaddrs.h>
 #include <unistd.h>
 
-static constexpr int HOST_TIMEOUT_SEC  = 10;
+static constexpr int HOST_TIMEOUT_SEC  = 20;  // HB 간격(3s) + 데이터 프레임 SNDTIMEO(3s) + 마진
 static constexpr int HANDSHAKE_TIMEOUT = 10;
 static constexpr size_t PIPE_BUF       = 65536;
 

@@ -198,24 +198,66 @@ void CentralClient::enqueue_central(const void* hdr, size_t hdr_len,
     central_queue_cv_.notify_one();
 }
 
-// central_fd 단독 write 스레드: 큐를 드레인하여 순서 보장 + mutex 불필요
+// HB/제어 전용 enqueue (우선순위 큐, 드롭 없음)
+// HB는 작아서 (11 bytes) 큐에 최대 4개까지만 유지 (stale HB 방지)
+void CentralClient::enqueue_hb(const void* hdr, size_t hdr_len,
+                               const void* data, size_t data_len){
+    if(!central_sender_running_.load()) return;
+    size_t total = hdr_len + data_len;
+    std::vector<uint8_t> pkt(total);
+    if(hdr_len && hdr)   memcpy(pkt.data(),           hdr,  hdr_len);
+    if(data_len && data) memcpy(pkt.data() + hdr_len, data, data_len);
+    {
+        std::lock_guard<std::mutex> lk(central_queue_mtx_);
+        while(central_hb_queue_.size() >= 4)  // stale HB 제거
+            central_hb_queue_.pop_front();
+        central_hb_queue_.push_back(std::move(pkt));
+    }
+    central_queue_cv_.notify_one();
+}
+
+// central_fd 단독 write 스레드
+// 루프마다 HB 큐를 먼저 확인 → HB는 데이터 프레임 한 개 전송 시간 내에 반드시 전송됨
+// 데이터 프레임은 SO_SNDTIMEO=3s 적용 → 3초 초과 시 연결 닫고 재접속
 void CentralClient::central_sender_loop(int central_fd){
     while(central_sender_running_.load()){
         std::vector<uint8_t> pkt;
+        bool is_hb = false;
         {
             std::unique_lock<std::mutex> lk(central_queue_mtx_);
             central_queue_cv_.wait_for(lk, std::chrono::milliseconds(200),
-                [this]{ return !central_send_queue_.empty() || !central_sender_running_.load(); });
-            if(central_send_queue_.empty()) continue;
-            pkt = std::move(central_send_queue_.front());
-            central_send_queue_.pop_front();
-            central_queue_bytes_ -= pkt.size();
+                [this]{ return !central_hb_queue_.empty() ||
+                               !central_send_queue_.empty() ||
+                               !central_sender_running_.load(); });
+            if(!central_sender_running_.load()) break;
+            // HB 우선: HB 큐에 있으면 먼저 처리
+            if(!central_hb_queue_.empty()){
+                pkt = std::move(central_hb_queue_.front());
+                central_hb_queue_.pop_front();
+                is_hb = true;
+            } else if(!central_send_queue_.empty()){
+                pkt = std::move(central_send_queue_.front());
+                central_send_queue_.pop_front();
+                central_queue_bytes_ -= pkt.size();
+            } else {
+                continue;
+            }
         }
+
+        if(is_hb){
+            // HB/제어: 타임아웃 없이 전송 (HB는 11 bytes로 즉각 전송됨)
+            timeval tv0{0, 0};
+            setsockopt(central_fd, SOL_SOCKET, SO_SNDTIMEO, &tv0, sizeof(tv0));
+        } else {
+            // 데이터 프레임: 3s 타임아웃 → 초과 시 스트림 오염이므로 재접속
+            timeval tv{3, 0};
+            setsockopt(central_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        }
+
         if(!central_send_all(central_fd, pkt.data(), pkt.size())){
             int e = errno;
-            printf("[CentralClient] relay_sender: send failed errno=%d(%s), closing central_fd\n",
-                   e, strerror(e));
-            // central_fd 닫기 → mux_loop recv 실패 → mux_loop 종료 → on_central_disconnect_ 호출
+            printf("[CentralClient] sender: %s send failed errno=%d(%s), reconnecting\n",
+                   is_hb ? "HB" : "data", e, strerror(e));
             shutdown(central_fd, SHUT_RDWR);
             break;
         }
@@ -231,14 +273,14 @@ void CentralClient::start_mux_adapter(int central_fd,
     mux_central_fd_ = central_fd;
     on_central_disconnect_ = std::move(on_disconnect);
 
-    // central_fd 송신 타임아웃 해제 (relay_sender가 단독으로 블로킹 write)
-    // tcp_connect에서 설정된 3초 SNDTIMEO를 제거해 장기 스트림에 맞게 설정
+    // central_fd: 초기에는 타임아웃 없음 (sender_loop에서 프레임 타입별로 설정)
     timeval tv0{0, 0};
     setsockopt(central_fd, SOL_SOCKET, SO_SNDTIMEO, &tv0, sizeof(tv0));
 
     // relay_sender 먼저 시작 (pump/HB enqueue 직전)
     central_queue_bytes_ = 0;
     central_send_queue_.clear();
+    central_hb_queue_.clear();
     central_sender_running_.store(true);
     central_sender_thr_ = std::thread(&CentralClient::central_sender_loop, this, central_fd);
 
@@ -257,6 +299,7 @@ void CentralClient::stop_mux_adapter(){
     {
         std::lock_guard<std::mutex> qlk(central_queue_mtx_);
         central_send_queue_.clear();
+        central_hb_queue_.clear();
         central_queue_bytes_ = 0;
     }
     std::lock_guard<std::mutex> lk(mux_joins_mtx_);
@@ -294,15 +337,15 @@ void CentralClient::mux_loop(int central_fd,
                        errno, strerror(errno));
                 break;
             }
-            // EAGAIN/ETIMEDOUT → heartbeat enqueue 후 계속
-            // enqueue_central는 블로킹 없음 (central_sender_thr_가 실제 write)
+            // EAGAIN/ETIMEDOUT → heartbeat 우선 큐에 enqueue
+            // enqueue_hb는 non-blocking, sender_loop에서 데이터보다 먼저 전송됨
             auto now = std::chrono::steady_clock::now();
             if(std::chrono::duration_cast<std::chrono::seconds>(now-last_hb).count() >= 3){
                 last_hb = now;
                 CentralMuxHdr hb{}; hb.type = 0x00; hb.len = sizeof(CentralHostHb);
                 CentralHostHb hbp{}; hbp.user_count = count_fn ? count_fn() : 0;
-                enqueue_central(&hb, CENTRAL_MUX_HDR_SIZE, &hbp, sizeof(hbp));
-                printf("[CentralClient] HB enqueued (users=%u)\n", hbp.user_count);
+                enqueue_hb(&hb, CENTRAL_MUX_HDR_SIZE, &hbp, sizeof(hbp));
+                printf("[CentralClient] HB enqueued (priority, users=%u)\n", hbp.user_count);
             }
             continue;
         }

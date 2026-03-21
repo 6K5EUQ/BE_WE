@@ -64,12 +64,13 @@ public:
     bool is_central_connected() const { return mux_running_.load(); }
 
     // relay에 NET_RESET 신호 전송 (0=reset start, 1=open)
+    // HB 큐(우선순위)로 전송 → 데이터 큐 congestion 영향 없음
     void send_net_reset(uint8_t flag){
         if(!central_sender_running_.load()) return;
         CentralMuxHdr mh{}; mh.conn_id = 0xFFFF;
         mh.type = static_cast<uint8_t>(CentralMuxType::NET_RESET);
         mh.len = 1;
-        enqueue_central(&mh, CENTRAL_MUX_HDR_SIZE, &flag, 1);
+        enqueue_hb(&mh, CENTRAL_MUX_HDR_SIZE, &flag, 1);
     }
 
     // ── JOIN 모드 ─────────────────────────────────────────────────────────
@@ -96,20 +97,24 @@ private:
     int               mux_central_fd_ = -1;
 
     // central_fd 전용 송신 큐 + 스레드
-    // 펌프/HB 모두 여기 enqueue → central_sender_thr_ 가 직렬로 write
-    // → 펌프가 central_fd 블로킹으로 mutex 장시간 점유해 HB를 막는 문제 해결
+    // HB/제어: central_hb_queue_ (우선순위 큐) → 데이터 큐보다 항상 먼저 전송
+    // 데이터(FFT/audio): central_send_queue_ → 8MB 초과 시 오래된 항목 드롭
+    // central_sender_thr_ 가 직렬로 write → HB가 대용량 데이터 프레임에 막히지 않음
     std::thread              central_sender_thr_;
     std::atomic<bool>        central_sender_running_{false};
     std::mutex               central_queue_mtx_;
     std::condition_variable  central_queue_cv_;
-    std::deque<std::vector<uint8_t>> central_send_queue_;
+    std::deque<std::vector<uint8_t>> central_hb_queue_;   // HB/NET_RESET 전용 (우선)
+    std::deque<std::vector<uint8_t>> central_send_queue_; // FFT/오디오 데이터
     size_t                   central_queue_bytes_ = 0;
     static constexpr size_t  CENTRAL_QUEUE_MAX_BYTES = 8 * 1024 * 1024; // 8MB
 
-    // (hdr, hdr_len) + (data, data_len) 을 합쳐 하나의 청크로 enqueue
-    // queue가 CENTRAL_QUEUE_MAX_BYTES 를 초과하면 가장 오래된 항목부터 삭제
+    // 데이터 큐 enqueue (큐 오버플로 시 오래된 항목 드롭)
     void enqueue_central(const void* hdr, size_t hdr_len,
                        const void* data, size_t data_len);
+    // HB/제어 큐 enqueue (우선순위, 드롭 없음)
+    void enqueue_hb(const void* hdr, size_t hdr_len,
+                    const void* data, size_t data_len);
     void central_sender_loop(int central_fd);
 
     struct JoinPair {
