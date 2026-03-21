@@ -155,18 +155,8 @@ void RelayServer::handshake(int fd){
         printf("[Relay] JOIN conn_id=%u entered room '%s' (%zu users)\n",
                je->conn_id, sid.c_str(), room->joins.size());
 
-        // 캐시된 최신 상태를 새 JOIN에게 즉시 전송
-        {
-            std::lock_guard<std::mutex> clk(room->cache_mtx);
-            if(!room->cached_heartbeat.empty())
-                je->enqueue_data(room->cached_heartbeat.data(), room->cached_heartbeat.size());
-            if(!room->cached_status.empty())
-                je->enqueue_data(room->cached_status.data(), room->cached_status.size());
-            if(!room->cached_ch_sync.empty())
-                je->enqueue_data(room->cached_ch_sync.data(), room->cached_ch_sync.size());
-            if(!room->cached_op_list.empty())
-                je->enqueue_data(room->cached_op_list.data(), room->cached_op_list.size());
-        }
+        // 캐시 전송은 AUTH_ACK 통과 후 (dispatch_to_joins에서 처리)
+        // JOIN이 AUTH_ACK를 동기 대기하므로 그 전에 다른 패킷을 보내면 안 됨
 
         join_loop(je, room);
 
@@ -369,23 +359,43 @@ void RelayServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
     if(bewe_len < BEWE_HDR_SIZE) return;
     uint8_t bewe_type = bewe_pkt[4]; // BEWE 패킷 타입
 
-    // ── AUTH_ACK: HOST → JOIN 통과. 릴레이는 op_index를 캐시 ─────────
+    // ── AUTH_ACK: HOST → JOIN 통과. 릴레이는 op_index 캐시 + 캐시 전송
     if(bewe_type == BEWE_TYPE_AUTH_ACK && bewe_len >= BEWE_HDR_SIZE + 2){
         uint8_t ok = bewe_pkt[BEWE_HDR_SIZE];
         uint8_t op_idx = bewe_pkt[BEWE_HDR_SIZE + 1];
         if(ok && conn_id != 0xFFFF){
-            std::lock_guard<std::mutex> jlk(room->joins_mtx);
-            for(auto& je : room->joins){
-                if(je->conn_id == conn_id){
-                    je->op_index = op_idx;
-                    je->authed   = true;
-                    printf("[Relay] AUTH_ACK op=%u '%s' room='%s'\n",
-                           op_idx, je->name, room->station_id.c_str());
-                    break;
+            std::shared_ptr<JoinEntry> target;
+            {
+                std::lock_guard<std::mutex> jlk(room->joins_mtx);
+                for(auto& je : room->joins){
+                    if(je->conn_id == conn_id){
+                        je->op_index = op_idx;
+                        je->authed   = true;
+                        target = je;
+                        printf("[Relay] AUTH_ACK op=%u '%s' room='%s'\n",
+                               op_idx, je->name, room->station_id.c_str());
+                        break;
+                    }
                 }
             }
+            // AUTH_ACK를 먼저 전달한 후, 캐시된 상태 패킷 전송
+            if(target){
+                target->enqueue_data(bewe_pkt, bewe_len);  // AUTH_ACK 먼저
+                std::lock_guard<std::mutex> clk(room->cache_mtx);
+                if(!room->cached_heartbeat.empty())
+                    target->enqueue_data(room->cached_heartbeat.data(), room->cached_heartbeat.size());
+                if(!room->cached_status.empty())
+                    target->enqueue_data(room->cached_status.data(), room->cached_status.size());
+                if(!room->cached_ch_sync.empty())
+                    target->enqueue_data(room->cached_ch_sync.data(), room->cached_ch_sync.size());
+                if(!room->cached_op_list.empty())
+                    target->enqueue_data(room->cached_op_list.data(), room->cached_op_list.size());
+                // OPERATOR_LIST 갱신 (새 유저 반영)
+                build_and_broadcast_op_list(room);
+                return;  // AUTH_ACK는 이미 전송함, 아래 기타 경로 타지 않도록
+            }
         }
-        // 그대로 JOIN에 전달 (아래 기타 패킷 경로로)
+        // ok=0 또는 broadcast → 그대로 전달
     }
 
     // ── 상태 패킷 캐시 (새 JOIN 접속 시 즉시 전송용) ────────────────
