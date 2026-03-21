@@ -158,6 +158,10 @@ int RelayClient::open_room(const std::string& relay_host, int relay_port,
     int bufsize = 1024 * 1024;
     setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
     setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
+    // TCP_NODELAY + send 타임아웃 (buffer 가득 차도 무한 블록 방지)
+    int nd = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
+    timeval stv{2, 0};  // 2초 타임아웃
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &stv, sizeof(stv));
 
     RelayHostOpen op{};
     strncpy(op.station_id,   station_id.c_str(),   sizeof(op.station_id)-1);
@@ -286,18 +290,21 @@ void RelayClient::mux_loop(int relay_fd,
             int rfd = relay_fd;
             jp->thr = std::thread([jp, cid, rfd, this](){
                 std::vector<uint8_t> tbuf(65536);
-                while(jp->local_fd >= 0){
+                while(jp->local_fd >= 0 && mux_running_.load()){
                     ssize_t n = recv(jp->remote_fd, tbuf.data(), tbuf.size(), 0);
                     if(n <= 0) break;
-                    RelayMuxHdr mh{}; mh.conn_id=cid;  // 특정 JOIN conn_id (0xFFFF=브로드캐스트 아님)
+                    RelayMuxHdr mh{}; mh.conn_id=cid;
                     mh.type = static_cast<uint8_t>(RelayMuxType::DATA);
                     mh.len  = (uint32_t)n;
-                    // relay_fd write: mux_loop(HB)와 동시 접근 방지 → mutex
                     std::lock_guard<std::mutex> wlk(mux_relay_write_mtx_);
                     if(!relay_send_all(rfd, &mh, RELAY_MUX_HDR_SIZE) ||
                        !relay_send_all(rfd, tbuf.data(), n)){
-                        printf("[RelayClient] pump: send to relay failed conn_id=%u\n", cid);
-                        break;  // 이 JOIN의 pump만 종료, relay_fd는 유지
+                        int e = errno;
+                        printf("[RelayClient] pump: relay_fd write failed conn_id=%u errno=%d(%s)\n",
+                               cid, e, strerror(e));
+                        // relay_fd 에러 → mux_loop 종료시켜서 auto-reconnect 유도
+                        shutdown(rfd, SHUT_RDWR);
+                        break;
                     }
                 }
             });
@@ -311,9 +318,15 @@ void RelayClient::mux_loop(int relay_fd,
             if(mux.len > (uint32_t)buf.size()) buf.resize(mux.len);
             if(mux.len > 0 && !relay_recv_all(relay_fd, buf.data(), mux.len)) break;
 
-            // 특정 JOIN 또는 broadcast
-            // MSG_DONTWAIT: 느린 JOIN 1명이 다른 JOIN을 지연시키지 않도록
-            // 버퍼 가득 차면 패킷 드롭 (실시간 스트림이므로 재전송보다 드롭이 나음)
+            // 릴레이→HOST 방향 CHANNEL_SYNC (audio_mask 재작성본): HOST가 직접 처리
+            // conn_id=0xFFFF + BEWE type=0x0A → HOST의 audio_mask 갱신
+            if(cid == 0xFFFF && mux.len >= 9 && buf[4] == 0x0A){
+                if(on_relay_ch_sync_)
+                    on_relay_ch_sync_(buf.data(), mux.len);
+                continue;  // socketpair에 전달 안 함
+            }
+
+            // 특정 JOIN 또는 broadcast → socketpair로 전달
             std::lock_guard<std::mutex> lk(mux_joins_mtx_);
             for(auto& [id, jp] : mux_joins_){
                 if(cid != 0xFFFF && id != cid) continue;

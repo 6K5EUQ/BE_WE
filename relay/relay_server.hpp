@@ -184,6 +184,10 @@ private:
     // 릴레이가 OPERATOR_LIST 빌드 + broadcast
     void build_and_broadcast_op_list(std::shared_ptr<HostRoom> room);
 
+    // 릴레이가 CHANNEL_SYNC의 audio_mask를 재작성해서 broadcast
+    // (recv_audio[] 테이블 기반으로 listener 정보 반영)
+    void rebuild_and_broadcast_ch_sync(std::shared_ptr<HostRoom> room);
+
     // BEWE 패킷 빌드 헬퍼 (magic + type + len + payload)
     static std::vector<uint8_t> make_bewe_packet(uint8_t type, const void* payload, uint32_t plen);
 };

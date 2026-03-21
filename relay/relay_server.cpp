@@ -410,24 +410,15 @@ void RelayServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         cache.assign(bewe_pkt, bewe_pkt + bewe_len);
     }
 
-    // ── CHANNEL_SYNC 인터셉트: 서버 기준 audio_mask 캐시 ──────────────
+    // ── CHANNEL_SYNC 인터셉트: 캐시 저장 → audio_mask 재작성 후 broadcast
     if(bewe_type == BEWE_TYPE_CH_SYNC){
-        uint32_t payload_len = bewe_len - BEWE_HDR_SIZE;
-        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
-        if(payload_len >= (size_t)(CH_SYNC_ENTRY_SIZE * MAX_CHANNELS_RELAY)){
-            for(int i = 0; i < MAX_CHANNELS_RELAY; i++){
-                const uint8_t* entry = payload + i * CH_SYNC_ENTRY_SIZE;
-                uint32_t mask;
-                memcpy(&mask, entry + CH_SYNC_MASK_OFFSET, sizeof(mask));
-                room->ch_audio_mask[i] = mask;
-            }
+        // 원본 캐시 (audio_mask 재작성의 base)
+        {
+            std::lock_guard<std::mutex> clk(room->cache_mtx);
+            room->cached_ch_sync.assign(bewe_pkt, bewe_pkt + bewe_len);
         }
-        // CHANNEL_SYNC는 모든 JOIN에게 그대로 전달
-        std::lock_guard<std::mutex> jlk(room->joins_mtx);
-        for(auto& je : room->joins){
-            if(!je->alive.load() || je->fd < 0) continue;
-            je->enqueue_data(bewe_pkt, bewe_len);
-        }
+        // audio_mask를 릴레이의 recv_audio[] 기반으로 재작성 + broadcast
+        rebuild_and_broadcast_ch_sync(room);
         return;
     }
 
@@ -483,15 +474,16 @@ bool RelayServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
 
         uint8_t cmd_type = cmd_payload[0];
 
-        // TOGGLE_RECV: 릴레이가 뮤트 테이블 갱신 + HOST에도 포워드
-        // (HOST의 audio_mask 갱신 → CHANNEL_SYNC로 전체 동기)
+        // TOGGLE_RECV: 릴레이에서만 처리 (HOST에 포워드 안 함)
         if(cmd_type == BEWE_CMD_TOGGLE_RECV && cmd_len >= 6){
             uint8_t ch_idx = cmd_payload[4];
             uint8_t enable = cmd_payload[5];
             if(ch_idx < MAX_CHANNELS_RELAY){
                 je->recv_audio[ch_idx] = (enable != 0);
+                // audio_mask 재계산 + CHANNEL_SYNC 재작성 broadcast
+                rebuild_and_broadcast_ch_sync(room);
             }
-            return false;  // HOST에도 포워드
+            return true;  // HOST에 포워드 안 함
         }
         return false;  // 다른 CMD는 HOST에 포워드
     }
@@ -564,6 +556,55 @@ void RelayServer::build_and_broadcast_op_list(std::shared_ptr<HostRoom> room){
     for(auto& je : room->joins){
         if(!je->alive.load() || je->fd < 0) continue;
         je->enqueue_data(pkt.data(), pkt.size());
+    }
+}
+
+// ── CHANNEL_SYNC audio_mask 재작성 + broadcast ───────────────────────────
+// HOST가 보낸 원본 CHANNEL_SYNC에서 audio_mask를 릴레이의 recv_audio[] 기반으로 재계산
+void RelayServer::rebuild_and_broadcast_ch_sync(std::shared_ptr<HostRoom> room){
+    std::vector<uint8_t> base_sync;
+    {
+        std::lock_guard<std::mutex> clk(room->cache_mtx);
+        if(room->cached_ch_sync.empty()) return;
+        base_sync = room->cached_ch_sync;  // 복사
+    }
+    if(base_sync.size() < BEWE_HDR_SIZE + CH_SYNC_ENTRY_SIZE * MAX_CHANNELS_RELAY) return;
+
+    // audio_mask 재계산: bit0=HOST(항상 원본 유지), bit_i=JOIN op_index i의 recv_audio[ch]
+    uint8_t* payload = base_sync.data() + BEWE_HDR_SIZE;
+    std::lock_guard<std::mutex> jlk(room->joins_mtx);
+    for(int ch = 0; ch < MAX_CHANNELS_RELAY; ch++){
+        uint8_t* entry = payload + ch * CH_SYNC_ENTRY_SIZE;
+        // 원본에서 HOST bit(0) 보존
+        uint32_t orig_mask;
+        memcpy(&orig_mask, entry + CH_SYNC_MASK_OFFSET, sizeof(orig_mask));
+        uint32_t new_mask = orig_mask & 0x1u;  // bit0(HOST) 유지
+
+        for(auto& je : room->joins){
+            if(!je->authed || !je->alive.load()) continue;
+            if(je->recv_audio[ch])
+                new_mask |= (1u << je->op_index);
+        }
+        memcpy(entry + CH_SYNC_MASK_OFFSET, &new_mask, sizeof(new_mask));
+    }
+
+    // 캐시도 갱신
+    {
+        std::lock_guard<std::mutex> clk(room->cache_mtx);
+        room->cached_ch_sync = base_sync;
+    }
+
+    // 모든 JOIN에게 broadcast
+    for(auto& je : room->joins){
+        if(!je->alive.load() || je->fd < 0) continue;
+        je->enqueue_data(base_sync.data(), base_sync.size());
+    }
+
+    // HOST에도 재작성된 CHANNEL_SYNC 전송 (HOST 툴팁의 listener 반영)
+    if(room->alive.load() && room->fd >= 0){
+        std::lock_guard<std::mutex> hlk(room->host_send_mtx);
+        relay_send_mux(room->fd, 0xFFFF, RelayMuxType::DATA,
+                       base_sync.data(), base_sync.size());
     }
 }
 

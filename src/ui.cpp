@@ -1233,6 +1233,7 @@ void run_streaming_viewer(){
     static std::map<std::string,std::vector<std::string>> pub_listeners;
     // Public 파일 소유자 추적 (filename → uploader_name): 업로드한 사람만 삭제 가능
     static std::map<std::string,std::string> pub_owners;
+    static std::atomic<bool> ch_sync_dirty_flag{false};
     do {
     do_main_menu = false;
     FFTViewer v;
@@ -2060,6 +2061,7 @@ void run_streaming_viewer(){
             // HOST: 서버 시작 (public 목록 + 소유자/리스너 초기화)
             shared_files.clear(); pub_iq_files.clear(); pub_audio_files.clear();
             pub_listeners.clear(); pub_owners.clear();
+            ch_sync_dirty_flag.store(false);
             srv = new NetServer();
             // 인증: 로그인 시스템과 동일하게 처리 (여기서는 간단히 항상 허용)
             srv->cb.on_auth = [&,srv](const char* id, const char* pw,
@@ -2275,12 +2277,15 @@ void run_streaming_viewer(){
                 }).detach();
             };
             srv->cb.on_toggle_recv = [&](int ch_idx, uint8_t op_idx, bool enable){
+                // 릴레이가 TOGGLE_RECV를 처리하므로 여기는 호출되지 않지만
+                // 만약 호출되면 로컬 mask만 갱신 (broadcast 안 함)
                 if(ch_idx<0||ch_idx>=MAX_CHANNELS) return;
                 uint32_t bit = 1u << op_idx;
-                uint32_t mask = v.channels[ch_idx].audio_mask.load();
-                if(enable) mask |= bit; else mask &= ~bit;
-                v.channels[ch_idx].audio_mask.store(mask);
-                srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+                uint32_t old_mask = v.channels[ch_idx].audio_mask.load();
+                uint32_t new_mask;
+                do {
+                    new_mask = enable ? (old_mask | bit) : (old_mask & ~bit);
+                } while(!v.channels[ch_idx].audio_mask.compare_exchange_weak(old_mask, new_mask));
             };
             srv->cb.on_update_ch_range = [&](int idx, float s, float e){
                 if(idx<0||idx>=MAX_CHANNELS) return;
@@ -2468,6 +2473,16 @@ void run_streaming_viewer(){
                             v.station_lat, v.station_lon,
                             (uint8_t)login_get_tier());
                         if(rfd >= 0){
+                            // 릴레이가 재작성한 CHANNEL_SYNC → HOST의 audio_mask 갱신
+                            relay_cli.set_on_relay_ch_sync([&v](const uint8_t* pkt, size_t len){
+                                if(len < 9 + 60*10) return;  // BEWE_HDR + 10 entries
+                                const uint8_t* payload = pkt + 9;
+                                for(int i=0; i<MAX_CHANNELS && i<10; i++){
+                                    uint32_t mask;
+                                    memcpy(&mask, payload + i*60 + 12, sizeof(mask));
+                                    v.channels[i].audio_mask.store(mask);
+                                }
+                            });
                             relay_cli.start_mux_adapter(rfd,
                                 [&v](int local_fd){ if(v.net_srv) v.net_srv->inject_fd(local_fd); },
                                 [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; },

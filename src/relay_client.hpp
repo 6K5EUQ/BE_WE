@@ -101,8 +101,14 @@ private:
     std::unordered_map<uint16_t, std::shared_ptr<JoinPair>> mux_joins_;
 
     std::function<void()> on_mux_disconnect_;  // mux_loop 종료 시 호출
+    std::function<void(const uint8_t*, size_t)> on_relay_ch_sync_;  // 릴레이 재작성 CHANNEL_SYNC
 
     void mux_loop(int relay_fd,
                   std::function<void(int)> on_new_join,
                   std::function<uint8_t()> count_fn);
+public:
+    // 릴레이가 보내는 CHANNEL_SYNC(audio_mask 재작성본)를 HOST에서 수신하는 콜백
+    void set_on_relay_ch_sync(std::function<void(const uint8_t*, size_t)> cb){
+        on_relay_ch_sync_ = std::move(cb);
+    }
 };
