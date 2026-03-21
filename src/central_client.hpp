@@ -63,6 +63,21 @@ public:
     void stop_mux_adapter();
     bool is_central_connected() const { return mux_running_.load(); }
 
+    // HOST→중앙서버 broadcast (conn_id=0xFFFF, 1회 전송 → 중앙서버가 N명에게 fan-out)
+    // N× 대역폭 문제 해결: 기존 per-JOIN socketpair 경유 방식 대체
+    void enqueue_relay_broadcast(const uint8_t* bewe_pkt, size_t bewe_len){
+        if(!central_sender_running_.load()) return;
+        CentralMuxHdr mh{}; mh.conn_id = 0xFFFF;
+        mh.type = static_cast<uint8_t>(CentralMuxType::DATA);
+        mh.len  = (uint32_t)bewe_len;
+        enqueue_central(&mh, CENTRAL_MUX_HDR_SIZE, bewe_pkt, bewe_len);
+    }
+
+    // 중앙서버→HOST 방향 전역 채팅 수신 콜백 설정
+    void set_on_central_chat(std::function<void(const char* from, const char* msg)> cb){
+        on_central_chat_ = std::move(cb);
+    }
+
     // relay에 NET_RESET 신호 전송 (0=reset start, 1=open)
     // HB 큐(우선순위)로 전송 → 데이터 큐 congestion 영향 없음
     void send_net_reset(uint8_t flag){
@@ -127,6 +142,7 @@ private:
 
     std::function<void()> on_central_disconnect_;  // mux_loop 종료 시 호출
     std::function<void(const uint8_t*, size_t)> on_central_ch_sync_;  // 릴레이 재작성 CHANNEL_SYNC
+    std::function<void(const char*, const char*)> on_central_chat_;   // 중앙서버 전역 채팅 수신
 
     void mux_loop(int central_fd,
                   std::function<void(int)> on_new_join,

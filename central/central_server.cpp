@@ -439,6 +439,12 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         return;
     }
 
+    // ── CHAT: 전역 브로드캐스트 (모든 방의 JOIN + 다른 방 HOST) ─────────
+    if(bewe_type == BEWE_TYPE_CHAT){
+        broadcast_global_chat(bewe_pkt, bewe_len, room.get());
+        return;
+    }
+
     // ── 기타 패킷 (FFT, STATUS, HEARTBEAT 등): 그대로 전달 ───────────
     std::lock_guard<std::mutex> jlk(room->joins_mtx);
     for(auto& je : room->joins){
@@ -488,15 +494,10 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
         return false;  // 다른 CMD는 HOST에 포워드
     }
 
-    // ── CHAT: 릴레이가 broadcast, HOST에도 포워드 ────────────────────
+    // ── CHAT: 전역 브로드캐스트 (모든 방 JOIN + 다른 방 HOST) ────────
     if(bewe_type == BEWE_TYPE_CHAT){
-        // 모든 JOIN에게 broadcast
-        std::lock_guard<std::mutex> jlk(room->joins_mtx);
-        for(auto& j : room->joins){
-            if(!j->alive.load() || !j->authed || j->fd < 0) continue;
-            j->enqueue_data(bewe_pkt, bewe_len);
-        }
-        return false;  // HOST에도 포워드 (HOST UI에 표시)
+        broadcast_global_chat(bewe_pkt, bewe_len, room.get());
+        return false;  // 소스 방 HOST에도 포워드 (join_loop가 central_send_mux로 전달)
     }
 
     return false;
@@ -671,5 +672,45 @@ void CentralServer::watchdog_loop(){
                 r->alive.store(false);
             }
         }
+    }
+}
+
+// ── 전역 채팅 브로드캐스트 ───────────────────────────────────────────────
+// skip_host_room: 채팅을 보낸 방의 HOST는 제외 (HOST는 이미 알고 있음)
+// deadlock 방지: rooms_mtx_ 해제 후 host_send_mtx 획득
+void CentralServer::broadcast_global_chat(const uint8_t* bewe_pkt, size_t bewe_len,
+                                          HostRoom* skip_host_room){
+    struct Target {
+        std::shared_ptr<HostRoom> room;
+        bool send_to_host;
+        std::vector<std::shared_ptr<JoinEntry>> joins;
+    };
+    std::vector<Target> targets;
+    {
+        std::lock_guard<std::mutex> lk(rooms_mtx_);
+        for(auto& room : rooms_){
+            if(!room->alive.load()) continue;
+            Target t;
+            t.room = room;
+            t.send_to_host = (room.get() != skip_host_room && room->fd >= 0);
+            {
+                std::lock_guard<std::mutex> jlk(room->joins_mtx);
+                for(auto& je : room->joins)
+                    if(je->alive.load() && je->authed && je->fd >= 0)
+                        t.joins.push_back(je);
+            }
+            targets.push_back(std::move(t));
+        }
+    }  // rooms_mtx_ 해제 후 전송 (deadlock 방지)
+
+    for(auto& t : targets){
+        if(t.send_to_host && t.room->fd >= 0){
+            std::lock_guard<std::mutex> hlk(t.room->host_send_mtx);
+            if(t.room->fd >= 0)
+                central_send_mux(t.room->fd, 0xFFFF, CentralMuxType::DATA,
+                                 bewe_pkt, bewe_len);
+        }
+        for(auto& je : t.joins)
+            je->enqueue_data(bewe_pkt, bewe_len);
     }
 }

@@ -416,6 +416,17 @@ void CentralClient::mux_loop(int central_fd,
                 continue;  // socketpair에 전달 안 함
             }
 
+            // 중앙서버→HOST CHAT: relay 루프 방지를 위해 socketpair 전달 않음
+            // (JOIN들은 중앙서버에서 직접 CHAT을 수신)
+            // BEWE 패킷: magic[4]+type[1]+len[4]+payload → buf[4]=type
+            if(mux.len >= 9 && buf[4] == 0x07){  // BEWE_TYPE_CHAT
+                if(on_central_chat_ && mux.len >= 9 + 32){
+                    const char* from = reinterpret_cast<const char*>(buf.data() + 9);
+                    const char* msg  = reinterpret_cast<const char*>(buf.data() + 9 + 32);
+                    on_central_chat_(from, msg);
+                }
+                continue;
+            }
             // 특정 JOIN 또는 broadcast → socketpair로 전달
             std::lock_guard<std::mutex> lk(mux_joins_mtx_);
             for(auto& [id, jp] : mux_joins_){

@@ -114,8 +114,10 @@ void NetServer::accept_loop(){
 void NetServer::inject_fd(int fd){
     auto conn = std::make_shared<ClientConn>();
     conn->fd = fd;
+    conn->is_relay = true;
     conn->alive.store(true);
     conn->start_send_worker();
+    relay_client_count_.fetch_add(1);
     {
         std::lock_guard<std::mutex> lk(clients_mtx_);
         clients_.push_back(conn);
@@ -370,6 +372,7 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
 
 // ── drop_client ───────────────────────────────────────────────────────────
 void NetServer::drop_client(std::shared_ptr<ClientConn> c){
+    if(c->is_relay) relay_client_count_.fetch_sub(1);
     bool was_authed = c->authed;
     uint8_t idx = c->op_index;
     char name[32]; strncpy(name, c->name, 31);
@@ -419,10 +422,13 @@ void NetServer::broadcast_fft(const float* data, int fft_size,
     memcpy(payload.data(), &hdr, sizeof(PktFftFrame));
     memcpy(payload.data() + sizeof(PktFftFrame), data, data_bytes);
 
+    auto pkt = make_packet(PacketType::FFT_FRAME, payload.data(), total);
+    if(relay_client_count_.load() > 0 && cb.on_relay_broadcast)
+        cb.on_relay_broadcast(pkt.data(), pkt.size());
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
-        if(!c->authed || !c->alive.load()) continue;
-        c->enqueue(make_packet(PacketType::FFT_FRAME, payload.data(), total), true);
+        if(c->is_relay || !c->authed || !c->alive.load()) continue;
+        c->enqueue(pkt, true);
     }
 }
 
@@ -442,7 +448,7 @@ void NetServer::send_audio(uint32_t op_mask, uint8_t ch_idx, int8_t pan,
 
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
-        if(!c->authed || !c->alive.load()) continue;
+        if(c->is_relay || !c->authed || !c->alive.load()) continue;
         if(!(op_mask & (1u << c->op_index))) continue;
         c->enqueue(make_packet(PacketType::AUDIO_FRAME, payload.data(), payload_size), false, true);
     }
@@ -462,9 +468,11 @@ void NetServer::broadcast_audio_all(uint8_t ch_idx, int8_t pan,
     memcpy(payload.data() + sizeof(PktAudioFrame), pcm, n_samples*sizeof(float));
 
     auto pkt = make_packet(PacketType::AUDIO_FRAME, payload.data(), payload_size);
+    if(relay_client_count_.load() > 0 && cb.on_relay_broadcast)
+        cb.on_relay_broadcast(pkt.data(), pkt.size());
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
-        if(!c->authed || !c->alive.load()) continue;
+        if(c->is_relay || !c->authed || !c->alive.load()) continue;
         c->enqueue(pkt, false, true);
     }
 }
@@ -486,10 +494,13 @@ void NetServer::broadcast_channel_sync(const Channel* chs, int n){
         sync.ch[i].sq_gate       = chs[i].sq_gate.load(std::memory_order_relaxed) ? 1 : 0;
         strncpy(sync.ch[i].owner_name, chs[i].owner, 31);
     }
+    auto pkt = make_packet(PacketType::CHANNEL_SYNC, &sync, sizeof(sync));
+    if(relay_client_count_.load() > 0 && cb.on_relay_broadcast)
+        cb.on_relay_broadcast(pkt.data(), pkt.size());
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
-        if(!c->authed || !c->alive.load()) continue;
-        send_to(*c, PacketType::CHANNEL_SYNC, &sync, sizeof(sync));
+        if(c->is_relay || !c->authed || !c->alive.load()) continue;
+        c->enqueue(pkt, false);
     }
 }
 
@@ -498,20 +509,26 @@ void NetServer::broadcast_chat(const char* from, const char* msg){
     PktChat chat{};
     strncpy(chat.from, from, 31);
     strncpy(chat.msg,  msg,  sizeof(chat.msg)-1);
+    auto pkt = make_packet(PacketType::CHAT, &chat, sizeof(chat));
+    if(relay_client_count_.load() > 0 && cb.on_relay_broadcast)
+        cb.on_relay_broadcast(pkt.data(), pkt.size());
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
-        if(!c->authed || !c->alive.load()) continue;
-        send_to(*c, PacketType::CHAT, &chat, sizeof(chat));
+        if(c->is_relay || !c->authed || !c->alive.load()) continue;
+        c->enqueue(pkt, false);
     }
 }
 
 // ── Broadcast heartbeat ───────────────────────────────────────────────────
 void NetServer::broadcast_heartbeat(uint8_t host_state, uint8_t sdr_temp_c, uint8_t sdr_state, uint8_t iq_on){
     PktHeartbeat hb{}; hb.host_state = host_state; hb.sdr_temp_c = sdr_temp_c; hb.sdr_state = sdr_state; hb.iq_on = iq_on;
+    auto pkt = make_packet(PacketType::HEARTBEAT, &hb, sizeof(hb));
+    if(relay_client_count_.load() > 0 && cb.on_relay_broadcast)
+        cb.on_relay_broadcast(pkt.data(), pkt.size());
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
-        if(!c->authed || !c->alive.load()) continue;
-        send_to(*c, PacketType::HEARTBEAT, &hb, sizeof(hb));
+        if(c->is_relay || !c->authed || !c->alive.load()) continue;
+        c->enqueue(pkt, false);
     }
 }
 
@@ -520,10 +537,13 @@ void NetServer::broadcast_status(float cf_mhz, float gain_db,
                                   uint32_t sr, uint8_t hw_type){
     PktStatus s{}; s.cf_mhz=cf_mhz; s.gain_db=gain_db;
     s.sample_rate=sr; s.hw_type=hw_type;
+    auto pkt = make_packet(PacketType::STATUS, &s, sizeof(s));
+    if(relay_client_count_.load() > 0 && cb.on_relay_broadcast)
+        cb.on_relay_broadcast(pkt.data(), pkt.size());
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
-        if(!c->authed || !c->alive.load()) continue;
-        send_to(*c, PacketType::STATUS, &s, sizeof(s));
+        if(c->is_relay || !c->authed || !c->alive.load()) continue;
+        c->enqueue(pkt, false);
     }
 }
 
@@ -541,7 +561,7 @@ void NetServer::broadcast_operator_list(){
             ++cnt;
         }
         for(auto& c : clients_){
-            if(!c->authed || !c->alive.load()) continue;
+            if(c->is_relay || !c->authed || !c->alive.load()) continue;
             if(cnt >= MAX_OPERATORS) break;
             ol.ops[cnt].index = c->op_index;
             ol.ops[cnt].tier  = c->tier;
@@ -549,8 +569,9 @@ void NetServer::broadcast_operator_list(){
             ++cnt;
         }
         ol.count = (uint8_t)cnt;
+        // relay 클라이언트는 제외 (중앙서버가 op_list 관리)
         for(auto& c : clients_){
-            if(!c->authed || !c->alive.load()) continue;
+            if(c->is_relay || !c->authed || !c->alive.load()) continue;
             send_to(*c, PacketType::OPERATOR_LIST, &ol, sizeof(ol));
         }
     }
@@ -564,10 +585,13 @@ void NetServer::broadcast_wf_event(int32_t fft_offset, int64_t wall_time,
     ev.wall_time      = wall_time;
     ev.type           = type;
     strncpy(ev.label, label, 31);
+    auto pkt = make_packet(PacketType::WF_EVENT, &ev, sizeof(ev));
+    if(relay_client_count_.load() > 0 && cb.on_relay_broadcast)
+        cb.on_relay_broadcast(pkt.data(), pkt.size());
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& cli : clients_){
-        if(!cli->authed || !cli->alive.load()) continue;
-        cli->enqueue(make_packet(PacketType::WF_EVENT, &ev, sizeof(ev)), false);
+        if(cli->is_relay || !cli->authed || !cli->alive.load()) continue;
+        cli->enqueue(pkt, false);
     }
 }
 

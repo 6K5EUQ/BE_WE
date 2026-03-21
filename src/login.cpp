@@ -149,7 +149,7 @@ bool draw_login_screen(int win_w, int win_h){
     static char server_buf[128] = "144.24.86.137";
 
     bool is_t3 = (tier == 3);
-    const float PW_=290.0f,PH_=318.0f,PAD=28.0f;
+    const float PW_=290.0f,PH_=360.0f,PAD=28.0f;
     ImGui::SetNextWindowPos(ImVec2((float)win_w-PW_-PAD,(float)win_h-PH_-PAD));
     ImGui::SetNextWindowSize(ImVec2(PW_,PH_));
     ImGui::SetNextWindowBgAlpha(0.88f);

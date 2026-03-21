@@ -2468,7 +2468,9 @@ void run_streaming_viewer(){
                 if(s_central_host[0] != '\0' && v.station_location_set){
                     auto central_connect = [&v, &central_cli,
                                           rh = std::string(s_central_host),
-                                          rp = s_central_port](){
+                                          rp = s_central_port,
+                                          _log_mtx = &host_chat_mtx,
+                                          _log = &host_chat_log](){
                         std::string sid = v.station_name + "_" + std::string(login_get_id());
                         int rfd = central_cli.open_room(
                             rh, rp, sid, v.station_name,
@@ -2484,6 +2486,17 @@ void run_streaming_viewer(){
                                     memcpy(&mask, payload + i*60 + 12, sizeof(mask));
                                     v.channels[i].audio_mask.store(mask);
                                 }
+                            });
+                            if(v.net_srv){
+                                v.net_srv->cb.on_relay_broadcast = [&central_cli](const uint8_t* pkt, size_t len){
+                                    central_cli.enqueue_relay_broadcast(pkt, len);
+                                };
+                            }
+                            central_cli.set_on_central_chat([_log_mtx, _log](const char* from, const char* msg){
+                                std::lock_guard<std::mutex> lk(*_log_mtx);
+                                if((int)_log->size() >= 200) _log->erase(_log->begin());
+                                LocalChatMsg m{}; strncpy(m.from,from,31); strncpy(m.msg,msg,255);
+                                _log->push_back(m);
                             });
                             central_cli.start_mux_adapter(rfd,
                                 [&v](int local_fd){ if(v.net_srv) v.net_srv->inject_fd(local_fd); },

@@ -190,4 +190,9 @@ private:
 
     // BEWE 패킷 빌드 헬퍼 (magic + type + len + payload)
     static std::vector<uint8_t> make_bewe_packet(uint8_t type, const void* payload, uint32_t plen);
+
+    // 전역 채팅: 중앙서버에 접속한 모든 JOIN + 다른 방의 HOST에게 CHAT BEWE 패킷 전달
+    // skip_host_room: 소스 방의 HOST는 제외 (이미 알고 있음)
+    void broadcast_global_chat(const uint8_t* bewe_pkt, size_t bewe_len,
+                               HostRoom* skip_host_room = nullptr);
 };

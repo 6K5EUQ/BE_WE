@@ -20,6 +20,7 @@ struct ClientConn {
     uint8_t tier     = 0;
     char    name[32] = {};
     bool    authed   = false;
+    bool     is_relay  = false;  // 중앙서버 MUX 경유 클라이언트 (inject_fd로 추가됨)
     std::atomic<bool> alive{false};
     std::thread     thr;
 
@@ -173,6 +174,9 @@ struct ServerCallbacks {
     std::function<void(float msps)>          on_set_sr;       // JOIN → HOST: SR 변경
     // JOIN이 public 파일 삭제 요청: op_name, filename (소유자 검증은 ui.cpp에서)
     std::function<void(const char* op_name, const char* filename)> on_pub_delete_req;
+    // 중앙서버 relay 브로드캐스트 콜백: BEWE 패킷 1회 전달 → 중앙서버가 N명에게 fan-out
+    // 이 콜백을 통해 FFT/오디오/채팅 등이 relay 클라이언트로 전달됨 (N× 대역폭 문제 해결)
+    std::function<void(const uint8_t*, size_t)> on_relay_broadcast;
 };
 
 // ── NetServer ─────────────────────────────────────────────────────────────
@@ -185,6 +189,7 @@ public:
     bool is_running() const { return running_.load(); }
     int  client_count() const;
     int  listen_port() const { return listen_port_; }
+    bool has_relay() const { return relay_client_count_.load() > 0; }
 
     // relay MUX 모드: socketpair의 local_fd를 새 클라이언트로 inject
     void inject_fd(int fd);
@@ -274,6 +279,7 @@ private:
     int  server_fd_ = -1;
     int  listen_port_ = 0;
     std::atomic<bool> running_{false};
+    std::atomic<int>  relay_client_count_{0};  // inject_fd로 추가된 relay 클라이언트 수
     std::thread accept_thr_;
 
     mutable std::mutex            clients_mtx_;
