@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <unistd.h>
@@ -67,9 +68,10 @@ void RelayServer::accept_loop(){
         int cfd = accept(listen_fd_, (sockaddr*)&caddr, &clen);
         if(cfd < 0){ if(running_.load()) perror("accept"); break; }
         int ka = 1; setsockopt(cfd, SOL_SOCKET, SO_KEEPALIVE, &ka, sizeof(ka));
-        int bufsize = 512 * 1024;
+        int bufsize = 2 * 1024 * 1024;  // 2MB
         setsockopt(cfd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
         setsockopt(cfd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
+        int nd = 1; setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
         std::thread([this, cfd](){ handshake(cfd); }).detach();
     }
 }
@@ -481,16 +483,15 @@ bool RelayServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
 
         uint8_t cmd_type = cmd_payload[0];
 
-        // TOGGLE_RECV: 릴레이에서 처리, HOST에 포워드 안 함
+        // TOGGLE_RECV: 릴레이가 뮤트 테이블 갱신 + HOST에도 포워드
+        // (HOST의 audio_mask 갱신 → CHANNEL_SYNC로 전체 동기)
         if(cmd_type == BEWE_CMD_TOGGLE_RECV && cmd_len >= 6){
             uint8_t ch_idx = cmd_payload[4];
             uint8_t enable = cmd_payload[5];
             if(ch_idx < MAX_CHANNELS_RELAY){
                 je->recv_audio[ch_idx] = (enable != 0);
-                printf("[Relay] JOIN '%s' toggle_recv ch=%u %s\n",
-                       je->name, ch_idx, enable ? "ON" : "OFF");
             }
-            return true;
+            return false;  // HOST에도 포워드
         }
         return false;  // 다른 CMD는 HOST에 포워드
     }

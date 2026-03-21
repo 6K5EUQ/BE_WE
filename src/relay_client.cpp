@@ -155,7 +155,7 @@ int RelayClient::open_room(const std::string& relay_host, int relay_port,
     if(fd < 0){ printf("[RelayClient] open_room: connect failed\n"); return -1; }
 
     // TCP send/recv 버퍼 확대 (MUX 스트림 안정성)
-    int bufsize = 512 * 1024;
+    int bufsize = 2 * 1024 * 1024;
     setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
     setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
 
@@ -264,7 +264,7 @@ void RelayClient::mux_loop(int relay_fd,
             int sv[2];
             if(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) continue;
             // socketpair 버퍼 확대 (relay 경유 시 burst 흡수)
-            int spbuf = 512 * 1024;
+            int spbuf = 2 * 1024 * 1024;
             setsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &spbuf, sizeof(spbuf));
             setsockopt(sv[0], SOL_SOCKET, SO_RCVBUF, &spbuf, sizeof(spbuf));
             setsockopt(sv[1], SOL_SOCKET, SO_SNDBUF, &spbuf, sizeof(spbuf));
@@ -297,9 +297,7 @@ void RelayClient::mux_loop(int relay_fd,
                     if(!relay_send_all(rfd, &mh, RELAY_MUX_HDR_SIZE) ||
                        !relay_send_all(rfd, tbuf.data(), n)){
                         printf("[RelayClient] pump: send to relay failed conn_id=%u\n", cid);
-                        // relay_fd shutdown → mux_loop도 즉시 깨어남
-                        shutdown(rfd, SHUT_RDWR);
-                        break;
+                        break;  // 이 JOIN의 pump만 종료, relay_fd는 유지
                     }
                 }
             });

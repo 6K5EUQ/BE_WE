@@ -27,8 +27,8 @@ struct JoinEntry {
     bool     authed    = false;
 
     // ── 독립 송신 큐: FFT/제어 + 오디오 각각 전용 스레드 ─────────────────
-    static constexpr size_t SEND_QUEUE_MAX  = 512;
-    static constexpr size_t AUDIO_QUEUE_MAX = 256;
+    static constexpr size_t SEND_QUEUE_MAX  = 1024;
+    static constexpr size_t AUDIO_QUEUE_MAX = 512;
 
     // FFT/제어 큐
     std::deque<std::vector<uint8_t>> send_queue;
