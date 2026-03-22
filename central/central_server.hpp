@@ -29,8 +29,8 @@ struct JoinEntry {
     // ── 독립 송신 큐 ──────────────────────────────────────────────────────
     // 우선순위: ctrl_queue(제어) > send_queue(FFT) > audio_queue(오디오)
     // 단일 send 스레드가 우선순위 순서로 큐에서 꺼내 전송
-    static constexpr size_t SEND_QUEUE_MAX_BYTES  = 8 * 1024 * 1024; // FFT 8MB (~2초)
-    static constexpr size_t AUDIO_QUEUE_MAX_BYTES = 4 * 1024 * 1024; // 오디오 4MB (~2초)
+    static constexpr size_t SEND_QUEUE_MAX_BYTES  = 2 * 1024 * 1024; // FFT 2MB (~0.5초)
+    static constexpr size_t AUDIO_QUEUE_MAX_BYTES = 512 * 1024;      // 오디오 512KB (~0.5초)
 
     // 제어 큐 (AUTH_ACK, CMD_ACK, STATUS, OP_LIST, CH_SYNC 등) — 드롭 없음
     std::deque<std::vector<uint8_t>> ctrl_queue;
@@ -89,18 +89,18 @@ struct JoinEntry {
                             ctrl_queue.pop_front();
                         }
                     } else {
-                        // FFT 최대 32개
+                        // FFT 최대 4개 (burst 완화)
                         int n = 0;
-                        while(!send_queue.empty() && n++ < 32){
+                        while(!send_queue.empty() && n++ < 4){
                             size_t sz = send_queue.front().size();
                             batch.push_back(std::move(send_queue.front()));
                             send_queue.pop_front();
                             if(send_queue_bytes >= sz) send_queue_bytes -= sz;
                             else send_queue_bytes = 0;
                         }
-                        // 오디오 최대 64개 (끊김 방지: 오디오 패킷이 작으므로 더 많이 배치)
+                        // 오디오 최대 8개 (burst 완화)
                         n = 0;
-                        while(!audio_queue.empty() && n++ < 64){
+                        while(!audio_queue.empty() && n++ < 8){
                             size_t sz = audio_queue.front().size();
                             batch.push_back(std::move(audio_queue.front()));
                             audio_queue.pop_front();
