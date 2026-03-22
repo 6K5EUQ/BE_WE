@@ -28,7 +28,9 @@ static void enqueue_host_send(std::shared_ptr<HostRoom>& room, uint16_t conn_id,
     room->host_send_queue.push_back(std::move(pkt));
 }
 
-// HOST send 큐를 flush (host_mux_loop에서 호출, non-blocking)
+// HOST send 큐를 flush (host_mux_loop에서 호출)
+// blocking send: CONN_OPEN/CLOSE 같은 제어 패킷은 절대 드롭하면 안 됨
+// SO_SNDTIMEO=5s 설정 되어 있으므로 무한 블로킹 없음
 static void flush_host_send_queue(std::shared_ptr<HostRoom>& room){
     std::deque<std::vector<uint8_t>> batch;
     {
@@ -37,15 +39,18 @@ static void flush_host_send_queue(std::shared_ptr<HostRoom>& room){
     }
     for(auto& pkt : batch){
         if(room->fd < 0 || !room->alive.load()) break;
-        // non-blocking send: 못 보내면 드롭 (작은 제어 패킷이라 거의 항상 성공)
         size_t sent = 0;
         while(sent < pkt.size()){
-            ssize_t r = ::send(room->fd, pkt.data()+sent, pkt.size()-sent, MSG_NOSIGNAL|MSG_DONTWAIT);
+            ssize_t r = ::send(room->fd, pkt.data()+sent, pkt.size()-sent, MSG_NOSIGNAL);
             if(r > 0){ sent += r; continue; }
             if(r < 0 && errno == EINTR) continue;
-            // EAGAIN 또는 에러 → 이 패킷 드롭
+            // 에러 (EPIPE, ETIMEDOUT 등) → 룸 종료
+            printf("[Central] flush_host_send: send error errno=%d(%s) room='%s'\n",
+                   errno, strerror(errno), room->station_id.c_str());
+            room->alive.store(false);
             break;
         }
+        if(!room->alive.load()) break;
     }
 }
 
@@ -504,24 +509,21 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
             // AUTH_ACK를 먼저 전달한 후, 캐시된 상태 패킷 전송
             if(target){
                 target->enqueue_data(bewe_pkt, bewe_len);  // AUTH_ACK 먼저
-                std::lock_guard<std::mutex> clk(room->cache_mtx);
+                // cache_mtx를 잡고 복사 후 즉시 해제 (build_and_broadcast_op_list가 joins_mtx 잠금하므로
+                // cache_mtx를 잡은 상태에서 호출하면 잠금 역전 데드락 발생)
+                std::vector<uint8_t> c_hb, c_st, c_ch, c_op;
+                {
+                    std::lock_guard<std::mutex> clk(room->cache_mtx);
+                    c_hb = room->cached_heartbeat;
+                    c_st = room->cached_status;
+                    c_ch = room->cached_ch_sync;
+                    c_op = room->cached_op_list;
+                }
                 int cache_count = 0;
-                if(!room->cached_heartbeat.empty()){
-                    target->enqueue_data(room->cached_heartbeat.data(), room->cached_heartbeat.size());
-                    cache_count++;
-                }
-                if(!room->cached_status.empty()){
-                    target->enqueue_data(room->cached_status.data(), room->cached_status.size());
-                    cache_count++;
-                }
-                if(!room->cached_ch_sync.empty()){
-                    target->enqueue_data(room->cached_ch_sync.data(), room->cached_ch_sync.size());
-                    cache_count++;
-                }
-                if(!room->cached_op_list.empty()){
-                    target->enqueue_data(room->cached_op_list.data(), room->cached_op_list.size());
-                    cache_count++;
-                }
+                if(!c_hb.empty()){ target->enqueue_data(c_hb.data(), c_hb.size()); cache_count++; }
+                if(!c_st.empty()){ target->enqueue_data(c_st.data(), c_st.size()); cache_count++; }
+                if(!c_ch.empty()){ target->enqueue_data(c_ch.data(), c_ch.size()); cache_count++; }
+                if(!c_op.empty()){ target->enqueue_data(c_op.data(), c_op.size()); cache_count++; }
                 printf("[Central] sent %d cached packets to conn_id=%u\n", cache_count, conn_id);
                 // OPERATOR_LIST 갱신 (새 유저 반영)
                 build_and_broadcast_op_list(room);
@@ -532,16 +534,15 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
     }
 
     // ── 상태 패킷 캐시 (새 JOIN 접속 시 즉시 전송용) ────────────────
-    if(bewe_type == BEWE_TYPE_HEARTBEAT || bewe_type == BEWE_TYPE_STATUS ||
-       bewe_type == BEWE_TYPE_CH_SYNC){
+    if(bewe_type == BEWE_TYPE_HEARTBEAT || bewe_type == BEWE_TYPE_STATUS){
         std::lock_guard<std::mutex> clk(room->cache_mtx);
-        auto& cache = (bewe_type == BEWE_TYPE_HEARTBEAT) ? room->cached_heartbeat :
-                      (bewe_type == BEWE_TYPE_STATUS)    ? room->cached_status :
-                                                           room->cached_ch_sync;
+        auto& cache = (bewe_type == BEWE_TYPE_HEARTBEAT) ? room->cached_heartbeat
+                                                         : room->cached_status;
         cache.assign(bewe_pkt, bewe_pkt + bewe_len);
     }
 
     // ── CHANNEL_SYNC 인터셉트: 캐시 저장 → audio_mask 재작성 후 broadcast
+    // (rebuild_and_broadcast_ch_sync 내부에서 cache_mtx를 잡으므로 여기서 중복 잠금 없이 처리)
     if(bewe_type == BEWE_TYPE_CH_SYNC){
         {
             std::lock_guard<std::mutex> clk(room->cache_mtx);
@@ -698,29 +699,31 @@ void CentralServer::rebuild_and_broadcast_ch_sync(std::shared_ptr<HostRoom> room
     if(base_sync.size() < BEWE_HDR_SIZE + CH_SYNC_ENTRY_SIZE * MAX_CHANNELS_RELAY) return;
 
     uint8_t* payload = base_sync.data() + BEWE_HDR_SIZE;
-    std::lock_guard<std::mutex> jlk(room->joins_mtx);
-    for(int ch = 0; ch < MAX_CHANNELS_RELAY; ch++){
-        uint8_t* entry = payload + ch * CH_SYNC_ENTRY_SIZE;
-        uint32_t orig_mask;
-        memcpy(&orig_mask, entry + CH_SYNC_MASK_OFFSET, sizeof(orig_mask));
-        uint32_t new_mask = orig_mask & 0x1u;
+    {
+        std::lock_guard<std::mutex> jlk(room->joins_mtx);
+        for(int ch = 0; ch < MAX_CHANNELS_RELAY; ch++){
+            uint8_t* entry = payload + ch * CH_SYNC_ENTRY_SIZE;
+            uint32_t orig_mask;
+            memcpy(&orig_mask, entry + CH_SYNC_MASK_OFFSET, sizeof(orig_mask));
+            uint32_t new_mask = orig_mask & 0x1u;
+
+            for(auto& je : room->joins){
+                if(!je->authed || !je->alive.load()) continue;
+                if(je->recv_audio[ch])
+                    new_mask |= (1u << je->op_index);
+            }
+            memcpy(entry + CH_SYNC_MASK_OFFSET, &new_mask, sizeof(new_mask));
+        }
 
         for(auto& je : room->joins){
-            if(!je->authed || !je->alive.load()) continue;
-            if(je->recv_audio[ch])
-                new_mask |= (1u << je->op_index);
+            if(!je->alive.load() || je->fd < 0) continue;
+            je->enqueue_data(base_sync.data(), base_sync.size());
         }
-        memcpy(entry + CH_SYNC_MASK_OFFSET, &new_mask, sizeof(new_mask));
-    }
+    }  // joins_mtx 해제 후 cache/host 작업
 
     {
         std::lock_guard<std::mutex> clk(room->cache_mtx);
         room->cached_ch_sync = base_sync;
-    }
-
-    for(auto& je : room->joins){
-        if(!je->alive.load() || je->fd < 0) continue;
-        je->enqueue_data(base_sync.data(), base_sync.size());
     }
 
     // HOST에도 재작성된 CHANNEL_SYNC 전송 (큐 경유)

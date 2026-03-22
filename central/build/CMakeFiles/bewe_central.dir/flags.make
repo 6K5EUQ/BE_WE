@@ -6,5 +6,5 @@ CXX_DEFINES =
 
 CXX_INCLUDES = -I/home/dsa/BE_WE/central/.
 
-CXX_FLAGS = -std=gnu++17 -O2
+CXX_FLAGS = -O3 -DNDEBUG -std=gnu++17 -O2
 
