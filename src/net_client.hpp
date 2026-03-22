@@ -137,6 +137,10 @@ public:
     // Optional: override save directory for incoming file (return "" to use default)
     std::function<std::string(const std::string& filename)> on_get_save_dir;
     std::function<void(bool allowed)> on_region_response;
+    // IQ_PROGRESS: HOST→relay→JOIN 파이프 전송 진행상황 (phase: 0=REC,1=Transferring,2=Done)
+    std::function<void(const PktIqProgress&)> on_iq_progress;
+    // IQ_PIPE_READY: 중앙서버가 JOIN에게 파이프 연결 요청 (BEWE type=0x20 경유)
+    std::function<void(uint32_t req_id, const char* filename, uint64_t filesize)> on_iq_pipe_ready;
     // SHARE_LIST: called when HOST sends updated share file list
     // vector of (filename, size_bytes, uploader)
     std::function<void(const std::vector<std::tuple<std::string,uint64_t,std::string>>&)> on_share_list;

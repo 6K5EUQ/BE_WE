@@ -276,6 +276,7 @@ CMakeFiles/bewe_central.dir/central_main.cpp.o: /home/dsa/BE_WE/central/central_
   /usr/lib/gcc/x86_64-linux-gnu/13/include/stdint.h
 
 CMakeFiles/bewe_central.dir/central_server.cpp.o: /home/dsa/BE_WE/central/central_server.cpp \
+  /home/dsa/BE_WE/src/net_protocol.hpp \
   /home/dsa/BE_WE/central/central_proto.hpp \
   /home/dsa/BE_WE/central/central_server.hpp \
   /usr/include/alloca.h \
@@ -849,6 +850,8 @@ CMakeFiles/bewe_central.dir/central_server.cpp.o: /home/dsa/BE_WE/central/centra
 /usr/include/x86_64-linux-gnu/bits/struct_mutex.h:
 
 /usr/include/linux/close_range.h:
+
+/home/dsa/BE_WE/src/net_protocol.hpp:
 
 /usr/include/c++/13/bits/stl_iterator_base_funcs.h:
 

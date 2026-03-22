@@ -473,6 +473,20 @@ void NetClient::handle_packet(PacketType type,
         break;
     }
 
+    case PacketType::IQ_PROGRESS: {
+        if(len < sizeof(PktIqProgress)) break;
+        auto* p = reinterpret_cast<const PktIqProgress*>(payload);
+        if(on_iq_progress) on_iq_progress(*p);
+        break;
+    }
+
+    case PacketType::IQ_PIPE_READY: {
+        if(len < sizeof(PktIqPipeReady)) break;
+        auto* p = reinterpret_cast<const PktIqPipeReady*>(payload);
+        if(on_iq_pipe_ready) on_iq_pipe_ready(p->req_id, p->filename, p->filesize);
+        break;
+    }
+
     default: break;
     }
 }

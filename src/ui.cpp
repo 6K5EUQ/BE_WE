@@ -1904,6 +1904,108 @@ void run_streaming_viewer(){
             }
         };
 
+        // JOIN: IQ 전송 진행상황 수신 (phase: 0=REC, 1=Transferring, 2=Done)
+        cli->on_iq_progress = [&](const PktIqProgress& p){
+            std::string fn(p.filename, strnlen(p.filename, 128));
+            std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+            for(auto& e : v.rec_entries){
+                if(!e.is_region) continue;
+                if(e.filename != fn && p.phase == 0) {
+                    // phase=0(REC): 파일명으로 새로 매칭
+                    if(e.req_state == FFTViewer::RecEntry::REQ_CONFIRMED && e.filename.empty())
+                        e.filename = fn;
+                }
+                if(e.filename == fn || (p.phase == 0 && e.req_state == FFTViewer::RecEntry::REQ_CONFIRMED)){
+                    if(p.phase == 0){
+                        // [REC] Recording...
+                        e.filename = fn;
+                        e.req_state = FFTViewer::RecEntry::REQ_CONFIRMED;
+                    } else if(p.phase == 1){
+                        // [Transferring]
+                        e.req_state = FFTViewer::RecEntry::REQ_TRANSFERRING;
+                        e.xfer_done = p.done; e.xfer_total = p.total;
+                    } else if(p.phase == 2){
+                        // [Done]
+                        e.xfer_done = p.total; e.xfer_total = p.total;
+                        e.finished = true;
+                    }
+                    break;
+                }
+            }
+        };
+
+        // JOIN: 중앙서버 파이프 준비 신호 → 7702 포트에 연결해서 파일 수신
+        cli->on_iq_pipe_ready = [&](uint32_t req_id, const char* filename, uint64_t filesize){
+            std::string fn(filename);
+            std::string save_dir = BEWEPaths::record_iq_dir();
+            std::string save_path = save_dir + "/" + fn;
+            std::string central_host_cap = s_central_host;
+            // rec_entries에 TRANSFERRING 항목 추가
+            {
+                std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                bool found = false;
+                for(auto& e : v.rec_entries)
+                    if(e.is_region && e.filename == fn){ found=true; break; }
+                if(!found){
+                    FFTViewer::RecEntry e{};
+                    e.filename = fn; e.is_region = true;
+                    e.req_state = FFTViewer::RecEntry::REQ_TRANSFERRING;
+                    e.xfer_total = filesize; e.xfer_done = 0;
+                    e.t_start = std::chrono::steady_clock::now();
+                    v.rec_entries.push_back(e);
+                }
+            }
+            std::thread([req_id, fn, save_path, filesize, central_host_cap, &v, &central_cli](){
+                int pipe_fd = central_cli.pipe_connect_join(central_host_cap, req_id);
+                if(pipe_fd < 0){
+                    printf("[UI] pipe_connect_join failed req_id=%u\n", req_id);
+                    return;
+                }
+                FILE* fp = fopen(save_path.c_str(), "wb");
+                if(!fp){
+                    close(pipe_fd);
+                    printf("[UI] cannot open save path: %s\n", save_path.c_str());
+                    return;
+                }
+                std::vector<uint8_t> buf(256*1024);
+                uint64_t received = 0;
+                while(true){
+                    ssize_t n = recv(pipe_fd, buf.data(), buf.size(), 0);
+                    if(n <= 0) break;
+                    fwrite(buf.data(), 1, (size_t)n, fp);
+                    received += (uint64_t)n;
+                    // xfer_done 업데이트
+                    std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                    for(auto& e : v.rec_entries)
+                        if(e.is_region && e.filename == fn){ e.xfer_done = received; break; }
+                }
+                fclose(fp);
+                close(pipe_fd);
+                printf("[UI] IQ pipe recv done: %s (%.1f MB)\n", fn.c_str(), received/1048576.0);
+                // Done 상태로 전환
+                {
+                    std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                    for(auto& e : v.rec_entries)
+                        if(e.is_region && e.filename == fn){
+                            e.xfer_done = received; e.xfer_total = received;
+                            e.finished = true; e.path = save_path;
+                            break;
+                        }
+                }
+                // rec_iq_files에 추가
+                bool f2=false;
+                for(auto& s : rec_iq_files) if(s==fn){f2=true;break;}
+                if(!f2) rec_iq_files.push_back(fn);
+                // 3초 후 항목 제거
+                std::this_thread::sleep_for(std::chrono::seconds(3));
+                std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                v.rec_entries.erase(
+                    std::remove_if(v.rec_entries.begin(), v.rec_entries.end(),
+                        [&fn](const FFTViewer::RecEntry& e){ return e.filename==fn && e.finished; }),
+                    v.rec_entries.end());
+            }).detach();
+        };
+
         // JOIN: HOST Public 파일 목록 수신 (filename, size_bytes, uploader)
         cli->on_share_list = [&](const std::vector<std::tuple<std::string,uint64_t,std::string>>& files){
             std::lock_guard<std::mutex> lk(join_share_mtx);
@@ -2182,7 +2284,6 @@ void run_streaming_viewer(){
                                              int32_t fft_top, int32_t fft_bot,
                                              float freq_lo, float freq_hi,
                                              int32_t time_start, int32_t time_end){
-                // 승인 없이 즉시 추출+전송 시작
                 std::string fname;
                 {
                     std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
@@ -2203,7 +2304,6 @@ void run_streaming_viewer(){
                     v.rec_entries.push_back(e);
                     fname = fn;
                 }
-                // JOIN 요청 시각 → HOST fft 인덱스 변환
                 float rps=(float)v.header.sample_rate/(float)v.fft_input_size/(float)v.time_average;
                 if(rps<=0.f) rps=37.5f;
                 time_t now_h=time(nullptr);
@@ -2213,7 +2313,16 @@ void run_streaming_viewer(){
                 float fl=freq_lo, fh=freq_hi;
                 int32_t ts=time_start, te=time_end;
                 uint8_t oidx=op_idx;
-                std::thread([&v,srv,ft,fb,fl,fh,ts,te,oidx,fname](){
+                // station_id: central_cli에 등록된 룸 ID
+                std::string sid = v.station_name + "_" + std::string(login_get_id());
+                std::string central_host_cap = s_central_host;
+                std::thread([&v,srv,ft,fb,fl,fh,ts,te,oidx,fname,sid,central_host_cap,&central_cli](){
+                    // [REC] 상태 표시
+                    {
+                        std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
+                        for(auto& e:v.rec_entries)
+                            if(e.filename==fname){ e.req_state=FFTViewer::RecEntry::REQ_CONFIRMED; break; }
+                    }
                     for(int w=0;w<200&&v.rec_busy_flag.load();w++)
                         std::this_thread::sleep_for(std::chrono::milliseconds(50));
                     v.region.fft_top=ft; v.region.fft_bot=fb;
@@ -2225,6 +2334,15 @@ void run_streaming_viewer(){
                     v.rec_state = FFTViewer::REC_BUSY;
                     v.rec_anim_timer = 0.0f;
                     v.region.active = false;
+                    // IQ_PROGRESS phase=0 (REC 중) 브로드캐스트
+                    if(srv){
+                        PktIqProgress prog{};
+                        static std::atomic<uint32_t> req_id_counter{1};
+                        prog.req_id = req_id_counter.fetch_add(1);
+                        strncpy(prog.filename, fname.c_str(), 127);
+                        prog.done=0; prog.total=0; prog.phase=0;
+                        srv->broadcast_iq_progress(prog);
+                    }
                     v.do_region_save_work();
                     v.rec_state = FFTViewer::REC_SUCCESS;
                     v.rec_success_timer = 3.0f;
@@ -2240,7 +2358,7 @@ void run_streaming_viewer(){
                             }
                     }
                     if(path.empty()){
-                        srv->send_region_response((int)oidx, false);
+                        if(srv) srv->send_region_response((int)oidx, false);
                         {
                             std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
                             for(auto it2=v.rec_entries.begin();it2!=v.rec_entries.end();++it2)
@@ -2260,22 +2378,50 @@ void run_streaming_viewer(){
                                 break;
                             }
                     }
-                    uint8_t tid=v.next_transfer_id.fetch_add(1);
-                    srv->send_file_to((int)oidx,path.c_str(),tid,
-                        [&v,fname](uint64_t done, uint64_t total){
-                            std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
-                            for(auto& e:v.rec_entries)
-                                if(e.filename==fname){ e.xfer_done=done; break; }
-                        });
+                    static std::atomic<uint32_t> g_req_id{1000};
+                    uint32_t req_id = g_req_id.fetch_add(1);
+                    const char* fn_only = strrchr(path.c_str(),'/');
+                    fn_only = fn_only ? fn_only+1 : path.c_str();
+
+                    // 중앙서버 파이프에 연결
+                    int pipe_fd = -1;
+                    if(central_cli.is_central_connected()){
+                        pipe_fd = central_cli.pipe_connect_host(
+                            central_host_cap, sid, req_id, 0xFFFF,
+                            fn_only, fsz);
+                    }
+
+                    if(pipe_fd >= 0 && srv){
+                        srv->send_file_via_pipe(pipe_fd, path.c_str(), req_id,
+                            [&v,fname,fsz](uint64_t done, uint64_t total){
+                                std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
+                                for(auto& e:v.rec_entries)
+                                    if(e.filename==fname){
+                                        e.xfer_done=done; e.xfer_total=total>0?total:fsz;
+                                        if(done >= (total>0?total:fsz) && total>0)
+                                            e.finished=true;
+                                        break;
+                                    }
+                            });
+                    } else if(srv){
+                        // 파이프 실패 시 기존 MUX 경유로 폴백
+                        uint8_t tid=v.next_transfer_id.fetch_add(1);
+                        srv->send_file_to((int)oidx,path.c_str(),tid,
+                            [&v,fname](uint64_t done, uint64_t total){
+                                std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
+                                for(auto& e:v.rec_entries)
+                                    if(e.filename==fname){ e.xfer_done=done; break; }
+                            });
+                    }
+                    // Done 후 3초 표시 후 HOST rec_entries 제거 + 파일 삭제
+                    std::this_thread::sleep_for(std::chrono::seconds(3));
                     {
                         std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
                         for(auto it2=v.rec_entries.begin();it2!=v.rec_entries.end();++it2)
-                            if(it2->filename==fname){
-                                v.rec_entries.erase(it2);
-                                break;
-                            }
+                            if(it2->filename==fname){ v.rec_entries.erase(it2); break; }
                     }
                     remove(path.c_str());
+                    printf("[UI] IQ pipe transfer done, deleted %s\n", path.c_str());
                 }).detach();
             };
             srv->cb.on_toggle_recv = [&](int ch_idx, uint8_t op_idx, bool enable){
@@ -4434,16 +4580,20 @@ void run_streaming_viewer(){
                                                 else
                                                     ImGui::Text("[Transferring]  %s", re.filename.c_str());
                                                 ImGui::PopStyleColor();
-                                            } else if(re.req_state==RS::REQ_NONE && re.finished){
+                                            } else if((re.req_state==RS::REQ_NONE || re.req_state==RS::REQ_TRANSFERRING) && re.finished){
                                                 // 전송 완료
-                                                auto it_rz2=fsz_cache.find(re.filename);
-                                                const std::string szstr2=(it_rz2!=fsz_cache.end())?it_rz2->second:fmt_filesize("",re.path);
                                                 col=IM_COL32(120,200,120,255);
                                                 ImGui::PushStyleColor(ImGuiCol_Text,col);
-                                                if(!szstr2.empty())
-                                                    ImGui::Text("[Done]  %s  %s", re.filename.c_str(), szstr2.c_str());
-                                                else
-                                                    ImGui::Text("[Done]  %s", re.filename.c_str());
+                                                if(re.xfer_total > 0)
+                                                    ImGui::Text("[Done]  %s  (%.1f MB)", re.filename.c_str(), re.xfer_total/1048576.0);
+                                                else {
+                                                    auto it_rz2=fsz_cache.find(re.filename);
+                                                    const std::string szstr2=(it_rz2!=fsz_cache.end())?it_rz2->second:fmt_filesize("",re.path);
+                                                    if(!szstr2.empty())
+                                                        ImGui::Text("[Done]  %s  %s", re.filename.c_str(), szstr2.c_str());
+                                                    else
+                                                        ImGui::Text("[Done]  %s", re.filename.c_str());
+                                                }
                                                 ImGui::PopStyleColor();
                                             } else if(re.req_state==RS::REQ_DENIED){
                                                 col=IM_COL32(200,80,80,255);

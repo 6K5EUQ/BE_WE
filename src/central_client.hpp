@@ -98,6 +98,15 @@ public:
     // primary_host + 캐시된 LAN IP를 합친 후보 목록 생성
     std::vector<std::string> make_candidates(const std::string& primary_host);
 
+    // ── IQ 파일 전송 파이프 (7701 포트) ──────────────────────────────────
+    // HOST: 파이프 서버에 연결, PIPE_HOST 전송 → fd 반환 (이후 파일 직접 write)
+    int pipe_connect_host(const std::string& central_host,
+                          const std::string& station_id,
+                          uint32_t req_id, uint16_t target_conn_id,
+                          const char* filename, uint64_t filesize);
+    // JOIN: 파이프 서버에 연결, PIPE_JOIN 전송 → fd 반환 (이후 파일 직접 read)
+    int pipe_connect_join(const std::string& central_host, uint32_t req_id);
+
 private:
     // 폴링
     std::thread       poll_thr_;

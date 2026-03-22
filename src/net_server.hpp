@@ -216,6 +216,13 @@ public:
                             uint8_t type, const char* label);
     void send_file_to(int op_index, const char* path, uint8_t transfer_id,
                       std::function<void(uint64_t done, uint64_t total)> progress_cb = nullptr);
+
+    // IQ 파이프 전송: 파이프 fd가 이미 열려있을 때 사용
+    void send_file_via_pipe(int pipe_fd, const char* path, uint32_t req_id,
+                            std::function<void(uint64_t done, uint64_t total)> progress_cb = nullptr);
+
+    // IQ 진행상황 브로드캐스트 (모든 클라이언트)
+    void broadcast_iq_progress(const PktIqProgress& prog);
     void send_region_response(int op_index, bool allowed);
 
     // Channel state → all clients

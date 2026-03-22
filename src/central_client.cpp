@@ -327,8 +327,8 @@ void CentralClient::mux_loop(int central_fd,
             // 새 JOIN → socketpair 생성
             int sv[2];
             if(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) continue;
-            // socketpair 버퍼 확대 (relay 경유 시 burst 흡수)
-            int spbuf = 212992;
+            // socketpair 버퍼 확대: FFT 1프레임(131KB) burst 흡수
+            int spbuf = 1 * 1024 * 1024;  // 1MB
             setsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &spbuf, sizeof(spbuf));
             setsockopt(sv[0], SOL_SOCKET, SO_RCVBUF, &spbuf, sizeof(spbuf));
             setsockopt(sv[1], SOL_SOCKET, SO_SNDBUF, &spbuf, sizeof(spbuf));
@@ -414,6 +414,61 @@ void CentralClient::mux_loop(int central_fd,
     }
     mux_running_.store(false);
     if(on_central_disconnect_) on_central_disconnect_();
+}
+
+// ── IQ 파이프: HOST 측 연결 ───────────────────────────────────────────────
+int CentralClient::pipe_connect_host(const std::string& central_host,
+                                     const std::string& station_id,
+                                     uint32_t req_id, uint16_t target_conn_id,
+                                     const char* filename, uint64_t filesize){
+    auto cands = make_candidates(central_host);
+    int fd = tcp_connect_any(cands, CENTRAL_PIPE_PORT);
+    if(fd < 0){ printf("[CentralClient] pipe_connect_host: connect failed\n"); return -1; }
+
+    // 전송 타임아웃 해제 (큰 파일 전송)
+    timeval tv0{0,0};
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv0, sizeof(tv0));
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv0, sizeof(tv0));
+    int bufsize = 4 * 1024 * 1024;
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
+    int nd = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
+
+    PipePktHost ph{};
+    strncpy(ph.station_id, station_id.c_str(), 31);
+    ph.req_id          = req_id;
+    ph.target_conn_id  = target_conn_id;
+    strncpy(ph.filename, filename, 127);
+    ph.filesize        = filesize;
+
+    if(!pipe_send_pkt(fd, PipePktType::PIPE_HOST, &ph, sizeof(ph))){
+        close(fd); return -1;
+    }
+    printf("[CentralClient] pipe_connect_host: req_id=%u file='%s' size=%llu fd=%d\n",
+           req_id, filename, (unsigned long long)filesize, fd);
+    return fd;
+}
+
+// ── IQ 파이프: JOIN 측 연결 ───────────────────────────────────────────────
+int CentralClient::pipe_connect_join(const std::string& central_host, uint32_t req_id){
+    auto cands = make_candidates(central_host);
+    int fd = tcp_connect_any(cands, CENTRAL_PIPE_PORT);
+    if(fd < 0){ printf("[CentralClient] pipe_connect_join: connect failed\n"); return -1; }
+
+    timeval tv0{0,0};
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv0, sizeof(tv0));
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv0, sizeof(tv0));
+    int bufsize = 4 * 1024 * 1024;
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
+    int nd = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
+
+    PipePktJoin pj{};
+    pj.req_id = req_id;
+
+    if(!pipe_send_pkt(fd, PipePktType::PIPE_JOIN, &pj, sizeof(pj))){
+        close(fd); return -1;
+    }
+    printf("[CentralClient] pipe_connect_join: req_id=%u fd=%d\n", req_id, fd);
+    return fd;
 }
 
 // ── JOIN 모드: 룸 입장 ────────────────────────────────────────────────────

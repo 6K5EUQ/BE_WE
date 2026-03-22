@@ -1,5 +1,6 @@
 #include "net_server.hpp"
 #include "udp_discovery.hpp"
+#include "../central/central_proto.hpp"
 #include <cstdio>
 #include <cstring>
 #include <cerrno>
@@ -705,6 +706,67 @@ void NetServer::send_file_to(int op_index, const char* path, uint8_t transfer_id
             std::this_thread::sleep_for(std::chrono::microseconds(want_us - elapsed_us));
     }
     fclose(fp);
+}
+
+void NetServer::broadcast_iq_progress(const PktIqProgress& prog){
+    auto pkt = make_packet(PacketType::IQ_PROGRESS, &prog, sizeof(prog));
+    std::lock_guard<std::mutex> lk(clients_mtx_);
+    for(auto& cli : clients_){
+        if(!cli->alive.load()) continue;
+        cli->enqueue(pkt, false);
+    }
+}
+
+void NetServer::send_file_via_pipe(int pipe_fd, const char* path, uint32_t req_id,
+                                    std::function<void(uint64_t,uint64_t)> progress_cb){
+    FILE* fp = fopen(path, "rb");
+    if(!fp){
+        fprintf(stderr, "send_file_via_pipe: open failed %s\n", path);
+        close(pipe_fd);
+        return;
+    }
+    fseek(fp, 0, SEEK_END); uint64_t total = (uint64_t)ftell(fp); fseek(fp, 0, SEEK_SET);
+    const char* fn = strrchr(path, '/'); fn = fn ? fn+1 : path;
+
+    // 진행상황 브로드캐스트 헬퍼 (phase: 0=REC, 1=Transferring, 2=Done)
+    auto broadcast_progress = [&](uint64_t done, uint8_t phase){
+        PktIqProgress prog{};
+        prog.req_id   = req_id;
+        strncpy(prog.filename, fn, 127);
+        prog.done     = done;
+        prog.total    = total;
+        prog.phase    = phase;
+        auto pkt = make_packet(PacketType::IQ_PROGRESS, &prog, sizeof(prog));
+        std::lock_guard<std::mutex> lk(clients_mtx_);
+        for(auto& cli : clients_){
+            if(!cli->alive.load()) continue;
+            cli->enqueue(pkt, false);
+        }
+    };
+
+    // Transferring 시작 알림
+    broadcast_progress(0, 1);
+
+    const uint32_t CHUNK = 256 * 1024;
+    std::vector<uint8_t> buf(CHUNK);
+    uint64_t offset = 0;
+
+    while(true){
+        size_t n = fread(buf.data(), 1, CHUNK, fp);
+        if(n == 0) break;
+        if(!central_send_all(pipe_fd, buf.data(), n)){
+            fprintf(stderr, "send_file_via_pipe: pipe write failed\n");
+            break;
+        }
+        offset += n;
+        if(progress_cb) progress_cb(offset, total);
+        broadcast_progress(offset, 1);
+    }
+    fclose(fp);
+    close(pipe_fd);
+
+    broadcast_progress(total, 2);  // Done
+    if(progress_cb) progress_cb(total, total);
 }
 
 void NetServer::send_share_list(int op_index,

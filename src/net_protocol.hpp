@@ -36,6 +36,8 @@ enum class PacketType : uint8_t {
     SHARE_UPLOAD_DATA  = 0x13,  // client → server: upload file chunk
     HEARTBEAT          = 0x14,  // server → all clients: 3s keepalive + state
     PUB_DELETE_REQ     = 0x15,  // client → server: request delete of public file (owner only)
+    IQ_PROGRESS        = 0x16,  // server → all: IQ 파일 전송 진행상황 (REC/Transferring/Done)
+    IQ_PIPE_READY      = 0x20,  // 중앙서버 → JOIN: 파이프 연결 준비 완료, req_id 전달
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────
@@ -270,6 +272,25 @@ struct __attribute__((packed)) PktHeartbeat {
     uint8_t sdr_temp_c;  // SDR 온도 (°C 정수, 0=미지원/미측정)
     uint8_t sdr_state;   // 0=streaming OK, 1=stream error
     uint8_t iq_on;       // 0=IQ 롤링 off, 1=on
+};
+
+// ── IQ_PIPE_READY ─────────────────────────────────────────────────────────
+// 중앙서버 → JOIN (MUX 경유): 파이프 포트(7702)에 접속하라는 신호
+struct __attribute__((packed)) PktIqPipeReady {
+    uint32_t req_id;
+    char     filename[128];
+    uint64_t filesize;
+};
+
+// ── IQ_PROGRESS ───────────────────────────────────────────────────────────
+// server → all: IQ 파일 전송 진행상황
+// phase: 0=REC중, 1=Transferring, 2=Done
+struct __attribute__((packed)) PktIqProgress {
+    uint32_t req_id;
+    char     filename[128];
+    uint64_t done;
+    uint64_t total;
+    uint8_t  phase;  // 0=REC, 1=Transferring, 2=Done
 };
 
 // ── Wire helpers ──────────────────────────────────────────────────────────

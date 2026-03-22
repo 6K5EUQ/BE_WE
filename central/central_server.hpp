@@ -98,9 +98,9 @@ struct JoinEntry {
                             if(send_queue_bytes >= sz) send_queue_bytes -= sz;
                             else send_queue_bytes = 0;
                         }
-                        // 오디오 최대 32개
+                        // 오디오 최대 64개 (끊김 방지: 오디오 패킷이 작으므로 더 많이 배치)
                         n = 0;
-                        while(!audio_queue.empty() && n++ < 32){
+                        while(!audio_queue.empty() && n++ < 64){
                             size_t sz = audio_queue.front().size();
                             batch.push_back(std::move(audio_queue.front()));
                             audio_queue.pop_front();
@@ -204,6 +204,26 @@ private:
 
     std::thread accept_thr_;
     std::thread watchdog_thr_;
+
+    // ── 파이프 서버 (7701 포트) ──────────────────────────────────────────
+    int         pipe_listen_fd_ = -1;
+    std::thread pipe_accept_thr_;
+
+    struct PipeWaiter {
+        uint32_t req_id;
+        int      fd;          // 기다리는 HOST/JOIN fd
+        bool     is_host;
+        char     station_id[32];
+        char     filename[128];
+        uint64_t filesize;
+        uint16_t target_conn_id;
+        std::chrono::steady_clock::time_point created;
+    };
+    mutable std::mutex               pipe_mtx_;
+    std::vector<PipeWaiter>          pipe_waiters_;
+
+    void pipe_accept_loop();
+    void pipe_handshake(int fd);
 
     int  make_listen_sock(int port);
     void accept_loop();

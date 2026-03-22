@@ -278,6 +278,7 @@ CMakeFiles/bewe_central.dir/central_main.cpp.o
 
 CMakeFiles/bewe_central.dir/central_server.cpp.o
  /home/dsa/BE_WE/central/central_server.cpp
+ /home/dsa/BE_WE/src/net_protocol.hpp
  /home/dsa/BE_WE/central/central_proto.hpp
  /home/dsa/BE_WE/central/central_server.hpp
  /usr/include/alloca.h
