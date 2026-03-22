@@ -66,7 +66,12 @@ public:
     // HOST→중앙서버 broadcast (conn_id=0xFFFF, 1회 전송 → 중앙서버가 N명에게 fan-out)
     // N× 대역폭 문제 해결: 기존 per-JOIN socketpair 경유 방식 대체
     void enqueue_relay_broadcast(const uint8_t* bewe_pkt, size_t bewe_len){
-        if(!central_sender_running_.load()) return;
+        if(!central_sender_running_.load()){
+            static int skip_warn = 0;
+            if(skip_warn++ % 600 == 0)
+                printf("[CentralClient] enqueue_relay_broadcast: sender not running (skip #%d)\n", skip_warn);
+            return;
+        }
         CentralMuxHdr mh{}; mh.conn_id = 0xFFFF;
         mh.type = static_cast<uint8_t>(CentralMuxType::DATA);
         mh.len  = (uint32_t)bewe_len;

@@ -425,6 +425,11 @@ void NetServer::broadcast_fft(const float* data, int fft_size,
     auto pkt = make_packet(PacketType::FFT_FRAME, payload.data(), total);
     if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size());
+    else {
+        static int fft_no_relay_warn = 0;
+        if(fft_no_relay_warn++ % 600 == 0)
+            printf("[NetServer] broadcast_fft: on_relay_broadcast is NULL (fft #%d)\n", fft_no_relay_warn);
+    }
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
         if(c->is_relay || !c->authed || !c->alive.load()) continue;
