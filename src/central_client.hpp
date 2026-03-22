@@ -70,24 +70,7 @@ public:
         CentralMuxHdr mh{}; mh.conn_id = 0xFFFF;
         mh.type = static_cast<uint8_t>(CentralMuxType::DATA);
         mh.len  = (uint32_t)bewe_len;
-        if(bewe_len < 5){
-            enqueue_hb(&mh, CENTRAL_MUX_HDR_SIZE, bewe_pkt, bewe_len);
-            return;
-        }
-        uint8_t t = bewe_pkt[4];
-        // 제어 패킷은 HB 우선 큐 → FFT/오디오 대기 없이 즉시 전송
-        // 0x00=HB, 0x01=AUTH_REQ, 0x02=AUTH_ACK, 0x05=CMD, 0x06=CMD_ACK,
-        // 0x07=CHAT, 0x08=STATUS, 0x09=OP_LIST, 0x0A=CH_SYNC
-        bool is_ctrl = (t == 0x00 || t == 0x01 || t == 0x02 ||
-                        t == 0x05 || t == 0x06 || t == 0x07 ||
-                        t == 0x08 || t == 0x09 || t == 0x0A);
-        bool is_audio = (t == 0x04);
-        if(is_ctrl)
-            enqueue_hb(&mh, CENTRAL_MUX_HDR_SIZE, bewe_pkt, bewe_len);
-        else if(is_audio)
-            enqueue_central_audio(&mh, CENTRAL_MUX_HDR_SIZE, bewe_pkt, bewe_len);
-        else
-            enqueue_central(&mh, CENTRAL_MUX_HDR_SIZE, bewe_pkt, bewe_len);
+        enqueue_central(&mh, CENTRAL_MUX_HDR_SIZE, bewe_pkt, bewe_len);
     }
 
     // 중앙서버→HOST 방향 전역 채팅 수신 콜백 설정
@@ -96,13 +79,12 @@ public:
     }
 
     // relay에 NET_RESET 신호 전송 (0=reset start, 1=open)
-    // HB 큐(우선순위)로 전송 → 데이터 큐 congestion 영향 없음
     void send_net_reset(uint8_t flag){
         if(!central_sender_running_.load()) return;
         CentralMuxHdr mh{}; mh.conn_id = 0xFFFF;
         mh.type = static_cast<uint8_t>(CentralMuxType::NET_RESET);
         mh.len = 1;
-        enqueue_hb(&mh, CENTRAL_MUX_HDR_SIZE, &flag, 1);
+        enqueue_central(&mh, CENTRAL_MUX_HDR_SIZE, &flag, 1);
     }
 
     // ── JOIN 모드 ─────────────────────────────────────────────────────────
@@ -128,33 +110,21 @@ private:
     std::atomic<bool> mux_running_{false};
     int               mux_central_fd_ = -1;
 
+    // central_fd 전용 송신 큐 + 스레드
+    // 펌프/HB 모두 여기 enqueue → central_sender_thr_ 가 직렬로 write
+    // → 펌프가 central_fd 블로킹으로 mutex 장시간 점유해 HB를 막는 문제 해결
     std::thread              central_sender_thr_;
     std::atomic<bool>        central_sender_running_{false};
     std::mutex               central_queue_mtx_;
     std::condition_variable  central_queue_cv_;
-    std::deque<std::vector<uint8_t>> central_hb_queue_;    // HB/NET_RESET 전용 (우선)
-    std::deque<std::vector<uint8_t>> central_send_queue_;  // FFT 데이터
-    std::deque<std::vector<uint8_t>> central_audio_queue_; // 오디오 데이터 (분리)
-    std::deque<std::vector<uint8_t>> central_join_queue_;  // JOIN→HOST 방향 (분리)
+    std::deque<std::vector<uint8_t>> central_send_queue_;
     size_t                   central_queue_bytes_ = 0;
-    size_t                   central_audio_bytes_ = 0;
-    size_t                   central_join_bytes_  = 0;
-    static constexpr size_t  CENTRAL_QUEUE_MAX_BYTES = 32 * 1024 * 1024; // FFT 32MB
-    static constexpr size_t  CENTRAL_AUDIO_MAX_BYTES = 16 * 1024 * 1024; // 오디오 16MB
-    static constexpr size_t  CENTRAL_JOIN_MAX_BYTES  =  4 * 1024 * 1024; // JOIN→HOST 4MB
+    static constexpr size_t  CENTRAL_QUEUE_MAX_BYTES = 32 * 1024 * 1024; // 32MB
 
-    // FFT 큐 enqueue (오버플로 시 드롭)
+    // (hdr, hdr_len) + (data, data_len) 을 합쳐 하나의 청크로 enqueue
+    // queue가 CENTRAL_QUEUE_MAX_BYTES 를 초과하면 가장 오래된 항목부터 삭제
     void enqueue_central(const void* hdr, size_t hdr_len,
                        const void* data, size_t data_len);
-    // 오디오 큐 enqueue (오버플로 시 드롭)
-    void enqueue_central_audio(const void* hdr, size_t hdr_len,
-                               const void* data, size_t data_len);
-    // JOIN→HOST 방향 큐 enqueue (오버플로 시 드롭)
-    void enqueue_join_data(const void* hdr, size_t hdr_len,
-                           const void* data, size_t data_len);
-    // HB/제어 큐 enqueue (우선순위, 드롭 없음)
-    void enqueue_hb(const void* hdr, size_t hdr_len,
-                    const void* data, size_t data_len);
     void central_sender_loop(int central_fd);
 
     struct JoinPair {

@@ -559,7 +559,7 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
 
         std::lock_guard<std::mutex> jlk(room->joins_mtx);
         for(auto& je : room->joins){
-            if(!je->alive.load() || je->fd < 0) continue;
+            if(!je->alive.load() || je->fd < 0 || !je->authed) continue;
             if(conn_id != 0xFFFF && conn_id != je->conn_id) continue;
             if(!je->recv_audio[ch_idx]) continue;
             je->enqueue_audio(bewe_pkt, bewe_len);

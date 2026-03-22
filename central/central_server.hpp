@@ -81,28 +81,32 @@ struct JoinEntry {
                     });
                     if(send_stop.load() && ctrl_queue.empty() &&
                        send_queue.empty() && audio_queue.empty()) break;
-                    // 제어 패킷 전부 꺼냄
-                    while(!ctrl_queue.empty()){
-                        batch.push_back(std::move(ctrl_queue.front()));
-                        ctrl_queue.pop_front();
-                    }
-                    // FFT 최대 32개
-                    int n = 0;
-                    while(!send_queue.empty() && n++ < 32){
-                        size_t sz = send_queue.front().size();
-                        batch.push_back(std::move(send_queue.front()));
-                        send_queue.pop_front();
-                        if(send_queue_bytes >= sz) send_queue_bytes -= sz;
-                        else send_queue_bytes = 0;
-                    }
-                    // 오디오 최대 32개
-                    n = 0;
-                    while(!audio_queue.empty() && n++ < 32){
-                        size_t sz = audio_queue.front().size();
-                        batch.push_back(std::move(audio_queue.front()));
-                        audio_queue.pop_front();
-                        if(audio_queue_bytes >= sz) audio_queue_bytes -= sz;
-                        else audio_queue_bytes = 0;
+                    // 제어 패킷이 있으면 제어만 먼저 전송 (FFT/오디오와 절대 혼합 금지)
+                    // → AUTH_ACK가 FFT보다 항상 먼저 JOIN에 도달 보장
+                    if(!ctrl_queue.empty()){
+                        while(!ctrl_queue.empty()){
+                            batch.push_back(std::move(ctrl_queue.front()));
+                            ctrl_queue.pop_front();
+                        }
+                    } else {
+                        // FFT 최대 32개
+                        int n = 0;
+                        while(!send_queue.empty() && n++ < 32){
+                            size_t sz = send_queue.front().size();
+                            batch.push_back(std::move(send_queue.front()));
+                            send_queue.pop_front();
+                            if(send_queue_bytes >= sz) send_queue_bytes -= sz;
+                            else send_queue_bytes = 0;
+                        }
+                        // 오디오 최대 32개
+                        n = 0;
+                        while(!audio_queue.empty() && n++ < 32){
+                            size_t sz = audio_queue.front().size();
+                            batch.push_back(std::move(audio_queue.front()));
+                            audio_queue.pop_front();
+                            if(audio_queue_bytes >= sz) audio_queue_bytes -= sz;
+                            else audio_queue_bytes = 0;
+                        }
                     }
                 }
                 for(auto& pkt : batch) send_raw(pkt);
