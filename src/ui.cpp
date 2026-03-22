@@ -1941,6 +1941,9 @@ void run_streaming_viewer(){
 
         // JOIN: IQ_CHUNK 스트림 수신 (중앙 MUX 경유, WAN 호환)
         // seq=0: START, seq=1..N: data, seq=0xFFFFFFFF: END
+        // 열린 파일 핸들을 req_id별로 유지 (매 청크마다 open/close 방지)
+        static std::unordered_map<uint32_t, FILE*> s_iq_chunk_fps;
+        static std::unordered_map<uint32_t, std::string> s_iq_chunk_fns;
         cli->on_iq_chunk = [&](uint32_t req_id, uint32_t seq,
                                const char* filename, uint64_t filesize,
                                const uint8_t* data, uint32_t data_len){
@@ -1949,14 +1952,35 @@ void run_streaming_viewer(){
             std::string save_path = save_dir + "/" + fn;
 
             if(seq == 0){
-                // START: rec_entries에 TRANSFERRING 항목 추가
+                // START: 기존 REQ_CONFIRMED 항목을 찾아 TRANSFERRING으로 업데이트,
+                //        없으면 새로 추가
                 printf("[JOIN] IQ_CHUNK START: req_id=%u file='%s' size=%.1fMB\n",
                        req_id, fn.c_str(), filesize/1048576.0);
+                // 파일 핸들 미리 열기
+                FILE* fp = fopen(save_path.c_str(), "wb");
+                if(fp){
+                    s_iq_chunk_fps[req_id] = fp;
+                    s_iq_chunk_fns[req_id] = fn;
+                } else {
+                    printf("[JOIN] IQ_CHUNK START: fopen failed '%s' errno=%d\n",
+                           save_path.c_str(), errno);
+                }
                 std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                // 기존 REQ_CONFIRMED 항목 업데이트 (JOIN이 요청 시 만든 항목)
                 bool found = false;
-                for(auto& e : v.rec_entries)
-                    if(e.is_region && e.filename == fn){ found=true; break; }
+                for(auto& e : v.rec_entries){
+                    if(!e.is_region) continue;
+                    if(e.req_state == FFTViewer::RecEntry::REQ_CONFIRMED ||
+                       e.req_state == FFTViewer::RecEntry::REQ_TRANSFERRING){
+                        e.filename = fn;
+                        e.req_state = FFTViewer::RecEntry::REQ_TRANSFERRING;
+                        e.xfer_total = filesize; e.xfer_done = 0;
+                        e.path = save_path;
+                        found = true; break;
+                    }
+                }
                 if(!found){
+                    // 예상치 못한 경우 새 항목 생성
                     FFTViewer::RecEntry e{};
                     e.filename = fn; e.is_region = true;
                     e.req_state = FFTViewer::RecEntry::REQ_TRANSFERRING;
@@ -1966,8 +1990,14 @@ void run_streaming_viewer(){
                     v.rec_entries.push_back(e);
                 }
             } else if(seq == 0xFFFFFFFFu){
-                // END: 파일 닫기, Done 상태 전환
+                // END: 파일 핸들 닫고, Done 상태 전환
                 printf("[JOIN] IQ_CHUNK END: req_id=%u file='%s'\n", req_id, fn.c_str());
+                auto it_fp = s_iq_chunk_fps.find(req_id);
+                if(it_fp != s_iq_chunk_fps.end()){
+                    fclose(it_fp->second);
+                    s_iq_chunk_fps.erase(it_fp);
+                }
+                s_iq_chunk_fns.erase(req_id);
                 {
                     std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                     for(auto& e : v.rec_entries){
@@ -1995,19 +2025,15 @@ void run_streaming_viewer(){
                         v.rec_entries.end());
                 }).detach();
             } else {
-                // DATA: 파일에 쓰고 진행률 업데이트
-                if(data && data_len > 0){
-                    FILE* fp = fopen(save_path.c_str(), seq==1 ? "wb" : "ab");
-                    if(fp){
-                        fwrite(data, 1, data_len, fp);
-                        fclose(fp);
-                    } else {
-                        printf("[JOIN] IQ_CHUNK fopen failed: %s seq=%u errno=%d\n",
-                               save_path.c_str(), seq, errno);
-                    }
+                // DATA: 열려있는 파일 핸들에 바로 쓰기
+                auto it_fp = s_iq_chunk_fps.find(req_id);
+                if(it_fp != s_iq_chunk_fps.end() && data && data_len > 0){
+                    fwrite(data, 1, data_len, it_fp->second);
                     std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                     for(auto& e : v.rec_entries)
                         if(e.is_region && e.filename == fn){ e.xfer_done += data_len; break; }
+                } else if(it_fp == s_iq_chunk_fps.end()){
+                    printf("[JOIN] IQ_CHUNK DATA seq=%u: no open file for req_id=%u\n", seq, req_id);
                 }
             }
         };
@@ -2392,15 +2418,14 @@ void run_streaming_viewer(){
                         fn_only2 = fn_only2 ? fn_only2+1 : path.c_str();
                         printf("[HOST] IQ_CHUNK transfer start: req_id=%u file='%s' size=%.1fMB\n",
                                req_id, fn_only2, fsz/1048576.0);
-                        // START 패킷
+                        // START 패킷 (no_drop=true: IQ는 드롭 불가)
                         {
-                            std::vector<uint8_t> pkt(sizeof(PktHdr) + sizeof(PktIqChunkHdr));
                             PktIqChunkHdr ch{};
                             ch.req_id = req_id; ch.seq = 0;
                             strncpy(ch.filename, fn_only2, 127);
                             ch.filesize = fsz; ch.data_len = 0;
                             auto bewe = make_packet(PacketType::IQ_CHUNK, &ch, sizeof(ch));
-                            srv->cb.on_relay_broadcast(bewe.data(), bewe.size());
+                            srv->cb.on_relay_broadcast(bewe.data(), bewe.size(), /*no_drop=*/true);
                         }
                         // 청크 전송 스레드
                         std::thread([&v, fname, path, fsz, srv, req_id,
@@ -2419,7 +2444,7 @@ void run_streaming_viewer(){
                                 ch->filesize = fsz; ch->data_len = (uint32_t)n;
                                 auto bewe = make_packet(PacketType::IQ_CHUNK, buf.data(), (uint32_t)(sizeof(PktIqChunkHdr)+n));
                                 if(srv->cb.on_relay_broadcast)
-                                    srv->cb.on_relay_broadcast(bewe.data(), bewe.size());
+                                    srv->cb.on_relay_broadcast(bewe.data(), bewe.size(), /*no_drop=*/true);
                                 sent += n;
                                 // HOST rec_entries 진행 갱신
                                 {
@@ -2437,7 +2462,7 @@ void run_streaming_viewer(){
                                 ch.filesize = fsz; ch.data_len = 0;
                                 auto bewe = make_packet(PacketType::IQ_CHUNK, &ch, sizeof(ch));
                                 if(srv->cb.on_relay_broadcast)
-                                    srv->cb.on_relay_broadcast(bewe.data(), bewe.size());
+                                    srv->cb.on_relay_broadcast(bewe.data(), bewe.size(), /*no_drop=*/true);
                             }
                             printf("[HOST] IQ_CHUNK transfer done: req_id=%u %.1fMB\n", req_id, sent/1048576.0);
                             // IQ_PROGRESS Done 브로드캐스트
@@ -2674,8 +2699,8 @@ void run_streaming_viewer(){
                                 }
                             });
                             if(v.net_srv){
-                                v.net_srv->cb.on_relay_broadcast = [&central_cli](const uint8_t* pkt, size_t len){
-                                    central_cli.enqueue_relay_broadcast(pkt, len);
+                                v.net_srv->cb.on_relay_broadcast = [&central_cli](const uint8_t* pkt, size_t len, bool no_drop){
+                                    central_cli.enqueue_relay_broadcast(pkt, len, no_drop);
                                 };
                             }
                             central_cli.set_on_central_chat([_log_mtx, _log](const char* from, const char* msg){
@@ -4579,8 +4604,8 @@ void run_streaming_viewer(){
                                         auto& re=v.rec_entries[ri];
                                         if(re.is_audio) continue;
                                         ImGui::PushID(ri+30000);
-                                        if(re.req_state == RS::REQ_NONE){
-                                            // 일반 IQ 녹음 항목
+                                        if(re.req_state == RS::REQ_NONE && !re.is_region){
+                                            // 일반 IQ 녹음 항목 (로컬 녹음)
                                             if(re.finished){
                                                 auto it_rz=fsz_cache.find(re.filename);
                                                 const std::string szstr=(it_rz!=fsz_cache.end())?it_rz->second:fmt_filesize("",re.path);

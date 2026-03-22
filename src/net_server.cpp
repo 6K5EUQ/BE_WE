@@ -433,7 +433,7 @@ void NetServer::broadcast_fft(const float* data, int fft_size,
     {
         static uint64_t fft_relay_count = 0;
         if(cb.on_relay_broadcast){
-            cb.on_relay_broadcast(pkt.data(), pkt.size());
+            cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
             fft_relay_count++;
             if(fft_relay_count % 600 == 1)
                 printf("[NetServer] broadcast_fft→relay: #%llu size=%zu\n",
@@ -469,7 +469,7 @@ void NetServer::send_audio(uint32_t op_mask, uint8_t ch_idx, int8_t pan,
     auto pkt = make_packet(PacketType::AUDIO_FRAME, payload.data(), payload_size);
     // relay JOIN이 있을 때만 중앙서버로 전송 (없으면 큐 낭비 방지)
     if(cb.on_relay_broadcast && has_relay())
-        cb.on_relay_broadcast(pkt.data(), pkt.size());
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
 
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
@@ -494,7 +494,7 @@ void NetServer::broadcast_audio_all(uint8_t ch_idx, int8_t pan,
 
     auto pkt = make_packet(PacketType::AUDIO_FRAME, payload.data(), payload_size);
     if(cb.on_relay_broadcast && has_relay())
-        cb.on_relay_broadcast(pkt.data(), pkt.size());
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
         if(c->is_relay || !c->authed || !c->alive.load()) continue;
@@ -521,7 +521,7 @@ void NetServer::broadcast_channel_sync(const Channel* chs, int n){
     }
     auto pkt = make_packet(PacketType::CHANNEL_SYNC, &sync, sizeof(sync));
     if(cb.on_relay_broadcast)
-        cb.on_relay_broadcast(pkt.data(), pkt.size());
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
         if(c->is_relay || !c->authed || !c->alive.load()) continue;
@@ -536,7 +536,7 @@ void NetServer::broadcast_chat(const char* from, const char* msg){
     strncpy(chat.msg,  msg,  sizeof(chat.msg)-1);
     auto pkt = make_packet(PacketType::CHAT, &chat, sizeof(chat));
     if(cb.on_relay_broadcast)
-        cb.on_relay_broadcast(pkt.data(), pkt.size());
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
         if(c->is_relay || !c->authed || !c->alive.load()) continue;
@@ -549,7 +549,7 @@ void NetServer::broadcast_heartbeat(uint8_t host_state, uint8_t sdr_temp_c, uint
     PktHeartbeat hb{}; hb.host_state = host_state; hb.sdr_temp_c = sdr_temp_c; hb.sdr_state = sdr_state; hb.iq_on = iq_on;
     auto pkt = make_packet(PacketType::HEARTBEAT, &hb, sizeof(hb));
     if(cb.on_relay_broadcast)
-        cb.on_relay_broadcast(pkt.data(), pkt.size());
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
         if(c->is_relay || !c->authed || !c->alive.load()) continue;
@@ -564,7 +564,7 @@ void NetServer::broadcast_status(float cf_mhz, float gain_db,
     s.sample_rate=sr; s.hw_type=hw_type;
     auto pkt = make_packet(PacketType::STATUS, &s, sizeof(s));
     if(cb.on_relay_broadcast)
-        cb.on_relay_broadcast(pkt.data(), pkt.size());
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
         if(c->is_relay || !c->authed || !c->alive.load()) continue;
@@ -612,7 +612,7 @@ void NetServer::broadcast_wf_event(int32_t fft_offset, int64_t wall_time,
     strncpy(ev.label, label, 31);
     auto pkt = make_packet(PacketType::WF_EVENT, &ev, sizeof(ev));
     if(cb.on_relay_broadcast)
-        cb.on_relay_broadcast(pkt.data(), pkt.size());
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& cli : clients_){
         if(cli->is_relay || !cli->authed || !cli->alive.load()) continue;

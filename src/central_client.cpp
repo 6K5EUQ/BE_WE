@@ -181,14 +181,18 @@ int CentralClient::open_room(const std::string& central_host, int central_port,
 // local_fd에서 JOIN이 보내는 데이터 → relay_fd로 MUX해서 전송
 // ── central_fd 전용 송신 큐 ─────────────────────────────────────────────────
 void CentralClient::enqueue_central(const void* hdr, size_t hdr_len,
-                                 const void* data, size_t data_len){
+                                 const void* data, size_t data_len,
+                                 bool no_drop){
     if(!central_sender_running_.load()) return;
     size_t total = hdr_len + data_len;
     std::lock_guard<std::mutex> lk(central_queue_mtx_);
     // 큐 오버플로: 오래된 항목 드롭 (FFT 프레임은 스트리밍이라 일부 유실 허용)
-    while(central_queue_bytes_ + total > CENTRAL_QUEUE_MAX_BYTES && !central_send_queue_.empty()){
-        central_queue_bytes_ -= central_send_queue_.front().size();
-        central_send_queue_.pop_front();
+    // no_drop=true (IQ_CHUNK 등)는 드롭 없이 항상 추가
+    if(!no_drop){
+        while(central_queue_bytes_ + total > CENTRAL_QUEUE_MAX_BYTES && !central_send_queue_.empty()){
+            central_queue_bytes_ -= central_send_queue_.front().size();
+            central_send_queue_.pop_front();
+        }
     }
     std::vector<uint8_t> pkt(total);
     if(hdr_len && hdr)   memcpy(pkt.data(),           hdr,  hdr_len);

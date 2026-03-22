@@ -176,7 +176,8 @@ struct ServerCallbacks {
     std::function<void(const char* op_name, const char* filename)> on_pub_delete_req;
     // 중앙서버 relay 브로드캐스트 콜백: BEWE 패킷 1회 전달 → 중앙서버가 N명에게 fan-out
     // 이 콜백을 통해 FFT/오디오/채팅 등이 relay 클라이언트로 전달됨 (N× 대역폭 문제 해결)
-    std::function<void(const uint8_t*, size_t)> on_relay_broadcast;
+    // no_drop: IQ_CHUNK 등 드롭하면 안 되는 패킷
+    std::function<void(const uint8_t*, size_t, bool no_drop)> on_relay_broadcast;
 };
 
 // ── NetServer ─────────────────────────────────────────────────────────────

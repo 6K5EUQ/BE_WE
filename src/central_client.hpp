@@ -65,12 +65,14 @@ public:
 
     // HOST→중앙서버 broadcast (conn_id=0xFFFF, 1회 전송 → 중앙서버가 N명에게 fan-out)
     // N× 대역폭 문제 해결: 기존 per-JOIN socketpair 경유 방식 대체
-    void enqueue_relay_broadcast(const uint8_t* bewe_pkt, size_t bewe_len){
+    // no_drop=true: IQ_CHUNK 등 드롭하면 안 되는 패킷
+    void enqueue_relay_broadcast(const uint8_t* bewe_pkt, size_t bewe_len,
+                                 bool no_drop = false){
         if(!central_sender_running_.load()) return;
         CentralMuxHdr mh{}; mh.conn_id = 0xFFFF;
         mh.type = static_cast<uint8_t>(CentralMuxType::DATA);
         mh.len  = (uint32_t)bewe_len;
-        enqueue_central(&mh, CENTRAL_MUX_HDR_SIZE, bewe_pkt, bewe_len);
+        enqueue_central(&mh, CENTRAL_MUX_HDR_SIZE, bewe_pkt, bewe_len, no_drop);
     }
 
     // 중앙서버→HOST 방향 전역 채팅 수신 콜백 설정
@@ -123,8 +125,10 @@ private:
 
     // (hdr, hdr_len) + (data, data_len) 을 합쳐 하나의 청크로 enqueue
     // queue가 CENTRAL_QUEUE_MAX_BYTES 를 초과하면 가장 오래된 항목부터 삭제
+    // no_drop=true: IQ_CHUNK 등 드롭 불가 패킷 — 큐 제한 무시하고 항상 추가
     void enqueue_central(const void* hdr, size_t hdr_len,
-                       const void* data, size_t data_len);
+                       const void* data, size_t data_len,
+                       bool no_drop = false);
     void central_sender_loop(int central_fd);
 
     struct JoinPair {
