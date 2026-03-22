@@ -208,9 +208,9 @@ void CentralClient::central_sender_loop(int central_fd){
             central_queue_cv_.wait_for(lk, std::chrono::milliseconds(200),
                 [this]{ return !central_send_queue_.empty() || !central_sender_running_.load(); });
             if(central_send_queue_.empty()) continue;
-            // 한 번에 최대 64개 꺼내기 (mutex 보유 시간 최소화)
+            // 한 번에 최대 8개 꺼내기 (burst 완화)
             int n = 0;
-            while(!central_send_queue_.empty() && n++ < 64){
+            while(!central_send_queue_.empty() && n++ < 8){
                 central_queue_bytes_ -= central_send_queue_.front().size();
                 batch.push_back(std::move(central_send_queue_.front()));
                 central_send_queue_.pop_front();
