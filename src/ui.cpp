@@ -1966,16 +1966,21 @@ void run_streaming_viewer(){
             }
             std::string host_ip_cap(host_ip ? host_ip : "", host_ip ? strnlen(host_ip, 16) : 0);
             std::thread([req_id, fn, save_path, filesize, host_ip_cap, &v](){
-                // HOST의 IQ 전송 서버(7703)에 직접 TCP 연결
+                printf("[JOIN] IQ pipe thread started: req_id=%u host_ip='%s' port=%d\n",
+                       req_id, host_ip_cap.c_str(), IQ_PIPE_SERVER_PORT);
                 int pipe_fd = -1;
                 {
                     struct addrinfo hints{}, *res = nullptr;
                     hints.ai_family   = AF_INET;
                     hints.ai_socktype = SOCK_STREAM;
-                    if(getaddrinfo(host_ip_cap.c_str(), std::to_string(IQ_PIPE_SERVER_PORT).c_str(), &hints, &res) == 0){
+                    int gai = getaddrinfo(host_ip_cap.c_str(), std::to_string(IQ_PIPE_SERVER_PORT).c_str(), &hints, &res);
+                    if(gai != 0){
+                        printf("[JOIN] IQ pipe getaddrinfo failed: %s\n", gai_strerror(gai));
+                    } else {
                         pipe_fd = socket(AF_INET, SOCK_STREAM, 0);
                         if(pipe_fd >= 0){
                             if(::connect(pipe_fd, res->ai_addr, res->ai_addrlen) != 0){
+                                printf("[JOIN] IQ pipe connect failed errno=%d(%s)\n", errno, strerror(errno));
                                 close(pipe_fd); pipe_fd = -1;
                             }
                         }
@@ -1983,10 +1988,11 @@ void run_streaming_viewer(){
                     }
                 }
                 if(pipe_fd < 0){
-                    printf("[UI] IQ pipe connect to %s:%d failed req_id=%u\n",
+                    printf("[JOIN] IQ pipe connect to %s:%d FAILED req_id=%u\n",
                            host_ip_cap.c_str(), IQ_PIPE_SERVER_PORT, req_id);
                     return;
                 }
+                printf("[JOIN] IQ pipe connect OK fd=%d req_id=%u\n", pipe_fd, req_id);
                 int nd = 1; setsockopt(pipe_fd, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
                 int rbuf = 4*1024*1024;
                 setsockopt(pipe_fd, SOL_SOCKET, SO_RCVBUF, &rbuf, sizeof(rbuf));
