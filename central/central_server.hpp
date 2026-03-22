@@ -186,7 +186,9 @@ private:
 
     // 릴레이가 CHANNEL_SYNC의 audio_mask를 재작성해서 broadcast
     // (recv_audio[] 테이블 기반으로 listener 정보 반영)
-    void rebuild_and_broadcast_ch_sync(std::shared_ptr<HostRoom> room);
+    // send_to_host: true=HOST에도 재작성 CH_SYNC 전송, false=JOIN에게만
+    // host_mux_loop 경유 시 false (HOST fd에 blocking write → 데드락 방지)
+    void rebuild_and_broadcast_ch_sync(std::shared_ptr<HostRoom> room, bool send_to_host = true);
 
     // BEWE 패킷 빌드 헬퍼 (magic + type + len + payload)
     static std::vector<uint8_t> make_bewe_packet(uint8_t type, const void* payload, uint32_t plen);

@@ -186,9 +186,18 @@ void CentralClient::enqueue_central(const void* hdr, size_t hdr_len,
     size_t total = hdr_len + data_len;
     std::lock_guard<std::mutex> lk(central_queue_mtx_);
     // 큐 오버플로: 오래된 항목 드롭 (FFT 프레임은 스트리밍이라 일부 유실 허용)
+    int overflow_drops = 0;
     while(central_queue_bytes_ + total > CENTRAL_QUEUE_MAX_BYTES && !central_send_queue_.empty()){
         central_queue_bytes_ -= central_send_queue_.front().size();
         central_send_queue_.pop_front();
+        overflow_drops++;
+    }
+    if(overflow_drops > 0){
+        static int drop_warn = 0;
+        if(drop_warn++ % 60 == 0)
+            printf("[CentralClient] enqueue overflow: dropped %d, queueBytes=%zu/%zu, queueSize=%zu\n",
+                   overflow_drops, central_queue_bytes_, CENTRAL_QUEUE_MAX_BYTES,
+                   central_send_queue_.size());
     }
     std::vector<uint8_t> pkt(total);
     if(hdr_len && hdr)   memcpy(pkt.data(),           hdr,  hdr_len);
@@ -260,13 +269,21 @@ void CentralClient::central_sender_loop(int central_fd){
             }
         }
 
+        auto t0 = std::chrono::steady_clock::now();
         if(!central_send_all(central_fd, pkt.data(), pkt.size())){
             int e = errno;
-            printf("[CentralClient] sender: %s send failed errno=%d(%s), reconnecting\n",
-                   is_hb ? "HB" : "data", e, strerror(e));
+            auto send_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+            printf("[CentralClient] sender: %s send failed errno=%d(%s) size=%zu took=%lldms, reconnecting\n",
+                   is_hb ? "HB" : "data", e, strerror(e), pkt.size(), (long long)send_ms);
             shutdown(central_fd, SHUT_RDWR);
             break;
         }
+        auto send_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        if(send_ms > 500)
+            printf("[CentralClient] sender: SLOW %s send size=%zu took=%lldms qDepth=%zu\n",
+                   is_hb ? "HB" : "data", pkt.size(), (long long)send_ms, queue_depth);
         data_sent++;
 
         // 30초마다 통계 출력

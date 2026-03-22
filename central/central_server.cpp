@@ -526,7 +526,8 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
             std::lock_guard<std::mutex> clk(room->cache_mtx);
             room->cached_ch_sync.assign(bewe_pkt, bewe_pkt + bewe_len);
         }
-        rebuild_and_broadcast_ch_sync(room);
+        // host_mux_loop 경유: HOST에 send하면 데드락 → send_to_host=false
+        rebuild_and_broadcast_ch_sync(room, /*send_to_host=*/false);
         return;
     }
 
@@ -597,7 +598,8 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
                 je->recv_audio[ch_idx] = (enable != 0);
                 printf("[Central] TOGGLE_RECV conn_id=%u ch=%u enable=%u\n",
                        je->conn_id, ch_idx, enable);
-                rebuild_and_broadcast_ch_sync(room);
+                // join_loop 경유: HOST에 send OK
+                rebuild_and_broadcast_ch_sync(room, /*send_to_host=*/true);
             }
             return true;  // HOST에 포워드 안 함
         }
@@ -665,7 +667,7 @@ void CentralServer::build_and_broadcast_op_list(std::shared_ptr<HostRoom> room){
 }
 
 // ── CHANNEL_SYNC audio_mask 재작성 + broadcast ───────────────────────────
-void CentralServer::rebuild_and_broadcast_ch_sync(std::shared_ptr<HostRoom> room){
+void CentralServer::rebuild_and_broadcast_ch_sync(std::shared_ptr<HostRoom> room, bool send_to_host){
     std::vector<uint8_t> base_sync;
     {
         std::lock_guard<std::mutex> clk(room->cache_mtx);
@@ -701,7 +703,8 @@ void CentralServer::rebuild_and_broadcast_ch_sync(std::shared_ptr<HostRoom> room
     }
 
     // HOST에도 재작성된 CHANNEL_SYNC 전송
-    if(room->alive.load() && room->fd >= 0){
+    // send_to_host=false이면 HOST에 보내지 않음 (host_mux_loop 경유 시 데드락 방지)
+    if(send_to_host && room->alive.load() && room->fd >= 0){
         std::lock_guard<std::mutex> hlk(room->host_send_mtx);
         if(!central_send_mux(room->fd, 0xFFFF, CentralMuxType::DATA,
                            base_sync.data(), base_sync.size())){
