@@ -139,6 +139,9 @@ void CentralServer::handshake(int fd){
 
         auto je = std::make_shared<JoinEntry>();
         je->fd = fd;
+        // JOIN fd에 send 타임아웃 설정: 느린 JOIN이 send worker를 무한 블로킹하지 않도록
+        timeval stv{5, 0};
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &stv, sizeof(stv));
         je->start_send_worker();
         {
             std::lock_guard<std::mutex> lk(room->joins_mtx);

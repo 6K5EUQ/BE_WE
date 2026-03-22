@@ -139,6 +139,7 @@ struct __attribute__((packed)) CentralError {
 
 // ── Wire helpers ───────────────────────────────────────────────────────────
 #include <vector>
+#include <cerrno>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -146,7 +147,11 @@ inline bool central_send_all(int fd, const void* buf, size_t len){
     const uint8_t* p = static_cast<const uint8_t*>(buf);
     while(len > 0){
         ssize_t r = send(fd, p, len, MSG_NOSIGNAL);
-        if(r <= 0) return false;
+        if(r < 0){
+            if(errno == EINTR) continue;
+            return false;  // EAGAIN(timeout) 등 → 호출자가 판단
+        }
+        if(r == 0) return false;
         p += r; len -= r;
     }
     return true;

@@ -423,7 +423,7 @@ void NetServer::broadcast_fft(const float* data, int fft_size,
     memcpy(payload.data() + sizeof(PktFftFrame), data, data_bytes);
 
     auto pkt = make_packet(PacketType::FFT_FRAME, payload.data(), total);
-    if(relay_client_count_.load() > 0 && cb.on_relay_broadcast)
+    if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size());
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
@@ -468,7 +468,7 @@ void NetServer::broadcast_audio_all(uint8_t ch_idx, int8_t pan,
     memcpy(payload.data() + sizeof(PktAudioFrame), pcm, n_samples*sizeof(float));
 
     auto pkt = make_packet(PacketType::AUDIO_FRAME, payload.data(), payload_size);
-    if(relay_client_count_.load() > 0 && cb.on_relay_broadcast)
+    if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size());
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
@@ -495,7 +495,7 @@ void NetServer::broadcast_channel_sync(const Channel* chs, int n){
         strncpy(sync.ch[i].owner_name, chs[i].owner, 31);
     }
     auto pkt = make_packet(PacketType::CHANNEL_SYNC, &sync, sizeof(sync));
-    if(relay_client_count_.load() > 0 && cb.on_relay_broadcast)
+    if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size());
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
@@ -510,7 +510,7 @@ void NetServer::broadcast_chat(const char* from, const char* msg){
     strncpy(chat.from, from, 31);
     strncpy(chat.msg,  msg,  sizeof(chat.msg)-1);
     auto pkt = make_packet(PacketType::CHAT, &chat, sizeof(chat));
-    if(relay_client_count_.load() > 0 && cb.on_relay_broadcast)
+    if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size());
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
@@ -523,7 +523,7 @@ void NetServer::broadcast_chat(const char* from, const char* msg){
 void NetServer::broadcast_heartbeat(uint8_t host_state, uint8_t sdr_temp_c, uint8_t sdr_state, uint8_t iq_on){
     PktHeartbeat hb{}; hb.host_state = host_state; hb.sdr_temp_c = sdr_temp_c; hb.sdr_state = sdr_state; hb.iq_on = iq_on;
     auto pkt = make_packet(PacketType::HEARTBEAT, &hb, sizeof(hb));
-    if(relay_client_count_.load() > 0 && cb.on_relay_broadcast)
+    if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size());
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
@@ -538,7 +538,7 @@ void NetServer::broadcast_status(float cf_mhz, float gain_db,
     PktStatus s{}; s.cf_mhz=cf_mhz; s.gain_db=gain_db;
     s.sample_rate=sr; s.hw_type=hw_type;
     auto pkt = make_packet(PacketType::STATUS, &s, sizeof(s));
-    if(relay_client_count_.load() > 0 && cb.on_relay_broadcast)
+    if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size());
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
@@ -586,7 +586,7 @@ void NetServer::broadcast_wf_event(int32_t fft_offset, int64_t wall_time,
     ev.type           = type;
     strncpy(ev.label, label, 31);
     auto pkt = make_packet(PacketType::WF_EVENT, &ev, sizeof(ev));
-    if(relay_client_count_.load() > 0 && cb.on_relay_broadcast)
+    if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size());
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& cli : clients_){

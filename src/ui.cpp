@@ -2498,32 +2498,36 @@ void run_streaming_viewer(){
                                 LocalChatMsg m{}; strncpy(m.from,from,31); strncpy(m.msg,msg,255);
                                 _log->push_back(m);
                             });
+                            // 재귀적 자동 재연결 함수 (shared_ptr로 캡처)
+                            auto reconnect_fn = std::make_shared<std::function<void()>>();
+                            *reconnect_fn = [&v, &central_cli, rh, rp, reconnect_fn](){
+                                // Central Server 끊김 → 자동 재연결 (3초 후, 최대 5회)
+                                std::thread([&v, &central_cli, rh, rp, reconnect_fn](){
+                                    for(int attempt=0; attempt<5; attempt++){
+                                        std::this_thread::sleep_for(std::chrono::seconds(3));
+                                        if(!v.net_srv) return;  // HOST 모드 종료됨
+                                        printf("[UI] Central auto-reconnect attempt %d/5\n", attempt+1);
+                                        std::string sid = v.station_name + "_" + std::string(login_get_id());
+                                        int rfd2 = central_cli.open_room(
+                                            rh, rp, sid, v.station_name,
+                                            v.station_lat, v.station_lon,
+                                            (uint8_t)login_get_tier());
+                                        if(rfd2 >= 0){
+                                            central_cli.start_mux_adapter(rfd2,
+                                                [&v](int fd2){ if(v.net_srv) v.net_srv->inject_fd(fd2); },
+                                                [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; },
+                                                *reconnect_fn);
+                                            printf("[UI] Central auto-reconnected\n");
+                                            return;
+                                        }
+                                    }
+                                    printf("[UI] Central auto-reconnect failed after 5 attempts\n");
+                                }).detach();
+                            };
                             central_cli.start_mux_adapter(rfd,
                                 [&v](int local_fd){ if(v.net_srv) v.net_srv->inject_fd(local_fd); },
                                 [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; },
-                                [&v, &central_cli, rh, rp](){
-                                    // Central Server 끊김 → 자동 재연결 (3초 후, 최대 5회)
-                                    std::thread([&v, &central_cli, rh, rp](){
-                                        for(int attempt=0; attempt<5; attempt++){
-                                            std::this_thread::sleep_for(std::chrono::seconds(3));
-                                            if(!v.net_srv) return;  // HOST 모드 종료됨
-                                            printf("[UI] Central auto-reconnect attempt %d/5\n", attempt+1);
-                                            std::string sid = v.station_name + "_" + std::string(login_get_id());
-                                            int rfd2 = central_cli.open_room(
-                                                rh, rp, sid, v.station_name,
-                                                v.station_lat, v.station_lon,
-                                                (uint8_t)login_get_tier());
-                                            if(rfd2 >= 0){
-                                                central_cli.start_mux_adapter(rfd2,
-                                                    [&v](int fd2){ if(v.net_srv) v.net_srv->inject_fd(fd2); },
-                                                    [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; });
-                                                printf("[UI] Central auto-reconnected\n");
-                                                return;
-                                            }
-                                        }
-                                        printf("[UI] Central auto-reconnect failed after 5 attempts\n");
-                                    }).detach();
-                                });
+                                *reconnect_fn);
                             printf("[UI] Central MUX adapter started\n");
                         } else {
                             printf("[UI] Central open_room failed, Central unavailable\n");

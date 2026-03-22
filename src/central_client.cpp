@@ -249,8 +249,9 @@ void CentralClient::central_sender_loop(int central_fd){
             timeval tv0{0, 0};
             setsockopt(central_fd, SOL_SOCKET, SO_SNDTIMEO, &tv0, sizeof(tv0));
         } else {
-            // 데이터 프레임: 3s 타임아웃 → 초과 시 스트림 오염이므로 재접속
-            timeval tv{3, 0};
+            // 데이터 프레임: 10s 타임아웃 → 초과 시 스트림 오염이므로 재접속
+            // (SDR 재연결 burst 등 일시적 congestion 흡수)
+            timeval tv{10, 0};
             setsockopt(central_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
         }
 
