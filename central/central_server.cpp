@@ -593,11 +593,17 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                     bewe_type == BEWE_TYPE_CMD || bewe_type == BEWE_TYPE_OP_LIST ||
                     bewe_type == BEWE_TYPE_AUTH_ACK ||
                     bewe_type == BEWE_TYPE_IQ_PIPE_READY);   // 드롭 불가
+    if(bewe_type == BEWE_TYPE_IQ_PIPE_READY)
+        printf("[Central] dispatch IQ_PIPE_READY conn_id=%u joins=%zu\n",
+               conn_id, room->joins.size());
     std::lock_guard<std::mutex> jlk(room->joins_mtx);
     for(auto& je : room->joins){
         if(!je->alive.load() || je->fd < 0) continue;
         if(conn_id != 0xFFFF && conn_id != je->conn_id) continue;
         if(is_fft && !je->authed) continue;
+        if(bewe_type == BEWE_TYPE_IQ_PIPE_READY)
+            printf("[Central] dispatch IQ_PIPE_READY → conn_id=%u authed=%d\n",
+                   je->conn_id, je->authed);
         if(is_ctrl)
             je->enqueue_ctrl(bewe_pkt, bewe_len);
         else

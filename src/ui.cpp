@@ -1944,6 +1944,8 @@ void run_streaming_viewer(){
 
         // JOIN: 중앙서버 파이프 준비 신호 → 7702 포트에 연결해서 파일 수신
         cli->on_iq_pipe_ready = [&](uint32_t req_id, const char* filename, uint64_t filesize, const char* host_ip){
+            printf("[JOIN] on_iq_pipe_ready: req_id=%u file='%s' size=%.1fMB host_ip='%s'\n",
+                   req_id, filename, filesize/1048576.0, host_ip ? host_ip : "(null)");
             std::string fn(filename);
             std::string save_dir = BEWEPaths::record_iq_dir();
             std::string save_path = save_dir + "/" + fn;
@@ -2459,9 +2461,17 @@ void run_streaming_viewer(){
                         ready.filesize = fsz;
                         std::string lip = get_local_ip();
                         strncpy(ready.host_ip, lip.c_str(), 15);
+                        printf("[HOST] IQ_PIPE_READY broadcast: req_id=%u file='%s' size=%.1fMB host_ip='%s'\n",
+                               req_id, fn_only2, fsz/1048576.0, lip.c_str());
                         auto pkt = make_packet(PacketType::IQ_PIPE_READY, &ready, sizeof(ready));
-                        if(srv->cb.on_relay_broadcast)
+                        if(srv->cb.on_relay_broadcast){
                             srv->cb.on_relay_broadcast(pkt.data(), pkt.size());
+                            printf("[HOST] IQ_PIPE_READY enqueued to relay broadcast\n");
+                        } else {
+                            printf("[HOST] IQ_PIPE_READY: on_relay_broadcast is NULL — packet NOT sent!\n");
+                        }
+                    } else {
+                        printf("[HOST] IQ_PIPE_READY: srv is NULL — packet NOT sent!\n");
                     }
                 }).detach();
             };
