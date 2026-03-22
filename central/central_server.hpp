@@ -26,24 +26,24 @@ struct JoinEntry {
     uint8_t  op_index  = 0;   // 1-based (릴레이가 할당)
     bool     authed    = false;
 
-    // ── 독립 송신 큐: FFT/제어 + 오디오 각각 전용 스레드 ─────────────────
-    // 바이트 기준으로 제한 (고속 네트워크에서 항목 수 기준은 부적합)
+    // ── 독립 송신 큐 ──────────────────────────────────────────────────────
+    // 우선순위: ctrl_queue(제어) > send_queue(FFT) > audio_queue(오디오)
+    // 단일 send 스레드가 우선순위 순서로 큐에서 꺼내 전송
     static constexpr size_t SEND_QUEUE_MAX_BYTES  = 32 * 1024 * 1024; // FFT 32MB
     static constexpr size_t AUDIO_QUEUE_MAX_BYTES = 16 * 1024 * 1024; // 오디오 16MB
 
-    // FFT/제어 큐
+    // 제어 큐 (AUTH_ACK, CMD_ACK, STATUS, OP_LIST, CH_SYNC 등) — 드롭 없음
+    std::deque<std::vector<uint8_t>> ctrl_queue;
+    // FFT 큐
     std::deque<std::vector<uint8_t>> send_queue;
     size_t                  send_queue_bytes = 0;
-    std::mutex              send_mtx;
-    std::condition_variable send_cv;
-    std::thread             send_thr;
-
     // 오디오 큐
     std::deque<std::vector<uint8_t>> audio_queue;
     size_t                  audio_queue_bytes = 0;
-    std::mutex              audio_mtx;
-    std::condition_variable audio_cv;
-    std::thread             audio_thr;
+
+    std::mutex              send_mtx;   // 모든 큐 공유 lock
+    std::condition_variable send_cv;
+    std::thread             send_thr;
 
     std::atomic<bool>       send_stop{false};
     std::mutex              fd_write_mtx;  // fd write 직렬화
@@ -68,36 +68,44 @@ struct JoinEntry {
     }
 
     void start_send_worker(){
+        // 단일 스레드: ctrl → FFT → 오디오 우선순위 순서로 배치 전송
         send_thr = std::thread([this](){
             while(true){
-                std::vector<uint8_t> pkt;
+                std::vector<std::vector<uint8_t>> batch;
+                batch.reserve(32);
                 {
                     std::unique_lock<std::mutex> lk(send_mtx);
-                    send_cv.wait(lk, [this]{ return !send_queue.empty() || send_stop.load(); });
-                    if(send_stop.load() && send_queue.empty()) break;
-                    size_t sz = send_queue.front().size();
-                    pkt = std::move(send_queue.front());
-                    send_queue.pop_front();
-                    if(send_queue_bytes >= sz) send_queue_bytes -= sz;
-                    else send_queue_bytes = 0;
+                    send_cv.wait(lk, [this]{
+                        return !ctrl_queue.empty() || !send_queue.empty() ||
+                               !audio_queue.empty() || send_stop.load();
+                    });
+                    if(send_stop.load() && ctrl_queue.empty() &&
+                       send_queue.empty() && audio_queue.empty()) break;
+                    // 제어 패킷 전부 꺼냄
+                    while(!ctrl_queue.empty()){
+                        batch.push_back(std::move(ctrl_queue.front()));
+                        ctrl_queue.pop_front();
+                    }
+                    // FFT 최대 32개
+                    int n = 0;
+                    while(!send_queue.empty() && n++ < 32){
+                        size_t sz = send_queue.front().size();
+                        batch.push_back(std::move(send_queue.front()));
+                        send_queue.pop_front();
+                        if(send_queue_bytes >= sz) send_queue_bytes -= sz;
+                        else send_queue_bytes = 0;
+                    }
+                    // 오디오 최대 32개
+                    n = 0;
+                    while(!audio_queue.empty() && n++ < 32){
+                        size_t sz = audio_queue.front().size();
+                        batch.push_back(std::move(audio_queue.front()));
+                        audio_queue.pop_front();
+                        if(audio_queue_bytes >= sz) audio_queue_bytes -= sz;
+                        else audio_queue_bytes = 0;
+                    }
                 }
-                send_raw(pkt);
-            }
-        });
-        audio_thr = std::thread([this](){
-            while(true){
-                std::vector<uint8_t> pkt;
-                {
-                    std::unique_lock<std::mutex> lk(audio_mtx);
-                    audio_cv.wait(lk, [this]{ return !audio_queue.empty() || send_stop.load(); });
-                    if(send_stop.load() && audio_queue.empty()) break;
-                    size_t sz = audio_queue.front().size();
-                    pkt = std::move(audio_queue.front());
-                    audio_queue.pop_front();
-                    if(audio_queue_bytes >= sz) audio_queue_bytes -= sz;
-                    else audio_queue_bytes = 0;
-                }
-                send_raw(pkt);
+                for(auto& pkt : batch) send_raw(pkt);
             }
         });
     }
@@ -105,22 +113,27 @@ struct JoinEntry {
     void stop_send_worker(){
         send_stop.store(true);
         send_cv.notify_all();
-        audio_cv.notify_all();
-        if(send_thr.joinable())  send_thr.join();
-        if(audio_thr.joinable()) audio_thr.join();
+        if(send_thr.joinable()) send_thr.join();
     }
 
-    // FFT/제어 큐에 push (바이트 기준 32MB 제한)
-    void enqueue_data(const uint8_t* data, size_t len){
-        uint8_t bewe_t = (len >= 5) ? data[4] : 0xFF;
+    // 제어 패킷 큐에 push (AUTH_ACK, CMD_ACK, STATUS, OP_LIST, CH_SYNC 등)
+    // 드롭 없음, FFT보다 항상 먼저 전송
+    void enqueue_ctrl(const uint8_t* data, size_t len){
         std::lock_guard<std::mutex> lk(send_mtx);
+        if(len >= 5 && data[4] == 0x02)
+            printf("[JoinEntry] enqueue_ctrl AUTH_ACK conn_id=%u\n", conn_id);
+        ctrl_queue.emplace_back(data, data + len);
+        send_cv.notify_one();
+    }
+
+    // FFT 큐에 push (바이트 기준 32MB 제한)
+    void enqueue_data(const uint8_t* data, size_t len){
+        std::lock_guard<std::mutex> lk(send_mtx);
+        // 제어 패킷은 enqueue_ctrl로 보내야 함 — 여기선 FFT만
         while(send_queue_bytes + len > SEND_QUEUE_MAX_BYTES && !send_queue.empty()){
             send_queue_bytes -= send_queue.front().size();
             send_queue.pop_front();
         }
-        if(bewe_t == 0x02)
-            printf("[JoinEntry] enqueue_data AUTH_ACK conn_id=%u qbytes=%zu\n",
-                   conn_id, send_queue_bytes);
         send_queue.emplace_back(data, data + len);
         send_queue_bytes += len;
         send_cv.notify_one();
@@ -128,14 +141,14 @@ struct JoinEntry {
 
     // 오디오 큐에 push (바이트 기준 16MB 제한)
     void enqueue_audio(const uint8_t* data, size_t len){
-        std::lock_guard<std::mutex> lk(audio_mtx);
+        std::lock_guard<std::mutex> lk(send_mtx);
         while(audio_queue_bytes + len > AUDIO_QUEUE_MAX_BYTES && !audio_queue.empty()){
             audio_queue_bytes -= audio_queue.front().size();
             audio_queue.pop_front();
         }
         audio_queue.emplace_back(data, data + len);
         audio_queue_bytes += len;
-        audio_cv.notify_one();
+        send_cv.notify_one();
     }
 };
 

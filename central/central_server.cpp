@@ -506,11 +506,9 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                     }
                 }
             }
-            // AUTH_ACK를 먼저 전달한 후, 캐시된 상태 패킷 전송
+            // AUTH_ACK를 먼저 전달한 후, 캐시된 상태 패킷 전송 (모두 ctrl 큐로 → 즉시 전송)
             if(target){
-                target->enqueue_data(bewe_pkt, bewe_len);  // AUTH_ACK 먼저
-                // cache_mtx를 잡고 복사 후 즉시 해제 (build_and_broadcast_op_list가 joins_mtx 잠금하므로
-                // cache_mtx를 잡은 상태에서 호출하면 잠금 역전 데드락 발생)
+                target->enqueue_ctrl(bewe_pkt, bewe_len);  // AUTH_ACK 먼저
                 std::vector<uint8_t> c_hb, c_st, c_ch, c_op;
                 {
                     std::lock_guard<std::mutex> clk(room->cache_mtx);
@@ -520,10 +518,10 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                     c_op = room->cached_op_list;
                 }
                 int cache_count = 0;
-                if(!c_hb.empty()){ target->enqueue_data(c_hb.data(), c_hb.size()); cache_count++; }
-                if(!c_st.empty()){ target->enqueue_data(c_st.data(), c_st.size()); cache_count++; }
-                if(!c_ch.empty()){ target->enqueue_data(c_ch.data(), c_ch.size()); cache_count++; }
-                if(!c_op.empty()){ target->enqueue_data(c_op.data(), c_op.size()); cache_count++; }
+                if(!c_hb.empty()){ target->enqueue_ctrl(c_hb.data(), c_hb.size()); cache_count++; }
+                if(!c_st.empty()){ target->enqueue_ctrl(c_st.data(), c_st.size()); cache_count++; }
+                if(!c_ch.empty()){ target->enqueue_ctrl(c_ch.data(), c_ch.size()); cache_count++; }
+                if(!c_op.empty()){ target->enqueue_ctrl(c_op.data(), c_op.size()); cache_count++; }
                 printf("[Central] sent %d cached packets to conn_id=%u\n", cache_count, conn_id);
                 // OPERATOR_LIST 갱신 (새 유저 반영)
                 build_and_broadcast_op_list(room);
@@ -575,15 +573,22 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         return;
     }
 
-    // ── 기타 패킷 (FFT, STATUS, HEARTBEAT 등): 그대로 전달 ───────────
-    // FFT/AUDIO는 auth 완료된 JOIN에게만 전달 (인증 전 스트림 오염 방지)
-    bool auth_required = (bewe_type == BEWE_TYPE_FFT || bewe_type == BEWE_TYPE_AUDIO);
+    // ── 기타 패킷 (FFT, HEARTBEAT, STATUS 등): 타입에 따라 분류 ─────────
+    // FFT: auth 완료된 JOIN에게만, 전용 send_queue (대용량, 드롭 허용)
+    // 제어(HEARTBEAT/STATUS/CMD_ACK 등): ctrl_queue (우선 전송, 드롭 없음)
+    bool is_fft = (bewe_type == BEWE_TYPE_FFT);
+    bool is_ctrl = (bewe_type == BEWE_TYPE_HEARTBEAT || bewe_type == BEWE_TYPE_STATUS ||
+                    bewe_type == BEWE_TYPE_CMD || bewe_type == BEWE_TYPE_OP_LIST ||
+                    bewe_type == BEWE_TYPE_AUTH_ACK);
     std::lock_guard<std::mutex> jlk(room->joins_mtx);
     for(auto& je : room->joins){
         if(!je->alive.load() || je->fd < 0) continue;
         if(conn_id != 0xFFFF && conn_id != je->conn_id) continue;
-        if(auth_required && !je->authed) continue;
-        je->enqueue_data(bewe_pkt, bewe_len);
+        if(is_fft && !je->authed) continue;
+        if(is_ctrl)
+            je->enqueue_ctrl(bewe_pkt, bewe_len);
+        else
+            je->enqueue_data(bewe_pkt, bewe_len);
     }
 }
 
@@ -686,7 +691,7 @@ void CentralServer::build_and_broadcast_op_list(std::shared_ptr<HostRoom> room){
 
     for(auto& je : room->joins){
         if(!je->alive.load() || je->fd < 0) continue;
-        je->enqueue_data(pkt.data(), pkt.size());
+        je->enqueue_ctrl(pkt.data(), pkt.size());
     }
     printf("[Central] OP_LIST broadcast: %d operators room='%s'\n", count, room->station_id.c_str());
 }
@@ -720,7 +725,7 @@ void CentralServer::rebuild_and_broadcast_ch_sync(std::shared_ptr<HostRoom> room
 
         for(auto& je : room->joins){
             if(!je->alive.load() || je->fd < 0) continue;
-            je->enqueue_data(base_sync.data(), base_sync.size());
+            je->enqueue_ctrl(base_sync.data(), base_sync.size());
         }
     }  // joins_mtx 해제 후 cache/host 작업
 

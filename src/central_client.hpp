@@ -70,9 +70,21 @@ public:
         CentralMuxHdr mh{}; mh.conn_id = 0xFFFF;
         mh.type = static_cast<uint8_t>(CentralMuxType::DATA);
         mh.len  = (uint32_t)bewe_len;
-        // 오디오(0x04)는 별도 큐 — FFT 큐를 차지하지 않도록 분리
-        bool is_audio = (bewe_len >= 5 && bewe_pkt[4] == 0x04);
-        if(is_audio)
+        if(bewe_len < 5){
+            enqueue_hb(&mh, CENTRAL_MUX_HDR_SIZE, bewe_pkt, bewe_len);
+            return;
+        }
+        uint8_t t = bewe_pkt[4];
+        // 제어 패킷은 HB 우선 큐 → FFT/오디오 대기 없이 즉시 전송
+        // 0x00=HB, 0x01=AUTH_REQ, 0x02=AUTH_ACK, 0x05=CMD, 0x06=CMD_ACK,
+        // 0x07=CHAT, 0x08=STATUS, 0x09=OP_LIST, 0x0A=CH_SYNC
+        bool is_ctrl = (t == 0x00 || t == 0x01 || t == 0x02 ||
+                        t == 0x05 || t == 0x06 || t == 0x07 ||
+                        t == 0x08 || t == 0x09 || t == 0x0A);
+        bool is_audio = (t == 0x04);
+        if(is_ctrl)
+            enqueue_hb(&mh, CENTRAL_MUX_HDR_SIZE, bewe_pkt, bewe_len);
+        else if(is_audio)
             enqueue_central_audio(&mh, CENTRAL_MUX_HDR_SIZE, bewe_pkt, bewe_len);
         else
             enqueue_central(&mh, CENTRAL_MUX_HDR_SIZE, bewe_pkt, bewe_len);
