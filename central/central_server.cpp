@@ -261,6 +261,9 @@ void CentralServer::host_mux_loop(std::shared_ptr<HostRoom> room){
     uint64_t hb_count = 0;
     uint64_t fft_count = 0, audio_count = 0, other_count = 0;
     uint64_t recv_bytes = 0;
+    // 3초 윈도우 카운터 (구간 값)
+    uint64_t win_hb = 0, win_fft = 0, win_audio = 0;
+    uint64_t win_bytes = 0;
     auto last_stat = std::chrono::steady_clock::now();
     auto start_time = last_stat;
 
@@ -288,35 +291,35 @@ void CentralServer::host_mux_loop(std::shared_ptr<HostRoom> room){
         }
         recv_bytes += CENTRAL_MUX_HDR_SIZE;
 
-        // 10초마다 통계
+        // 3초마다 통계 (구간 값)
         auto now_s = std::chrono::steady_clock::now();
-        auto stat_elapsed = std::chrono::duration_cast<std::chrono::seconds>(now_s - last_stat).count();
-        if(stat_elapsed >= 10){
+        auto stat_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now_s - last_stat).count();
+        if(stat_elapsed >= 3000){
             auto total_sec = std::chrono::duration_cast<std::chrono::seconds>(now_s - start_time).count();
             size_t join_count = 0;
             {
                 std::lock_guard<std::mutex> jlk(room->joins_mtx);
                 join_count = room->joins.size();
             }
-            printf("[Central] [STATS] room='%s' uptime=%llds | recv: pkts=%llu bytes=%llu (%.1f KB/s) | "
-                   "hb=%llu fft=%llu audio=%llu other=%llu | joins=%zu\n",
+            double win_sec = stat_elapsed / 1000.0;
+            printf("[Central] [STATS] room='%s' uptime=%llds | recv: pkts=%llu (%.1f KB/s) | "
+                   "hb=%llu fft=%llu audio=%llu | joins=%zu\n",
                    room->station_id.c_str(),
                    (long long)total_sec,
                    (unsigned long long)mux_pkts,
-                   (unsigned long long)recv_bytes,
-                   (double)recv_bytes / std::max((long long)1, (long long)total_sec) / 1024.0,
-                   (unsigned long long)hb_count,
-                   (unsigned long long)fft_count,
-                   (unsigned long long)audio_count,
-                   (unsigned long long)other_count,
+                   (double)win_bytes / win_sec / 1024.0,
+                   (unsigned long long)win_hb,
+                   (unsigned long long)win_fft,
+                   (unsigned long long)win_audio,
                    join_count);
             last_stat = now_s;
+            win_hb = win_fft = win_audio = win_bytes = 0;
         }
 
         // ── HB ─────────────────────────────────────────────────────────────
         if(mux.type == 0x00){
             room->last_hb = std::chrono::steady_clock::now();
-            hb_count++;
+            hb_count++; win_hb++;
             if(mux.len > 0){
                 if(buf.size() < mux.len) buf.resize(mux.len);
                 if(!central_recv_all(room->fd, buf.data(), mux.len)){
@@ -374,6 +377,7 @@ void CentralServer::host_mux_loop(std::shared_ptr<HostRoom> room){
             break;
         }
         recv_bytes += mux.len;
+        win_bytes  += mux.len;
         mux_pkts++;
 
         auto mux_type = static_cast<CentralMuxType>(mux.type);
@@ -382,8 +386,8 @@ void CentralServer::host_mux_loop(std::shared_ptr<HostRoom> room){
         // BEWE 타입별 카운트
         if(mux.len >= BEWE_HDR_SIZE){
             uint8_t bt = buf[4];
-            if(bt == BEWE_TYPE_FFT)        fft_count++;
-            else if(bt == BEWE_TYPE_AUDIO) audio_count++;
+            if(bt == BEWE_TYPE_FFT)        { fft_count++;   win_fft++; }
+            else if(bt == BEWE_TYPE_AUDIO) { audio_count++; win_audio++; }
             else                           other_count++;
         }
 
