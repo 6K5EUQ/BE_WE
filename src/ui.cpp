@@ -2022,6 +2022,7 @@ void run_streaming_viewer(){
                     for(auto& e : v.rec_entries)
                         if(e.is_region && e.filename == fn){
                             e.xfer_done = received; e.xfer_total = received;
+                            e.req_state = FFTViewer::RecEntry::REQ_NONE;
                             e.finished = true; e.path = save_path;
                             break;
                         }
@@ -2414,21 +2415,7 @@ void run_streaming_viewer(){
                                 break;
                             }
                     }
-                    // JOIN에게 IQ_PIPE_READY 브로드캐스트 (HOST IP + req_id + 파일정보)
-                    if(srv){
-                        PktIqPipeReady ready{};
-                        ready.req_id   = req_id;
-                        const char* fn_only2 = strrchr(path.c_str(), '/');
-                        fn_only2 = fn_only2 ? fn_only2+1 : path.c_str();
-                        strncpy(ready.filename, fn_only2, 127);
-                        ready.filesize = fsz;
-                        std::string lip = get_local_ip();
-                        strncpy(ready.host_ip, lip.c_str(), 15);
-                        auto pkt = make_packet(PacketType::IQ_PIPE_READY, &ready, sizeof(ready));
-                        // relay 경유: cb.on_relay_broadcast → 중앙서버 MUX broadcast
-                        if(srv->cb.on_relay_broadcast)
-                            srv->cb.on_relay_broadcast(pkt.data(), pkt.size());
-                    }
+                    // register_send 먼저 → JOIN이 connect 시 즉시 매칭 가능
                     // IQ 전송 전용 독립 서버에 등록 (BEWE 스트림과 완전 분리)
                     s_iq_pipe_srv.register_send(req_id, path,
                         [&v, fname, path, srv, req_id](uint64_t done, uint64_t total, int phase){
@@ -2462,6 +2449,20 @@ void run_streaming_viewer(){
                                 }).detach();
                             }
                         });
+                    // register_send 후 IQ_PIPE_READY 브로드캐스트 (JOIN이 connect 시 즉시 매칭)
+                    if(srv){
+                        PktIqPipeReady ready{};
+                        ready.req_id   = req_id;
+                        const char* fn_only2 = strrchr(path.c_str(), '/');
+                        fn_only2 = fn_only2 ? fn_only2+1 : path.c_str();
+                        strncpy(ready.filename, fn_only2, 127);
+                        ready.filesize = fsz;
+                        std::string lip = get_local_ip();
+                        strncpy(ready.host_ip, lip.c_str(), 15);
+                        auto pkt = make_packet(PacketType::IQ_PIPE_READY, &ready, sizeof(ready));
+                        if(srv->cb.on_relay_broadcast)
+                            srv->cb.on_relay_broadcast(pkt.data(), pkt.size());
+                    }
                 }).detach();
             };
             srv->cb.on_toggle_recv = [&](int ch_idx, uint8_t op_idx, bool enable){

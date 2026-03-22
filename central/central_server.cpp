@@ -591,7 +591,8 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
     bool is_fft = (bewe_type == BEWE_TYPE_FFT);
     bool is_ctrl = (bewe_type == BEWE_TYPE_HEARTBEAT || bewe_type == BEWE_TYPE_STATUS ||
                     bewe_type == BEWE_TYPE_CMD || bewe_type == BEWE_TYPE_OP_LIST ||
-                    bewe_type == BEWE_TYPE_AUTH_ACK);
+                    bewe_type == BEWE_TYPE_AUTH_ACK ||
+                    bewe_type == BEWE_TYPE_IQ_PIPE_READY);   // 드롭 불가
     std::lock_guard<std::mutex> jlk(room->joins_mtx);
     for(auto& je : room->joins){
         if(!je->alive.load() || je->fd < 0) continue;
