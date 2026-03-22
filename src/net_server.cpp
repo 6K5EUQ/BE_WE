@@ -712,7 +712,7 @@ void NetServer::broadcast_iq_progress(const PktIqProgress& prog){
     auto pkt = make_packet(PacketType::IQ_PROGRESS, &prog, sizeof(prog));
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& cli : clients_){
-        if(!cli->alive.load()) continue;
+        if(!cli->alive.load() || !cli->authed) continue;
         cli->enqueue(pkt, false);
     }
 }
@@ -739,7 +739,7 @@ void NetServer::send_file_via_pipe(int pipe_fd, const char* path, uint32_t req_i
         auto pkt = make_packet(PacketType::IQ_PROGRESS, &prog, sizeof(prog));
         std::lock_guard<std::mutex> lk(clients_mtx_);
         for(auto& cli : clients_){
-            if(!cli->alive.load()) continue;
+            if(!cli->alive.load() || !cli->authed) continue;
             cli->enqueue(pkt, false);
         }
     };

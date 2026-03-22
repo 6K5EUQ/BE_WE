@@ -125,28 +125,36 @@ bool NetClient::connect_fd(int fd, const char* id, const char* pw, uint8_t tier)
 
     printf("[NetClient] connect_fd: sent AUTH_REQ id='%s' tier=%u fd=%d\n", id, tier, fd);
 
-    PktHdr hdr{};
+    // AUTH_ACK가 올 때까지 앞에 도착한 다른 패킷은 드레인 (최대 32개)
     printf("[NetClient] connect_fd: waiting for AUTH_ACK...\n");
-    ssize_t hr = recv(fd_, &hdr, PKT_HDR_SIZE, MSG_WAITALL);
-    if(hr != PKT_HDR_SIZE){
-        printf("[NetClient] connect_fd: recv AUTH_ACK hdr failed hr=%zd errno=%d(%s)\n",
-               hr, errno, strerror(errno));
-        fd_=-1; return false;
-    }
-    printf("[NetClient] connect_fd: got hdr magic=%02x%02x%02x%02x type=0x%02x len=%u\n",
-           hdr.magic[0], hdr.magic[1], hdr.magic[2], hdr.magic[3], hdr.type, hdr.len);
-    if(static_cast<PacketType>(hdr.type) != PacketType::AUTH_ACK){
-        printf("[NetClient] connect_fd: expected AUTH_ACK got type=0x%02x\n", hdr.type);
-        fd_=-1; return false;
-    }
-    std::vector<uint8_t> payload(hdr.len);
-    if(hdr.len > 0){
-        ssize_t pr = recv(fd_, payload.data(), hdr.len, MSG_WAITALL);
-        if(pr != (ssize_t)hdr.len){
-            printf("[NetClient] connect_fd: recv AUTH_ACK payload failed pr=%zd/%u errno=%d(%s)\n",
-                   pr, hdr.len, errno, strerror(errno));
+    PktHdr hdr{};
+    std::vector<uint8_t> payload;
+    int skip_count = 0;
+    while(true){
+        ssize_t hr = recv(fd_, &hdr, PKT_HDR_SIZE, MSG_WAITALL);
+        if(hr != PKT_HDR_SIZE){
+            printf("[NetClient] connect_fd: recv hdr failed hr=%zd errno=%d(%s)\n",
+                   hr, errno, strerror(errno));
             fd_=-1; return false;
         }
+        if(memcmp(hdr.magic, BEWE_MAGIC, 4) != 0){
+            printf("[NetClient] connect_fd: bad magic\n");
+            fd_=-1; return false;
+        }
+        if(hdr.len > 4*1024*1024){ fd_=-1; return false; }
+        payload.resize(hdr.len);
+        if(hdr.len > 0){
+            ssize_t pr = recv(fd_, payload.data(), hdr.len, MSG_WAITALL);
+            if(pr != (ssize_t)hdr.len){
+                printf("[NetClient] connect_fd: recv payload failed\n");
+                fd_=-1; return false;
+            }
+        }
+        if(static_cast<PacketType>(hdr.type) == PacketType::AUTH_ACK) break;
+        // AUTH_ACK 아닌 패킷은 스킵 (IQ_PROGRESS, CH_SYNC 등이 먼저 올 수 있음)
+        printf("[NetClient] connect_fd: skipping pre-auth pkt type=0x%02x len=%u\n",
+               hdr.type, hdr.len);
+        if(++skip_count > 64){ fd_=-1; return false; }
     }
     if(hdr.len < sizeof(PktAuthAck)){
         printf("[NetClient] connect_fd: AUTH_ACK payload too short %u\n", hdr.len);

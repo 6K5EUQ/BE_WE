@@ -333,9 +333,6 @@ void CentralClient::mux_loop(int central_fd,
             setsockopt(sv[0], SOL_SOCKET, SO_RCVBUF, &spbuf, sizeof(spbuf));
             setsockopt(sv[1], SOL_SOCKET, SO_SNDBUF, &spbuf, sizeof(spbuf));
             setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &spbuf, sizeof(spbuf));
-            // remote_fd(sv[1])에 send 타임아웃: 느린 JOIN이 mux_loop를 블로킹하지 않도록
-            timeval sp_tv{0, 100000}; // 100ms
-            setsockopt(sv[1], SOL_SOCKET, SO_SNDTIMEO, &sp_tv, sizeof(sp_tv));
             // sv[0]: NetServer가 accept 대신 직접 client_loop에 inject (local_fd)
             // sv[1]: relay로 데이터 보내는 쪽 (remote_fd)
             auto jp = std::make_shared<JoinPair>();
