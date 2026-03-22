@@ -119,7 +119,7 @@ private:
     std::condition_variable  central_queue_cv_;
     std::deque<std::vector<uint8_t>> central_send_queue_;
     size_t                   central_queue_bytes_ = 0;
-    static constexpr size_t  CENTRAL_QUEUE_MAX_BYTES = 32 * 1024 * 1024; // 32MB
+    static constexpr size_t  CENTRAL_QUEUE_MAX_BYTES = 4 * 1024 * 1024; // 4MB (~1초)
 
     // (hdr, hdr_len) + (data, data_len) 을 합쳐 하나의 청크로 enqueue
     // queue가 CENTRAL_QUEUE_MAX_BYTES 를 초과하면 가장 오래된 항목부터 삭제

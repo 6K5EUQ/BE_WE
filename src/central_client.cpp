@@ -198,26 +198,33 @@ void CentralClient::enqueue_central(const void* hdr, size_t hdr_len,
     central_queue_cv_.notify_one();
 }
 
-// central_fd 단독 write 스레드: 큐를 드레인하여 순서 보장 + mutex 불필요
+// central_fd 단독 write 스레드: 배치 처리로 큐를 빠르게 드레인
 void CentralClient::central_sender_loop(int central_fd){
+    std::deque<std::vector<uint8_t>> batch;
     while(central_sender_running_.load()){
-        std::vector<uint8_t> pkt;
+        batch.clear();
         {
             std::unique_lock<std::mutex> lk(central_queue_mtx_);
             central_queue_cv_.wait_for(lk, std::chrono::milliseconds(200),
                 [this]{ return !central_send_queue_.empty() || !central_sender_running_.load(); });
             if(central_send_queue_.empty()) continue;
-            pkt = std::move(central_send_queue_.front());
-            central_send_queue_.pop_front();
-            central_queue_bytes_ -= pkt.size();
+            // 한 번에 최대 64개 꺼내기 (mutex 보유 시간 최소화)
+            int n = 0;
+            while(!central_send_queue_.empty() && n++ < 64){
+                central_queue_bytes_ -= central_send_queue_.front().size();
+                batch.push_back(std::move(central_send_queue_.front()));
+                central_send_queue_.pop_front();
+            }
         }
-        if(!central_send_all(central_fd, pkt.data(), pkt.size())){
-            int e = errno;
-            printf("[CentralClient] relay_sender: send failed errno=%d(%s), closing central_fd\n",
-                   e, strerror(e));
-            // central_fd 닫기 → mux_loop recv 실패 → mux_loop 종료 → on_central_disconnect_ 호출
-            shutdown(central_fd, SHUT_RDWR);
-            break;
+        for(auto& pkt : batch){
+            if(!central_send_all(central_fd, pkt.data(), pkt.size())){
+                int e = errno;
+                printf("[CentralClient] relay_sender: send failed errno=%d(%s), closing central_fd\n",
+                       e, strerror(e));
+                shutdown(central_fd, SHUT_RDWR);
+                central_sender_running_.store(false);
+                return;
+            }
         }
     }
     central_sender_running_.store(false);
@@ -277,11 +284,13 @@ void CentralClient::mux_loop(int central_fd,
     // keepalive heartbeat 타이머
     auto last_hb = std::chrono::steady_clock::now();
 
-    while(mux_running_.load()){
-        // MUX 헤더 수신 (non-blocking 타임아웃 3초로 HB 전송 기회 확보)
+    // SO_RCVTIMEO 루프 밖에서 한 번만 설정 (HB 주기 3초)
+    {
         timeval tv{3,0};
         setsockopt(central_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    }
 
+    while(mux_running_.load()){
         CentralMuxHdr mux{};
         ssize_t r = recv(central_fd, &mux, CENTRAL_MUX_HDR_SIZE, MSG_WAITALL);
         if(r <= 0){
@@ -310,10 +319,6 @@ void CentralClient::mux_loop(int central_fd,
             printf("[CentralClient] mux_loop: short read %zd/%d\n", r, CENTRAL_MUX_HDR_SIZE);
             break;
         }
-
-        // payload 수신용 타임아웃 (5초) — 무한 블로킹 방지
-        timeval tvp{5,0};
-        setsockopt(central_fd, SOL_SOCKET, SO_RCVTIMEO, &tvp, sizeof(tvp));
 
         auto mux_type = static_cast<CentralMuxType>(mux.type);
         uint16_t cid  = mux.conn_id;

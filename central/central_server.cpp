@@ -440,8 +440,6 @@ void CentralServer::join_loop(std::shared_ptr<JoinEntry> je, std::shared_ptr<Hos
         }
 
         uint8_t bewe_type = (9 + bewe_len > 4) ? buf[4] : 0xFF;
-        printf("[Central] JOIN→HOST conn_id=%u bewe_type=%s(0x%02x) len=%u\n",
-               je->conn_id, bewe_type_name(bewe_type), bewe_type, 9 + bewe_len);
 
         // JOIN→HOST: 릴레이가 처리할 명령은 인터셉트
         bool consumed = intercept_join_cmd(je, room, buf.data(), 9 + bewe_len);

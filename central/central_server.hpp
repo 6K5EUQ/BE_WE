@@ -29,8 +29,8 @@ struct JoinEntry {
     // ── 독립 송신 큐 ──────────────────────────────────────────────────────
     // 우선순위: ctrl_queue(제어) > send_queue(FFT) > audio_queue(오디오)
     // 단일 send 스레드가 우선순위 순서로 큐에서 꺼내 전송
-    static constexpr size_t SEND_QUEUE_MAX_BYTES  = 32 * 1024 * 1024; // FFT 32MB
-    static constexpr size_t AUDIO_QUEUE_MAX_BYTES = 16 * 1024 * 1024; // 오디오 16MB
+    static constexpr size_t SEND_QUEUE_MAX_BYTES  = 8 * 1024 * 1024; // FFT 8MB (~2초)
+    static constexpr size_t AUDIO_QUEUE_MAX_BYTES = 4 * 1024 * 1024; // 오디오 4MB (~2초)
 
     // 제어 큐 (AUTH_ACK, CMD_ACK, STATUS, OP_LIST, CH_SYNC 등) — 드롭 없음
     std::deque<std::vector<uint8_t>> ctrl_queue;
