@@ -465,11 +465,16 @@ void NetServer::send_audio(uint32_t op_mask, uint8_t ch_idx, int8_t pan,
     ah->n_samples = n_samples;
     memcpy(payload.data() + sizeof(PktAudioFrame), pcm, n_samples*sizeof(float));
 
+    auto pkt = make_packet(PacketType::AUDIO_FRAME, payload.data(), payload_size);
+    // relay(중앙서버)에도 전송 — 중앙서버가 recv_audio[] 테이블로 채널별 필터링
+    if(cb.on_relay_broadcast)
+        cb.on_relay_broadcast(pkt.data(), pkt.size());
+
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
         if(c->is_relay || !c->authed || !c->alive.load()) continue;
         if(!(op_mask & (1u << c->op_index))) continue;
-        c->enqueue(make_packet(PacketType::AUDIO_FRAME, payload.data(), payload_size), false, true);
+        c->enqueue(pkt, false, true);
     }
 }
 

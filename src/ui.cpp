@@ -1957,8 +1957,8 @@ void run_streaming_viewer(){
             return dir;
         };
 
-        // 오퍼레이터 목록 팝업 표시
-        bool op_popup_open = true;
+        // 오퍼레이터 목록 팝업 — 건너뜀 (바로 메인으로 진입)
+        bool op_popup_open = false;
         while(op_popup_open && !glfwWindowShouldClose(win)){
             glfwPollEvents();
             int fw,fh; glfwGetFramebufferSize(win,&fw,&fh);
