@@ -1,3 +1,0 @@
-/home/dsa/BE_WE/central/build/CMakeFiles/bewe_central.dir
-/home/dsa/BE_WE/central/build/CMakeFiles/edit_cache.dir
-/home/dsa/BE_WE/central/build/CMakeFiles/rebuild_cache.dir

@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/bewe_central.dir/central_main.cpp.o CMakeFiles/bewe_central.dir/central_server.cpp.o -o bewe_central  -lpthread 
