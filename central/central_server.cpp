@@ -222,9 +222,9 @@ void CentralServer::handshake(int fd){
 
         auto je = std::make_shared<JoinEntry>();
         je->fd = fd;
-        // JOIN fd에 send 타임아웃 설정: 느린 JOIN이 send worker를 무한 블로킹하지 않도록
-        timeval jtv{5, 0};
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &jtv, sizeof(jtv));
+        // SO_SNDTIMEO 제거: 타임아웃 시 EAGAIN→alive=false로 오연결 끊김 발생
+        // send_worker는 per-JOIN 전용 스레드이므로 블로킹이 길어져도 다른 JOIN에 무관
+        // TCP 스택이 실제 연결 끊김 시 EPIPE/ECONNRESET으로 정상 감지
         je->start_send_worker();
         {
             std::lock_guard<std::mutex> lk(room->joins_mtx);
