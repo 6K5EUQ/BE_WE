@@ -399,7 +399,7 @@ void CentralClient::mux_loop(int central_fd,
             for(auto& [id, jp] : mux_joins_){
                 if(cid != 0xFFFF && id != cid) continue;
                 if(jp->remote_fd >= 0)
-                    send(jp->remote_fd, buf.data(), mux.len, MSG_NOSIGNAL | MSG_DONTWAIT);
+                    send(jp->remote_fd, buf.data(), mux.len, MSG_NOSIGNAL);
             }
 
         } else if(mux_type == CentralMuxType::CONN_CLOSE){

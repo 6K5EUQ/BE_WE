@@ -107,13 +107,7 @@ bool NetClient::connect(const char* host, int port,
 bool NetClient::connect_fd(int fd, const char* id, const char* pw, uint8_t tier){
     fd_ = fd;
 
-    // SO_RCVTIMEO: recv() 3초 타임아웃 (relay 모드도 동일)
-    timeval tv{3, 0};
-    setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-    // SO_SNDTIMEO: send() 2초 타임아웃 → 채팅/명령 전송 블로킹 방지
-    timeval stv{2, 0};
-    setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &stv, sizeof(stv));
+    // socketpair는 로컬 IPC — 타임아웃 불필요 (타임아웃 설정 시 EAGAIN으로 오작동)
 
     PktAuthReq req{};
     strncpy(req.id, id, 31);

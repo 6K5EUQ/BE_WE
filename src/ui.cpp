@@ -3454,11 +3454,9 @@ void run_streaming_viewer(){
             // 스페이스바: TM 토글 (진입/해제)
             if(ImGui::IsKeyPressed(ImGuiKey_Space,false)){
                 if(v.tm_active.load()){
-                    // 해제: 라이브 복귀
                     v.tm_offset=0.0f;
                     v.tm_active.store(false);
                 } else {
-                    // 진입: 현재 시점을 freeze 기준으로
                     v.tm_freeze_idx=v.current_fft_idx;
                     v.tm_display_fft_idx=v.current_fft_idx;
                     v.tm_offset=0.0f;
@@ -5528,11 +5526,10 @@ void run_streaming_viewer(){
                             IM_COL32(200,200,200,255), center_str);
             }
 
-            // ── 좌측: 타임머신 오프셋 (활성 시만 표시) ───────────────────
-            if(v.tm_active.load()){
+            // ── 좌측: 타임머신 오프셋 (TM 모드 + 오프셋 있을 때만 표시) ─
+            if(v.tm_active.load() && v.tm_offset > 0.0f){
                 char tm_txt[48];
-                if(v.tm_offset<=0.0f) snprintf(tm_txt,sizeof(tm_txt),"LIVE");
-                else snprintf(tm_txt,sizeof(tm_txt),"-%.1f sec",v.tm_offset);
+                snprintf(tm_txt,sizeof(tm_txt),"-%.1f sec",v.tm_offset);
                 dl->AddText(ImVec2(8,ty_b),IM_COL32(255,200,50,255),tm_txt);
             }
 
