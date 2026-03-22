@@ -367,12 +367,19 @@ void CentralClient::mux_loop(int central_fd,
             if(mux.len > (uint32_t)buf.size()) buf.resize(mux.len);
             if(mux.len > 0 && !central_recv_all(central_fd, buf.data(), mux.len)) break;
 
-            // 릴레이→HOST 방향 CHANNEL_SYNC (audio_mask 재작성본): HOST가 직접 처리
-            // conn_id=0xFFFF + BEWE type=0x0A → HOST의 audio_mask 갱신
-            if(cid == 0xFFFF && mux.len >= 9 && buf[4] == 0x0A){
-                if(on_central_ch_sync_)
-                    on_central_ch_sync_(buf.data(), mux.len);
-                continue;  // socketpair에 전달 안 함
+            // 릴레이→HOST 방향 broadcast (conn_id=0xFFFF) 처리
+            if(cid == 0xFFFF && mux.len >= 9){
+                uint8_t btype = buf[4];
+                if(btype == 0x0A){  // CH_SYNC: audio_mask 갱신
+                    if(on_central_ch_sync_)
+                        on_central_ch_sync_(buf.data(), mux.len);
+                    continue;
+                }
+                if(btype == 0x09){  // OP_LIST: HOST UI 오퍼레이터 목록 갱신
+                    if(on_central_op_list_)
+                        on_central_op_list_(buf.data(), mux.len);
+                    continue;
+                }
             }
 
             // 중앙서버→HOST CHAT: relay 루프 방지를 위해 socketpair 전달 않음
@@ -440,7 +447,17 @@ int CentralClient::pipe_connect_host(const std::string& central_host,
     if(!pipe_send_pkt(fd, PipePktType::PIPE_HOST, &ph, sizeof(ph))){
         close(fd); return -1;
     }
-    printf("[CentralClient] pipe_connect_host: req_id=%u file='%s' size=%llu fd=%d\n",
+    // 중앙서버가 JOIN 연결 후 1바이트 'G'(go)를 보낼 때까지 대기 (최대 60초)
+    timeval tv_wait{60, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv_wait, sizeof(tv_wait));
+    uint8_t go = 0;
+    ssize_t gr = recv(fd, &go, 1, 0);
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv0, sizeof(tv0));
+    if(gr != 1 || go != 'G'){
+        printf("[CentralClient] pipe_connect_host: no go signal (gr=%zd go=%u)\n", gr, go);
+        close(fd); return -1;
+    }
+    printf("[CentralClient] pipe_connect_host: req_id=%u file='%s' size=%llu fd=%d GO\n",
            req_id, filename, (unsigned long long)filesize, fd);
     return fd;
 }

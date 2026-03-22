@@ -705,10 +705,14 @@ void CentralServer::build_and_broadcast_op_list(std::shared_ptr<HostRoom> room){
         room->cached_op_list = pkt;
     }
 
+    // JOIN들에게 전송
     for(auto& je : room->joins){
         if(!je->alive.load() || je->fd < 0) continue;
         je->enqueue_ctrl(pkt.data(), pkt.size());
     }
+    // HOST에게도 MUX broadcast (conn_id=0xFFFF)로 전송 → HOST UI 오퍼레이터 목록 갱신
+    if(room->alive.load() && room->fd >= 0)
+        enqueue_host_send(room, 0xFFFF, CentralMuxType::DATA, pkt.data(), pkt.size());
     printf("[Central] OP_LIST broadcast: %d operators room='%s'\n", count, room->station_id.c_str());
 }
 
@@ -902,7 +906,9 @@ void CentralServer::pipe_handshake(int fd){
                     setsockopt(fd,      SOL_SOCKET, SO_RCVTIMEO, &tv0, sizeof(tv0));
                     setsockopt(join_fd, SOL_SOCKET, SO_SNDTIMEO, &tv0, sizeof(tv0));
                     setsockopt(join_fd, SOL_SOCKET, SO_RCVTIMEO, &tv0, sizeof(tv0));
-                    // 양방향 파이프: HOST→JOIN (파일), JOIN→HOST (없지만 EOF 감지용)
+                    // HOST에게 GO 신호 전송 → HOST가 파일 전송 시작
+                    uint8_t go = 'G';
+                    send(fd, &go, 1, MSG_NOSIGNAL);
                     int host_fd_cap = fd;
                     int join_fd_cap = join_fd;
                     // HOST→JOIN 스레드
@@ -947,10 +953,12 @@ void CentralServer::pipe_handshake(int fd){
                 strncpy(ready.filename, ph->filename, 127);
                 ready.filesize = ph->filesize;
                 auto pkt = make_bewe_packet(BEWE_TYPE_IQ_PIPE_READY, &ready, sizeof(ready));
-                // target_conn_id에게만 전달
+                // target_conn_id가 0xFFFF면 authed JOIN 전체에 broadcast,
+                // 아니면 해당 conn_id에게만 전달
                 std::lock_guard<std::mutex> jlk(room->joins_mtx);
                 for(auto& je : room->joins){
-                    if(je->conn_id == ph->target_conn_id && je->alive.load())
+                    if(!je->alive.load() || !je->authed) continue;
+                    if(ph->target_conn_id == 0xFFFF || je->conn_id == ph->target_conn_id)
                         je->enqueue_ctrl(pkt.data(), pkt.size());
                 }
             }
@@ -972,6 +980,9 @@ void CentralServer::pipe_handshake(int fd){
                 setsockopt(host_fd, SOL_SOCKET, SO_RCVTIMEO, &tv0, sizeof(tv0));
                 setsockopt(fd,      SOL_SOCKET, SO_SNDTIMEO, &tv0, sizeof(tv0));
                 setsockopt(fd,      SOL_SOCKET, SO_RCVTIMEO, &tv0, sizeof(tv0));
+                // HOST에게 GO 신호 전송 → HOST가 파일 전송 시작
+                uint8_t go = 'G';
+                send(host_fd, &go, 1, MSG_NOSIGNAL);
                 int host_fd_cap = host_fd;
                 int join_fd_cap = fd;
                 std::thread([host_fd_cap, join_fd_cap](){

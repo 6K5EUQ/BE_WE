@@ -796,7 +796,7 @@ std::vector<OpEntry> NetServer::get_operators() const {
     std::vector<OpEntry> ops;
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
-        if(!c->authed || !c->alive.load()) continue;
+        if(c->is_relay || !c->authed || !c->alive.load()) continue;
         OpEntry e{}; e.index=c->op_index; e.tier=c->tier;
         strncpy(e.name, c->name, 31);
         ops.push_back(e);

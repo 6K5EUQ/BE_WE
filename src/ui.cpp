@@ -1258,6 +1258,9 @@ void run_streaming_viewer(){
     static constexpr int s_central_port = CENTRAL_PORT;
     // Central Server 경유 JOIN 시 station_id 보존 (재연결용)
     static std::string s_central_join_station_id;
+    // 중앙서버가 보낸 OP_LIST (HOST 모드에서 오퍼레이터 창 표시용)
+    static PktOperatorList s_relay_op_list{};
+    static std::mutex s_relay_op_mtx;
     int  mode_sel     = do_chassis_reset ? chassis_reset_mode : 0;
     int& host_port    = s_host_port;
     char (&connect_host)[128] = s_connect_host;
@@ -2316,7 +2319,10 @@ void run_streaming_viewer(){
                 // station_id: central_cli에 등록된 룸 ID
                 std::string sid = v.station_name + "_" + std::string(login_get_id());
                 std::string central_host_cap = s_central_host;
-                std::thread([&v,srv,ft,fb,fl,fh,ts,te,oidx,fname,sid,central_host_cap,&central_cli](){
+                static std::atomic<uint32_t> g_req_id{1000};
+                uint32_t req_id_val = g_req_id.fetch_add(1);
+                std::thread([&v,srv,ft,fb,fl,fh,ts,te,oidx,fname,sid,central_host_cap,&central_cli,req_id_val](){
+                    uint32_t req_id = req_id_val;
                     // [REC] 상태 표시
                     {
                         std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
@@ -2334,11 +2340,10 @@ void run_streaming_viewer(){
                     v.rec_state = FFTViewer::REC_BUSY;
                     v.rec_anim_timer = 0.0f;
                     v.region.active = false;
-                    // IQ_PROGRESS phase=0 (REC 중) 브로드캐스트
+                    // IQ_PROGRESS phase=0 (REC 중) 브로드캐스트 — 파이프와 동일한 req_id 사용
                     if(srv){
                         PktIqProgress prog{};
-                        static std::atomic<uint32_t> req_id_counter{1};
-                        prog.req_id = req_id_counter.fetch_add(1);
+                        prog.req_id = req_id;
                         strncpy(prog.filename, fname.c_str(), 127);
                         prog.done=0; prog.total=0; prog.phase=0;
                         srv->broadcast_iq_progress(prog);
@@ -2378,8 +2383,6 @@ void run_streaming_viewer(){
                                 break;
                             }
                     }
-                    static std::atomic<uint32_t> g_req_id{1000};
-                    uint32_t req_id = g_req_id.fetch_add(1);
                     const char* fn_only = strrchr(path.c_str(),'/');
                     fn_only = fn_only ? fn_only+1 : path.c_str();
 
@@ -2643,6 +2646,24 @@ void run_streaming_viewer(){
                                 if((int)_log->size() >= 200) _log->erase(_log->begin());
                                 LocalChatMsg m{}; strncpy(m.from,from,31); strncpy(m.msg,msg,255);
                                 _log->push_back(m);
+                            });
+                            central_cli.set_on_central_op_list([](const uint8_t* pkt, size_t len){
+                                // BEWE 헤더(9바이트) 이후 OP_LIST payload 파싱
+                                if(len < 9 + 1) return;
+                                const uint8_t* payload = pkt + 9;
+                                size_t plen = len - 9;
+                                std::lock_guard<std::mutex> lk(s_relay_op_mtx);
+                                s_relay_op_list = {};
+                                uint8_t count = payload[0];
+                                if(count > MAX_OPERATORS) count = MAX_OPERATORS;
+                                s_relay_op_list.count = count;
+                                for(int i = 0; i < count; i++){
+                                    size_t off = 1 + i * BEWE_OP_ENTRY_SIZE;
+                                    if(off + BEWE_OP_ENTRY_SIZE > plen) break;
+                                    s_relay_op_list.ops[i].index = payload[off];
+                                    s_relay_op_list.ops[i].tier  = payload[off+1];
+                                    strncpy(s_relay_op_list.ops[i].name, (const char*)(payload+off+2), 31);
+                                }
                             });
                             // 재귀적 자동 재연결 함수 (shared_ptr로 캡처)
                             auto reconnect_fn = std::make_shared<std::function<void()>>();
@@ -5155,14 +5176,27 @@ void run_streaming_viewer(){
                                                 : ImVec4(0.4f,0.85f,1.f,1.f);
                         ImGui::TextColored(bcol, "%s %s", badge, my_id);
                     }
-                    // HOST 모드: JOIN 목록
+                    // HOST 모드: 중앙서버 OP_LIST 우선, 없으면 로컬 목록
                     if(v.net_srv){
-                        auto ops = v.net_srv->get_operators();
-                        for(auto& op : ops){
+                        std::lock_guard<std::mutex> lk(s_relay_op_mtx);
+                        // s_relay_op_list.count>0: 중앙서버 경유 (index=0은 HOST 본인)
+                        int join_count = 0;
+                        for(int i = 0; i < (int)s_relay_op_list.count; i++){
+                            auto& op = s_relay_op_list.ops[i];
+                            if(op.index == 0) continue;  // HOST 본인 스킵
                             ImGui::TextColored(ImVec4(0.7f,0.92f,0.7f,1.f),
                                 "[JOIN] %s  [T%d]", op.name, op.tier);
+                            join_count++;
                         }
-                        if(ops.empty()) ImGui::TextDisabled("  (no operators)");
+                        if(s_relay_op_list.count == 0){
+                            // 중앙서버 미연결: 로컬 목록 사용
+                            auto ops = v.net_srv->get_operators();
+                            for(auto& op : ops)
+                                ImGui::TextColored(ImVec4(0.7f,0.92f,0.7f,1.f),
+                                    "[JOIN] %s  [T%d]", op.name, op.tier);
+                            join_count = (int)ops.size();
+                        }
+                        if(join_count == 0) ImGui::TextDisabled("  (no operators)");
                     } else if(v.net_cli){
                         std::lock_guard<std::mutex> lk(v.net_cli->op_mtx);
                         for(int i=0;i<(int)v.net_cli->op_list.count;i++){
