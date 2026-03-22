@@ -220,9 +220,17 @@ void CentralClient::enqueue_hb(const void* hdr, size_t hdr_len,
 // 루프마다 HB 큐를 먼저 확인 → HB는 데이터 프레임 한 개 전송 시간 내에 반드시 전송됨
 // 데이터 프레임은 SO_SNDTIMEO=3s 적용 → 3초 초과 시 연결 닫고 재접속
 void CentralClient::central_sender_loop(int central_fd){
+    // 통합 5s 타임아웃 (HB도 데이터도 동일)
+    timeval tv{5, 0};
+    setsockopt(central_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    uint64_t data_sent = 0, data_dropped = 0;
+    auto last_stat = std::chrono::steady_clock::now();
+
     while(central_sender_running_.load()){
         std::vector<uint8_t> pkt;
         bool is_hb = false;
+        size_t queue_depth = 0;
         {
             std::unique_lock<std::mutex> lk(central_queue_mtx_);
             central_queue_cv_.wait_for(lk, std::chrono::milliseconds(200),
@@ -236,23 +244,20 @@ void CentralClient::central_sender_loop(int central_fd){
                 central_hb_queue_.pop_front();
                 is_hb = true;
             } else if(!central_send_queue_.empty()){
+                // 큐가 과도하게 쌓이면 오래된 프레임 일괄 드롭 (최신만 유지)
+                // 네트워크가 따라가지 못하는 상황에서 sender 블로킹 시간을 줄임
+                while(central_send_queue_.size() > 8){
+                    central_queue_bytes_ -= central_send_queue_.front().size();
+                    central_send_queue_.pop_front();
+                    data_dropped++;
+                }
                 pkt = std::move(central_send_queue_.front());
                 central_send_queue_.pop_front();
                 central_queue_bytes_ -= pkt.size();
+                queue_depth = central_send_queue_.size();
             } else {
                 continue;
             }
-        }
-
-        if(is_hb){
-            // HB/제어: 타임아웃 없이 전송 (HB는 11 bytes로 즉각 전송됨)
-            timeval tv0{0, 0};
-            setsockopt(central_fd, SOL_SOCKET, SO_SNDTIMEO, &tv0, sizeof(tv0));
-        } else {
-            // 데이터 프레임: 10s 타임아웃 → 초과 시 스트림 오염이므로 재접속
-            // (SDR 재연결 burst 등 일시적 congestion 흡수)
-            timeval tv{10, 0};
-            setsockopt(central_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
         }
 
         if(!central_send_all(central_fd, pkt.data(), pkt.size())){
@@ -261,6 +266,16 @@ void CentralClient::central_sender_loop(int central_fd){
                    is_hb ? "HB" : "data", e, strerror(e));
             shutdown(central_fd, SHUT_RDWR);
             break;
+        }
+        data_sent++;
+
+        // 30초마다 통계 출력
+        auto now = std::chrono::steady_clock::now();
+        if(std::chrono::duration_cast<std::chrono::seconds>(now-last_stat).count() >= 30){
+            printf("[CentralClient] sender stats: sent=%llu dropped=%llu queueBytes=%zu\n",
+                   (unsigned long long)data_sent, (unsigned long long)data_dropped,
+                   central_queue_bytes_);
+            last_stat = now;
         }
     }
     central_sender_running_.store(false);
