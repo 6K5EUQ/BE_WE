@@ -48,6 +48,7 @@ add_executable(BE_WE
     src/dmr.cpp
     src/login.cpp
     src/net_server.cpp
+    src/iq_pipe_server.cpp
     src/net_client.cpp
     src/net_stream.cpp
     src/globe.cpp

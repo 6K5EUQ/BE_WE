@@ -491,7 +491,7 @@ void NetClient::handle_packet(PacketType type,
     case PacketType::IQ_PIPE_READY: {
         if(len < sizeof(PktIqPipeReady)) break;
         auto* p = reinterpret_cast<const PktIqPipeReady*>(payload);
-        if(on_iq_pipe_ready) on_iq_pipe_ready(p->req_id, p->filename, p->filesize);
+        if(on_iq_pipe_ready) on_iq_pipe_ready(p->req_id, p->filename, p->filesize, p->host_ip);
         break;
     }
 

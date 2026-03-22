@@ -101,15 +101,9 @@ int CentralServer::make_listen_sock(int port){
 bool CentralServer::start(int port){
     listen_fd_ = make_listen_sock(port);
     if(listen_fd_ < 0) return false;
-    pipe_listen_fd_ = make_listen_sock(CENTRAL_PIPE_PORT);
-    if(pipe_listen_fd_ < 0){
-        printf("[Central] WARNING: pipe port %d failed, IQ transfer unavailable\n", CENTRAL_PIPE_PORT);
-    }
     running_.store(true);
-    accept_thr_      = std::thread(&CentralServer::accept_loop,      this);
-    watchdog_thr_    = std::thread(&CentralServer::watchdog_loop,     this);
-    if(pipe_listen_fd_ >= 0)
-        pipe_accept_thr_ = std::thread(&CentralServer::pipe_accept_loop, this);
+    accept_thr_   = std::thread(&CentralServer::accept_loop,  this);
+    watchdog_thr_ = std::thread(&CentralServer::watchdog_loop, this);
     return true;
 }
 
@@ -121,10 +115,8 @@ void CentralServer::run(){
 void CentralServer::stop(){
     running_.store(false);
     if(listen_fd_ >= 0){ shutdown(listen_fd_, SHUT_RDWR); close(listen_fd_); listen_fd_=-1; }
-    if(pipe_listen_fd_ >= 0){ shutdown(pipe_listen_fd_, SHUT_RDWR); close(pipe_listen_fd_); pipe_listen_fd_=-1; }
-    if(accept_thr_.joinable())      accept_thr_.join();
-    if(watchdog_thr_.joinable())    watchdog_thr_.join();
-    if(pipe_accept_thr_.joinable()) pipe_accept_thr_.join();
+    if(accept_thr_.joinable())   accept_thr_.join();
+    if(watchdog_thr_.joinable()) watchdog_thr_.join();
     std::lock_guard<std::mutex> lk(rooms_mtx_);
     for(auto& r : rooms_){
         r->alive.store(false);
@@ -209,6 +201,9 @@ void CentralServer::handshake(int fd){
         }
         printf("[Central] HOST room '%s' (%s) opened  fd=%d\n",
                room->station_id.c_str(), room->info.station_name, fd);
+
+        // HOST 연결 직후 첫 OP_LIST(HOST만) 전송 → HOST UI 초기화
+        build_and_broadcast_op_list(room);
 
         host_mux_loop(room);
 
@@ -857,159 +852,5 @@ void CentralServer::broadcast_global_chat(const uint8_t* bewe_pkt, size_t bewe_l
         }
         for(auto& je : t.joins)
             je->enqueue_data(bewe_pkt, bewe_len);
-    }
-}
-
-// ── 파이프 서버 (7701 포트): IQ 파일 전송 전용 ───────────────────────────
-void CentralServer::pipe_accept_loop(){
-    while(running_.load()){
-        sockaddr_in caddr{}; socklen_t clen = sizeof(caddr);
-        int cfd = accept(pipe_listen_fd_, (sockaddr*)&caddr, &clen);
-        if(cfd < 0){ if(running_.load()) perror("pipe_accept"); break; }
-        int nd = 1; setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
-        int bufsize = 4 * 1024 * 1024;
-        setsockopt(cfd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
-        setsockopt(cfd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
-        std::thread([this, cfd](){ pipe_handshake(cfd); }).detach();
-    }
-}
-
-void CentralServer::pipe_handshake(int fd){
-    timeval tv{10, 0};
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
-    PipePktHdr hdr{};
-    std::vector<uint8_t> payload;
-    if(!pipe_recv_pkt(fd, hdr, payload, 65536)){
-        close(fd); return;
-    }
-
-    auto ptype = static_cast<PipePktType>(hdr.type);
-
-    if(ptype == PipePktType::PIPE_HOST){
-        if(payload.size() < sizeof(PipePktHost)){ close(fd); return; }
-        auto* ph = reinterpret_cast<const PipePktHost*>(payload.data());
-
-        // 이미 대기중인 JOIN이 있는지 확인
-        {
-            std::lock_guard<std::mutex> lk(pipe_mtx_);
-            for(auto it = pipe_waiters_.begin(); it != pipe_waiters_.end(); ++it){
-                if(!it->is_host && it->req_id == ph->req_id){
-                    // 매칭! HOST fd + JOIN fd 파이프 연결
-                    int join_fd = it->fd;
-                    pipe_waiters_.erase(it);
-                    printf("[Pipe] matched req_id=%u: HOST+JOIN connected, piping\n", ph->req_id);
-                    // 송신 타임아웃 해제 (파일 전송 중 block 방지)
-                    timeval tv0{0,0};
-                    setsockopt(fd,      SOL_SOCKET, SO_SNDTIMEO, &tv0, sizeof(tv0));
-                    setsockopt(fd,      SOL_SOCKET, SO_RCVTIMEO, &tv0, sizeof(tv0));
-                    setsockopt(join_fd, SOL_SOCKET, SO_SNDTIMEO, &tv0, sizeof(tv0));
-                    setsockopt(join_fd, SOL_SOCKET, SO_RCVTIMEO, &tv0, sizeof(tv0));
-                    // HOST에게 GO 신호 전송 → HOST가 파일 전송 시작
-                    uint8_t go = 'G';
-                    send(fd, &go, 1, MSG_NOSIGNAL);
-                    int host_fd_cap = fd;
-                    int join_fd_cap = join_fd;
-                    // HOST→JOIN 스레드
-                    std::thread([host_fd_cap, join_fd_cap](){
-                        std::vector<uint8_t> buf(256*1024);
-                        while(true){
-                            ssize_t n = recv(host_fd_cap, buf.data(), buf.size(), 0);
-                            if(n <= 0) break;
-                            central_send_all(join_fd_cap, buf.data(), (size_t)n);
-                        }
-                        shutdown(join_fd_cap, SHUT_WR);
-                        close(host_fd_cap);
-                        close(join_fd_cap);
-                        printf("[Pipe] HOST→JOIN pipe done req_id=? (fd=%d→%d)\n", host_fd_cap, join_fd_cap);
-                    }).detach();
-                    return;
-                }
-            }
-            // JOIN 아직 없음 → HOST로 등록하고 대기
-            PipeWaiter w{};
-            w.req_id  = ph->req_id;
-            w.fd      = fd;
-            w.is_host = true;
-            strncpy(w.station_id, ph->station_id, 31);
-            strncpy(w.filename,   ph->filename,   127);
-            w.filesize        = ph->filesize;
-            w.target_conn_id  = ph->target_conn_id;
-            w.created         = std::chrono::steady_clock::now();
-            pipe_waiters_.push_back(w);
-            printf("[Pipe] HOST waiting req_id=%u file='%s' size=%llu\n",
-                   ph->req_id, ph->filename, (unsigned long long)ph->filesize);
-        }
-
-        // HOST가 대기 중인 동안 중앙서버는 해당 JOIN에게 PIPE_READY를 MUX로 전달
-        // → find the room and the target JOIN, send IQ_PIPE_READY BEWE packet
-        {
-            std::string sid(ph->station_id, strnlen(ph->station_id, 32));
-            auto room = find_room(sid);
-            if(room){
-                PktIqPipeReady ready{};
-                ready.req_id  = ph->req_id;
-                strncpy(ready.filename, ph->filename, 127);
-                ready.filesize = ph->filesize;
-                auto pkt = make_bewe_packet(BEWE_TYPE_IQ_PIPE_READY, &ready, sizeof(ready));
-                // target_conn_id가 0xFFFF면 authed JOIN 전체에 broadcast,
-                // 아니면 해당 conn_id에게만 전달
-                std::lock_guard<std::mutex> jlk(room->joins_mtx);
-                for(auto& je : room->joins){
-                    if(!je->alive.load() || !je->authed) continue;
-                    if(ph->target_conn_id == 0xFFFF || je->conn_id == ph->target_conn_id)
-                        je->enqueue_ctrl(pkt.data(), pkt.size());
-                }
-            }
-        }
-        return; // HOST fd는 pipe_waiters_에 보관됨, 이 스레드 종료
-
-    } else if(ptype == PipePktType::PIPE_JOIN){
-        if(payload.size() < sizeof(PipePktJoin)){ close(fd); return; }
-        auto* pj = reinterpret_cast<const PipePktJoin*>(payload.data());
-
-        std::lock_guard<std::mutex> lk(pipe_mtx_);
-        for(auto it = pipe_waiters_.begin(); it != pipe_waiters_.end(); ++it){
-            if(it->is_host && it->req_id == pj->req_id){
-                int host_fd = it->fd;
-                pipe_waiters_.erase(it);
-                printf("[Pipe] matched req_id=%u: JOIN arrived, piping\n", pj->req_id);
-                timeval tv0{0,0};
-                setsockopt(host_fd, SOL_SOCKET, SO_SNDTIMEO, &tv0, sizeof(tv0));
-                setsockopt(host_fd, SOL_SOCKET, SO_RCVTIMEO, &tv0, sizeof(tv0));
-                setsockopt(fd,      SOL_SOCKET, SO_SNDTIMEO, &tv0, sizeof(tv0));
-                setsockopt(fd,      SOL_SOCKET, SO_RCVTIMEO, &tv0, sizeof(tv0));
-                // HOST에게 GO 신호 전송 → HOST가 파일 전송 시작
-                uint8_t go = 'G';
-                send(host_fd, &go, 1, MSG_NOSIGNAL);
-                int host_fd_cap = host_fd;
-                int join_fd_cap = fd;
-                std::thread([host_fd_cap, join_fd_cap](){
-                    std::vector<uint8_t> buf(256*1024);
-                    while(true){
-                        ssize_t n = recv(host_fd_cap, buf.data(), buf.size(), 0);
-                        if(n <= 0) break;
-                        central_send_all(join_fd_cap, buf.data(), (size_t)n);
-                    }
-                    shutdown(join_fd_cap, SHUT_WR);
-                    close(host_fd_cap);
-                    close(join_fd_cap);
-                    printf("[Pipe] pipe done\n");
-                }).detach();
-                return;
-            }
-        }
-        // HOST 아직 없음 → JOIN으로 등록하고 대기
-        PipeWaiter w{};
-        w.req_id  = pj->req_id;
-        w.fd      = fd;
-        w.is_host = false;
-        w.created = std::chrono::steady_clock::now();
-        pipe_waiters_.push_back(w);
-        printf("[Pipe] JOIN waiting req_id=%u\n", pj->req_id);
-
-    } else {
-        close(fd);
     }
 }

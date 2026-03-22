@@ -6,6 +6,7 @@
 #include "globe.hpp"
 #include "udp_discovery.hpp"
 #include "central_client.hpp"
+#include "iq_pipe_server.hpp"
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <algorithm>
@@ -25,6 +26,8 @@
 #include <ifaddrs.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <netdb.h>
 
 // Returns the first non-loopback IPv4 address, or "127.0.0.1"
 static std::string get_local_ip(){
@@ -1261,6 +1264,8 @@ void run_streaming_viewer(){
     // 중앙서버가 보낸 OP_LIST (HOST 모드에서 오퍼레이터 창 표시용)
     static PktOperatorList s_relay_op_list{};
     static std::mutex s_relay_op_mtx;
+    // IQ 파일 전송 전용 독립 서버 (HOST 모드에서 시작)
+    static IqPipeServer s_iq_pipe_srv;
     int  mode_sel     = do_chassis_reset ? chassis_reset_mode : 0;
     int& host_port    = s_host_port;
     char (&connect_host)[128] = s_connect_host;
@@ -1938,11 +1943,10 @@ void run_streaming_viewer(){
         };
 
         // JOIN: 중앙서버 파이프 준비 신호 → 7702 포트에 연결해서 파일 수신
-        cli->on_iq_pipe_ready = [&](uint32_t req_id, const char* filename, uint64_t filesize){
+        cli->on_iq_pipe_ready = [&](uint32_t req_id, const char* filename, uint64_t filesize, const char* host_ip){
             std::string fn(filename);
             std::string save_dir = BEWEPaths::record_iq_dir();
             std::string save_path = save_dir + "/" + fn;
-            std::string central_host_cap = s_central_host;
             // rec_entries에 TRANSFERRING 항목 추가
             {
                 std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
@@ -1958,12 +1962,39 @@ void run_streaming_viewer(){
                     v.rec_entries.push_back(e);
                 }
             }
-            std::thread([req_id, fn, save_path, filesize, central_host_cap, &v, &central_cli](){
-                int pipe_fd = central_cli.pipe_connect_join(central_host_cap, req_id);
+            std::string host_ip_cap(host_ip ? host_ip : "", host_ip ? strnlen(host_ip, 16) : 0);
+            std::thread([req_id, fn, save_path, filesize, host_ip_cap, &v](){
+                // HOST의 IQ 전송 서버(7703)에 직접 TCP 연결
+                int pipe_fd = -1;
+                {
+                    struct addrinfo hints{}, *res = nullptr;
+                    hints.ai_family   = AF_INET;
+                    hints.ai_socktype = SOCK_STREAM;
+                    if(getaddrinfo(host_ip_cap.c_str(), std::to_string(IQ_PIPE_SERVER_PORT).c_str(), &hints, &res) == 0){
+                        pipe_fd = socket(AF_INET, SOCK_STREAM, 0);
+                        if(pipe_fd >= 0){
+                            if(::connect(pipe_fd, res->ai_addr, res->ai_addrlen) != 0){
+                                close(pipe_fd); pipe_fd = -1;
+                            }
+                        }
+                        freeaddrinfo(res);
+                    }
+                }
                 if(pipe_fd < 0){
-                    printf("[UI] pipe_connect_join failed req_id=%u\n", req_id);
+                    printf("[UI] IQ pipe connect to %s:%d failed req_id=%u\n",
+                           host_ip_cap.c_str(), IQ_PIPE_SERVER_PORT, req_id);
                     return;
                 }
+                int nd = 1; setsockopt(pipe_fd, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
+                int rbuf = 4*1024*1024;
+                setsockopt(pipe_fd, SOL_SOCKET, SO_RCVBUF, &rbuf, sizeof(rbuf));
+                // req_id 전송 (4바이트 LE)
+                if(send(pipe_fd, &req_id, 4, MSG_NOSIGNAL) != 4){
+                    printf("[UI] IQ pipe req_id send failed req_id=%u\n", req_id);
+                    close(pipe_fd); return;
+                }
+                printf("[UI] IQ pipe connected to %s:%d req_id=%u\n",
+                       host_ip_cap.c_str(), IQ_PIPE_SERVER_PORT, req_id);
                 FILE* fp = fopen(save_path.c_str(), "wb");
                 if(!fp){
                     close(pipe_fd);
@@ -2383,48 +2414,54 @@ void run_streaming_viewer(){
                                 break;
                             }
                     }
-                    const char* fn_only = strrchr(path.c_str(),'/');
-                    fn_only = fn_only ? fn_only+1 : path.c_str();
-
-                    // 중앙서버 파이프에 연결
-                    int pipe_fd = -1;
-                    if(central_cli.is_central_connected()){
-                        pipe_fd = central_cli.pipe_connect_host(
-                            central_host_cap, sid, req_id, 0xFFFF,
-                            fn_only, fsz);
+                    // JOIN에게 IQ_PIPE_READY 브로드캐스트 (HOST IP + req_id + 파일정보)
+                    if(srv){
+                        PktIqPipeReady ready{};
+                        ready.req_id   = req_id;
+                        const char* fn_only2 = strrchr(path.c_str(), '/');
+                        fn_only2 = fn_only2 ? fn_only2+1 : path.c_str();
+                        strncpy(ready.filename, fn_only2, 127);
+                        ready.filesize = fsz;
+                        std::string lip = get_local_ip();
+                        strncpy(ready.host_ip, lip.c_str(), 15);
+                        auto pkt = make_packet(PacketType::IQ_PIPE_READY, &ready, sizeof(ready));
+                        // relay 경유: cb.on_relay_broadcast → 중앙서버 MUX broadcast
+                        if(srv->cb.on_relay_broadcast)
+                            srv->cb.on_relay_broadcast(pkt.data(), pkt.size());
                     }
-
-                    if(pipe_fd >= 0 && srv){
-                        srv->send_file_via_pipe(pipe_fd, path.c_str(), req_id,
-                            [&v,fname,fsz](uint64_t done, uint64_t total){
+                    // IQ 전송 전용 독립 서버에 등록 (BEWE 스트림과 완전 분리)
+                    s_iq_pipe_srv.register_send(req_id, path,
+                        [&v, fname, path, srv, req_id](uint64_t done, uint64_t total, int phase){
+                            if(phase == 1){
+                                // 전송 중: xfer_done 갱신
                                 std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
-                                for(auto& e:v.rec_entries)
-                                    if(e.filename==fname){
-                                        e.xfer_done=done; e.xfer_total=total>0?total:fsz;
-                                        if(done >= (total>0?total:fsz) && total>0)
-                                            e.finished=true;
+                                for(auto& e : v.rec_entries)
+                                    if(e.filename == fname){
+                                        e.xfer_done = done; e.xfer_total = total;
                                         break;
                                     }
-                            });
-                    } else if(srv){
-                        // 파이프 실패 시 기존 MUX 경유로 폴백
-                        uint8_t tid=v.next_transfer_id.fetch_add(1);
-                        srv->send_file_to((int)oidx,path.c_str(),tid,
-                            [&v,fname](uint64_t done, uint64_t total){
-                                std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
-                                for(auto& e:v.rec_entries)
-                                    if(e.filename==fname){ e.xfer_done=done; break; }
-                            });
-                    }
-                    // Done 후 3초 표시 후 HOST rec_entries 제거 + 파일 삭제
-                    std::this_thread::sleep_for(std::chrono::seconds(3));
-                    {
-                        std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
-                        for(auto it2=v.rec_entries.begin();it2!=v.rec_entries.end();++it2)
-                            if(it2->filename==fname){ v.rec_entries.erase(it2); break; }
-                    }
-                    remove(path.c_str());
-                    printf("[UI] IQ pipe transfer done, deleted %s\n", path.c_str());
+                            } else if(phase == 2){
+                                // 완료: IQ_PROGRESS Done 브로드캐스트
+                                if(srv){
+                                    PktIqProgress prog{};
+                                    prog.req_id = req_id;
+                                    strncpy(prog.filename, fname.c_str(), 127);
+                                    prog.done = total; prog.total = total; prog.phase = 2;
+                                    srv->broadcast_iq_progress(prog);
+                                }
+                                // 3초 후 HOST rec_entries 제거 + 파일 삭제
+                                std::thread([&v, fname, path](){
+                                    std::this_thread::sleep_for(std::chrono::seconds(3));
+                                    std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
+                                    v.rec_entries.erase(
+                                        std::remove_if(v.rec_entries.begin(), v.rec_entries.end(),
+                                            [&fname](const FFTViewer::RecEntry& e){ return e.filename == fname; }),
+                                        v.rec_entries.end());
+                                    remove(path.c_str());
+                                    printf("[UI] IQ transfer done, deleted %s\n", path.c_str());
+                                }).detach();
+                            }
+                        });
                 }).detach();
             };
             srv->cb.on_toggle_recv = [&](int ch_idx, uint8_t op_idx, bool enable){
@@ -2595,6 +2632,7 @@ void run_streaming_viewer(){
             } else {
                 host_port = srv->listen_port(); // 실제 할당된 포트 기록
                 v.net_srv = srv;
+                s_iq_pipe_srv.start(IQ_PIPE_SERVER_PORT);
                 srv->set_host_info(login_get_id(), (uint8_t)login_get_tier());
                 // HOST station 정보를 static에 저장 (/reset 재진입 시 복원)
                 if(v.station_location_set){
@@ -5189,12 +5227,13 @@ void run_streaming_viewer(){
                             join_count++;
                         }
                         if(s_relay_op_list.count == 0){
-                            // 중앙서버 미연결: 로컬 목록 사용
+                            // 중앙서버 미연결 또는 OP_LIST 미수신: 로컬 클라이언트 목록 사용
                             auto ops = v.net_srv->get_operators();
-                            for(auto& op : ops)
+                            for(auto& op : ops){
                                 ImGui::TextColored(ImVec4(0.7f,0.92f,0.7f,1.f),
                                     "[JOIN] %s  [T%d]", op.name, op.tier);
-                            join_count = (int)ops.size();
+                                join_count++;
+                            }
                         }
                         if(join_count == 0) ImGui::TextDisabled("  (no operators)");
                     } else if(v.net_cli){
@@ -6273,6 +6312,7 @@ void run_streaming_viewer(){
     if(v.net_bcast_thr.joinable()) v.net_bcast_thr.join();
     central_cli.stop_mux_adapter();
     central_cli.stop_polling();
+    s_iq_pipe_srv.stop();
     if(v.net_srv){ v.net_srv->stop_discovery_broadcast(); v.net_srv->stop(); delete v.net_srv; v.net_srv=nullptr; }
     if(v.net_cli){ v.net_cli->disconnect(); delete v.net_cli; v.net_cli=nullptr; }
     if(!v.remote_mode && cap.joinable()) cap.join();

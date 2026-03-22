@@ -275,11 +275,12 @@ struct __attribute__((packed)) PktHeartbeat {
 };
 
 // ── IQ_PIPE_READY ─────────────────────────────────────────────────────────
-// 중앙서버 → JOIN (MUX 경유): 파이프 포트(7702)에 접속하라는 신호
+// 중앙서버 → JOIN (MUX 경유): HOST의 IQ 전송 서버(7703)에 접속하라는 신호
 struct __attribute__((packed)) PktIqPipeReady {
     uint32_t req_id;
     char     filename[128];
     uint64_t filesize;
+    char     host_ip[16];   // HOST의 IPv4 주소 (dotted-decimal)
 };
 
 // ── IQ_PROGRESS ───────────────────────────────────────────────────────────
