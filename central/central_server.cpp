@@ -576,10 +576,13 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
     }
 
     // ── 기타 패킷 (FFT, STATUS, HEARTBEAT 등): 그대로 전달 ───────────
+    // FFT/AUDIO는 auth 완료된 JOIN에게만 전달 (인증 전 스트림 오염 방지)
+    bool auth_required = (bewe_type == BEWE_TYPE_FFT || bewe_type == BEWE_TYPE_AUDIO);
     std::lock_guard<std::mutex> jlk(room->joins_mtx);
     for(auto& je : room->joins){
         if(!je->alive.load() || je->fd < 0) continue;
         if(conn_id != 0xFFFF && conn_id != je->conn_id) continue;
+        if(auth_required && !je->authed) continue;
         je->enqueue_data(bewe_pkt, bewe_len);
     }
 }
