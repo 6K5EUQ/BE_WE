@@ -31,7 +31,6 @@ static void enqueue_host_send(std::shared_ptr<HostRoom>& room, uint16_t conn_id,
 
 // HOST send 큐를 flush (host_mux_loop에서 호출)
 // blocking send: CONN_OPEN/CLOSE 같은 제어 패킷은 절대 드롭하면 안 됨
-// SO_SNDTIMEO=5s 설정 되어 있으므로 무한 블로킹 없음
 static void flush_host_send_queue(std::shared_ptr<HostRoom>& room){
     std::deque<std::vector<uint8_t>> batch;
     {
@@ -163,12 +162,10 @@ void CentralServer::handshake(int fd){
         close(fd); return;
     }
 
-    // recv: 타임아웃 해제 (host_mux_loop에서 개별 설정)
-    // send: 5s 타임아웃 유지 (join_loop→HOST send가 무한 블로킹되는 것 방지)
+    // recv/send 타임아웃 모두 해제 (host_mux_loop / send_worker에서 블로킹 운용)
     timeval tv0{0,0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv0, sizeof(tv0));
-    timeval stv{5,0};
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &stv, sizeof(stv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv0, sizeof(tv0));
 
     auto type = static_cast<CentralPktType>(hdr.type);
 
