@@ -6,7 +6,6 @@
 #include "globe.hpp"
 #include "udp_discovery.hpp"
 #include "central_client.hpp"
-#include "iq_pipe_server.hpp"
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <algorithm>
@@ -1264,8 +1263,6 @@ void run_streaming_viewer(){
     // 중앙서버가 보낸 OP_LIST (HOST 모드에서 오퍼레이터 창 표시용)
     static PktOperatorList s_relay_op_list{};
     static std::mutex s_relay_op_mtx;
-    // IQ 파일 전송 전용 독립 서버 (HOST 모드에서 시작)
-    static IqPipeServer s_iq_pipe_srv;
     int  mode_sel     = do_chassis_reset ? chassis_reset_mode : 0;
     int& host_port    = s_host_port;
     char (&connect_host)[128] = s_connect_host;
@@ -1942,15 +1939,19 @@ void run_streaming_viewer(){
             }
         };
 
-        // JOIN: 중앙서버 파이프 준비 신호 → 7702 포트에 연결해서 파일 수신
-        cli->on_iq_pipe_ready = [&](uint32_t req_id, const char* filename, uint64_t filesize, const char* host_ip){
-            printf("[JOIN] on_iq_pipe_ready: req_id=%u file='%s' size=%.1fMB host_ip='%s'\n",
-                   req_id, filename, filesize/1048576.0, host_ip ? host_ip : "(null)");
-            std::string fn(filename);
+        // JOIN: IQ_CHUNK 스트림 수신 (중앙 MUX 경유, WAN 호환)
+        // seq=0: START, seq=1..N: data, seq=0xFFFFFFFF: END
+        cli->on_iq_chunk = [&](uint32_t req_id, uint32_t seq,
+                               const char* filename, uint64_t filesize,
+                               const uint8_t* data, uint32_t data_len){
+            std::string fn(filename && filename[0] ? filename : "");
             std::string save_dir = BEWEPaths::record_iq_dir();
             std::string save_path = save_dir + "/" + fn;
-            // rec_entries에 TRANSFERRING 항목 추가
-            {
+
+            if(seq == 0){
+                // START: rec_entries에 TRANSFERRING 항목 추가
+                printf("[JOIN] IQ_CHUNK START: req_id=%u file='%s' size=%.1fMB\n",
+                       req_id, fn.c_str(), filesize/1048576.0);
                 std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                 bool found = false;
                 for(auto& e : v.rec_entries)
@@ -1961,92 +1962,54 @@ void run_streaming_viewer(){
                     e.req_state = FFTViewer::RecEntry::REQ_TRANSFERRING;
                     e.xfer_total = filesize; e.xfer_done = 0;
                     e.t_start = std::chrono::steady_clock::now();
+                    e.path = save_path;
                     v.rec_entries.push_back(e);
                 }
-            }
-            std::string host_ip_cap(host_ip ? host_ip : "", host_ip ? strnlen(host_ip, 16) : 0);
-            std::thread([req_id, fn, save_path, filesize, host_ip_cap, &v](){
-                printf("[JOIN] IQ pipe thread started: req_id=%u host_ip='%s' port=%d\n",
-                       req_id, host_ip_cap.c_str(), IQ_PIPE_SERVER_PORT);
-                int pipe_fd = -1;
-                {
-                    struct addrinfo hints{}, *res = nullptr;
-                    hints.ai_family   = AF_INET;
-                    hints.ai_socktype = SOCK_STREAM;
-                    int gai = getaddrinfo(host_ip_cap.c_str(), std::to_string(IQ_PIPE_SERVER_PORT).c_str(), &hints, &res);
-                    if(gai != 0){
-                        printf("[JOIN] IQ pipe getaddrinfo failed: %s\n", gai_strerror(gai));
-                    } else {
-                        pipe_fd = socket(AF_INET, SOCK_STREAM, 0);
-                        if(pipe_fd >= 0){
-                            if(::connect(pipe_fd, res->ai_addr, res->ai_addrlen) != 0){
-                                printf("[JOIN] IQ pipe connect failed errno=%d(%s)\n", errno, strerror(errno));
-                                close(pipe_fd); pipe_fd = -1;
-                            }
-                        }
-                        freeaddrinfo(res);
-                    }
-                }
-                if(pipe_fd < 0){
-                    printf("[JOIN] IQ pipe connect to %s:%d FAILED req_id=%u\n",
-                           host_ip_cap.c_str(), IQ_PIPE_SERVER_PORT, req_id);
-                    return;
-                }
-                printf("[JOIN] IQ pipe connect OK fd=%d req_id=%u\n", pipe_fd, req_id);
-                int nd = 1; setsockopt(pipe_fd, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
-                int rbuf = 4*1024*1024;
-                setsockopt(pipe_fd, SOL_SOCKET, SO_RCVBUF, &rbuf, sizeof(rbuf));
-                // req_id 전송 (4바이트 LE)
-                if(send(pipe_fd, &req_id, 4, MSG_NOSIGNAL) != 4){
-                    printf("[UI] IQ pipe req_id send failed req_id=%u\n", req_id);
-                    close(pipe_fd); return;
-                }
-                printf("[UI] IQ pipe connected to %s:%d req_id=%u\n",
-                       host_ip_cap.c_str(), IQ_PIPE_SERVER_PORT, req_id);
-                FILE* fp = fopen(save_path.c_str(), "wb");
-                if(!fp){
-                    close(pipe_fd);
-                    printf("[UI] cannot open save path: %s\n", save_path.c_str());
-                    return;
-                }
-                std::vector<uint8_t> buf(256*1024);
-                uint64_t received = 0;
-                while(true){
-                    ssize_t n = recv(pipe_fd, buf.data(), buf.size(), 0);
-                    if(n <= 0) break;
-                    fwrite(buf.data(), 1, (size_t)n, fp);
-                    received += (uint64_t)n;
-                    // xfer_done 업데이트
-                    std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
-                    for(auto& e : v.rec_entries)
-                        if(e.is_region && e.filename == fn){ e.xfer_done = received; break; }
-                }
-                fclose(fp);
-                close(pipe_fd);
-                printf("[UI] IQ pipe recv done: %s (%.1f MB)\n", fn.c_str(), received/1048576.0);
-                // Done 상태로 전환
+            } else if(seq == 0xFFFFFFFFu){
+                // END: 파일 닫기, Done 상태 전환
+                printf("[JOIN] IQ_CHUNK END: req_id=%u file='%s'\n", req_id, fn.c_str());
                 {
                     std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
-                    for(auto& e : v.rec_entries)
+                    for(auto& e : v.rec_entries){
                         if(e.is_region && e.filename == fn){
-                            e.xfer_done = received; e.xfer_total = received;
+                            e.xfer_done = e.xfer_total;
                             e.req_state = FFTViewer::RecEntry::REQ_NONE;
-                            e.finished = true; e.path = save_path;
+                            e.finished = true;
+                            printf("[JOIN] IQ_CHUNK Done: %s (%.1fMB)\n",
+                                   fn.c_str(), e.xfer_total/1048576.0);
                             break;
                         }
+                    }
                 }
                 // rec_iq_files에 추가
                 bool f2=false;
                 for(auto& s : rec_iq_files) if(s==fn){f2=true;break;}
                 if(!f2) rec_iq_files.push_back(fn);
-                // 3초 후 항목 제거
-                std::this_thread::sleep_for(std::chrono::seconds(3));
-                std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
-                v.rec_entries.erase(
-                    std::remove_if(v.rec_entries.begin(), v.rec_entries.end(),
-                        [&fn](const FFTViewer::RecEntry& e){ return e.filename==fn && e.finished; }),
-                    v.rec_entries.end());
-            }).detach();
+                // 3초 후 항목 제거 (별도 스레드)
+                std::thread([fn, &v](){
+                    std::this_thread::sleep_for(std::chrono::seconds(3));
+                    std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                    v.rec_entries.erase(
+                        std::remove_if(v.rec_entries.begin(), v.rec_entries.end(),
+                            [&fn](const FFTViewer::RecEntry& e){ return e.filename==fn && e.finished; }),
+                        v.rec_entries.end());
+                }).detach();
+            } else {
+                // DATA: 파일에 쓰고 진행률 업데이트
+                if(data && data_len > 0){
+                    FILE* fp = fopen(save_path.c_str(), seq==1 ? "wb" : "ab");
+                    if(fp){
+                        fwrite(data, 1, data_len, fp);
+                        fclose(fp);
+                    } else {
+                        printf("[JOIN] IQ_CHUNK fopen failed: %s seq=%u errno=%d\n",
+                               save_path.c_str(), seq, errno);
+                    }
+                    std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                    for(auto& e : v.rec_entries)
+                        if(e.is_region && e.filename == fn){ e.xfer_done += data_len; break; }
+                }
+            }
         };
 
         // JOIN: HOST Public 파일 목록 수신 (filename, size_bytes, uploader)
@@ -2423,61 +2386,81 @@ void run_streaming_viewer(){
                                 break;
                             }
                     }
-                    // register_send 먼저 → JOIN이 connect 시 즉시 매칭 가능
-                    // IQ 전송 전용 독립 서버에 등록 (BEWE 스트림과 완전 분리)
-                    s_iq_pipe_srv.register_send(req_id, path,
-                        [&v, fname, path, srv, req_id](uint64_t done, uint64_t total, int phase){
-                            if(phase == 1){
-                                // 전송 중: xfer_done 갱신
-                                std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
-                                for(auto& e : v.rec_entries)
-                                    if(e.filename == fname){
-                                        e.xfer_done = done; e.xfer_total = total;
-                                        break;
-                                    }
-                            } else if(phase == 2){
-                                // 완료: IQ_PROGRESS Done 브로드캐스트
-                                if(srv){
-                                    PktIqProgress prog{};
-                                    prog.req_id = req_id;
-                                    strncpy(prog.filename, fname.c_str(), 127);
-                                    prog.done = total; prog.total = total; prog.phase = 2;
-                                    srv->broadcast_iq_progress(prog);
-                                }
-                                // 3초 후 HOST rec_entries 제거 + 파일 삭제
-                                std::thread([&v, fname, path](){
-                                    std::this_thread::sleep_for(std::chrono::seconds(3));
-                                    std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
-                                    v.rec_entries.erase(
-                                        std::remove_if(v.rec_entries.begin(), v.rec_entries.end(),
-                                            [&fname](const FFTViewer::RecEntry& e){ return e.filename == fname; }),
-                                        v.rec_entries.end());
-                                    remove(path.c_str());
-                                    printf("[UI] IQ transfer done, deleted %s\n", path.c_str());
-                                }).detach();
-                            }
-                        });
-                    // register_send 후 IQ_PIPE_READY 브로드캐스트 (JOIN이 connect 시 즉시 매칭)
-                    if(srv){
-                        PktIqPipeReady ready{};
-                        ready.req_id   = req_id;
+                    // IQ 파일을 청크로 나눠 central MUX broadcast (WAN 지원, 포트포워딩 불필요)
+                    if(srv && srv->cb.on_relay_broadcast){
                         const char* fn_only2 = strrchr(path.c_str(), '/');
                         fn_only2 = fn_only2 ? fn_only2+1 : path.c_str();
-                        strncpy(ready.filename, fn_only2, 127);
-                        ready.filesize = fsz;
-                        std::string lip = get_local_ip();
-                        strncpy(ready.host_ip, lip.c_str(), 15);
-                        printf("[HOST] IQ_PIPE_READY broadcast: req_id=%u file='%s' size=%.1fMB host_ip='%s'\n",
-                               req_id, fn_only2, fsz/1048576.0, lip.c_str());
-                        auto pkt = make_packet(PacketType::IQ_PIPE_READY, &ready, sizeof(ready));
-                        if(srv->cb.on_relay_broadcast){
-                            srv->cb.on_relay_broadcast(pkt.data(), pkt.size());
-                            printf("[HOST] IQ_PIPE_READY enqueued to relay broadcast\n");
-                        } else {
-                            printf("[HOST] IQ_PIPE_READY: on_relay_broadcast is NULL — packet NOT sent!\n");
+                        printf("[HOST] IQ_CHUNK transfer start: req_id=%u file='%s' size=%.1fMB\n",
+                               req_id, fn_only2, fsz/1048576.0);
+                        // START 패킷
+                        {
+                            std::vector<uint8_t> pkt(sizeof(PktHdr) + sizeof(PktIqChunkHdr));
+                            PktIqChunkHdr ch{};
+                            ch.req_id = req_id; ch.seq = 0;
+                            strncpy(ch.filename, fn_only2, 127);
+                            ch.filesize = fsz; ch.data_len = 0;
+                            auto bewe = make_packet(PacketType::IQ_CHUNK, &ch, sizeof(ch));
+                            srv->cb.on_relay_broadcast(bewe.data(), bewe.size());
                         }
+                        // 청크 전송 스레드
+                        std::thread([&v, fname, path, fsz, srv, req_id,
+                                     fn2 = std::string(fn_only2)](){
+                            FILE* fp = fopen(path.c_str(), "rb");
+                            if(!fp){ printf("[HOST] IQ_CHUNK: cannot open %s\n", path.c_str()); return; }
+                            const size_t CHUNK = 64 * 1024;
+                            std::vector<uint8_t> buf(sizeof(PktIqChunkHdr) + CHUNK);
+                            uint64_t sent = 0; uint32_t seq = 1;
+                            while(true){
+                                size_t n = fread(buf.data() + sizeof(PktIqChunkHdr), 1, CHUNK, fp);
+                                if(n == 0) break;
+                                auto* ch = reinterpret_cast<PktIqChunkHdr*>(buf.data());
+                                ch->req_id = req_id; ch->seq = seq++;
+                                strncpy(ch->filename, fn2.c_str(), 127);
+                                ch->filesize = fsz; ch->data_len = (uint32_t)n;
+                                auto bewe = make_packet(PacketType::IQ_CHUNK, buf.data(), (uint32_t)(sizeof(PktIqChunkHdr)+n));
+                                if(srv->cb.on_relay_broadcast)
+                                    srv->cb.on_relay_broadcast(bewe.data(), bewe.size());
+                                sent += n;
+                                // HOST rec_entries 진행 갱신
+                                {
+                                    std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
+                                    for(auto& e : v.rec_entries)
+                                        if(e.filename == fname){ e.xfer_done = sent; e.xfer_total = fsz; break; }
+                                }
+                            }
+                            fclose(fp);
+                            // END 패킷
+                            {
+                                PktIqChunkHdr ch{};
+                                ch.req_id = req_id; ch.seq = 0xFFFFFFFF;
+                                strncpy(ch.filename, fn2.c_str(), 127);
+                                ch.filesize = fsz; ch.data_len = 0;
+                                auto bewe = make_packet(PacketType::IQ_CHUNK, &ch, sizeof(ch));
+                                if(srv->cb.on_relay_broadcast)
+                                    srv->cb.on_relay_broadcast(bewe.data(), bewe.size());
+                            }
+                            printf("[HOST] IQ_CHUNK transfer done: req_id=%u %.1fMB\n", req_id, sent/1048576.0);
+                            // IQ_PROGRESS Done 브로드캐스트
+                            {
+                                PktIqProgress prog{};
+                                prog.req_id = req_id;
+                                strncpy(prog.filename, fname.c_str(), 127);
+                                prog.done = sent; prog.total = fsz; prog.phase = 2;
+                                srv->broadcast_iq_progress(prog);
+                            }
+                            // 3초 후 HOST rec_entries 제거 + 파일 삭제
+                            std::this_thread::sleep_for(std::chrono::seconds(3));
+                            {
+                                std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
+                                v.rec_entries.erase(
+                                    std::remove_if(v.rec_entries.begin(), v.rec_entries.end(),
+                                        [&fname](const FFTViewer::RecEntry& e){ return e.filename == fname; }),
+                                    v.rec_entries.end());
+                            }
+                            remove(path.c_str());
+                        }).detach();
                     } else {
-                        printf("[HOST] IQ_PIPE_READY: srv is NULL — packet NOT sent!\n");
+                        printf("[HOST] IQ_CHUNK: on_relay_broadcast is NULL — cannot send\n");
                     }
                 }).detach();
             };
@@ -2649,7 +2632,6 @@ void run_streaming_viewer(){
             } else {
                 host_port = srv->listen_port(); // 실제 할당된 포트 기록
                 v.net_srv = srv;
-                s_iq_pipe_srv.start(IQ_PIPE_SERVER_PORT);
                 srv->set_host_info(login_get_id(), (uint8_t)login_get_tier());
                 // HOST station 정보를 static에 저장 (/reset 재진입 시 복원)
                 if(v.station_location_set){
@@ -6326,7 +6308,6 @@ void run_streaming_viewer(){
     if(v.net_bcast_thr.joinable()) v.net_bcast_thr.join();
     central_cli.stop_mux_adapter();
     central_cli.stop_polling();
-    s_iq_pipe_srv.stop();
     if(v.net_srv){ v.net_srv->stop_discovery_broadcast(); v.net_srv->stop(); delete v.net_srv; v.net_srv=nullptr; }
     if(v.net_cli){ v.net_cli->disconnect(); delete v.net_cli; v.net_cli=nullptr; }
     if(!v.remote_mode && cap.joinable()) cap.join();

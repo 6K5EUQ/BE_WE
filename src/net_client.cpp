@@ -480,10 +480,12 @@ void NetClient::handle_packet(PacketType type,
         break;
     }
 
-    case PacketType::IQ_PIPE_READY: {
-        if(len < sizeof(PktIqPipeReady)) break;
-        auto* p = reinterpret_cast<const PktIqPipeReady*>(payload);
-        if(on_iq_pipe_ready) on_iq_pipe_ready(p->req_id, p->filename, p->filesize, p->host_ip);
+    case PacketType::IQ_CHUNK: {
+        if(len < sizeof(PktIqChunkHdr)) break;
+        auto* h = reinterpret_cast<const PktIqChunkHdr*>(payload);
+        const uint8_t* data = payload + sizeof(PktIqChunkHdr);
+        uint32_t data_len = (len > sizeof(PktIqChunkHdr)) ? (len - (uint32_t)sizeof(PktIqChunkHdr)) : 0;
+        if(on_iq_chunk) on_iq_chunk(h->req_id, h->seq, h->filename, h->filesize, data, data_len);
         break;
     }
 

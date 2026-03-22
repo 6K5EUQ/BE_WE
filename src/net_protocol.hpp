@@ -37,7 +37,7 @@ enum class PacketType : uint8_t {
     HEARTBEAT          = 0x14,  // server → all clients: 3s keepalive + state
     PUB_DELETE_REQ     = 0x15,  // client → server: request delete of public file (owner only)
     IQ_PROGRESS        = 0x16,  // server → all: IQ 파일 전송 진행상황 (REC/Transferring/Done)
-    IQ_PIPE_READY      = 0x20,  // 중앙서버 → JOIN: 파이프 연결 준비 완료, req_id 전달
+    IQ_CHUNK           = 0x20,  // HOST → JOIN (MUX): IQ 파일 청크 전송
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────
@@ -274,13 +274,16 @@ struct __attribute__((packed)) PktHeartbeat {
     uint8_t iq_on;       // 0=IQ 롤링 off, 1=on
 };
 
-// ── IQ_PIPE_READY ─────────────────────────────────────────────────────────
-// 중앙서버 → JOIN (MUX 경유): HOST의 IQ 전송 서버(7703)에 접속하라는 신호
-struct __attribute__((packed)) PktIqPipeReady {
+// ── IQ_CHUNK ──────────────────────────────────────────────────────────────
+// HOST → JOIN (central MUX 경유): IQ 파일 청크 스트리밍
+// seq==0: 전송 시작 (filename/filesize 유효), data_len>0: 데이터, data_len==0 && seq==0xFFFFFFFF: 완료
+struct __attribute__((packed)) PktIqChunkHdr {
     uint32_t req_id;
+    uint32_t seq;        // 0=START, 0xFFFFFFFF=END, 그 외=데이터 순번
     char     filename[128];
-    uint64_t filesize;
-    char     host_ip[16];   // HOST의 IPv4 주소 (dotted-decimal)
+    uint64_t filesize;   // START 패킷에서만 유효
+    uint32_t data_len;   // 뒤따르는 데이터 바이트 수 (END 패킷은 0)
+    // uint8_t data[data_len] follows
 };
 
 // ── IQ_PROGRESS ───────────────────────────────────────────────────────────

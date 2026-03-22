@@ -54,8 +54,8 @@ struct __attribute__((packed)) PipePktJoin {
     uint32_t req_id;     // HOST가 알려준 req_id
 };
 
-// MUX DATA로 JOIN에게 전달: IQ_PIPE_READY (net_protocol.hpp의 PktIqPipeReady 사용)
-static constexpr uint8_t BEWE_TYPE_IQ_PIPE_READY = 0x20;
+// MUX DATA로 JOIN에게 전달: IQ_CHUNK (net_protocol.hpp의 PktIqChunkHdr 사용)
+static constexpr uint8_t BEWE_TYPE_IQ_CHUNK = 0x20;
 
 // BEWE_TYPE_IQ_PROGRESS: 전송 진행 브로드캐스트 (net_protocol.hpp의 PktIqProgress 사용)
 static constexpr uint8_t BEWE_TYPE_IQ_PROGRESS = 0x21;

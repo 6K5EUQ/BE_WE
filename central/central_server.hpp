@@ -127,7 +127,7 @@ struct JoinEntry {
         if(len >= 5 && data[4] == 0x02)
             printf("[JoinEntry] enqueue_ctrl AUTH_ACK conn_id=%u\n", conn_id);
         if(len >= 5 && data[4] == 0x20)
-            printf("[JoinEntry] enqueue_ctrl IQ_PIPE_READY conn_id=%u\n", conn_id);
+            printf("[JoinEntry] enqueue_ctrl IQ_CHUNK conn_id=%u len=%zu\n", conn_id, len);
         ctrl_queue.emplace_back(data, data + len);
         send_cv.notify_one();
     }
