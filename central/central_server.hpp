@@ -122,6 +122,10 @@ struct HostRoom {
     std::chrono::steady_clock::time_point last_hb;
 
     mutable std::mutex                    host_send_mtx; // HOST fd write 직렬화
+    // HOST fd 송신 큐: join_loop 등이 HOST에 보낼 데이터를 여기에 넣고,
+    // host_mux_loop이 recv 루프에서 매번 flush → blocking send 없이 안전
+    std::deque<std::vector<uint8_t>>      host_send_queue;
+
     mutable std::mutex                    joins_mtx;
     std::vector<std::shared_ptr<JoinEntry>> joins;
     uint16_t                              next_conn_id = 1;
