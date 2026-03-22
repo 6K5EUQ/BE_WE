@@ -254,8 +254,6 @@ void NetClient::recv_loop(){
             disc_reason = "oversized";
             break;
         }
-        printf("[NetClient] recv pkt#%llu type=0x%02x len=%u\n",
-               (unsigned long long)pkt_count, hdr.type, len);
         std::vector<uint8_t> payload(len);
         if(len > 0){
             int rc2 = recv_all_ex(fd_, payload.data(), len, connected_);
