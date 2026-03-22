@@ -188,7 +188,10 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
             ack.ok = 0;
             strncpy(ack.reason, "Auth failed", sizeof(ack.reason));
         }
+        printf("[NetServer] AUTH_ACK sending op=%d ok=%u is_relay=%d fd=%d\n",
+               idx, ack.ok, (int)c->is_relay, c->fd);
         send_to(*c, PacketType::AUTH_ACK, &ack, sizeof(ack));
+        printf("[NetServer] AUTH_ACK sent op=%d ok=%u\n", idx, ack.ok);
         if(ack.ok){
             broadcast_operator_list();
             update_discovery_user_count();
@@ -376,6 +379,9 @@ void NetServer::drop_client(std::shared_ptr<ClientConn> c){
     bool was_authed = c->authed;
     uint8_t idx = c->op_index;
     char name[32]; strncpy(name, c->name, 31);
+
+    printf("[NetServer] drop_client op=%d '%s' fd=%d authed=%d is_relay=%d\n",
+           idx, name, c->fd, (int)was_authed, (int)c->is_relay);
 
     c->alive.store(false);
     c->stop_send_worker();

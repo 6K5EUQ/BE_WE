@@ -123,14 +123,35 @@ bool NetClient::connect_fd(int fd, const char* id, const char* pw, uint8_t tier)
         fd_=-1; return false;
     }
 
+    printf("[NetClient] connect_fd: sent AUTH_REQ id='%s' tier=%u fd=%d\n", id, tier, fd);
+
     PktHdr hdr{};
-    if(!recv_all(fd_, &hdr, PKT_HDR_SIZE) ||
-       static_cast<PacketType>(hdr.type) != PacketType::AUTH_ACK){
+    printf("[NetClient] connect_fd: waiting for AUTH_ACK...\n");
+    ssize_t hr = recv(fd_, &hdr, PKT_HDR_SIZE, MSG_WAITALL);
+    if(hr != PKT_HDR_SIZE){
+        printf("[NetClient] connect_fd: recv AUTH_ACK hdr failed hr=%zd errno=%d(%s)\n",
+               hr, errno, strerror(errno));
+        fd_=-1; return false;
+    }
+    printf("[NetClient] connect_fd: got hdr magic=%02x%02x%02x%02x type=0x%02x len=%u\n",
+           hdr.magic[0], hdr.magic[1], hdr.magic[2], hdr.magic[3], hdr.type, hdr.len);
+    if(static_cast<PacketType>(hdr.type) != PacketType::AUTH_ACK){
+        printf("[NetClient] connect_fd: expected AUTH_ACK got type=0x%02x\n", hdr.type);
         fd_=-1; return false;
     }
     std::vector<uint8_t> payload(hdr.len);
-    if(hdr.len > 0 && !recv_all(fd_, payload.data(), hdr.len)){ fd_=-1; return false; }
-    if(hdr.len < sizeof(PktAuthAck)){ fd_=-1; return false; }
+    if(hdr.len > 0){
+        ssize_t pr = recv(fd_, payload.data(), hdr.len, MSG_WAITALL);
+        if(pr != (ssize_t)hdr.len){
+            printf("[NetClient] connect_fd: recv AUTH_ACK payload failed pr=%zd/%u errno=%d(%s)\n",
+                   pr, hdr.len, errno, strerror(errno));
+            fd_=-1; return false;
+        }
+    }
+    if(hdr.len < sizeof(PktAuthAck)){
+        printf("[NetClient] connect_fd: AUTH_ACK payload too short %u\n", hdr.len);
+        fd_=-1; return false;
+    }
     auto* ack = reinterpret_cast<PktAuthAck*>(payload.data());
     if(!ack->ok){
         printf("[NetClient] relay auth failed: %s\n", ack->reason);
@@ -142,11 +163,12 @@ bool NetClient::connect_fd(int fd, const char* id, const char* pw, uint8_t tier)
     strncpy(my_name, id, 31);
     connected_.store(true);
 
-    printf("[NetClient] relay connected as op %d '%s' (Tier%d)\n",
-           my_op_index, my_name, my_tier);
+    printf("[NetClient] relay connected as op %d '%s' (Tier%d) fd=%d\n",
+           my_op_index, my_name, my_tier, fd_);
 
     if(recv_thr_.joinable()) recv_thr_.join();
     recv_thr_ = std::thread(&NetClient::recv_loop, this);
+    printf("[NetClient] connect_fd: recv_thr started\n");
     return true;
 }
 
@@ -201,6 +223,7 @@ void NetClient::stop_discovery_listen() {
 void NetClient::recv_loop(){
     uint64_t pkt_count = 0;
     const char* disc_reason = "unknown";
+    printf("[NetClient] recv_loop started fd=%d\n", fd_);
     while(connected_.load()){
         PktHdr hdr{};
         int rc = recv_all_ex(fd_, &hdr, PKT_HDR_SIZE, connected_);
@@ -217,7 +240,8 @@ void NetClient::recv_loop(){
             break;
         }
         if(memcmp(hdr.magic, BEWE_MAGIC, 4) != 0){
-            printf("[NetClient] bad magic: type=0x%02x len=%u pkts=%llu\n",
+            printf("[NetClient] bad magic: %02x%02x%02x%02x type=0x%02x len=%u pkts=%llu\n",
+                   hdr.magic[0], hdr.magic[1], hdr.magic[2], hdr.magic[3],
                    hdr.type, hdr.len, (unsigned long long)pkt_count);
             disc_reason = "bad_magic";
             break;
@@ -228,6 +252,8 @@ void NetClient::recv_loop(){
             disc_reason = "oversized";
             break;
         }
+        printf("[NetClient] recv pkt#%llu type=0x%02x len=%u\n",
+               (unsigned long long)pkt_count, hdr.type, len);
         std::vector<uint8_t> payload(len);
         if(len > 0){
             int rc2 = recv_all_ex(fd_, payload.data(), len, connected_);
@@ -244,8 +270,8 @@ void NetClient::recv_loop(){
         handle_packet(static_cast<PacketType>(hdr.type), payload.data(), len);
     }
     connected_.store(false);
-    printf("[NetClient] disconnected: reason=%s total_pkts=%llu\n",
-           disc_reason, (unsigned long long)pkt_count);
+    printf("[NetClient] disconnected: reason=%s total_pkts=%llu fd=%d\n",
+           disc_reason, (unsigned long long)pkt_count, fd_);
 }
 
 // ── handle_packet ─────────────────────────────────────────────────────────

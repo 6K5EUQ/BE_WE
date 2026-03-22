@@ -50,11 +50,18 @@ struct JoinEntry {
         std::lock_guard<std::mutex> wlk(fd_write_mtx);
         const uint8_t* p = pkt.data();
         size_t rem = pkt.size();
+        uint8_t bewe_t = (pkt.size() >= 5) ? pkt[4] : 0xFF;
         while(rem > 0){
             ssize_t r = ::send(fd, p, rem, MSG_NOSIGNAL);
-            if(r <= 0){ alive.store(false); break; }
+            if(r <= 0){
+                printf("[JoinEntry] send_raw FAIL conn_id=%u bewe_type=0x%02x total=%zu r=%zd errno=%d(%s)\n",
+                       conn_id, bewe_t, pkt.size(), r, errno, strerror(errno));
+                alive.store(false); break;
+            }
             p += r; rem -= r;
         }
+        if(bewe_t == 0x02)
+            printf("[JoinEntry] send_raw AUTH_ACK conn_id=%u size=%zu OK\n", conn_id, pkt.size());
     }
 
     void start_send_worker(){
@@ -96,9 +103,16 @@ struct JoinEntry {
 
     // FFT/제어 큐에 push
     void enqueue_data(const uint8_t* data, size_t len){
+        uint8_t bewe_t = (len >= 5) ? data[4] : 0xFF;
         std::lock_guard<std::mutex> lk(send_mtx);
-        if(send_queue.size() >= SEND_QUEUE_MAX)
+        if(send_queue.size() >= SEND_QUEUE_MAX){
+            printf("[JoinEntry] enqueue_data DROP (queue full %zu) conn_id=%u bewe_type=0x%02x\n",
+                   send_queue.size(), conn_id, bewe_t);
             send_queue.pop_front();
+        }
+        if(bewe_t == 0x02)
+            printf("[JoinEntry] enqueue_data AUTH_ACK conn_id=%u qsize=%zu\n",
+                   conn_id, send_queue.size());
         send_queue.emplace_back(data, data + len);
         send_cv.notify_one();
     }

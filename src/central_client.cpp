@@ -478,11 +478,24 @@ void CentralClient::mux_loop(int central_fd,
                 continue;
             }
             // 특정 JOIN 또는 broadcast → socketpair로 전달
+            {
+                uint8_t bewe_t = (mux.len >= 5) ? buf[4] : 0xFF;
+                static uint64_t data_fwd_count = 0;
+                data_fwd_count++;
+                if(bewe_t == 0x02 || data_fwd_count % 300 == 1)
+                    printf("[CentralClient] mux DATA→sp: cid=%u bewe_type=0x%02x len=%u joins=%zu (#%llu)\n",
+                           cid, bewe_t, mux.len, mux_joins_.size(), (unsigned long long)data_fwd_count);
+            }
             std::lock_guard<std::mutex> lk(mux_joins_mtx_);
             for(auto& [id, jp] : mux_joins_){
                 if(cid != 0xFFFF && id != cid) continue;
-                if(jp->remote_fd >= 0)
-                    send(jp->remote_fd, buf.data(), mux.len, MSG_NOSIGNAL | MSG_DONTWAIT);
+                if(jp->remote_fd >= 0){
+                    uint8_t bewe_t = (mux.len >= 5) ? buf[4] : 0xFF;
+                    ssize_t sr = send(jp->remote_fd, buf.data(), mux.len, MSG_NOSIGNAL | MSG_DONTWAIT);
+                    if(sr != (ssize_t)mux.len)
+                        printf("[CentralClient] mux DATA→sp PARTIAL: cid=%u bewe_type=0x%02x len=%u sent=%zd errno=%d(%s)\n",
+                               cid, bewe_t, mux.len, sr, errno, strerror(errno));
+                }
             }
 
         } else if(mux_type == CentralMuxType::CONN_CLOSE){
