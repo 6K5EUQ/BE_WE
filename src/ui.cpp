@@ -1940,10 +1940,19 @@ void run_streaming_viewer(){
         };
 
         // JOIN: IQ_CHUNK 스트림 수신 (중앙 MUX 경유, WAN 호환)
-        // seq=0: START, seq=1..N: data, seq=0xFFFFFFFF: END
-        // 열린 파일 핸들을 req_id별로 유지 (매 청크마다 open/close 방지)
-        static std::unordered_map<uint32_t, FILE*> s_iq_chunk_fps;
-        static std::unordered_map<uint32_t, std::string> s_iq_chunk_fns;
+        // recv 스레드 블로킹 방지: DATA 청크를 메모리 큐에 적재, 별도 write 스레드가 파일 기록
+        struct IqWriteCtx {
+            std::string     save_path;
+            std::string     fn;
+            uint64_t        filesize = 0;
+            std::deque<std::vector<uint8_t>> write_queue;
+            std::mutex      mtx;
+            std::condition_variable cv;
+            std::thread     thr;
+            std::atomic<bool> done_flag{false};
+            uint64_t        xfer_done = 0;
+        };
+        static std::unordered_map<uint32_t, std::shared_ptr<IqWriteCtx>> s_iq_ctx;
         cli->on_iq_chunk = [&](uint32_t req_id, uint32_t seq,
                                const char* filename, uint64_t filesize,
                                const uint8_t* data, uint32_t data_len){
@@ -1952,21 +1961,74 @@ void run_streaming_viewer(){
             std::string save_path = save_dir + "/" + fn;
 
             if(seq == 0){
-                // START: 기존 REQ_CONFIRMED 항목을 찾아 TRANSFERRING으로 업데이트,
-                //        없으면 새로 추가
+                // START: write 스레드 생성, rec_entries 업데이트
                 printf("[JOIN] IQ_CHUNK START: req_id=%u file='%s' size=%.1fMB\n",
                        req_id, fn.c_str(), filesize/1048576.0);
-                // 파일 핸들 미리 열기
-                FILE* fp = fopen(save_path.c_str(), "wb");
-                if(fp){
-                    s_iq_chunk_fps[req_id] = fp;
-                    s_iq_chunk_fns[req_id] = fn;
-                } else {
-                    printf("[JOIN] IQ_CHUNK START: fopen failed '%s' errno=%d\n",
-                           save_path.c_str(), errno);
-                }
+                auto ctx = std::make_shared<IqWriteCtx>();
+                ctx->save_path = save_path;
+                ctx->fn = fn;
+                ctx->filesize = filesize;
+                s_iq_ctx[req_id] = ctx;
+                // write 스레드 시작
+                ctx->thr = std::thread([ctx, req_id, fn, save_path, filesize, &v, &rec_iq_files](){
+                    FILE* fp = fopen(save_path.c_str(), "wb");
+                    if(!fp){
+                        printf("[JOIN] IQ write thread: fopen failed '%s' errno=%d\n",
+                               save_path.c_str(), errno);
+                        return;
+                    }
+                    uint64_t written = 0;
+                    while(true){
+                        std::vector<uint8_t> chunk;
+                        {
+                            std::unique_lock<std::mutex> lk(ctx->mtx);
+                            ctx->cv.wait(lk, [&ctx]{ return !ctx->write_queue.empty() || ctx->done_flag.load(); });
+                            if(ctx->write_queue.empty() && ctx->done_flag.load()) break;
+                            if(!ctx->write_queue.empty()){
+                                chunk = std::move(ctx->write_queue.front());
+                                ctx->write_queue.pop_front();
+                            }
+                        }
+                        if(!chunk.empty()){
+                            fwrite(chunk.data(), 1, chunk.size(), fp);
+                            written += chunk.size();
+                            ctx->xfer_done = written;
+                            // 진행률 업데이트
+                            std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                            for(auto& e : v.rec_entries)
+                                if(e.is_region && e.filename == fn){ e.xfer_done = written; break; }
+                        }
+                    }
+                    // 남은 청크 모두 처리
+                    {
+                        std::lock_guard<std::mutex> lk(ctx->mtx);
+                        while(!ctx->write_queue.empty()){
+                            auto& c2 = ctx->write_queue.front();
+                            fwrite(c2.data(), 1, c2.size(), fp);
+                            written += c2.size();
+                            ctx->write_queue.pop_front();
+                        }
+                    }
+                    fflush(fp);
+                    fclose(fp);
+                    printf("[JOIN] IQ write done: %s (%.1fMB written)\n", fn.c_str(), written/1048576.0);
+                    // rec_entries 제거
+                    {
+                        std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                        for(auto it = v.rec_entries.begin(); it != v.rec_entries.end(); ++it){
+                            if(it->is_region && it->filename == fn){
+                                v.rec_entries.erase(it); break;
+                            }
+                        }
+                    }
+                    // rec_iq_files에 즉시 추가
+                    bool f2=false;
+                    for(auto& s : rec_iq_files) if(s==fn){f2=true;break;}
+                    if(!f2) rec_iq_files.push_back(fn);
+                });
+                ctx->thr.detach();
+                // rec_entries 업데이트
                 std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
-                // 기존 REQ_CONFIRMED 항목 업데이트 (JOIN이 요청 시 만든 항목)
                 bool found = false;
                 for(auto& e : v.rec_entries){
                     if(!e.is_region) continue;
@@ -1980,7 +2042,6 @@ void run_streaming_viewer(){
                     }
                 }
                 if(!found){
-                    // 예상치 못한 경우 새 항목 생성
                     FFTViewer::RecEntry e{};
                     e.filename = fn; e.is_region = true;
                     e.req_state = FFTViewer::RecEntry::REQ_TRANSFERRING;
@@ -1990,50 +2051,29 @@ void run_streaming_viewer(){
                     v.rec_entries.push_back(e);
                 }
             } else if(seq == 0xFFFFFFFFu){
-                // END: 파일 핸들 닫고, Done 상태 전환
+                // END: write 스레드에 종료 신호
                 printf("[JOIN] IQ_CHUNK END: req_id=%u file='%s'\n", req_id, fn.c_str());
-                auto it_fp = s_iq_chunk_fps.find(req_id);
-                if(it_fp != s_iq_chunk_fps.end()){
-                    fclose(it_fp->second);
-                    s_iq_chunk_fps.erase(it_fp);
-                }
-                s_iq_chunk_fns.erase(req_id);
-                {
-                    std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
-                    for(auto& e : v.rec_entries){
-                        if(e.is_region && e.filename == fn){
-                            e.xfer_done = e.xfer_total;
-                            e.req_state = FFTViewer::RecEntry::REQ_NONE;
-                            e.finished = true;
-                            printf("[JOIN] IQ_CHUNK Done: %s (%.1fMB)\n",
-                                   fn.c_str(), e.xfer_total/1048576.0);
-                            break;
-                        }
+                auto it = s_iq_ctx.find(req_id);
+                if(it != s_iq_ctx.end()){
+                    {
+                        std::lock_guard<std::mutex> lk(it->second->mtx);
+                        it->second->done_flag.store(true);
                     }
+                    it->second->cv.notify_all();
+                    s_iq_ctx.erase(it);
                 }
-                // rec_iq_files에 추가
-                bool f2=false;
-                for(auto& s : rec_iq_files) if(s==fn){f2=true;break;}
-                if(!f2) rec_iq_files.push_back(fn);
-                // 3초 후 항목 제거 (별도 스레드)
-                std::thread([fn, &v](){
-                    std::this_thread::sleep_for(std::chrono::seconds(3));
-                    std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
-                    v.rec_entries.erase(
-                        std::remove_if(v.rec_entries.begin(), v.rec_entries.end(),
-                            [&fn](const FFTViewer::RecEntry& e){ return e.filename==fn && e.finished; }),
-                        v.rec_entries.end());
-                }).detach();
             } else {
-                // DATA: 열려있는 파일 핸들에 바로 쓰기
-                auto it_fp = s_iq_chunk_fps.find(req_id);
-                if(it_fp != s_iq_chunk_fps.end() && data && data_len > 0){
-                    fwrite(data, 1, data_len, it_fp->second);
-                    std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
-                    for(auto& e : v.rec_entries)
-                        if(e.is_region && e.filename == fn){ e.xfer_done += data_len; break; }
-                } else if(it_fp == s_iq_chunk_fps.end()){
-                    printf("[JOIN] IQ_CHUNK DATA seq=%u: no open file for req_id=%u\n", seq, req_id);
+                // DATA: write 큐에 push (recv 스레드 비블로킹)
+                auto it = s_iq_ctx.find(req_id);
+                if(it != s_iq_ctx.end() && data && data_len > 0){
+                    std::vector<uint8_t> chunk(data, data + data_len);
+                    {
+                        std::lock_guard<std::mutex> lk(it->second->mtx);
+                        it->second->write_queue.push_back(std::move(chunk));
+                    }
+                    it->second->cv.notify_one();
+                } else if(it == s_iq_ctx.end()){
+                    printf("[JOIN] IQ_CHUNK DATA seq=%u: no ctx for req_id=%u\n", seq, req_id);
                 }
             }
         };
@@ -2473,16 +2513,18 @@ void run_streaming_viewer(){
                                 prog.done = sent; prog.total = fsz; prog.phase = 2;
                                 srv->broadcast_iq_progress(prog);
                             }
-                            // 3초 후 HOST rec_entries 제거 + 파일 삭제
-                            std::this_thread::sleep_for(std::chrono::seconds(3));
+                            // 전송 완료 후 HOST rec_entries에서 TRANSFERRING 항목만 제거
+                            // (파일은 삭제하지 않고 HOST record/iq에 보존)
                             {
                                 std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
                                 v.rec_entries.erase(
                                     std::remove_if(v.rec_entries.begin(), v.rec_entries.end(),
-                                        [&fname](const FFTViewer::RecEntry& e){ return e.filename == fname; }),
+                                        [&fname](const FFTViewer::RecEntry& e){
+                                            return e.filename == fname &&
+                                                   e.req_state == FFTViewer::RecEntry::REQ_TRANSFERRING;
+                                        }),
                                     v.rec_entries.end());
                             }
-                            remove(path.c_str());
                         }).detach();
                     } else {
                         printf("[HOST] IQ_CHUNK: on_relay_broadcast is NULL — cannot send\n");
