@@ -466,8 +466,8 @@ void NetServer::send_audio(uint32_t op_mask, uint8_t ch_idx, int8_t pan,
     memcpy(payload.data() + sizeof(PktAudioFrame), pcm, n_samples*sizeof(float));
 
     auto pkt = make_packet(PacketType::AUDIO_FRAME, payload.data(), payload_size);
-    // relay(중앙서버)에도 전송 — 중앙서버가 recv_audio[] 테이블로 채널별 필터링
-    if(cb.on_relay_broadcast)
+    // relay JOIN이 있을 때만 중앙서버로 전송 (없으면 큐 낭비 방지)
+    if(cb.on_relay_broadcast && has_relay())
         cb.on_relay_broadcast(pkt.data(), pkt.size());
 
     std::lock_guard<std::mutex> lk(clients_mtx_);
@@ -492,7 +492,7 @@ void NetServer::broadcast_audio_all(uint8_t ch_idx, int8_t pan,
     memcpy(payload.data() + sizeof(PktAudioFrame), pcm, n_samples*sizeof(float));
 
     auto pkt = make_packet(PacketType::AUDIO_FRAME, payload.data(), payload_size);
-    if(cb.on_relay_broadcast)
+    if(cb.on_relay_broadcast && has_relay())
         cb.on_relay_broadcast(pkt.data(), pkt.size());
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){

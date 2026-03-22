@@ -207,6 +207,50 @@ void CentralClient::enqueue_central(const void* hdr, size_t hdr_len,
     central_queue_cv_.notify_one();
 }
 
+// 오디오 전용 enqueue (FFT 큐와 분리, 16MB 초과 시 드롭)
+void CentralClient::enqueue_central_audio(const void* hdr, size_t hdr_len,
+                                          const void* data, size_t data_len){
+    if(!central_sender_running_.load()) return;
+    size_t total = hdr_len + data_len;
+    std::lock_guard<std::mutex> lk(central_queue_mtx_);
+    while(central_audio_bytes_ + total > CENTRAL_AUDIO_MAX_BYTES && !central_audio_queue_.empty()){
+        central_audio_bytes_ -= central_audio_queue_.front().size();
+        central_audio_queue_.pop_front();
+    }
+    std::vector<uint8_t> pkt(total);
+    if(hdr_len && hdr)   memcpy(pkt.data(),           hdr,  hdr_len);
+    if(data_len && data) memcpy(pkt.data() + hdr_len, data, data_len);
+    central_audio_queue_.push_back(std::move(pkt));
+    central_audio_bytes_ += total;
+    central_queue_cv_.notify_one();
+}
+
+// JOIN→HOST 방향 전용 enqueue (4MB 초과 시 드롭)
+void CentralClient::enqueue_join_data(const void* hdr, size_t hdr_len,
+                                      const void* data, size_t data_len){
+    if(!central_sender_running_.load()) return;
+    size_t total = hdr_len + data_len;
+    std::lock_guard<std::mutex> lk(central_queue_mtx_);
+    int overflow_drops = 0;
+    while(central_join_bytes_ + total > CENTRAL_JOIN_MAX_BYTES && !central_join_queue_.empty()){
+        central_join_bytes_ -= central_join_queue_.front().size();
+        central_join_queue_.pop_front();
+        overflow_drops++;
+    }
+    if(overflow_drops > 0){
+        static int drop_warn = 0;
+        if(drop_warn++ % 60 == 0)
+            printf("[CentralClient] join enqueue overflow: dropped %d, joinBytes=%zu/%zu\n",
+                   overflow_drops, central_join_bytes_, CENTRAL_JOIN_MAX_BYTES);
+    }
+    std::vector<uint8_t> pkt(total);
+    if(hdr_len && hdr)   memcpy(pkt.data(),           hdr,  hdr_len);
+    if(data_len && data) memcpy(pkt.data() + hdr_len, data, data_len);
+    central_join_queue_.push_back(std::move(pkt));
+    central_join_bytes_ += total;
+    central_queue_cv_.notify_one();
+}
+
 // HB/제어 전용 enqueue (우선순위 큐, 드롭 없음)
 // HB는 작아서 (11 bytes) 큐에 최대 4개까지만 유지 (stale HB 방지)
 void CentralClient::enqueue_hb(const void* hdr, size_t hdr_len,
@@ -237,11 +281,15 @@ void CentralClient::central_sender_loop(int central_fd){
     while(central_sender_running_.load()){
         std::vector<uint8_t> pkt;
         bool is_hb = false;
+        bool is_audio = false;
+        bool is_join = false;
         {
             std::unique_lock<std::mutex> lk(central_queue_mtx_);
             central_queue_cv_.wait_for(lk, std::chrono::milliseconds(200),
                 [this]{ return !central_hb_queue_.empty() ||
                                !central_send_queue_.empty() ||
+                               !central_audio_queue_.empty() ||
+                               !central_join_queue_.empty() ||
                                !central_sender_running_.load(); });
             if(!central_sender_running_.load()) break;
             if(!central_hb_queue_.empty()){
@@ -252,18 +300,23 @@ void CentralClient::central_sender_loop(int central_fd){
                 pkt = std::move(central_send_queue_.front());
                 central_send_queue_.pop_front();
                 central_queue_bytes_ -= pkt.size();
+            } else if(!central_audio_queue_.empty()){
+                pkt = std::move(central_audio_queue_.front());
+                central_audio_queue_.pop_front();
+                central_audio_bytes_ -= pkt.size();
+                is_audio = true;
+            } else if(!central_join_queue_.empty()){
+                pkt = std::move(central_join_queue_.front());
+                central_join_queue_.pop_front();
+                central_join_bytes_ -= pkt.size();
+                is_join = true;
             } else {
                 continue;
             }
         }
 
-        // 한 패킷을 완전히 전송될 때까지 poll+send 반복
-        // HB: 최대 5초
-        // Data: 최대 15초 — TCP cwnd가 10(~12KB)에서 시작해도
-        //   131KB 전송에 RTT 11ms × ~10 doubling ≈ 110ms이지만,
-        //   실제로는 send 버퍼 경쟁 등으로 더 걸림. 충분한 여유.
-        //   부분 전송이 시작되면 cwnd가 성장하므로 기다리는 게 맞음.
-        int max_ms = is_hb ? 5000 : 15000;
+        // HB: 5초, FFT: 15초, 오디오: 5초, JOIN: 10초
+        int max_ms = is_hb ? 5000 : (is_audio ? 5000 : (is_join ? 10000 : 15000));
         auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(max_ms);
         const uint8_t* p = pkt.data();
         size_t rem = pkt.size();
@@ -306,9 +359,9 @@ void CentralClient::central_sender_loop(int central_fd){
         // 30초마다 통계
         auto now = std::chrono::steady_clock::now();
         if(std::chrono::duration_cast<std::chrono::seconds>(now-last_stat).count() >= 30){
-            printf("[CentralClient] sender stats: sent=%llu dropped=%llu queueBytes=%zu\n",
+            printf("[CentralClient] sender stats: sent=%llu dropped=%llu fftQ=%zu audioQ=%zu joinQ=%zu\n",
                    (unsigned long long)data_sent, (unsigned long long)data_dropped,
-                   central_queue_bytes_);
+                   central_queue_bytes_, central_audio_bytes_, central_join_bytes_);
             last_stat = now;
         }
     }
@@ -329,8 +382,12 @@ void CentralClient::start_mux_adapter(int central_fd,
 
     // relay_sender 먼저 시작 (pump/HB enqueue 직전)
     central_queue_bytes_ = 0;
+    central_audio_bytes_ = 0;
+    central_join_bytes_  = 0;
     central_send_queue_.clear();
     central_hb_queue_.clear();
+    central_audio_queue_.clear();
+    central_join_queue_.clear();
     central_sender_running_.store(true);
     central_sender_thr_ = std::thread(&CentralClient::central_sender_loop, this, central_fd);
 
@@ -350,7 +407,11 @@ void CentralClient::stop_mux_adapter(){
         std::lock_guard<std::mutex> qlk(central_queue_mtx_);
         central_send_queue_.clear();
         central_hb_queue_.clear();
+        central_audio_queue_.clear();
+        central_join_queue_.clear();
         central_queue_bytes_ = 0;
+        central_audio_bytes_ = 0;
+        central_join_bytes_  = 0;
     }
     std::lock_guard<std::mutex> lk(mux_joins_mtx_);
     for(auto& [id, jp] : mux_joins_){
@@ -435,7 +496,7 @@ void CentralClient::mux_loop(int central_fd,
             }
 
             // sv[1] → central_fd pump (JOIN이 local_fd에 쓰는 데이터를 relay로)
-            // enqueue_central 사용: central_sender_thr_ 가 실제 write → 블로킹 없음
+            // enqueue_join_data 사용: JOIN→HOST 전용 큐로 분리 → FFT/오디오 큐 방해 없음
             jp->thr = std::thread([jp, cid, this](){
                 std::vector<uint8_t> tbuf(65536);
                 while(jp->local_fd >= 0 && mux_running_.load()){
@@ -444,7 +505,7 @@ void CentralClient::mux_loop(int central_fd,
                     CentralMuxHdr mh{}; mh.conn_id=cid;
                     mh.type = static_cast<uint8_t>(CentralMuxType::DATA);
                     mh.len  = (uint32_t)n;
-                    enqueue_central(&mh, CENTRAL_MUX_HDR_SIZE, tbuf.data(), n);
+                    enqueue_join_data(&mh, CENTRAL_MUX_HDR_SIZE, tbuf.data(), n);
                 }
                 printf("[CentralClient] pump exit conn_id=%u\n", cid);
             });
