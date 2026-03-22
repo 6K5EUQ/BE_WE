@@ -226,11 +226,10 @@ void CentralClient::enqueue_hb(const void* hdr, size_t hdr_len,
 }
 
 // central_fd 단독 write 스레드
-// non-blocking send + poll: 패킷별 deadline 내에 완전 전송, 초과 시 드롭 또는 재접속
-// TCP cwnd가 작을 때도 한 패킷을 보내는 동안 cwnd가 성장하므로 점진적 throughput 증가
+// MSG_DONTWAIT send + poll: fd 자체는 blocking 유지 (mux_loop recv에 영향 안 줌)
 void CentralClient::central_sender_loop(int central_fd){
-    int flags = fcntl(central_fd, F_GETFL, 0);
-    fcntl(central_fd, F_SETFL, flags | O_NONBLOCK);
+    // O_NONBLOCK 설정하지 않음! mux_loop의 recv가 깨짐
+    // 대신 send() 시 MSG_DONTWAIT 사용
 
     uint64_t data_sent = 0, data_dropped = 0;
     auto last_stat = std::chrono::steady_clock::now();
@@ -271,7 +270,7 @@ void CentralClient::central_sender_loop(int central_fd){
         bool failed = false;
 
         while(rem > 0){
-            ssize_t r = ::send(central_fd, p, rem, MSG_NOSIGNAL);
+            ssize_t r = ::send(central_fd, p, rem, MSG_NOSIGNAL | MSG_DONTWAIT);
             if(r > 0){ p += r; rem -= r; continue; }
             if(r < 0 && errno == EINTR) continue;
             if(r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)){
