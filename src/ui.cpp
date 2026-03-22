@@ -2425,7 +2425,7 @@ void run_streaming_viewer(){
                     {
                         std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
                         for(auto it=v.rec_entries.rbegin();it!=v.rec_entries.rend();++it)
-                            if(it->is_region&&it->req_state==FFTViewer::RecEntry::REQ_NONE&&it->finished){
+                            if(!it->is_audio&&it->req_state==FFTViewer::RecEntry::REQ_NONE&&it->finished){
                                 path=it->path;
                                 v.rec_entries.erase(std::next(it).base());
                                 break;

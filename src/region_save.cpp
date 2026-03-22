@@ -364,7 +364,7 @@ void FFTViewer::do_region_save_work(){
         e.filename = bn ? bn+1 : outpath;
         e.finished = true;
         e.is_audio = false;
-        e.is_region= false;  // 로컬 저장 → 일반 IQ 항목 (흰색 Selectable, SA 가능)
+        e.is_region= false;
         e.t_start  = std::chrono::steady_clock::now();
         rec_entries.push_back(e);
     }
