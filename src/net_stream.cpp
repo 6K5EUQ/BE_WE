@@ -30,7 +30,9 @@ void FFTViewer::net_bcast_worker(){
         if(cur_seq == last_seq) continue;
         last_seq = cur_seq;
 
-        if(!net_srv || (net_srv->client_count() == 0 && !net_srv->has_relay())) continue;
+        if(!net_srv) continue;
+        // client가 없어도 central 연결 시 on_relay_broadcast가 설정되어 있으면 전송
+        if(net_srv->client_count() == 0 && !net_srv->has_relay() && !net_srv->cb.on_relay_broadcast) continue;
         if(net_bcast_pause.load(std::memory_order_relaxed)) continue;
 
         // 최신 FFT 행을 로컬 버퍼로 빠르게 복사 (data_mtx는 최소 시간만 점유)

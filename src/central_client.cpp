@@ -226,12 +226,11 @@ void CentralClient::enqueue_hb(const void* hdr, size_t hdr_len,
 }
 
 // central_fd 단독 write 스레드
-// 루프마다 HB 큐를 먼저 확인 → HB는 데이터 프레임 한 개 전송 시간 내에 반드시 전송됨
-// 데이터 프레임은 SO_SNDTIMEO=3s 적용 → 3초 초과 시 연결 닫고 재접속
+// non-blocking send + poll: 패킷별 deadline 내에 완전 전송, 초과 시 드롭 또는 재접속
+// TCP cwnd가 작을 때도 한 패킷을 보내는 동안 cwnd가 성장하므로 점진적 throughput 증가
 void CentralClient::central_sender_loop(int central_fd){
-    // 통합 5s 타임아웃 (HB도 데이터도 동일)
-    timeval tv{5, 0};
-    setsockopt(central_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    int flags = fcntl(central_fd, F_GETFL, 0);
+    fcntl(central_fd, F_SETFL, flags | O_NONBLOCK);
 
     uint64_t data_sent = 0, data_dropped = 0;
     auto last_stat = std::chrono::steady_clock::now();
@@ -239,7 +238,6 @@ void CentralClient::central_sender_loop(int central_fd){
     while(central_sender_running_.load()){
         std::vector<uint8_t> pkt;
         bool is_hb = false;
-        size_t queue_depth = 0;
         {
             std::unique_lock<std::mutex> lk(central_queue_mtx_);
             central_queue_cv_.wait_for(lk, std::chrono::milliseconds(200),
@@ -247,46 +245,66 @@ void CentralClient::central_sender_loop(int central_fd){
                                !central_send_queue_.empty() ||
                                !central_sender_running_.load(); });
             if(!central_sender_running_.load()) break;
-            // HB 우선: HB 큐에 있으면 먼저 처리
             if(!central_hb_queue_.empty()){
                 pkt = std::move(central_hb_queue_.front());
                 central_hb_queue_.pop_front();
                 is_hb = true;
             } else if(!central_send_queue_.empty()){
-                // 큐가 과도하게 쌓이면 오래된 프레임 일괄 드롭 (최신만 유지)
-                // 네트워크가 따라가지 못하는 상황에서 sender 블로킹 시간을 줄임
-                while(central_send_queue_.size() > 8){
-                    central_queue_bytes_ -= central_send_queue_.front().size();
-                    central_send_queue_.pop_front();
-                    data_dropped++;
-                }
                 pkt = std::move(central_send_queue_.front());
                 central_send_queue_.pop_front();
                 central_queue_bytes_ -= pkt.size();
-                queue_depth = central_send_queue_.size();
             } else {
                 continue;
             }
         }
 
-        auto t0 = std::chrono::steady_clock::now();
-        if(!central_send_all(central_fd, pkt.data(), pkt.size())){
-            int e = errno;
-            auto send_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - t0).count();
-            printf("[CentralClient] sender: %s send failed errno=%d(%s) size=%zu took=%lldms, reconnecting\n",
-                   is_hb ? "HB" : "data", e, strerror(e), pkt.size(), (long long)send_ms);
-            shutdown(central_fd, SHUT_RDWR);
-            break;
-        }
-        auto send_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - t0).count();
-        if(send_ms > 500)
-            printf("[CentralClient] sender: SLOW %s send size=%zu took=%lldms qDepth=%zu\n",
-                   is_hb ? "HB" : "data", pkt.size(), (long long)send_ms, queue_depth);
-        data_sent++;
+        // 한 패킷을 완전히 전송될 때까지 poll+send 반복
+        // HB: 최대 5초
+        // Data: 최대 15초 — TCP cwnd가 10(~12KB)에서 시작해도
+        //   131KB 전송에 RTT 11ms × ~10 doubling ≈ 110ms이지만,
+        //   실제로는 send 버퍼 경쟁 등으로 더 걸림. 충분한 여유.
+        //   부분 전송이 시작되면 cwnd가 성장하므로 기다리는 게 맞음.
+        int max_ms = is_hb ? 5000 : 15000;
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(max_ms);
+        const uint8_t* p = pkt.data();
+        size_t rem = pkt.size();
+        bool failed = false;
 
-        // 30초마다 통계 출력
+        while(rem > 0){
+            ssize_t r = ::send(central_fd, p, rem, MSG_NOSIGNAL);
+            if(r > 0){ p += r; rem -= r; continue; }
+            if(r < 0 && errno == EINTR) continue;
+            if(r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)){
+                auto now_tp = std::chrono::steady_clock::now();
+                int left_ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(
+                    deadline - now_tp).count();
+                if(left_ms <= 0){
+                    // 시간 초과
+                    if(p == pkt.data()){
+                        // 1바이트도 못 보냄 → 스트림 오염 없이 드롭
+                        data_dropped++;
+                    } else {
+                        // 부분 전송 → MUX 스트림 오염 → 재접속
+                        printf("[CentralClient] sender: partial %s (%zu/%zu) timeout, reconnecting\n",
+                               is_hb ? "HB" : "data", pkt.size()-rem, pkt.size());
+                        failed = true;
+                    }
+                    break;
+                }
+                pollfd pfd{central_fd, POLLOUT, 0};
+                poll(&pfd, 1, std::min(left_ms, 100));
+                continue;  // deadline 체크 후 재시도
+            }
+            // send 에러 (EPIPE 등)
+            printf("[CentralClient] sender: send error errno=%d(%s), reconnecting\n",
+                   errno, strerror(errno));
+            failed = true; break;
+        }
+
+        if(failed){ shutdown(central_fd, SHUT_RDWR); break; }
+        if(rem == 0) data_sent++;
+
+        // 30초마다 통계
         auto now = std::chrono::steady_clock::now();
         if(std::chrono::duration_cast<std::chrono::seconds>(now-last_stat).count() >= 30){
             printf("[CentralClient] sender stats: sent=%llu dropped=%llu queueBytes=%zu\n",
