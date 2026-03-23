@@ -1,5 +1,7 @@
 # BE_WE
 
+> **Hear everything. Know everything.**
+>
 > Multi-user SDR spectrum analyzer with real-time network streaming, digital decoding, and 3D station discovery.
 
 ![Main Interface](assets/BEWE.png)
@@ -24,7 +26,11 @@
 
 ## Overview
 
-BE_WE is a Linux-native SDR (Software Defined Radio) application built with C++17, OpenGL, and ImGui. A single HOST captures RF spectrum from an SDR device and streams it in real-time to multiple JOIN clients over TCP. Every operator sees the same live waterfall, can create channels, demodulate signals, chat, and share recordings — all from separate machines.
+BE_WE is a Linux-native SDR (Software Defined Radio) platform built with C++17, OpenGL, and ImGui. A single HOST captures RF spectrum from an SDR device and streams it in real-time to multiple JOIN clients over TCP. Every operator sees the same live waterfall, can create channels, demodulate signals, chat, and share recordings — all from separate machines.
+
+**From hobbyist bench to government SIGINT floor** — BE_WE is designed for anyone who needs to monitor the electromagnetic spectrum. A ham radio enthusiast running an RTL-SDR on a desk, a maritime authority tracking AIS vessel traffic, or a military SIGINT team coordinating across distributed sensor sites — the same tool, the same workflow.
+
+The interface is built for **operators who work under pressure**. No deep menus, no configuration wizards. Click a frequency, drag a channel, hear the signal. Every action is one or two clicks away. Complex operations — multi-operator audio routing, time-domain IQ export, real-time collaborative monitoring — are surfaced through intuitive controls that a first-day operator can learn in minutes and a veteran can drive at full speed.
 
 ---
 
