@@ -38,7 +38,7 @@ Unlike any other desktop SDR software, BE_WE supports multiple operators working
 
 ### 3D Globe Station Discovery
 
-Stations running BE_WE appear as markers on an interactive 3D globe. Operators can visually browse available stations worldwide and connect with a single click — no IP addresses or manual configuration needed. LAN stations are discovered automatically; WAN stations are reachable through an optional relay server.
+Stations running BE_WE appear as markers on an interactive 3D globe. Operators can visually browse available stations worldwide and connect with a single click — no IP addresses or manual configuration needed. LAN stations are discovered automatically; WAN stations are reachable through the central server.
 
 ### Time Machine — Rewind the Spectrum
 
@@ -52,9 +52,9 @@ Instead of capturing the entire wideband IQ stream (which can be tens of MB/s), 
 
 Each demodulated channel can be routed to specific operators using a per-channel bitmask. Operator A monitors channel 1, operator B monitors channels 2 and 3 — each with independent pan and volume control. This enables team-based division of labor across the spectrum.
 
-### Distributed Architecture (HOST / JOIN / Relay)
+### Distributed Architecture (HOST / JOIN / Central Server)
 
-Any machine with an SDR can HOST a station. Any machine without an SDR can JOIN and operate as if the hardware were local. A relay server bridges stations across different networks. Local relay optimization minimizes latency on the same subnet. The entire system is designed for real-world deployment where operators and hardware are rarely in the same room.
+Any machine with an SDR can HOST a station. Any machine without an SDR can JOIN and operate as if the hardware were local. A central server bridges stations across different networks. The central server fans out HOST's stream to all JOINs with a single upload path (no N× bandwidth overhead). Local relay optimization minimizes latency on the same subnet. The entire system is designed for real-world deployment where operators and hardware are rarely in the same room.
 
 ---
 
@@ -99,23 +99,32 @@ Any machine with an SDR can HOST a station. Any machine without an SDR can JOIN 
 - 60-second rolling IQ recording to disk (toggle with `T`)
 - Freeze & seek through waterfall history (`Space`)
 - Region selection (Ctrl+Right-drag) for IQ export
+- Recordings saved to `~/BE_WE/recordings/`
 
 ### Network Streaming (HOST / JOIN)
 - HOST broadcasts FFT + audio over TCP
 - JOIN clients receive with jitter buffer for smooth playback
 - Per-client async send queues — slow clients don't block the stream
+- Separate priority queue for heartbeats — control frames always delivered even under heavy data load
 - Tier-based authentication (Tier 1 / 2 / 3)
 - Bi-directional commands: JOIN can tune frequency, create channels, control gain
+
+### Central Server (WAN)
+- Optional cloud server for cross-network (WAN) operation
+- HOST uploads FFT/audio stream **once** — central server fans out to all JOINs (no N× bandwidth overhead)
+- Global chat: all operators connected to the same central server see each other's messages regardless of room
+- IQ file transfer via dedicated pipe connection (no blocking main data stream)
+- Host room watchdog with 20-second timeout to detect dead connections
 
 ### Station Discovery & Globe
 - 3D interactive globe with Blue Marble texture
 - UDP broadcast discovery on LAN
-- Optional relay server for WAN connections
+- Central server for WAN connections
 - Local relay for same-subnet optimization
 - Click globe to set your station location
 
 ### Collaboration
-- Real-time chat between all connected operators
+- Real-time global chat between all operators on the same central server
 - File sharing (upload / download recordings via public directory)
 - Operator list with tier and connection status
 - Channel ownership tracking
@@ -142,7 +151,8 @@ Hardware is auto-detected at startup. If no SDR is found, you can still JOIN a r
 
 ```
                         ┌─────────────────────────────────┐
-                        │           RELAY SERVER          │
+                        │         CENTRAL SERVER          │
+                        │  (fan-out: 1× upload → N JOINs) │
                         └──────┬──────────────┬───────────┘
                                │   WAN        │
                  ┌─────────────┴───┐    ┌─────┴───────────┐
@@ -157,7 +167,13 @@ Hardware is auto-detected at startup. If no SDR is found, you can still JOIN a r
 
 - **HOST** — Runs the SDR, computes FFT, broadcasts to all JOINs
 - **JOIN** — Connects to HOST, receives spectrum + audio, sends commands
-- **Relay** — Optional WAN bridge when HOST and JOIN are on different networks
+- **Central Server** — Optional WAN bridge; receives HOST stream once, fans out to N JOINs
+
+### Bandwidth Design
+
+The central server uses a multiplexed protocol (`conn_id=0xFFFF` for broadcast). The HOST sends each FFT/audio frame **once** to the central server regardless of how many JOINs are connected. The central server handles fan-out internally. This ensures HOST upload bandwidth stays constant as JOIN count grows.
+
+Heartbeat and control frames use a **separate priority queue** from data frames, so they are always delivered even when the data channel is saturated with FFT/audio traffic.
 
 ---
 
@@ -222,6 +238,18 @@ make -j$(nproc)
 ./BE_WE
 ```
 
+### Central Server (optional, for WAN)
+
+```bash
+cd central
+mkdir build && cd build
+cmake ..
+make -j$(nproc)
+./bewe_central
+```
+
+The central server has no SDR or graphics dependencies — it can run on any Linux VPS.
+
 ---
 
 ## Usage
@@ -230,15 +258,16 @@ make -j$(nproc)
 
 1. Launch `./BE_WE`
 2. Log in with ID / Password and select a Tier (`Ctrl+1` / `Ctrl+2` / `Ctrl+3`)
-3. Click your location on the 3D globe, then press **HOST**
-4. SDR starts automatically — spectrum and waterfall appear
-5. Other users can now JOIN your station
+3. Optionally enter a Central Server IP in the login panel for WAN support
+4. Click your location on the 3D globe, then press **HOST**
+5. SDR starts automatically — spectrum and waterfall appear
+6. Other users can now JOIN your station directly (LAN) or via the central server (WAN)
 
 ### JOIN Mode
 
 1. Launch `./BE_WE` on a different machine (no SDR required)
 2. Log in and select a Tier
-3. Stations appear on the globe via UDP discovery or relay
+3. Stations appear on the globe via UDP discovery (LAN) or central server (WAN)
 4. Click a station marker and press **JOIN**
 5. Live spectrum, audio, and channels stream in real-time
 
@@ -257,10 +286,17 @@ make -j$(nproc)
 
 ## Network
 
-- HOST ↔ JOIN communication uses a custom binary protocol over TCP
-- LAN stations are discovered automatically via UDP broadcast
-- Optional relay server available for WAN connections
-- See `src/net_protocol.hpp` for internal details
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| 7701 | TCP | HOST ↔ JOIN direct connection |
+| 7701 | UDP | LAN station discovery broadcast |
+| 7700 | TCP | HOST / JOIN ↔ Central server (MUX) |
+| 7702 | TCP | IQ file transfer pipe (central server) |
+
+- HOST ↔ JOIN communication uses a custom binary protocol (`BEWE` magic, 9-byte header)
+- Central server MUX uses a 7-byte header (`conn_id` + `type` + `len`) wrapping BEWE packets
+- `conn_id=0xFFFF` signals broadcast — central server fans out to all JOINs in the room
+- See `src/net_protocol.hpp` and `central/central_proto.hpp` for protocol details
 
 ---
 
@@ -360,9 +396,9 @@ BE_WE/
 │   ├── net_protocol.hpp      # Binary protocol specification
 │   ├── net_server.hpp/cpp    # HOST-side TCP server
 │   ├── net_client.hpp/cpp    # JOIN-side TCP client
-│   ├── net_stream.cpp        # Stream utilities
+│   ├── net_stream.cpp        # FFT/audio streaming loop
+│   ├── central_client.hpp/cpp # Central server MUX client (HOST side)
 │   ├── udp_discovery.hpp/cpp # LAN station broadcast
-│   ├── relay_client.hpp/cpp  # WAN relay client
 │   ├── local_relay_server.*  # LAN local relay
 │   ├── globe.hpp/cpp         # 3D Earth renderer (OpenGL 3.3)
 │   ├── timemachine.cpp       # IQ rolling record & playback
@@ -371,12 +407,14 @@ BE_WE/
 │   ├── iq_record.cpp         # IQ / audio recording
 │   ├── login.cpp             # Authentication & tier selection
 │   ├── channel.hpp           # Per-channel state (freq, mode, squelch)
+│   ├── bewe_paths.hpp        # Runtime path management (recordings, temp)
 │   ├── config.hpp            # Global constants
 │   └── world_map_data.hpp    # Embedded vector map for globe
-├── relay/
-│   ├── relay_main.cpp        # Standalone relay server
-│   ├── relay_server.hpp/cpp  # Relay implementation
-│   └── relay_proto.hpp       # Relay protocol
+├── central/
+│   ├── central_main.cpp      # Standalone central server entry point
+│   ├── central_server.hpp/cpp # Central server implementation
+│   ├── central_proto.hpp     # Central MUX protocol definition
+│   └── CMakeLists.txt        # Central server build (no SDR/graphics deps)
 ├── libs/
 │   └── imgui/                # Dear ImGui (embedded)
 ├── assets/
@@ -384,7 +422,8 @@ BE_WE/
 │   ├── earth.jpg             # Blue Marble texture
 │   ├── login_bg_Tier_*.png   # Tier-specific login backgrounds
 │   └── *.png                 # UI screenshots
-└── CMakeLists.txt            # Build configuration
+├── recordings/               # Default recording output directory (~/BE_WE/recordings/)
+└── CMakeLists.txt            # Main build configuration
 ```
 
 ---
