@@ -139,6 +139,7 @@ void FFTViewer::start_audio_rec(int ch_idx){
         auto pos=s.rfind('/');
         e.filename=(pos==std::string::npos)?s:s.substr(pos+1);
         e.finished=false; e.is_audio=true; e.is_region=false;
+        e.ch_idx=ch_idx;
         e.t_start=std::chrono::steady_clock::now();
         rec_entries.push_back(e);
     }
@@ -161,6 +162,18 @@ void FFTViewer::stop_audio_rec(int ch_idx){
         ch.audio_rec_write_wav_hdr(fp,ch.audio_rec_sr,ch.audio_rec_frames);
         fclose(fp);
     }
+
+    // 실제 녹음 출력이 없으면 파일 삭제 + RecEntry 제거
+    if(ch.audio_rec_frames==0){
+        remove(ch.audio_rec_path.c_str());
+        bewe_log("Audio REC empty, deleted: %s\n", ch.audio_rec_path.c_str());
+        std::lock_guard<std::mutex> lk(rec_entries_mtx);
+        rec_entries.erase(std::remove_if(rec_entries.begin(),rec_entries.end(),
+            [&](const RecEntry& e){return e.path==ch.audio_rec_path;}),rec_entries.end());
+        ch.audio_rec_path.clear();
+        return;
+    }
+
     bewe_log("Audio REC done: %llu frames → %s\n",
              (unsigned long long)ch.audio_rec_frames, ch.audio_rec_path.c_str());
 
@@ -206,6 +219,7 @@ void FFTViewer::start_join_audio_rec(int ch_idx){
         std::string s(fn); auto pos=s.rfind('/');
         e.filename=(pos==std::string::npos)?s:s.substr(pos+1);
         e.finished=false; e.is_audio=true; e.is_region=false;
+        e.ch_idx=ch_idx;
         e.t_start=std::chrono::steady_clock::now();
         rec_entries.push_back(e);
     }
@@ -227,6 +241,18 @@ void FFTViewer::stop_join_audio_rec(int ch_idx){
         ch.audio_rec_write_wav_hdr(fp,ch.audio_rec_sr,ch.audio_rec_frames);
         fclose(fp);
     }
+
+    // 실제 녹음 출력이 없으면 파일 삭제 + RecEntry 제거
+    if(ch.audio_rec_frames==0){
+        remove(ch.audio_rec_path.c_str());
+        bewe_log("JOIN Audio REC empty, deleted: %s\n", ch.audio_rec_path.c_str());
+        std::lock_guard<std::mutex> lk(rec_entries_mtx);
+        rec_entries.erase(std::remove_if(rec_entries.begin(),rec_entries.end(),
+            [&](const RecEntry& e){return e.path==ch.audio_rec_path;}),rec_entries.end());
+        ch.audio_rec_path.clear();
+        return;
+    }
+
     bewe_log("JOIN Audio REC done: %llu frames → %s\n",
              (unsigned long long)ch.audio_rec_frames, ch.audio_rec_path.c_str());
     {

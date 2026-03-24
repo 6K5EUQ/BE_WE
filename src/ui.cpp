@@ -319,6 +319,11 @@ void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float 
                 // JOIN: 서버에 삭제 요청 → 서버가 broadcast 처리
                 net_cli->cmd_delete_ch(ci);
             }
+            // 녹음 중이면 중지
+            if(channels[ci].audio_rec_on.load()){
+                if(net_cli) stop_join_audio_rec(ci);
+                else stop_audio_rec(ci);
+            }
             // 로컬 즉시 반영 (서버 sync가 확인해줌)
             stop_dem(ci); stop_digi(ci); digi_panel_on[ci]=false;
             channels[ci].filter_active=false;
@@ -2297,6 +2302,8 @@ void run_streaming_viewer(){
             };
             srv->cb.on_delete_ch  = [&](int idx){
                 if(idx<0||idx>=MAX_CHANNELS) return;
+                if(v.channels[idx].audio_rec_on.load())
+                    v.stop_audio_rec(idx);
                 v.stop_dem(idx); v.stop_digi(idx); v.digi_panel_on[idx]=false;
                 v.channels[idx].filter_active=false;
                 v.channels[idx].mode=Channel::DM_NONE;
@@ -3596,6 +3603,21 @@ void run_streaming_viewer(){
             }
             if(ImGui::IsKeyPressed(ImGuiKey_Delete,false)){
                 if(sci>=0&&v.channels[sci].filter_active){
+                    // 오디오 녹음 중이면 중지 + 파일 삭제
+                    if(v.channels[sci].audio_rec_on.load()){
+                        if(v.remote_mode && v.net_cli)
+                            v.stop_join_audio_rec(sci);
+                        else
+                            v.stop_audio_rec(sci);
+                        std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                        for(auto it=v.rec_entries.begin();it!=v.rec_entries.end();++it){
+                            if(it->is_audio && it->ch_idx==sci){
+                                remove(it->path.c_str());
+                                v.rec_entries.erase(it);
+                                break;
+                            }
+                        }
+                    }
                     if(v.remote_mode && v.net_cli){
                         v.net_cli->cmd_delete_ch(sci);
                     } else {
@@ -4504,6 +4526,10 @@ void run_streaming_viewer(){
                                     ImGui::SetTooltip("%s",tip);
                                 }
                                 auto delete_ch = [&](){
+                                    if(v.channels[ci].audio_rec_on.load()){
+                                        if(v.remote_mode && v.net_cli) v.stop_join_audio_rec(ci);
+                                        else v.stop_audio_rec(ci);
+                                    }
                                     if(v.net_cli) v.net_cli->cmd_delete_ch(ci);
                                     v.stop_dem(ci); v.stop_digi(ci);
                                     v.channels[ci].filter_active=false;
@@ -4523,6 +4549,10 @@ void run_streaming_viewer(){
                             }
                             // Del 키 (선택된 채널)
                             if(ch.selected && ImGui::IsKeyPressed(ImGuiKey_Delete,false)){
+                                if(v.channels[ci].audio_rec_on.load()){
+                                    if(v.remote_mode && v.net_cli) v.stop_join_audio_rec(ci);
+                                    else v.stop_audio_rec(ci);
+                                }
                                 if(v.net_cli) v.net_cli->cmd_delete_ch(ci);
                                 v.stop_dem(ci); v.stop_digi(ci);
                                 v.channels[ci].filter_active=false;
@@ -4743,11 +4773,48 @@ void run_streaming_viewer(){
                                 if(has_audio){
                                     ImGui::TextDisabled("  Audio");
                                     ImGui::Indent(6.f);
+                                    // Pass 1: [REC] 항목 (녹음 중) 먼저 표시
                                     for(int ri=(int)v.rec_entries.size()-1;ri>=0;ri--){
                                         auto& re=v.rec_entries[ri];
-                                        if(!re.is_audio) continue;
+                                        if(!re.is_audio || re.finished) continue;
                                         ImGui::PushID(ri+32000);
-                                        if(re.finished){
+                                        {
+                                            float elapsed=std::chrono::duration<float>(
+                                                std::chrono::steady_clock::now()-re.t_start).count();
+                                            int secs=(int)elapsed;
+                                            int rec_secs=0;
+                                            if(re.ch_idx>=0 && v.channels[re.ch_idx].audio_rec_sr>0)
+                                                rec_secs=(int)(v.channels[re.ch_idx].audio_rec_frames/v.channels[re.ch_idx].audio_rec_sr);
+                                            float t2=(float)ImGui::GetTime();
+                                            bool blink=(fmodf(t2,0.8f)<0.4f);
+                                            ImGui::PushStyleColor(ImGuiCol_Text,
+                                                blink?IM_COL32(255,80,80,255):IM_COL32(200,60,60,255));
+                                            static std::unordered_map<std::string,std::pair<float,std::string>> aud_sz_cache;
+                                            auto& ac=aud_sz_cache[re.filename];
+                                            if(t2-ac.first >= 0.5f){ ac.first=t2; ac.second=fmt_filesize("",re.path); }
+                                            char rec_lbl[512];
+                                            if(!ac.second.empty())
+                                                snprintf(rec_lbl,sizeof(rec_lbl),"[REC]  %s  [%d/%ds]  %s", re.filename.c_str(), rec_secs, secs, ac.second.c_str());
+                                            else
+                                                snprintf(rec_lbl,sizeof(rec_lbl),"[REC]  %s  [%d/%ds]", re.filename.c_str(), rec_secs, secs);
+                                            ImGui::Selectable(rec_lbl, re.ch_idx>=0 && v.selected_ch==re.ch_idx);
+                                            if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                                                if(re.ch_idx>=0){
+                                                    if(v.selected_ch>=0) v.channels[v.selected_ch].selected=false;
+                                                    v.selected_ch=re.ch_idx;
+                                                    v.channels[re.ch_idx].selected=true;
+                                                }
+                                            }
+                                            ImGui::PopStyleColor();
+                                        }
+                                        ImGui::PopID();
+                                    }
+                                    // Pass 2: [Done] 항목
+                                    for(int ri=(int)v.rec_entries.size()-1;ri>=0;ri--){
+                                        auto& re=v.rec_entries[ri];
+                                        if(!re.is_audio || !re.finished) continue;
+                                        ImGui::PushID(ri+32000);
+                                        {
                                             auto it_az=fsz_cache.find(re.filename);
                                             const std::string szstr=(it_az!=fsz_cache.end())?it_az->second:fmt_filesize("",re.path);
                                             std::string lbl = std::string("[Done]  ")+re.filename;
@@ -4765,22 +4832,6 @@ void run_streaming_viewer(){
                                                     file_ctx.selected=true;
                                                 }
                                             }
-                                        } else {
-                                            float elapsed=std::chrono::duration<float>(
-                                                std::chrono::steady_clock::now()-re.t_start).count();
-                                            int secs=(int)elapsed;
-                                            float t2=(float)ImGui::GetTime();
-                                            bool blink=(fmodf(t2,0.8f)<0.4f);
-                                            ImGui::PushStyleColor(ImGuiCol_Text,
-                                                blink?IM_COL32(255,80,80,255):IM_COL32(200,60,60,255));
-                                            static std::unordered_map<std::string,std::pair<float,std::string>> aud_sz_cache;
-                                            auto& ac=aud_sz_cache[re.filename];
-                                            if(t2-ac.first >= 0.5f){ ac.first=t2; ac.second=fmt_filesize("",re.path); }
-                                            if(!ac.second.empty())
-                                                ImGui::Text("[REC]  %s  [%ds]  %s", re.filename.c_str(), secs, ac.second.c_str());
-                                            else
-                                                ImGui::Text("[REC]  %s  [%ds]", re.filename.c_str(), secs);
-                                            ImGui::PopStyleColor();
                                         }
                                         ImGui::PopID();
                                     }

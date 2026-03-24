@@ -318,6 +318,7 @@ public:
         int32_t     req_time_start = 0, req_time_end = 0; // Unix timestamps from JOIN
         std::string local_path_to_delete; // HOST: 전송 후 삭제할 파일 경로
         std::chrono::steady_clock::time_point t_start; // 시작 시각
+        int         ch_idx = -1;  // 오디오 녹음 채널 인덱스
     };
     std::vector<RecEntry> rec_entries;
     std::mutex            rec_entries_mtx;
