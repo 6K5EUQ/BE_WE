@@ -31,12 +31,13 @@ void FFTViewer::mix_worker(){
                         net_cli->audio[c].pop(dummy,p2); continue;
                     }
                     float smp=0; int8_t pan=0;
+                    bool jgate=channels[c].sq_gate.load(std::memory_order_relaxed);
                     if(!net_cli->audio[c].pop(smp, pan)){
                         if(rec_on && channels[c].audio_rec_fp)
-                            channels[c].maybe_rec_audio(0.f);
+                            channels[c].maybe_rec_audio(0.f, jgate);
                         continue;
                     }
-                    if(rec_on) channels[c].maybe_rec_audio(smp);
+                    if(rec_on) channels[c].maybe_rec_audio(smp, jgate);
                     if(is_muted) continue;
 
                     int lco = local_ch_out[c];

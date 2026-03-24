@@ -1,7 +1,5 @@
 # BE_WE
 
-> **Hear everything. Know everything.**
->
 > Multi-user SDR spectrum analyzer with real-time network streaming, digital decoding, and 3D station discovery.
 
 ![Main Interface](assets/BEWE.png)
@@ -26,11 +24,7 @@
 
 ## Overview
 
-BE_WE is a Linux-native SDR (Software Defined Radio) platform built with C++17, OpenGL, and ImGui. A single HOST captures RF spectrum from an SDR device and streams it in real-time to multiple JOIN clients over TCP. Every operator sees the same live waterfall, can create channels, demodulate signals, chat, and share recordings — all from separate machines.
-
-**From hobbyist bench to government SIGINT floor** — BE_WE is designed for anyone who needs to monitor the electromagnetic spectrum. A ham radio enthusiast running an RTL-SDR on a desk, a maritime authority tracking AIS vessel traffic, or a military SIGINT team coordinating across distributed sensor sites — the same tool, the same workflow.
-
-The interface is built for **operators who work under pressure**. No deep menus, no configuration wizards. Click a frequency, drag a channel, hear the signal. Every action is one or two clicks away. Complex operations — multi-operator audio routing, time-domain IQ export, real-time collaborative monitoring — are surfaced through intuitive controls that a first-day operator can learn in minutes and a veteran can drive at full speed.
+BE_WE is a Linux-native SDR (Software Defined Radio) application built with C++17, OpenGL, and ImGui. A single HOST captures RF spectrum from an SDR device and streams it in real-time to multiple JOIN clients over TCP. Every operator sees the same live waterfall, can create channels, demodulate signals, chat, and share recordings — all from separate machines.
 
 ---
 
@@ -44,7 +38,7 @@ Unlike any other desktop SDR software, BE_WE supports multiple operators working
 
 ### 3D Globe Station Discovery
 
-Stations running BE_WE appear as markers on an interactive 3D globe. Operators can visually browse available stations worldwide and connect with a single click — no IP addresses or manual configuration needed. LAN stations are discovered automatically; WAN stations are reachable through the central server.
+Stations running BE_WE appear as markers on an interactive 3D globe. Operators can visually browse available stations worldwide and connect with a single click — no IP addresses or manual configuration needed. LAN stations are discovered automatically; WAN stations are reachable through an optional relay server.
 
 ### Time Machine — Rewind the Spectrum
 
@@ -58,9 +52,9 @@ Instead of capturing the entire wideband IQ stream (which can be tens of MB/s), 
 
 Each demodulated channel can be routed to specific operators using a per-channel bitmask. Operator A monitors channel 1, operator B monitors channels 2 and 3 — each with independent pan and volume control. This enables team-based division of labor across the spectrum.
 
-### Distributed Architecture (HOST / JOIN / Central Server)
+### Distributed Architecture (HOST / JOIN / Central Relay)
 
-Any machine with an SDR can HOST a station. Any machine without an SDR can JOIN and operate as if the hardware were local. A central server bridges stations across different networks. The central server fans out HOST's stream to all JOINs with a single upload path (no N× bandwidth overhead). Local relay optimization minimizes latency on the same subnet. The entire system is designed for real-world deployment where operators and hardware are rarely in the same room.
+Any machine with an SDR can HOST a station. Any machine without an SDR can JOIN and operate as if the hardware were local. A central relay server bridges stations across different networks using a multiplexed (MUX) protocol over a single port — HOST connects once and the relay fans out to all JOINs. LAN-priority connection logic minimizes latency when operators share the same subnet. The entire system is designed for real-world deployment where operators and hardware are rarely in the same room.
 
 ---
 
@@ -105,35 +99,33 @@ Any machine with an SDR can HOST a station. Any machine without an SDR can JOIN 
 - 60-second rolling IQ recording to disk (toggle with `T`)
 - Freeze & seek through waterfall history (`Space`)
 - Region selection (Ctrl+Right-drag) for IQ export
-- Recordings saved to `~/BE_WE/recordings/`
+- IQ_CHUNK transfer: WAN-compatible file streaming from HOST to JOIN via MUX relay
+- Real-time transfer progress broadcast (REC → Transferring → Done)
 
 ### Network Streaming (HOST / JOIN)
 - HOST broadcasts FFT + audio over TCP
 - JOIN clients receive with jitter buffer for smooth playback
-- Per-client async send queues — slow clients don't block the stream
-- Separate priority queue for heartbeats — control frames always delivered even under heavy data load
+- Per-client async send queues with priority (control > FFT > audio) — slow clients don't block the stream
 - Tier-based authentication (Tier 1 / 2 / 3)
 - Bi-directional commands: JOIN can tune frequency, create channels, control gain
-
-### Central Server (WAN)
-- Optional cloud server for cross-network (WAN) operation
-- HOST uploads FFT/audio stream **once** — central server fans out to all JOINs (no N× bandwidth overhead)
-- Global chat: all operators connected to the same central server see each other's messages regardless of room
-- IQ file transfer via dedicated pipe connection (no blocking main data stream)
-- Host room watchdog with 20-second timeout to detect dead connections
+- Dynamic FFT size and sample rate changes from JOIN
+- Remote chassis reset and RX start/stop commands
+- IQ_CHUNK streaming: WAN-compatible file transfer via MUX relay
 
 ### Station Discovery & Globe
 - 3D interactive globe with Blue Marble texture
 - UDP broadcast discovery on LAN
-- Central server for WAN connections
-- Local relay for same-subnet optimization
+- Central relay server for WAN connections (single port 7700)
+- LAN-priority connection: auto-detects same-subnet relay and connects locally
+- Continuous station list polling with live updates
 - Click globe to set your station location
 
 ### Collaboration
-- Real-time global chat between all operators on the same central server
+- Real-time chat between all connected operators
 - File sharing (upload / download recordings via public directory)
 - Operator list with tier and connection status
 - Channel ownership tracking
+- Public file deletion by owner
 
 ### Signal Analyzer
 - Open exported WAV/IQ files for offline spectral analysis
@@ -156,14 +148,14 @@ Hardware is auto-detected at startup. If no SDR is found, you can still JOIN a r
 ## Architecture
 
 ```
-                        ┌─────────────────────────────────┐
-                        │         CENTRAL SERVER          │
-                        │  (fan-out: 1× upload → N JOINs) │
-                        └──────┬──────────────┬───────────┘
+                        ┌──────────────────────────────────┐
+                        │        CENTRAL RELAY SERVER       │
+                        │   port 7700 (MUX)  │  7702 (IQ)  │
+                        └──────┬──────────────┬────────────┘
                                │   WAN        │
                  ┌─────────────┴───┐    ┌─────┴───────────┐
                  │   HOST (SDR)    │    │   JOIN Client    │
-                 │                 │    │   (no hardware)  │
+                 │   port 7701     │    │   (no hardware)  │
                  │  ┌───────────┐  │    └──────────────────┘
                  │  │ BladeRF / │  │         LAN
                  │  │ RTL-SDR   │  ├─── UDP Discovery ───── JOIN Client
@@ -171,15 +163,9 @@ Hardware is auto-detected at startup. If no SDR is found, you can still JOIN a r
                  └─────────────────┘
 ```
 
-- **HOST** — Runs the SDR, computes FFT, broadcasts to all JOINs
+- **HOST** — Runs the SDR, computes FFT, streams to JOINs (direct on LAN, or via relay on WAN)
 - **JOIN** — Connects to HOST, receives spectrum + audio, sends commands
-- **Central Server** — Optional WAN bridge; receives HOST stream once, fans out to N JOINs
-
-### Bandwidth Design
-
-The central server uses a multiplexed protocol (`conn_id=0xFFFF` for broadcast). The HOST sends each FFT/audio frame **once** to the central server regardless of how many JOINs are connected. The central server handles fan-out internally. This ensures HOST upload bandwidth stays constant as JOIN count grows.
-
-Heartbeat and control frames use a **separate priority queue** from data frames, so they are always delivered even when the data channel is saturated with FFT/audio traffic.
+- **Central Relay** — WAN bridge: HOST opens a room, JOINs connect through a single multiplexed port (7700). IQ file transfers use a dedicated pipe port (7702)
 
 ---
 
@@ -244,18 +230,6 @@ make -j$(nproc)
 ./BE_WE
 ```
 
-### Central Server (optional, for WAN)
-
-```bash
-cd central
-mkdir build && cd build
-cmake ..
-make -j$(nproc)
-./bewe_central
-```
-
-The central server has no SDR or graphics dependencies — it can run on any Linux VPS.
-
 ---
 
 ## Usage
@@ -264,16 +238,15 @@ The central server has no SDR or graphics dependencies — it can run on any Lin
 
 1. Launch `./BE_WE`
 2. Log in with ID / Password and select a Tier (`Ctrl+1` / `Ctrl+2` / `Ctrl+3`)
-3. Optionally enter a Central Server IP in the login panel for WAN support
-4. Click your location on the 3D globe, then press **HOST**
-5. SDR starts automatically — spectrum and waterfall appear
-6. Other users can now JOIN your station directly (LAN) or via the central server (WAN)
+3. Click your location on the 3D globe, then press **HOST**
+4. SDR starts automatically — spectrum and waterfall appear
+5. Other users can now JOIN your station
 
 ### JOIN Mode
 
 1. Launch `./BE_WE` on a different machine (no SDR required)
 2. Log in and select a Tier
-3. Stations appear on the globe via UDP discovery (LAN) or central server (WAN)
+3. Stations appear on the globe via UDP discovery or relay
 4. Click a station marker and press **JOIN**
 5. Live spectrum, audio, and channels stream in real-time
 
@@ -292,17 +265,21 @@ The central server has no SDR or graphics dependencies — it can run on any Lin
 
 ## Network
 
-| Port | Protocol | Purpose |
-|------|----------|---------|
-| 7701 | TCP | HOST ↔ JOIN direct connection |
-| 7701 | UDP | LAN station discovery broadcast |
-| 7700 | TCP | HOST / JOIN ↔ Central server (MUX) |
-| 7702 | TCP | IQ file transfer pipe (central server) |
+### Ports
 
-- HOST ↔ JOIN communication uses a custom binary protocol (`BEWE` magic, 9-byte header)
-- Central server MUX uses a 7-byte header (`conn_id` + `type` + `len`) wrapping BEWE packets
-- `conn_id=0xFFFF` signals broadcast — central server fans out to all JOINs in the room
-- See `src/net_protocol.hpp` and `central/central_proto.hpp` for protocol details
+| Port | Role | Description |
+|------|------|-------------|
+| **7700** | Central Relay | MUX relay — HOST registers station, JOINs connect via relay |
+| **7701** | HOST ↔ JOIN | Direct BEWE protocol (LAN or relay-forwarded) |
+| **7702** | IQ Pipe | Dedicated IQ file transfer between HOST and JOIN |
+
+### Protocol
+
+- HOST ↔ JOIN communication uses a custom binary protocol (`BEWE` magic) over TCP
+- Central relay uses a separate protocol (`BRLY` magic) with MUX headers to multiplex multiple JOINs over one HOST connection
+- LAN stations are discovered automatically via UDP broadcast
+- WAN stations are reachable through the central relay server
+- See `src/net_protocol.hpp` and `central/central_proto.hpp` for internal details
 
 ---
 
@@ -395,32 +372,33 @@ BE_WE/
 │   ├── bladerf_io.cpp        # BladeRF SDR capture
 │   ├── rtlsdr_io.cpp         # RTL-SDR capture
 │   ├── hw_detect.cpp         # Hardware auto-detection
+│   ├── hw_config.hpp         # Runtime hardware parameters (SR, freq range, gain mapping)
 │   ├── demod.cpp             # AM / FM / MAGIC demodulation
-│   ├── audio.cpp             # ALSA output + 5 noise reduction algorithms
+│   ├── audio.hpp/cpp         # ALSA output + 5 noise reduction algorithms
 │   ├── ais.cpp               # AIS digital decoder
 │   ├── dmr.cpp               # DMR digital decoder (AMBE+2)
-│   ├── net_protocol.hpp      # Binary protocol specification
+│   ├── net_protocol.hpp      # Binary protocol specification (BEWE)
 │   ├── net_server.hpp/cpp    # HOST-side TCP server
 │   ├── net_client.hpp/cpp    # JOIN-side TCP client
-│   ├── net_stream.cpp        # FFT/audio streaming loop
-│   ├── central_client.hpp/cpp # Central server MUX client (HOST side)
+│   ├── net_stream.cpp        # Stream utilities
+│   ├── central_client.hpp/cpp # Central relay client (HOST/JOIN WAN relay)
+│   ├── iq_pipe_server.hpp/cpp # IQ file transfer server (port 7702)
 │   ├── udp_discovery.hpp/cpp # LAN station broadcast
-│   ├── local_relay_server.*  # LAN local relay
 │   ├── globe.hpp/cpp         # 3D Earth renderer (OpenGL 3.3)
 │   ├── timemachine.cpp       # IQ rolling record & playback
 │   ├── region_save.cpp       # Region IQ export
 │   ├── sa_compute.cpp        # Signal Analyzer offline FFT
 │   ├── iq_record.cpp         # IQ / audio recording
-│   ├── login.cpp             # Authentication & tier selection
+│   ├── login.hpp/cpp         # Authentication & tier selection
 │   ├── channel.hpp           # Per-channel state (freq, mode, squelch)
-│   ├── bewe_paths.hpp        # Runtime path management (recordings, temp)
 │   ├── config.hpp            # Global constants
+│   ├── bewe_paths.hpp        # Path management (recordings, assets, data dirs)
 │   └── world_map_data.hpp    # Embedded vector map for globe
 ├── central/
-│   ├── central_main.cpp      # Standalone central server entry point
-│   ├── central_server.hpp/cpp # Central server implementation
-│   ├── central_proto.hpp     # Central MUX protocol definition
-│   └── CMakeLists.txt        # Central server build (no SDR/graphics deps)
+│   ├── central_main.cpp      # Standalone central relay server
+│   ├── central_server.hpp/cpp # Central relay implementation
+│   ├── central_proto.hpp     # Central relay protocol (BRLY + MUX)
+│   └── CMakeLists.txt        # Build configuration for bewe_central
 ├── libs/
 │   └── imgui/                # Dear ImGui (embedded)
 ├── assets/
@@ -428,9 +406,35 @@ BE_WE/
 │   ├── earth.jpg             # Blue Marble texture
 │   ├── login_bg_Tier_*.png   # Tier-specific login backgrounds
 │   └── *.png                 # UI screenshots
-├── recordings/               # Default recording output directory (~/BE_WE/recordings/)
-└── CMakeLists.txt            # Main build configuration
+└── CMakeLists.txt            # Build configuration
 ```
+
+---
+
+## Data Directory
+
+BE_WE stores recordings and data files under `$HOME/BE_WE/`:
+
+```
+$HOME/BE_WE/
+├── recordings/
+│   ├── record/          # Current session recordings
+│   │   ├── iq/
+│   │   └── audio/
+│   ├── private/         # Previous session recordings
+│   │   ├── iq/
+│   │   └── audio/
+│   ├── public/          # Files shared via server
+│   │   ├── iq/
+│   │   └── audio/
+│   ├── share/           # Files downloaded from public
+│   │   ├── iq/
+│   │   └── audio/
+│   └── Time_temp/       # Time Machine rolling IQ buffer
+└── assets/              # Fallback asset directory
+```
+
+Directories are created automatically on startup.
 
 ---
 

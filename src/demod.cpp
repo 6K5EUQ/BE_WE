@@ -159,11 +159,10 @@ void FFTViewer::dem_worker(int ch_idx){
                     }
                     aac+=samp; acnt++;
                     if(acnt>=(int)actual_ad){
-                        float out=gate_open
-                                  ?std::max(-1.0f,std::min(1.0f,(float)(aac/acnt)))
-                                  :0.0f;
+                        float raw_out=std::max(-1.0f,std::min(1.0f,(float)(aac/acnt)));
+                        float out=gate_open?raw_out:0.0f;
                         aac=0; acnt=0;
-                        ch.maybe_rec_audio(out);
+                        ch.maybe_rec_audio(raw_out, gate_open);
                         ch.push_audio(out);
                         // ── 네트워크 오디오 전송 (스컬치 초과 시만) ────────────────────
                         if(net_srv && gate_open){
@@ -197,11 +196,10 @@ void FFTViewer::dem_worker(int ch_idx){
                 }
                 aac+=samp; acnt++;
                 if(acnt>=(int)actual_ad){
-                    float out=gate_open
-                              ?std::max(-1.0f,std::min(1.0f,(float)(aac/acnt)))
-                              :0.0f;
+                    float raw_out=std::max(-1.0f,std::min(1.0f,(float)(aac/acnt)));
+                    float out=gate_open?raw_out:0.0f;
                     aac=0; acnt=0;
-                    ch.maybe_rec_audio(out);
+                    ch.maybe_rec_audio(raw_out, gate_open);
                     ch.push_audio(out);
                     // ── 네트워크 오디오 전송 (스컬치 초과 시만) ────────────────────────
                     if(net_srv && gate_open && (ch.audio_mask.load() & ~0x1u)){

@@ -127,6 +127,11 @@ struct Channel {
     uint32_t          audio_rec_sr      = 0;
     std::string       audio_rec_path;
 
+    // 스컬치 기반 녹음 상태머신 (worker 스레드 전용)
+    enum SqRecState : int { SQR_IDLE=0, SQR_RECORDING=1, SQR_TAIL=2 };
+    int      sqr_state       = SQR_IDLE;
+    uint32_t sqr_tail_remain = 0;
+
     // mono int16 WAV 헤더 기록 (open / close 시 호출)
     void audio_rec_write_wav_hdr(FILE* fp, uint32_t sr, uint64_t frames){
         auto w32=[&](uint32_t v){ fwrite(&v,4,1,fp); };
@@ -138,10 +143,36 @@ struct Channel {
         fwrite("data",1,4,fp); w32(db);
     }
 
-    // demod worker에서 호출: out 샘플을 녹음 파일에 기록
-    inline void maybe_rec_audio(float out){
+    // demod worker에서 호출: 스컬치 기반 녹음 상태머신
+    inline void maybe_rec_audio(float out, bool gate_open){
         if(!audio_rec_on.load(std::memory_order_relaxed)) return;
         if(!audio_rec_fp) return;
+
+        uint32_t tail_samples = audio_rec_sr; // 1초
+
+        switch(sqr_state){
+        case SQR_IDLE:
+            if(!gate_open) return;
+            sqr_state = SQR_RECORDING;
+            break;
+        case SQR_RECORDING:
+            if(!gate_open){
+                sqr_state = SQR_TAIL;
+                sqr_tail_remain = tail_samples;
+            }
+            break;
+        case SQR_TAIL:
+            if(gate_open){
+                sqr_state = SQR_RECORDING;
+            } else if(sqr_tail_remain == 0){
+                sqr_state = SQR_IDLE;
+                return;
+            } else {
+                sqr_tail_remain--;
+            }
+            break;
+        }
+
         int16_t s16=(int16_t)(out<-1.f?-32767:out>1.f?32767:(int)(out*32767.f));
         fwrite(&s16,2,1,audio_rec_fp);
         audio_rec_frames++;

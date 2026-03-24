@@ -126,6 +126,8 @@ void FFTViewer::start_audio_rec(int ch_idx){
     ch.audio_rec_write_wav_hdr(fp,asr,0);
     ch.audio_rec_fp=fp;
     ch.audio_rec_path=fn;
+    ch.sqr_state = Channel::SQR_IDLE;
+    ch.sqr_tail_remain = 0;
     ch.audio_rec_on.store(true,std::memory_order_release);
 
     // RecEntry 추가
@@ -193,6 +195,8 @@ void FFTViewer::start_join_audio_rec(int ch_idx){
     ch.audio_rec_write_wav_hdr(fp,asr,0);
     ch.audio_rec_fp=fp;
     ch.audio_rec_path=fn;
+    ch.sqr_state = Channel::SQR_IDLE;
+    ch.sqr_tail_remain = 0;
     ch.audio_rec_on.store(true,std::memory_order_release);
 
     {
