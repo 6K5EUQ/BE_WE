@@ -33,17 +33,21 @@ out vec4 FragColor;
 uniform sampler2D uEarthTex;
 uniform bool uHasTex;
 void main(){
-    vec4 base;
-    if(uHasTex){
-        vec4 tex = texture(uEarthTex, vUV);
-        float rim = 1.0 - max(dot(normalize(vNorm), vec3(0.0,0.0,1.0)), 0.0);
-        rim = pow(rim, 3.0) * 0.5;
-        base = vec4(tex.rgb * (1.0 - rim * 0.6), 1.0);
-    } else {
-        base = vec4(0.04, 0.10, 0.28, 1.0);
-    }
+    vec3 N = normalize(vNorm);
+    vec3 V = vec3(0.0, 0.0, 1.0);
 
-    FragColor = base;
+    if(uHasTex){
+        vec3 tex = texture(uEarthTex, vUV).rgb;
+
+        // Atmosphere rim glow (works on both front and back faces)
+        float rim = 1.0 - abs(dot(N, V));
+        float atmo = pow(rim, 4.0) * 0.4;
+        vec3 col = tex + vec3(0.3, 0.5, 1.0) * atmo;
+
+        FragColor = vec4(col, 1.0);
+    } else {
+        FragColor = vec4(0.04, 0.10, 0.28, 1.0);
+    }
 }
 )GLSL";
 
@@ -132,7 +136,7 @@ bool GlobeRenderer::init() {
     prog_lines_  = compile_shader(LINES_VERT, LINES_FRAG);
     prog_land_   = compile_shader(LAND_VERT,  LAND_FRAG);
     if (!prog_sphere_ || !prog_lines_ || !prog_land_) return false;
-    build_sphere(30, 60);
+    build_sphere(64, 128);
     build_land();
     build_map_lines();
     build_stars();

@@ -1050,6 +1050,7 @@ void run_streaming_viewer(){
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);
     glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_SAMPLES,4);
     glfwWindowHint(GLFW_DECORATED,GLFW_FALSE);
     GLFWmonitor* primary=glfwGetPrimaryMonitor();
     const GLFWvidmode* vmode=glfwGetVideoMode(primary);
@@ -1060,6 +1061,7 @@ void run_streaming_viewer(){
     GLFWwindow* win=glfwCreateWindow(vmode->width,vmode->height,"BEWE",primary,nullptr);
     glfwMakeContextCurrent(win); glfwSwapInterval(0);
     glewExperimental=GL_TRUE; glewInit();
+    glEnable(GL_MULTISAMPLE);
     ImGui::CreateContext(); ImGui::StyleColorsDark();
     ImGui_ImplGlfw_InitForOpenGL(win,true);
     ImGui_ImplOpenGL3_Init("#version 330");
