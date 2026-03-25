@@ -13,8 +13,7 @@ pkg_check_modules(RTLSDR  REQUIRED librtlsdr)
 pkg_check_modules(LIBMBE  REQUIRED libmbe)
 pkg_check_modules(LIBPNG  REQUIRED libpng)
 
-find_path(VOLK_INCLUDE_DIR volk/volk.h)
-find_library(VOLK_LIB volk)
+pkg_check_modules(VOLK REQUIRED volk)
 
 find_package(OpenGL REQUIRED)
 find_package(GLEW   REQUIRED)
@@ -65,7 +64,7 @@ target_include_directories(BE_WE PRIVATE
     ${RTLSDR_INCLUDE_DIRS}
     ${LIBMBE_INCLUDE_DIRS}
     ${LIBPNG_INCLUDE_DIRS}
-    ${VOLK_INCLUDE_DIR}
+    ${VOLK_INCLUDE_DIRS}
     ${IMGUI_PATH}
     ${IMGUI_BACKENDS_PATH}
 )
@@ -81,7 +80,7 @@ target_link_libraries(BE_WE PRIVATE
     OpenGL::GL
     GLEW::GLEW
     glfw
-    ${VOLK_LIB}
+    ${VOLK_LIBRARIES}
     pthread
     m
 )

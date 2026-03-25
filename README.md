@@ -187,7 +187,7 @@ sudo apt install -y build-essential cmake pkg-config
 sudo apt install -y libbladerf-dev librtlsdr-dev
 
 # DSP / Audio
-sudo apt install -y libfftw3-dev libasound2-dev libmpg123-dev
+sudo apt install -y libfftw3-dev libasound2-dev libmpg123-dev libvolk-dev
 
 # Graphics
 sudo apt install -y libglew-dev libglfw3-dev libgl-dev libpng-dev
@@ -216,7 +216,7 @@ sudo ldconfig
 ```bash
 sudo apt install -y build-essential cmake pkg-config \
   libbladerf-dev librtlsdr-dev libfftw3-dev libasound2-dev \
-  libmpg123-dev libglew-dev libglfw3-dev libgl-dev libpng-dev libstb-dev
+  libmpg123-dev libvolk-dev libglew-dev libglfw3-dev libgl-dev libpng-dev libstb-dev
 ```
 
 ### Compile
@@ -354,6 +354,7 @@ See [System Dependencies](#system-dependencies) above. All required packages wit
 | `libmpg123` | `libmpg123-dev` |
 | `librtlsdr` | `librtlsdr-dev` |
 | `libmbe` | [build from source](#mbelib-manual-build-required) |
+| `volk` | `libvolk-dev` |
 | `libpng` | `libpng-dev` |
 | OpenGL | `libgl-dev` |
 | GLEW | `libglew-dev` |
