@@ -4094,7 +4094,7 @@ void run_streaming_viewer(){
                 vdiv_dragging = true;
             if(!ImGui::IsMouseDown(ImGuiMouseButton_Left))
                 vdiv_dragging = false;
-            if(vdiv_dragging){
+            if(vdiv_dragging && !v.eid_panel_open){
                 v.right_panel_ratio -= io.MouseDelta.x / disp_w;
                 v.right_panel_ratio = std::max(0.0f, std::min(1.0f, v.right_panel_ratio));
                 // 드래그 중 실시간으로 열린 상태의 너비를 기억 (닫힘 상태 제외)
@@ -4149,21 +4149,42 @@ void run_streaming_viewer(){
             float btn_x = rpx + 6;
             if(subbar_btn(btn_x, "STAT", stat_open, IM_COL32(80,255,160,255))){
                 stat_open = !stat_open;
-                if(stat_open){ v.sa_panel_open=false; board_open=false; }
+                if(stat_open){ v.sa_panel_open=false; board_open=false;
+                    if(v.eid_panel_open){ v.eid_panel_open=false; v.right_panel_ratio=v.eid_saved_ratio; }
+                }
             }
 
             // ── SA 버튼 ──────────────────────────────────────────────────
             float sa_btn_x = btn_x + 44;
             if(subbar_btn(sa_btn_x, "SA", v.sa_panel_open, IM_COL32(80,180,255,255))){
                 v.sa_panel_open = !v.sa_panel_open;
-                if(v.sa_panel_open){ stat_open=false; board_open=false; }
+                if(v.sa_panel_open){ stat_open=false; board_open=false;
+                    if(v.eid_panel_open){ v.eid_panel_open=false; v.right_panel_ratio=v.eid_saved_ratio; }
+                }
             }
 
             // ── BOARD 버튼 ───────────────────────────────────────────────
             float board_btn_x = sa_btn_x + 32;
             if(subbar_btn(board_btn_x, "BOARD", board_open, IM_COL32(255,200,80,255))){
                 board_open = !board_open;
-                if(board_open){ stat_open=false; v.sa_panel_open=false; }
+                if(board_open){ stat_open=false; v.sa_panel_open=false;
+                    if(v.eid_panel_open){ v.eid_panel_open=false; v.right_panel_ratio=v.eid_saved_ratio; }
+                }
+            }
+
+            // ── EID 버튼 ───────────────────────────────────────────
+            float eid_btn_x = board_btn_x + 52;
+            if(subbar_btn(eid_btn_x, "EID", v.eid_panel_open, IM_COL32(255,100,180,255))){
+                v.eid_panel_open = !v.eid_panel_open;
+                if(v.eid_panel_open){
+                    stat_open=false; v.sa_panel_open=false; board_open=false;
+                    v.eid_saved_ratio = v.right_panel_ratio;
+                    v.right_panel_ratio = 1.0f;
+                    if(!v.sa_temp_path.empty() && !v.eid_computing.load())
+                        v.eid_start(v.sa_temp_path);
+                } else {
+                    v.right_panel_ratio = v.eid_saved_ratio;
+                }
             }
 
             // ── FFT size 선택 (SA 활성화 시에만) ─────────────────────────
@@ -4202,7 +4223,7 @@ void run_streaming_viewer(){
             dl->AddRectFilled(ImVec2(rpx,rp_content_y),ImVec2(disp_w,content_y+content_h),IM_COL32(12,12,15,255));
 
             // ── STAT 패널 ─────────────────────────────────────────────────
-            if(stat_open){
+            if(stat_open && !v.eid_panel_open){
                 float px=rpx, py=rp_content_y, pw=disp_w-rpx, ph=rp_content_h;
                 ImGui::SetNextWindowPos(ImVec2(px,py));
                 ImGui::SetNextWindowSize(ImVec2(pw,ph));
@@ -5302,6 +5323,277 @@ void run_streaming_viewer(){
                 }
             }
 
+            // ── EID 패널 (Time-Amplitude 파형) ─────────────────────────
+            if(v.eid_panel_open){
+                if(v.eid_computing.load()){
+                    v.eid_anim_timer += io.DeltaTime;
+                    int dots = ((int)(v.eid_anim_timer / 0.5f) % 3) + 1;
+                    char msg[32]; snprintf(msg, sizeof(msg), "Loading %.*s", dots, "...");
+                    ImVec2 msz = ImGui::CalcTextSize(msg);
+                    dl->AddText(ImVec2(rpx+(rp_w-msz.x)/2, rp_content_y+(rp_content_h-msz.y)/2),
+                                IM_COL32(255,100,180,255), msg);
+                } else if(v.eid_data_ready.load()){
+                    // ── 플롯 영역 ──────────────────────────────────────────
+                    const float LM = 60.f, RM = 10.f, TM = 10.f, BM = 30.f;
+                    float ea_x0 = rpx + LM, ea_y0 = rp_content_y + TM;
+                    float ea_x1 = disp_w - RM, ea_y1 = content_y + content_h - BM;
+                    float ea_w = ea_x1 - ea_x0, ea_h = ea_y1 - ea_y0;
+                    if(ea_w < 10.f || ea_h < 10.f) goto eid_skip;
+
+                    // 배경
+                    dl->AddRectFilled(ImVec2(ea_x0, ea_y0), ImVec2(ea_x1, ea_y1), IM_COL32(8,8,12,255));
+                    dl->AddRect(ImVec2(ea_x0, ea_y0), ImVec2(ea_x1, ea_y1), IM_COL32(60,60,80,255));
+
+                    { // scope for eid data access
+                    double vt0 = v.eid_view_t0, vt1 = v.eid_view_t1;
+                    float  a_min = v.eid_amp_min, a_max = v.eid_amp_max;
+                    float  a_rng = a_max - a_min;
+                    if(a_rng < 1e-6f) a_rng = 1e-6f;
+                    double vis_samp = vt1 - vt0;
+                    if(vis_samp < 1.0) vis_samp = 1.0;
+                    int pixels = (int)ea_w;
+                    if(pixels < 1) pixels = 1;
+                    double spp = vis_samp / pixels; // samples per pixel
+
+                    // ── Y축 그리드 + 라벨 ──────────────────────────────────
+                    {
+                        int n_divs = std::max(2, std::min(10, (int)(ea_h / 40.f)));
+                        for(int i = 0; i <= n_divs; i++){
+                            float frac = (float)i / n_divs;
+                            float yy = ea_y0 + frac * ea_h;
+                            float amp_val = a_max - frac * a_rng; // top=max
+                            dl->AddLine(ImVec2(ea_x0, yy), ImVec2(ea_x1, yy),
+                                        IM_COL32(40,40,55,255));
+                            char lbl[16]; snprintf(lbl, sizeof(lbl), "%.3f", amp_val);
+                            ImVec2 tsz = ImGui::CalcTextSize(lbl);
+                            dl->AddText(ImVec2(ea_x0 - tsz.x - 4, yy - tsz.y * 0.5f),
+                                        IM_COL32(130,130,160,255), lbl);
+                        }
+                    }
+
+                    // ── X축 그리드 + 라벨 (시간) ────────────────────────────
+                    {
+                        uint32_t sr = v.eid_sample_rate;
+                        if(sr == 0) sr = 1;
+                        double t0_sec = vt0 / sr, t1_sec = vt1 / sr;
+                        double dt_sec = t1_sec - t0_sec;
+                        // 적응적 단위: us / ms / s
+                        const char* unit = "s"; double unit_div = 1.0;
+                        if(dt_sec < 0.001){ unit = "us"; unit_div = 1e-6; }
+                        else if(dt_sec < 1.0){ unit = "ms"; unit_div = 1e-3; }
+                        // step: 깔끔한 눈금 간격
+                        double range_u = dt_sec / unit_div;
+                        double raw_step = range_u / std::max(2.0, (double)(pixels / 120));
+                        double mag = pow(10.0, floor(log10(raw_step)));
+                        double norm = raw_step / mag;
+                        double nice_step;
+                        if(norm <= 1.0) nice_step = 1.0 * mag;
+                        else if(norm <= 2.0) nice_step = 2.0 * mag;
+                        else if(norm <= 5.0) nice_step = 5.0 * mag;
+                        else nice_step = 10.0 * mag;
+                        double start_u = ceil((t0_sec / unit_div) / nice_step) * nice_step;
+                        for(double tu = start_u; tu * unit_div <= t1_sec + nice_step * 0.5; tu += nice_step){
+                            double t_sec = tu * unit_div;
+                            double samp = t_sec * sr;
+                            float xx = ea_x0 + (float)((samp - vt0) / vis_samp) * ea_w;
+                            if(xx < ea_x0 || xx > ea_x1) continue;
+                            dl->AddLine(ImVec2(xx, ea_y0), ImVec2(xx, ea_y1),
+                                        IM_COL32(40,40,55,255));
+                            char lbl[32]; snprintf(lbl, sizeof(lbl), "%.4g%s", tu, unit);
+                            ImVec2 tsz = ImGui::CalcTextSize(lbl);
+                            dl->AddText(ImVec2(xx - tsz.x * 0.5f, ea_y1 + 4),
+                                        IM_COL32(130,130,160,255), lbl);
+                        }
+                    }
+
+                    // ── 파형 렌더링 (min-max 밴드 / 개별 샘플) ──────────────
+                    dl->PushClipRect(ImVec2(ea_x0, ea_y0), ImVec2(ea_x1, ea_y1), true);
+                    {
+                        const auto& env = v.eid_envelope;
+                        int64_t total = (int64_t)env.size();
+
+                        if(spp <= 1.0){
+                            // 개별 샘플 렌더: 점+선
+                            std::vector<ImVec2> pts;
+                            int64_t s0 = std::max((int64_t)0, (int64_t)vt0);
+                            int64_t s1 = std::min(total, (int64_t)ceil(vt1) + 1);
+                            pts.reserve(s1 - s0);
+                            for(int64_t s = s0; s < s1; s++){
+                                float xx = ea_x0 + (float)((s - vt0) / vis_samp) * ea_w;
+                                float yy = ea_y0 + (1.0f - (env[s] - a_min) / a_rng) * ea_h;
+                                pts.push_back(ImVec2(xx, yy));
+                            }
+                            if(pts.size() >= 2)
+                                dl->AddPolyline(pts.data(), (int)pts.size(),
+                                                IM_COL32(80,255,140,255), ImDrawFlags_None, 1.5f);
+                            // 샘플 포인트 (충분히 확대 시)
+                            if(spp < 0.3 && pts.size() < 2000){
+                                for(auto& p : pts)
+                                    dl->AddCircleFilled(p, 2.5f, IM_COL32(120,255,180,255));
+                            }
+                        } else {
+                            // min-max 밴드 렌더: 각 픽셀 열마다 수직 라인
+                            for(int px = 0; px < pixels; px++){
+                                int64_t s0 = (int64_t)(vt0 + px * spp);
+                                int64_t s1 = (int64_t)(vt0 + (px + 1) * spp);
+                                s0 = std::max((int64_t)0, std::min(s0, total - 1));
+                                s1 = std::max(s0 + 1, std::min(s1, total));
+                                float lo = env[s0], hi = env[s0];
+                                for(int64_t s = s0 + 1; s < s1; s++){
+                                    float v2 = env[s];
+                                    if(v2 < lo) lo = v2;
+                                    if(v2 > hi) hi = v2;
+                                }
+                                float xx = ea_x0 + px;
+                                float yy_lo = ea_y0 + (1.0f - (hi - a_min) / a_rng) * ea_h;
+                                float yy_hi = ea_y0 + (1.0f - (lo - a_min) / a_rng) * ea_h;
+                                if(yy_lo > yy_hi) std::swap(yy_lo, yy_hi);
+                                if(yy_hi - yy_lo < 1.0f) yy_hi = yy_lo + 1.0f;
+                                dl->AddLine(ImVec2(xx, yy_lo), ImVec2(xx, yy_hi),
+                                            IM_COL32(80,255,140,200));
+                            }
+                        }
+                    }
+                    dl->PopClipRect();
+
+                    // ── 마우스 인터랙션: 줌/팬 ─────────────────────────────
+                    ImVec2 mp = io.MousePos;
+                    bool mouse_in_eid = (mp.x >= ea_x0 && mp.x < ea_x1 &&
+                                         mp.y >= ea_y0 && mp.y < ea_y1);
+
+                    // 스크롤 휠 줌 (시간축)
+                    if(mouse_in_eid && io.MouseWheel != 0.f){
+                        // 줌 전 현재 뷰를 스택에 저장
+                        v.eid_view_stack.push_back({v.eid_view_t0, v.eid_view_t1});
+                        double zoom_f = (io.MouseWheel > 0) ? 0.8 : 1.25;
+                        double mouse_t = vt0 + ((mp.x - ea_x0) / ea_w) * vis_samp;
+                        double new_half = vis_samp * 0.5 * zoom_f;
+                        v.eid_view_t0 = mouse_t - new_half;
+                        v.eid_view_t1 = mouse_t + new_half;
+                        if(v.eid_view_t0 < 0){ v.eid_view_t1 -= v.eid_view_t0; v.eid_view_t0 = 0; }
+                        if(v.eid_view_t1 > (double)v.eid_total_samples){
+                            v.eid_view_t0 -= (v.eid_view_t1 - (double)v.eid_total_samples);
+                            v.eid_view_t1 = (double)v.eid_total_samples;
+                        }
+                        v.eid_view_t0 = std::max(0.0, v.eid_view_t0);
+                        v.eid_view_t1 = std::min((double)v.eid_total_samples, v.eid_view_t1);
+                        if(v.eid_view_t1 - v.eid_view_t0 < 32.0){
+                            double mid = (v.eid_view_t0 + v.eid_view_t1) * 0.5;
+                            v.eid_view_t0 = mid - 16.0; v.eid_view_t1 = mid + 16.0;
+                        }
+                    }
+
+                    // 좌클릭 드래그 → 영역 선택 줌
+                    if(mouse_in_eid && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                        v.eid_sel_active = true;
+                        v.eid_sel_x0 = mp.x;
+                        v.eid_sel_x1 = mp.x;
+                    }
+                    if(v.eid_sel_active){
+                        if(ImGui::IsMouseDown(ImGuiMouseButton_Left)){
+                            v.eid_sel_x1 = mp.x;
+                            // 선택 영역 표시 (회색 반투명)
+                            float sx0 = std::min(v.eid_sel_x0, v.eid_sel_x1);
+                            float sx1 = std::max(v.eid_sel_x0, v.eid_sel_x1);
+                            sx0 = std::max(sx0, ea_x0); sx1 = std::min(sx1, ea_x1);
+                            if(sx1 - sx0 > 1.f){
+                                dl->AddRectFilled(ImVec2(sx0, ea_y0), ImVec2(sx1, ea_y1),
+                                                  IM_COL32(200,200,220,50));
+                                dl->AddRect(ImVec2(sx0, ea_y0), ImVec2(sx1, ea_y1),
+                                            IM_COL32(200,200,220,160), 0.f, 0, 1.f);
+                            }
+                        } else {
+                            // 릴리즈: 선택 범위로 줌
+                            v.eid_sel_active = false;
+                            float sx0 = std::min(v.eid_sel_x0, v.eid_sel_x1);
+                            float sx1 = std::max(v.eid_sel_x0, v.eid_sel_x1);
+                            if(sx1 - sx0 > 5.f){ // 최소 5px 드래그
+                                // 현재 뷰를 스택에 push
+                                v.eid_view_stack.push_back({v.eid_view_t0, v.eid_view_t1});
+                                // 화면 좌표 → 샘플 인덱스
+                                double t0_new = vt0 + ((sx0 - ea_x0) / ea_w) * vis_samp;
+                                double t1_new = vt0 + ((sx1 - ea_x0) / ea_w) * vis_samp;
+                                v.eid_view_t0 = std::max(0.0, t0_new);
+                                v.eid_view_t1 = std::min((double)v.eid_total_samples, t1_new);
+                                if(v.eid_view_t1 - v.eid_view_t0 < 32.0){
+                                    double mid = (v.eid_view_t0 + v.eid_view_t1) * 0.5;
+                                    v.eid_view_t0 = mid - 16.0; v.eid_view_t1 = mid + 16.0;
+                                }
+                            }
+                        }
+                    }
+
+                    // 우클릭 한번 = 뒤로가기
+                    if(mouse_in_eid && ImGui::IsMouseReleased(ImGuiMouseButton_Right)){
+                        if(!v.eid_view_stack.empty()){
+                            auto [pt0, pt1] = v.eid_view_stack.back();
+                            v.eid_view_stack.pop_back();
+                            v.eid_view_t0 = pt0;
+                            v.eid_view_t1 = pt1;
+                        } else {
+                            v.eid_view_t0 = 0.0;
+                            v.eid_view_t1 = (double)v.eid_total_samples;
+                        }
+                    }
+
+                    // Home 키: 뷰 리셋 + 스택 클리어
+                    if(mouse_in_eid && ImGui::IsKeyPressed(ImGuiKey_Home, false)){
+                        v.eid_view_stack.clear();
+                        v.eid_view_t0 = 0.0;
+                        v.eid_view_t1 = (double)v.eid_total_samples;
+                    }
+
+                    // ── 커서 오버레이 ───────────────────────────────────────
+                    if(mouse_in_eid){
+                        // 십자선
+                        dl->AddLine(ImVec2(mp.x, ea_y0), ImVec2(mp.x, ea_y1),
+                                    IM_COL32(255,255,255,60));
+                        dl->AddLine(ImVec2(ea_x0, mp.y), ImVec2(ea_x1, mp.y),
+                                    IM_COL32(255,255,255,60));
+                        // 정보 박스
+                        double mouse_samp = vt0 + ((mp.x - ea_x0) / ea_w) * vis_samp;
+                        float  mouse_amp  = a_max - ((mp.y - ea_y0) / ea_h) * a_rng;
+                        uint32_t sr = v.eid_sample_rate > 0 ? v.eid_sample_rate : 1;
+                        double mouse_sec  = mouse_samp / sr;
+                        char info1[48], info2[48], info3[48];
+                        if(mouse_sec < 0.001)
+                            snprintf(info1, sizeof(info1), "Time : %.3f us", mouse_sec * 1e6);
+                        else if(mouse_sec < 1.0)
+                            snprintf(info1, sizeof(info1), "Time : %.4f ms", mouse_sec * 1e3);
+                        else
+                            snprintf(info1, sizeof(info1), "Time : %.6f s", mouse_sec);
+                        snprintf(info2, sizeof(info2), "Amp  : %.5f", mouse_amp);
+                        snprintf(info3, sizeof(info3), "Samp : %lld", (long long)(int64_t)mouse_samp);
+                        float fw = std::max({ImGui::CalcTextSize(info1).x,
+                                             ImGui::CalcTextSize(info2).x,
+                                             ImGui::CalcTextSize(info3).x});
+                        float fh = ImGui::GetFontSize() * 3.8f;
+                        float ox = ea_x1 - fw - 14.f, oy = ea_y0 + 8.f;
+                        dl->AddRectFilled(ImVec2(ox-4,oy-2), ImVec2(ox+fw+4,oy+fh),
+                                         IM_COL32(0,0,0,180), 4.f);
+                        float lh = ImGui::GetFontSize() + 2.f;
+                        dl->AddText(ImVec2(ox,oy),       IM_COL32(255,180,220,255), info1);
+                        dl->AddText(ImVec2(ox,oy+lh),    IM_COL32(255,180,220,255), info2);
+                        dl->AddText(ImVec2(ox,oy+lh*2),  IM_COL32(255,180,220,255), info3);
+                    }
+                    } // end scope for eid data access
+
+                    // EID 라벨
+                    {
+                        const char* title = "EID  Emitter Fingerprint";
+                        ImVec2 tsz = ImGui::CalcTextSize(title);
+                        dl->AddText(ImVec2(ea_x0 + (ea_w - tsz.x) * 0.5f, rp_content_y + 2),
+                                    IM_COL32(255,100,180,180), title);
+                    }
+                } else {
+                    eid_skip:
+                    const char* msg = "Load a WAV file (SA or right-click)";
+                    ImVec2 msz = ImGui::CalcTextSize(msg);
+                    dl->AddText(ImVec2(rpx+(rp_w-msz.x)/2, rp_content_y+(rp_content_h-msz.y)/2),
+                                IM_COL32(100,100,120,255), msg);
+                }
+            }
+
             // ── BOARD 패널 ────────────────────────────────────────────────
             if(board_open){
                 float px=rpx, py=rp_content_y, pw=disp_w-rpx, ph=rp_content_h;
@@ -5909,8 +6201,18 @@ void run_streaming_viewer(){
                 v.sa_start(file_ctx.filepath);
                 file_ctx.open = false;
             }
+            if(ImGui::Selectable("  EID Fingerprint Analysis")){
+                v.eid_cleanup();
+                v.sa_temp_path = file_ctx.filepath;
+                v.eid_panel_open = true;
+                stat_open=false; board_open=false; v.sa_panel_open=false;
+                v.eid_saved_ratio = v.right_panel_ratio;
+                v.right_panel_ratio = 1.0f;
+                prev_right_visible_outer = false;
+                v.eid_start(file_ctx.filepath);
+                file_ctx.open = false;
+            }
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f,0.5f,0.5f,1.f));
-            ImGui::Selectable("  Time-Domain Analysis");
             ImGui::Selectable("  Freq-Domain Analysis");
             ImGui::PopStyleColor();
 

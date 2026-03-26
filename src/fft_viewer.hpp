@@ -201,6 +201,38 @@ public:
     std::thread       sa_play_thread;
     void sa_play_demod();         // 선택 영역 복조 재생 (별도 스레드)
 
+    // ── EID (Emitter ID / RF Fingerprint) 패널 ─────────────────────────────
+    bool              eid_panel_open = false;
+    std::atomic<bool> eid_computing  {false};
+    std::thread       eid_thread;
+    float             eid_anim_timer = 0.0f;
+
+    // envelope 데이터
+    std::vector<float> eid_envelope;       // sqrt(I²+Q²), 전체 샘플
+    std::mutex         eid_data_mtx;
+    std::atomic<bool>  eid_data_ready{false};
+    int64_t            eid_total_samples = 0;
+    uint32_t           eid_sample_rate   = 0;
+
+    // 뷰 상태 (double: 대용량 샘플 인덱스 정밀도)
+    double  eid_view_t0 = 0.0;   // 보이는 시작 (샘플 인덱스)
+    double  eid_view_t1 = 0.0;   // 보이는 끝
+    float   eid_amp_min = 0.0f;  // 자동 스케일 최소
+    float   eid_amp_max = 1.0f;  // 자동 스케일 최대
+
+    // 좌클릭 드래그 영역 선택 (줌)
+    bool    eid_sel_active = false;
+    float   eid_sel_x0 = 0.f, eid_sel_x1 = 0.f;
+
+    // 뷰 히스토리 (우클릭 뒤로가기)
+    std::vector<std::pair<double,double>> eid_view_stack;
+
+    // 레이아웃 복원용
+    float   eid_saved_ratio = 0.0f;
+
+    void eid_start(const std::string& wav_path);
+    void eid_cleanup();
+
     // tm_rec 내부 상태
     bool    tm_rec_active=false;
     int64_t tm_rec_read_pos=0; // R키 실행 시 파일 추출
