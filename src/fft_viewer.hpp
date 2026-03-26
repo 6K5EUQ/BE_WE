@@ -154,7 +154,7 @@ public:
 
     // ── SA (Signal Analyzer) 패널 ─────────────────────────────────────────
     bool              sa_panel_open  = false;
-    int               sa_fft_size    = 8192;
+    int               sa_fft_size    = 1024;
     GLuint            sa_texture     = 0;
     int               sa_tex_w       = 0;
     int               sa_tex_h       = 0;
@@ -207,12 +207,29 @@ public:
     std::thread       eid_thread;
     float             eid_anim_timer = 0.0f;
 
+    // 뷰 모드: 0=Signal(envelope), 1=I/Q, 2=Phase, 3=Frequency
+    int eid_view_mode = 0;
+
     // envelope 데이터
     std::vector<float> eid_envelope;       // sqrt(I²+Q²), 전체 샘플
     std::mutex         eid_data_mtx;
     std::atomic<bool>  eid_data_ready{false};
     int64_t            eid_total_samples = 0;
     uint32_t           eid_sample_rate   = 0;
+
+    // I/Q 분리 데이터
+    std::vector<float> eid_ch_i;       // I(t) normalized
+    std::vector<float> eid_ch_q;       // Q(t) normalized
+
+    // 순시 위상/주파수
+    std::vector<float> eid_phase;      // atan2(Q,I)
+    std::vector<float> eid_inst_freq;  // d(phase)/dt
+
+    // 노이즈 레벨 (Signal 모드용)
+    float eid_noise_level = 0.f;
+
+    // center freq (표시용)
+    uint64_t eid_center_freq_hz = 0;
 
     // 뷰 상태 (double: 대용량 샘플 인덱스 정밀도)
     double  eid_view_t0 = 0.0;   // 보이는 시작 (샘플 인덱스)
@@ -227,8 +244,15 @@ public:
     // 뷰 히스토리 (우클릭 뒤로가기)
     std::vector<std::pair<double,double>> eid_view_stack;
 
-    // 레이아웃 복원용
-    float   eid_saved_ratio = 0.0f;
+    // 태그 영역
+    struct EidTag {
+        double s0, s1;       // 샘플 인덱스 시작/끝
+        ImU32  color;
+        char   label[32];
+    };
+    bool    eid_tag_dragging = false;
+    float   eid_tag_drag_x0 = 0.f, eid_tag_drag_x1 = 0.f;
+    std::vector<EidTag> eid_tags;
 
     void eid_start(const std::string& wav_path);
     void eid_cleanup();

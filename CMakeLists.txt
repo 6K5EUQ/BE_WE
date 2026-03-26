@@ -41,6 +41,7 @@ add_executable(BE_WE
     src/timemachine.cpp
     src/region_save.cpp
     src/sa_compute.cpp
+    src/eid_compute.cpp
     src/rtlsdr_io.cpp
     src/hw_detect.cpp
     src/ais.cpp

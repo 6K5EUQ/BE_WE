@@ -3991,6 +3991,14 @@ void run_streaming_viewer(){
         float content_y=TOPBAR_H, content_h=disp_h-content_y-TOPBAR_H;
         const float div_h=14.0f, vdiv_w=8.0f;
 
+        // ── Signal Analysis 토글 (E키) ─── 독립 오버레이 ────
+        if(ImGui::IsKeyPressed(ImGuiKey_E, false) && !io.WantTextInput){
+            v.eid_panel_open = !v.eid_panel_open;
+            if(v.eid_panel_open && !v.sa_temp_path.empty() &&
+               !v.eid_computing.load() && !v.eid_data_ready.load())
+                v.eid_start(v.sa_temp_path);
+        }
+
         // ── 우측 패널 계산 ────────────────────────────────────────────────
         // right_panel_ratio: 0=완전 닫힘(우측벽에 붙음), 1=전체폭
         // right_w: 우측 패널 실제 픽셀 폭
@@ -4094,7 +4102,7 @@ void run_streaming_viewer(){
                 vdiv_dragging = true;
             if(!ImGui::IsMouseDown(ImGuiMouseButton_Left))
                 vdiv_dragging = false;
-            if(vdiv_dragging && !v.eid_panel_open){
+            if(vdiv_dragging){
                 v.right_panel_ratio -= io.MouseDelta.x / disp_w;
                 v.right_panel_ratio = std::max(0.0f, std::min(1.0f, v.right_panel_ratio));
                 // 드래그 중 실시간으로 열린 상태의 너비를 기억 (닫힘 상태 제외)
@@ -4149,42 +4157,21 @@ void run_streaming_viewer(){
             float btn_x = rpx + 6;
             if(subbar_btn(btn_x, "STAT", stat_open, IM_COL32(80,255,160,255))){
                 stat_open = !stat_open;
-                if(stat_open){ v.sa_panel_open=false; board_open=false;
-                    if(v.eid_panel_open){ v.eid_panel_open=false; v.right_panel_ratio=v.eid_saved_ratio; }
-                }
+                if(stat_open){ v.sa_panel_open=false; board_open=false; }
             }
 
             // ── SA 버튼 ──────────────────────────────────────────────────
             float sa_btn_x = btn_x + 44;
             if(subbar_btn(sa_btn_x, "SA", v.sa_panel_open, IM_COL32(80,180,255,255))){
                 v.sa_panel_open = !v.sa_panel_open;
-                if(v.sa_panel_open){ stat_open=false; board_open=false;
-                    if(v.eid_panel_open){ v.eid_panel_open=false; v.right_panel_ratio=v.eid_saved_ratio; }
-                }
+                if(v.sa_panel_open){ stat_open=false; board_open=false; }
             }
 
             // ── BOARD 버튼 ───────────────────────────────────────────────
             float board_btn_x = sa_btn_x + 32;
             if(subbar_btn(board_btn_x, "BOARD", board_open, IM_COL32(255,200,80,255))){
                 board_open = !board_open;
-                if(board_open){ stat_open=false; v.sa_panel_open=false;
-                    if(v.eid_panel_open){ v.eid_panel_open=false; v.right_panel_ratio=v.eid_saved_ratio; }
-                }
-            }
-
-            // ── EID 버튼 ───────────────────────────────────────────
-            float eid_btn_x = board_btn_x + 52;
-            if(subbar_btn(eid_btn_x, "EID", v.eid_panel_open, IM_COL32(255,100,180,255))){
-                v.eid_panel_open = !v.eid_panel_open;
-                if(v.eid_panel_open){
-                    stat_open=false; v.sa_panel_open=false; board_open=false;
-                    v.eid_saved_ratio = v.right_panel_ratio;
-                    v.right_panel_ratio = 1.0f;
-                    if(!v.sa_temp_path.empty() && !v.eid_computing.load())
-                        v.eid_start(v.sa_temp_path);
-                } else {
-                    v.right_panel_ratio = v.eid_saved_ratio;
-                }
+                if(board_open){ stat_open=false; v.sa_panel_open=false; }
             }
 
             // ── FFT size 선택 (SA 활성화 시에만) ─────────────────────────
@@ -4223,7 +4210,7 @@ void run_streaming_viewer(){
             dl->AddRectFilled(ImVec2(rpx,rp_content_y),ImVec2(disp_w,content_y+content_h),IM_COL32(12,12,15,255));
 
             // ── STAT 패널 ─────────────────────────────────────────────────
-            if(stat_open && !v.eid_panel_open){
+            if(stat_open){
                 float px=rpx, py=rp_content_y, pw=disp_w-rpx, ph=rp_content_h;
                 ImGui::SetNextWindowPos(ImVec2(px,py));
                 ImGui::SetNextWindowSize(ImVec2(pw,ph));
@@ -5323,8 +5310,8 @@ void run_streaming_viewer(){
                 }
             }
 
-            // ── EID 패널 (Time-Amplitude 파형) ─────────────────────────
-            if(v.eid_panel_open){
+            // (Signal Analysis는 별도 독립 오버레이로 이동 — 아래 참고)
+            if(false){ // disabled – old EID block
                 if(v.eid_computing.load()){
                     v.eid_anim_timer += io.DeltaTime;
                     int dots = ((int)(v.eid_anim_timer / 0.5f) % 3) + 1;
@@ -5334,11 +5321,36 @@ void run_streaming_viewer(){
                                 IM_COL32(255,100,180,255), msg);
                 } else if(v.eid_data_ready.load()){
                     // ── 플롯 영역 ──────────────────────────────────────────
-                    const float LM = 60.f, RM = 10.f, TM = 10.f, BM = 30.f;
+                    const float LM = 60.f, RM = 10.f, TM = 28.f, BM = 30.f;
                     float ea_x0 = rpx + LM, ea_y0 = rp_content_y + TM;
                     float ea_x1 = disp_w - RM, ea_y1 = content_y + content_h - BM;
                     float ea_w = ea_x1 - ea_x0, ea_h = ea_y1 - ea_y0;
                     if(ea_w < 10.f || ea_h < 10.f) goto eid_skip;
+
+                    // ── 파일 정보 헤더 바 ──────────────────────────────────
+                    {
+                        uint32_t sr = v.eid_sample_rate > 0 ? v.eid_sample_rate : 1;
+                        double dur = (double)v.eid_total_samples / sr;
+                        const char* mode_names[] = {"Signal","I/Q","Phase","Frequency"};
+                        char hdr[256];
+                        if(v.eid_center_freq_hz > 0){
+                            double cf_mhz = v.eid_center_freq_hz / 1e6;
+                            if(sr >= 1000000)
+                                snprintf(hdr, sizeof(hdr), "Samples: %lld | SR: %.2f MSPS | Duration: %.4fs | CF: %.3f MHz | [%s]",
+                                    (long long)v.eid_total_samples, sr/1e6, dur, cf_mhz, mode_names[v.eid_view_mode]);
+                            else
+                                snprintf(hdr, sizeof(hdr), "Samples: %lld | SR: %u SPS | Duration: %.4fs | CF: %.3f MHz | [%s]",
+                                    (long long)v.eid_total_samples, sr, dur, cf_mhz, mode_names[v.eid_view_mode]);
+                        } else {
+                            if(sr >= 1000000)
+                                snprintf(hdr, sizeof(hdr), "Samples: %lld | SR: %.2f MSPS | Duration: %.4fs | [%s]",
+                                    (long long)v.eid_total_samples, sr/1e6, dur, mode_names[v.eid_view_mode]);
+                            else
+                                snprintf(hdr, sizeof(hdr), "Samples: %lld | SR: %u SPS | Duration: %.4fs | [%s]",
+                                    (long long)v.eid_total_samples, sr, dur, mode_names[v.eid_view_mode]);
+                        }
+                        dl->AddText(ImVec2(ea_x0, rp_content_y + 4), IM_COL32(160,160,180,220), hdr);
+                    }
 
                     // 배경
                     dl->AddRectFilled(ImVec2(ea_x0, ea_y0), ImVec2(ea_x1, ea_y1), IM_COL32(8,8,12,255));
@@ -5346,7 +5358,36 @@ void run_streaming_viewer(){
 
                     { // scope for eid data access
                     double vt0 = v.eid_view_t0, vt1 = v.eid_view_t1;
-                    float  a_min = v.eid_amp_min, a_max = v.eid_amp_max;
+                    int eid_mode = v.eid_view_mode;
+
+                    // Y축 범위: 모드별
+                    float a_min, a_max;
+                    if(eid_mode == 0){ // Signal
+                        a_min = v.eid_amp_min; a_max = v.eid_amp_max;
+                    } else if(eid_mode == 1){ // I/Q
+                        a_min = -1.0f; a_max = 1.0f;
+                    } else if(eid_mode == 2){ // Phase
+                        a_min = -3.14159265f; a_max = 3.14159265f;
+                    } else { // Frequency: auto-scale from visible range
+                        // 일단 넓은 범위, 아래서 실제 데이터로 갱신
+                        a_min = -0.5f; a_max = 0.5f;
+                        // visible range에서 inst_freq min/max 계산
+                        int64_t vs0 = std::max((int64_t)0, (int64_t)vt0);
+                        int64_t vs1 = std::min((int64_t)v.eid_inst_freq.size(), (int64_t)ceil(vt1));
+                        if(vs1 > vs0 && !v.eid_inst_freq.empty()){
+                            float flo = v.eid_inst_freq[vs0], fhi = flo;
+                            // 1st/99th percentile 대신 sampling으로 빠르게
+                            int64_t step = std::max((int64_t)1, (vs1-vs0)/2000);
+                            for(int64_t s = vs0; s < vs1; s += step){
+                                float fv = v.eid_inst_freq[s];
+                                if(fv < flo) flo = fv;
+                                if(fv > fhi) fhi = fv;
+                            }
+                            float fm = (fhi - flo) * 0.05f;
+                            a_min = flo - fm; a_max = fhi + fm;
+                        }
+                    }
+
                     float  a_rng = a_max - a_min;
                     if(a_rng < 1e-6f) a_rng = 1e-6f;
                     double vis_samp = vt1 - vt0;
@@ -5364,7 +5405,13 @@ void run_streaming_viewer(){
                             float amp_val = a_max - frac * a_rng; // top=max
                             dl->AddLine(ImVec2(ea_x0, yy), ImVec2(ea_x1, yy),
                                         IM_COL32(40,40,55,255));
-                            char lbl[16]; snprintf(lbl, sizeof(lbl), "%.3f", amp_val);
+                            char lbl[32];
+                            if(eid_mode == 2) // Phase: show π fractions
+                                snprintf(lbl, sizeof(lbl), "%.2f", amp_val);
+                            else if(eid_mode == 3) // Freq: Hz
+                                snprintf(lbl, sizeof(lbl), "%.0f", amp_val);
+                            else
+                                snprintf(lbl, sizeof(lbl), "%.3f", amp_val);
                             ImVec2 tsz = ImGui::CalcTextSize(lbl);
                             dl->AddText(ImVec2(ea_x0 - tsz.x - 4, yy - tsz.y * 0.5f),
                                         IM_COL32(130,130,160,255), lbl);
@@ -5406,52 +5453,94 @@ void run_streaming_viewer(){
                         }
                     }
 
-                    // ── 파형 렌더링 (min-max 밴드 / 개별 샘플) ──────────────
+                    // ── 파형 렌더링 (모드별) ───────────────────────────────
                     dl->PushClipRect(ImVec2(ea_x0, ea_y0), ImVec2(ea_x1, ea_y1), true);
                     {
-                        const auto& env = v.eid_envelope;
-                        int64_t total = (int64_t)env.size();
-
-                        if(spp <= 1.0){
-                            // 개별 샘플 렌더: 점+선
-                            std::vector<ImVec2> pts;
-                            int64_t s0 = std::max((int64_t)0, (int64_t)vt0);
-                            int64_t s1 = std::min(total, (int64_t)ceil(vt1) + 1);
-                            pts.reserve(s1 - s0);
-                            for(int64_t s = s0; s < s1; s++){
-                                float xx = ea_x0 + (float)((s - vt0) / vis_samp) * ea_w;
-                                float yy = ea_y0 + (1.0f - (env[s] - a_min) / a_rng) * ea_h;
-                                pts.push_back(ImVec2(xx, yy));
-                            }
-                            if(pts.size() >= 2)
-                                dl->AddPolyline(pts.data(), (int)pts.size(),
-                                                IM_COL32(80,255,140,255), ImDrawFlags_None, 1.5f);
-                            // 샘플 포인트 (충분히 확대 시)
-                            if(spp < 0.3 && pts.size() < 2000){
-                                for(auto& p : pts)
-                                    dl->AddCircleFilled(p, 2.5f, IM_COL32(120,255,180,255));
-                            }
+                        // 렌더할 데이터 채널 결정
+                        struct EidChannel { const std::vector<float>* data; ImU32 color; };
+                        EidChannel channels[2]; int n_ch = 0;
+                        if(eid_mode == 0){
+                            channels[0] = {&v.eid_envelope, IM_COL32(80,255,140,255)}; n_ch = 1;
+                        } else if(eid_mode == 1){
+                            channels[0] = {&v.eid_ch_i, IM_COL32(80,255,140,255)};  // I=녹색
+                            channels[1] = {&v.eid_ch_q, IM_COL32(80,140,255,255)};  // Q=파란색
+                            n_ch = 2;
+                        } else if(eid_mode == 2){
+                            channels[0] = {&v.eid_phase, IM_COL32(255,200,80,255)}; n_ch = 1;
                         } else {
-                            // min-max 밴드 렌더: 각 픽셀 열마다 수직 라인
-                            for(int px = 0; px < pixels; px++){
-                                int64_t s0 = (int64_t)(vt0 + px * spp);
-                                int64_t s1 = (int64_t)(vt0 + (px + 1) * spp);
-                                s0 = std::max((int64_t)0, std::min(s0, total - 1));
-                                s1 = std::max(s0 + 1, std::min(s1, total));
-                                float lo = env[s0], hi = env[s0];
-                                for(int64_t s = s0 + 1; s < s1; s++){
-                                    float v2 = env[s];
-                                    if(v2 < lo) lo = v2;
-                                    if(v2 > hi) hi = v2;
+                            channels[0] = {&v.eid_inst_freq, IM_COL32(255,120,200,255)}; n_ch = 1;
+                        }
+
+                        for(int ci = 0; ci < n_ch; ci++){
+                            const auto& dat = *channels[ci].data;
+                            ImU32 col = channels[ci].color;
+                            int64_t total = (int64_t)dat.size();
+                            if(total < 1) continue;
+
+                            if(spp <= 1.0){
+                                std::vector<ImVec2> pts;
+                                int64_t s0 = std::max((int64_t)0, (int64_t)vt0);
+                                int64_t s1 = std::min(total, (int64_t)ceil(vt1) + 1);
+                                pts.reserve(s1 - s0);
+                                for(int64_t s = s0; s < s1; s++){
+                                    float xx = ea_x0 + (float)((s - vt0) / vis_samp) * ea_w;
+                                    float yy = ea_y0 + (1.0f - (dat[s] - a_min) / a_rng) * ea_h;
+                                    pts.push_back(ImVec2(xx, yy));
                                 }
-                                float xx = ea_x0 + px;
-                                float yy_lo = ea_y0 + (1.0f - (hi - a_min) / a_rng) * ea_h;
-                                float yy_hi = ea_y0 + (1.0f - (lo - a_min) / a_rng) * ea_h;
-                                if(yy_lo > yy_hi) std::swap(yy_lo, yy_hi);
-                                if(yy_hi - yy_lo < 1.0f) yy_hi = yy_lo + 1.0f;
-                                dl->AddLine(ImVec2(xx, yy_lo), ImVec2(xx, yy_hi),
-                                            IM_COL32(80,255,140,200));
+                                if(pts.size() >= 2)
+                                    dl->AddPolyline(pts.data(), (int)pts.size(), col, ImDrawFlags_None, 1.5f);
+                                if(spp < 0.3 && pts.size() < 2000){
+                                    ImU32 dot_col = (col & 0xFF000000) | ((col & 0x00FEFEFE) >> 1) | 0x00808080;
+                                    for(auto& p : pts)
+                                        dl->AddCircleFilled(p, 2.5f, dot_col);
+                                }
+                            } else {
+                                for(int px = 0; px < pixels; px++){
+                                    int64_t s0 = (int64_t)(vt0 + px * spp);
+                                    int64_t s1 = (int64_t)(vt0 + (px + 1) * spp);
+                                    s0 = std::max((int64_t)0, std::min(s0, total - 1));
+                                    s1 = std::max(s0 + 1, std::min(s1, total));
+                                    float lo = dat[s0], hi = dat[s0];
+                                    for(int64_t s = s0 + 1; s < s1; s++){
+                                        float v2 = dat[s];
+                                        if(v2 < lo) lo = v2;
+                                        if(v2 > hi) hi = v2;
+                                    }
+                                    float xx = ea_x0 + px;
+                                    float yy_lo = ea_y0 + (1.0f - (hi - a_min) / a_rng) * ea_h;
+                                    float yy_hi = ea_y0 + (1.0f - (lo - a_min) / a_rng) * ea_h;
+                                    if(yy_lo > yy_hi) std::swap(yy_lo, yy_hi);
+                                    if(yy_hi - yy_lo < 1.0f) yy_hi = yy_lo + 1.0f;
+                                    ImU32 band_col = (col & 0xFF000000) | ((col & 0x00FFFFFF));
+                                    band_col = (band_col & 0x00FFFFFF) | 0xC8000000; // alpha ~200
+                                    dl->AddLine(ImVec2(xx, yy_lo), ImVec2(xx, yy_hi), band_col);
+                                }
                             }
+                        }
+
+                        // ── 노이즈 레벨 라인 (Signal 모드만) ──────────────
+                        if(eid_mode == 0 && v.eid_noise_level > a_min && v.eid_noise_level < a_max){
+                            float ny = ea_y0 + (1.0f - (v.eid_noise_level - a_min) / a_rng) * ea_h;
+                            for(float nx = ea_x0; nx < ea_x1; nx += 8.f)
+                                dl->AddLine(ImVec2(nx, ny), ImVec2(std::min(nx + 4.f, ea_x1), ny),
+                                            IM_COL32(255,60,60,150));
+                            // 라벨
+                            char nl[24]; snprintf(nl, sizeof(nl), "Noise %.4f", v.eid_noise_level);
+                            dl->AddText(ImVec2(ea_x1 - ImGui::CalcTextSize(nl).x - 4, ny - 14),
+                                        IM_COL32(255,60,60,180), nl);
+                        }
+
+                        // ── 태그 영역 렌더링 ─────────────────────────────
+                        for(auto& tag : v.eid_tags){
+                            float tx0 = ea_x0 + (float)((tag.s0 - vt0) / vis_samp) * ea_w;
+                            float tx1 = ea_x0 + (float)((tag.s1 - vt0) / vis_samp) * ea_w;
+                            tx0 = std::max(tx0, ea_x0); tx1 = std::min(tx1, ea_x1);
+                            if(tx1 <= tx0) continue;
+                            ImU32 fill = (tag.color & 0x00FFFFFF) | 0x28000000;
+                            dl->AddRectFilled(ImVec2(tx0, ea_y0), ImVec2(tx1, ea_y1), fill);
+                            dl->AddLine(ImVec2(tx0,ea_y0), ImVec2(tx0,ea_y1), tag.color, 1.5f);
+                            dl->AddLine(ImVec2(tx1,ea_y0), ImVec2(tx1,ea_y1), tag.color, 1.5f);
+                            dl->AddText(ImVec2(tx0+3, ea_y0+2), tag.color, tag.label);
                         }
                     }
                     dl->PopClipRect();
@@ -5501,6 +5590,23 @@ void run_streaming_viewer(){
                                                   IM_COL32(200,200,220,50));
                                 dl->AddRect(ImVec2(sx0, ea_y0), ImVec2(sx1, ea_y1),
                                             IM_COL32(200,200,220,160), 0.f, 0, 1.f);
+                                // ── 선택 영역 정보 표시 ──────────────────
+                                double sel_s0 = vt0 + ((sx0 - ea_x0) / ea_w) * vis_samp;
+                                double sel_s1 = vt0 + ((sx1 - ea_x0) / ea_w) * vis_samp;
+                                int64_t is0 = std::max((int64_t)0, (int64_t)sel_s0);
+                                int64_t is1 = std::min((int64_t)v.eid_total_samples, (int64_t)sel_s1);
+                                int64_t n_sel = is1 - is0;
+                                uint32_t sr = v.eid_sample_rate > 0 ? v.eid_sample_rate : 1;
+                                double sel_ms = (double)n_sel / sr * 1000.0;
+                                char sel_info[96];
+                                snprintf(sel_info, sizeof(sel_info), "Sel: %lld - %lld | %lld samp | %.3fms",
+                                    (long long)is0, (long long)is1, (long long)n_sel, sel_ms);
+                                ImVec2 si_sz = ImGui::CalcTextSize(sel_info);
+                                float si_x = sx0 + (sx1 - sx0 - si_sz.x) * 0.5f;
+                                si_x = std::max(si_x, sx0 + 2.f);
+                                dl->AddRectFilled(ImVec2(si_x-2,ea_y0+2), ImVec2(si_x+si_sz.x+2,ea_y0+si_sz.y+4),
+                                                  IM_COL32(0,0,0,180), 3.f);
+                                dl->AddText(ImVec2(si_x, ea_y0+3), IM_COL32(200,220,255,255), sel_info);
                             }
                         } else {
                             // 릴리즈: 선택 범위로 줌
@@ -5523,16 +5629,67 @@ void run_streaming_viewer(){
                         }
                     }
 
-                    // 우클릭 한번 = 뒤로가기
-                    if(mouse_in_eid && ImGui::IsMouseReleased(ImGuiMouseButton_Right)){
-                        if(!v.eid_view_stack.empty()){
-                            auto [pt0, pt1] = v.eid_view_stack.back();
-                            v.eid_view_stack.pop_back();
-                            v.eid_view_t0 = pt0;
-                            v.eid_view_t1 = pt1;
+                    // 우클릭: 드래그 → 태그 생성, 단순 클릭 → 뒤로가기
+                    if(mouse_in_eid && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                        v.eid_tag_dragging = true;
+                        v.eid_tag_drag_x0 = mp.x;
+                        v.eid_tag_drag_x1 = mp.x;
+                    }
+                    if(v.eid_tag_dragging && ImGui::IsMouseDown(ImGuiMouseButton_Right)){
+                        v.eid_tag_drag_x1 = mp.x;
+                        float sx0 = std::max(ea_x0, std::min(v.eid_tag_drag_x0, v.eid_tag_drag_x1));
+                        float sx1 = std::min(ea_x1, std::max(v.eid_tag_drag_x0, v.eid_tag_drag_x1));
+                        if(sx1 - sx0 > 1.f){
+                            dl->AddRectFilled(ImVec2(sx0, ea_y0), ImVec2(sx1, ea_y1),
+                                              IM_COL32(255,180,60,40));
+                            dl->AddRect(ImVec2(sx0, ea_y0), ImVec2(sx1, ea_y1),
+                                        IM_COL32(255,180,60,180), 0.f, 0, 1.f);
+                            // 선택 정보
+                            double sel_s0 = vt0 + ((sx0 - ea_x0) / ea_w) * vis_samp;
+                            double sel_s1 = vt0 + ((sx1 - ea_x0) / ea_w) * vis_samp;
+                            int64_t n_sel = (int64_t)sel_s1 - (int64_t)sel_s0;
+                            uint32_t sr = v.eid_sample_rate > 0 ? v.eid_sample_rate : 1;
+                            double sel_ms = (double)n_sel / sr * 1000.0;
+                            char ti[64]; snprintf(ti, sizeof(ti), "Tag: %lld samp | %.3fms", (long long)n_sel, sel_ms);
+                            ImVec2 tsz2 = ImGui::CalcTextSize(ti);
+                            float tx = sx0 + (sx1 - sx0 - tsz2.x) * 0.5f;
+                            tx = std::max(tx, sx0 + 2.f);
+                            dl->AddRectFilled(ImVec2(tx-2,ea_y0+2), ImVec2(tx+tsz2.x+2,ea_y0+tsz2.y+4),
+                                              IM_COL32(0,0,0,180), 3.f);
+                            dl->AddText(ImVec2(tx, ea_y0+3), IM_COL32(255,200,100,255), ti);
+                        }
+                    }
+                    if(v.eid_tag_dragging && ImGui::IsMouseReleased(ImGuiMouseButton_Right)){
+                        v.eid_tag_dragging = false;
+                        float dx = fabsf(v.eid_tag_drag_x1 - v.eid_tag_drag_x0);
+                        if(dx > 5.f){
+                            // 드래그 → 태그 생성
+                            float sx0 = std::max(ea_x0, std::min(v.eid_tag_drag_x0, v.eid_tag_drag_x1));
+                            float sx1 = std::min(ea_x1, std::max(v.eid_tag_drag_x0, v.eid_tag_drag_x1));
+                            double t0_tag = vt0 + ((sx0 - ea_x0) / ea_w) * vis_samp;
+                            double t1_tag = vt0 + ((sx1 - ea_x0) / ea_w) * vis_samp;
+                            static const ImU32 tag_colors[] = {
+                                IM_COL32(255,180,60,200), IM_COL32(100,200,255,200),
+                                IM_COL32(255,100,255,200), IM_COL32(100,255,180,200),
+                                IM_COL32(255,255,100,200), IM_COL32(180,140,255,200),
+                            };
+                            FFTViewer::EidTag tag;
+                            tag.s0 = std::max(0.0, t0_tag);
+                            tag.s1 = std::min((double)v.eid_total_samples, t1_tag);
+                            tag.color = tag_colors[v.eid_tags.size() % 6];
+                            snprintf(tag.label, sizeof(tag.label), "Tag %d", (int)v.eid_tags.size() + 1);
+                            v.eid_tags.push_back(tag);
                         } else {
-                            v.eid_view_t0 = 0.0;
-                            v.eid_view_t1 = (double)v.eid_total_samples;
+                            // 단순 클릭 → 뒤로가기
+                            if(!v.eid_view_stack.empty()){
+                                auto [pt0, pt1] = v.eid_view_stack.back();
+                                v.eid_view_stack.pop_back();
+                                v.eid_view_t0 = pt0;
+                                v.eid_view_t1 = pt1;
+                            } else {
+                                v.eid_view_t0 = 0.0;
+                                v.eid_view_t1 = (double)v.eid_total_samples;
+                            }
                         }
                     }
 
@@ -5541,6 +5698,23 @@ void run_streaming_viewer(){
                         v.eid_view_stack.clear();
                         v.eid_view_t0 = 0.0;
                         v.eid_view_t1 = (double)v.eid_total_samples;
+                    }
+
+                    // ── 뷰 모드 전환 (1/2/3/4 키) ────────────────────────
+                    if(mouse_in_eid){
+                        if(ImGui::IsKeyPressed(ImGuiKey_1, false)) v.eid_view_mode = 0;
+                        if(ImGui::IsKeyPressed(ImGuiKey_2, false)) v.eid_view_mode = 1;
+                        if(ImGui::IsKeyPressed(ImGuiKey_3, false)) v.eid_view_mode = 2;
+                        if(ImGui::IsKeyPressed(ImGuiKey_4, false)) v.eid_view_mode = 3;
+                        // Delete 키: 마우스 위치의 태그 삭제
+                        if(ImGui::IsKeyPressed(ImGuiKey_Delete, false)){
+                            double mouse_s = vt0 + ((mp.x - ea_x0) / ea_w) * vis_samp;
+                            for(auto it = v.eid_tags.begin(); it != v.eid_tags.end(); ++it){
+                                if(mouse_s >= it->s0 && mouse_s <= it->s1){
+                                    v.eid_tags.erase(it); break;
+                                }
+                            }
+                        }
                     }
 
                     // ── 커서 오버레이 ───────────────────────────────────────
@@ -5552,7 +5726,7 @@ void run_streaming_viewer(){
                                     IM_COL32(255,255,255,60));
                         // 정보 박스
                         double mouse_samp = vt0 + ((mp.x - ea_x0) / ea_w) * vis_samp;
-                        float  mouse_amp  = a_max - ((mp.y - ea_y0) / ea_h) * a_rng;
+                        float  mouse_val  = a_max - ((mp.y - ea_y0) / ea_h) * a_rng;
                         uint32_t sr = v.eid_sample_rate > 0 ? v.eid_sample_rate : 1;
                         double mouse_sec  = mouse_samp / sr;
                         char info1[48], info2[48], info3[48];
@@ -5562,7 +5736,15 @@ void run_streaming_viewer(){
                             snprintf(info1, sizeof(info1), "Time : %.4f ms", mouse_sec * 1e3);
                         else
                             snprintf(info1, sizeof(info1), "Time : %.6f s", mouse_sec);
-                        snprintf(info2, sizeof(info2), "Amp  : %.5f", mouse_amp);
+                        // 값 라벨: 모드별
+                        if(eid_mode == 0)
+                            snprintf(info2, sizeof(info2), "Amp  : %.5f", mouse_val);
+                        else if(eid_mode == 1)
+                            snprintf(info2, sizeof(info2), "Val  : %.5f", mouse_val);
+                        else if(eid_mode == 2)
+                            snprintf(info2, sizeof(info2), "Phase: %.4f rad", mouse_val);
+                        else
+                            snprintf(info2, sizeof(info2), "Freq : %.1f Hz", mouse_val);
                         snprintf(info3, sizeof(info3), "Samp : %lld", (long long)(int64_t)mouse_samp);
                         float fw = std::max({ImGui::CalcTextSize(info1).x,
                                              ImGui::CalcTextSize(info2).x,
@@ -5577,14 +5759,6 @@ void run_streaming_viewer(){
                         dl->AddText(ImVec2(ox,oy+lh*2),  IM_COL32(255,180,220,255), info3);
                     }
                     } // end scope for eid data access
-
-                    // EID 라벨
-                    {
-                        const char* title = "EID  Emitter Fingerprint";
-                        ImVec2 tsz = ImGui::CalcTextSize(title);
-                        dl->AddText(ImVec2(ea_x0 + (ea_w - tsz.x) * 0.5f, rp_content_y + 2),
-                                    IM_COL32(255,100,180,180), title);
-                    }
                 } else {
                     eid_skip:
                     const char* msg = "Load a WAV file (SA or right-click)";
@@ -6189,32 +6363,20 @@ void run_streaming_viewer(){
                 ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar|
                 ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoDecoration);
 
-            // Spectrogram Analysis → SA 탭으로 연결
-            if(ImGui::Selectable("  Spectrogram Analysis")){
+            // Signal Analysis → 독립 오버레이
+            if(ImGui::Selectable("  Signal Analysis")){
+                v.sa_temp_path = file_ctx.filepath;
+                v.eid_panel_open = true;
+                v.eid_view_mode = 1; // 기본 Amp
+                // 시간 도메인 데이터 로드
+                v.eid_cleanup();
+                v.eid_start(file_ctx.filepath);
+                // 스펙트로그램 데이터 로드
                 v.sa_cleanup();
                 v.sa_mode = false;
-                v.sa_temp_path = file_ctx.filepath;
-                v.sa_panel_open = true;
-                stat_open = false; board_open = false;
-                if(v.right_panel_ratio < 0.05f) v.right_panel_ratio = 0.3f;
-                prev_right_visible_outer = false;
                 v.sa_start(file_ctx.filepath);
                 file_ctx.open = false;
             }
-            if(ImGui::Selectable("  EID Fingerprint Analysis")){
-                v.eid_cleanup();
-                v.sa_temp_path = file_ctx.filepath;
-                v.eid_panel_open = true;
-                stat_open=false; board_open=false; v.sa_panel_open=false;
-                v.eid_saved_ratio = v.right_panel_ratio;
-                v.right_panel_ratio = 1.0f;
-                prev_right_visible_outer = false;
-                v.eid_start(file_ctx.filepath);
-                file_ctx.open = false;
-            }
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f,0.5f,0.5f,1.f));
-            ImGui::Selectable("  Freq-Domain Analysis");
-            ImGui::PopStyleColor();
 
             ImGui::Separator();
 
@@ -6381,6 +6543,7 @@ void run_streaming_viewer(){
                                            io.DisplaySize.y-CH-TOPBAR_H-10));
             ImGui::SetNextWindowSize(ImVec2(CW,CH));
             ImGui::SetNextWindowBgAlpha(0.92f);
+            ImGui::SetNextWindowFocus();
             ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,8.f);
             ImGui::PushStyleColor(ImGuiCol_WindowBg,ImVec4(0.05f,0.07f,0.12f,1.f));
             ImGui::PushStyleColor(ImGuiCol_FrameBg,ImVec4(0.10f,0.12f,0.20f,1.f));
@@ -6704,6 +6867,588 @@ void run_streaming_viewer(){
             ImGui::End();
             ImGui::PopStyleColor(); ImGui::PopStyleVar();
         }
+
+        // ╔══════════════════════════════════════════════════════════════════╗
+        // ║  Signal Analysis 독립 오버레이 (E키 토글)                        ║
+        // ╚══════════════════════════════════════════════════════════════════╝
+        if(v.eid_panel_open){
+            ImGui::SetNextWindowPos(ImVec2(0,0));
+            ImGui::SetNextWindowSize(ImVec2(disp_w, disp_h));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.047f,0.047f,0.07f,0.98f));
+            ImGui::Begin("##sig_analysis", nullptr,
+                ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
+                ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar);
+            ImDrawList* fg = ImGui::GetWindowDrawList();
+            const float SB_H = 22.f;  // 서브바 높이
+            float ov_x0 = 0.f, ov_y0 = 0.f;
+            float ov_x1 = disp_w, ov_y1 = disp_h;
+            float ov_w = ov_x1 - ov_x0, ov_h = ov_y1 - ov_y0;
+
+            // ── 서브바 ──────────────────────────────────────────────────
+            float sb_y0 = ov_y0, sb_y1 = ov_y0 + SB_H;
+            fg->AddRectFilled(ImVec2(ov_x0,sb_y0), ImVec2(ov_x1,sb_y1), IM_COL32(20,20,30,255));
+            fg->AddLine(ImVec2(ov_x0,sb_y1), ImVec2(ov_x1,sb_y1), IM_COL32(60,60,80,255));
+
+            // 서브바 버튼
+            struct SaBtn { const char* lbl; int mode; ImU32 col; };
+            SaBtn sa_btns[] = {
+                {"Spectrogram", 0, IM_COL32(255,200,80,255)},
+                {"Amp",         1, IM_COL32(80,255,140,255)},
+                {"Freq",        2, IM_COL32(255,120,200,255)},
+                {"Phase",       3, IM_COL32(255,220,80,255)},
+                {"I/Q",         4, IM_COL32(80,180,255,255)},
+            };
+            float bx = ov_x0 + 8.f;
+            float btn_ty = sb_y0 + 3.f;
+            for(auto& b : sa_btns){
+                ImVec2 tsz = ImGui::CalcTextSize(b.lbl);
+                bool active = (v.eid_view_mode == b.mode);
+                bool hov = (io.MousePos.x >= bx && io.MousePos.x <= bx + tsz.x + 2 &&
+                            io.MousePos.y >= sb_y0 && io.MousePos.y < sb_y1);
+                ImU32 col = active ? b.col : (hov ? IM_COL32(160,160,180,255) : IM_COL32(110,110,130,255));
+                fg->AddText(ImVec2(bx, btn_ty), col, b.lbl);
+                if(hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                    v.eid_view_mode = b.mode;
+                bx += tsz.x + 14.f;
+            }
+
+            // FFT size 콤보 (Spectrogram 모드일 때만)
+            if(v.eid_view_mode == 0){
+                static const int fft_sizes[] = {32,64,128,256,512,1024,2048,4096,8192};
+                static const char* fft_labels[] = {"32","64","128","256","512","1024","2048","4096","8192"};
+                char cur_lbl[16]; snprintf(cur_lbl,16,"%d",v.sa_fft_size);
+                float combo_w = 62;
+                float combo_x = ov_x1 - combo_w - 40;
+                float combo_y = sb_y0 + (SB_H - ImGui::GetFontSize() - 4)/2;
+                ImGui::SetCursorScreenPos(ImVec2(combo_x, combo_y));
+                ImGui::SetNextItemWidth(combo_w);
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4,2));
+                if(ImGui::BeginCombo("##ov_fft", cur_lbl)){
+                    for(int i=0;i<9;i++){
+                        bool sel = (v.sa_fft_size == fft_sizes[i]);
+                        if(ImGui::Selectable(fft_labels[i], sel)){
+                            if(v.sa_fft_size != fft_sizes[i]){
+                                v.sa_fft_size = fft_sizes[i];
+                                if(!v.sa_temp_path.empty() && !v.sa_computing.load())
+                                    v.sa_start(v.sa_temp_path);
+                            }
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::PopStyleVar();
+                fg->AddText(ImVec2(combo_x + combo_w + 4, btn_ty), IM_COL32(110,110,130,255), "FFT");
+            }
+
+            // 1/2/3/4/5 키로 뷰 전환
+            if(!io.WantTextInput){
+                if(ImGui::IsKeyPressed(ImGuiKey_1, false)) v.eid_view_mode = 0;
+                if(ImGui::IsKeyPressed(ImGuiKey_2, false)) v.eid_view_mode = 1;
+                if(ImGui::IsKeyPressed(ImGuiKey_3, false)) v.eid_view_mode = 2;
+                if(ImGui::IsKeyPressed(ImGuiKey_4, false)) v.eid_view_mode = 3;
+                if(ImGui::IsKeyPressed(ImGuiKey_5, false)) v.eid_view_mode = 4;
+            }
+
+            // ── 콘텐츠 영역 ────────────────────────────────────────────
+            float ca_y0 = sb_y1;
+            float ca_y1 = ov_y1;
+            float ca_h  = ca_y1 - ca_y0;
+
+            int eid_mode = v.eid_view_mode;
+
+            // ── 로딩 ────────────────────────────────────────────────────
+            bool loading = v.eid_computing.load() || (eid_mode == 0 && v.sa_computing.load());
+            if(loading){
+                v.eid_anim_timer += io.DeltaTime;
+                int dots = ((int)(v.eid_anim_timer / 0.5f) % 3) + 1;
+                char msg[32]; snprintf(msg, sizeof(msg), "Loading %.*s", dots, "...");
+                ImVec2 msz = ImGui::CalcTextSize(msg);
+                fg->AddText(ImVec2(ov_x0+(ov_w-msz.x)/2, ca_y0+(ca_h-msz.y)/2),
+                            IM_COL32(255,100,180,255), msg);
+
+            // ── Spectrogram 모드 (mode 0) ─── 가로: X=시간, Y=주파수 ────
+            } else if(eid_mode == 0){
+                if(v.sa_texture){
+                    const float LM = 60.f, RM = 10.f, TM = 24.f, BM = 30.f;
+                    float ea_x0 = ov_x0 + LM, ea_y0 = ca_y0 + TM;
+                    float ea_x1 = ov_x1 - RM, ea_y1 = ca_y1 - BM;
+                    float ea_w = ea_x1 - ea_x0, ea_h = ea_y1 - ea_y0;
+
+                    if(ea_w > 10.f && ea_h > 10.f){
+
+                    // 파일 정보 헤더
+                    {
+                        uint32_t sr = v.sa_sample_rate > 0 ? v.sa_sample_rate : 1;
+                        double total_time = (double)v.sa_total_rows * v.sa_actual_fft_n / sr;
+                        char hdr[256];
+                        if(v.sa_center_freq_hz > 0){
+                            snprintf(hdr, sizeof(hdr), "FFT: %d | Rows: %lld | SR: %.2f MSPS | Duration: %.4fs | CF: %.3f MHz",
+                                v.sa_actual_fft_n, (long long)v.sa_total_rows, sr/1e6, total_time, v.sa_center_freq_hz/1e6);
+                        } else {
+                            snprintf(hdr, sizeof(hdr), "FFT: %d | Rows: %lld | SR: %.2f MSPS | Duration: %.4fs",
+                                v.sa_actual_fft_n, (long long)v.sa_total_rows, sr/1e6, total_time);
+                        }
+                        fg->AddText(ImVec2(ea_x0, ca_y0 + 4), IM_COL32(160,160,180,220), hdr);
+                    }
+
+                    // 배경
+                    fg->AddRectFilled(ImVec2(ea_x0, ea_y0), ImVec2(ea_x1, ea_y1), IM_COL32(8,8,12,255));
+
+                    // 스펙트로그램 텍스처
+                    ImTextureID tid = (ImTextureID)(intptr_t)v.sa_texture;
+                    float fy0 = v.sa_view_x0, fy1 = v.sa_view_x1;
+                    float tx0 = v.sa_view_y0, tx1 = v.sa_view_y1;
+                    ImVec2 uv_tl(fy1, tx0), uv_tr(fy1, tx1);
+                    ImVec2 uv_br(fy0, tx1), uv_bl(fy0, tx0);
+                    fg->AddImageQuad(tid,
+                        ImVec2(ea_x0, ea_y0), ImVec2(ea_x1, ea_y0),
+                        ImVec2(ea_x1, ea_y1), ImVec2(ea_x0, ea_y1),
+                        uv_tl, uv_tr, uv_br, uv_bl);
+
+                    // Y축 라벨 (주파수 MHz) — top=고주파, bottom=저주파
+                    if(v.sa_center_freq_hz > 0 && v.sa_sample_rate > 0){
+                        double cf = (double)v.sa_center_freq_hz;
+                        double sr_d = (double)v.sa_sample_rate;
+                        double freq_lo = cf - sr_d * 0.5;
+                        // 보이는 범위 (view_x UV → 주파수)
+                        double vis_flo = freq_lo + fy0 * sr_d;
+                        double vis_fhi = freq_lo + fy1 * sr_d;
+                        int n_divs = std::max(2, std::min(10, (int)(ea_h / 50.f)));
+                        for(int i = 0; i <= n_divs; i++){
+                            float frac = (float)i / n_divs;
+                            float yy = ea_y0 + frac * ea_h;
+                            double freq_val = vis_fhi - frac * (vis_fhi - vis_flo); // top=high
+                            fg->AddLine(ImVec2(ea_x0, yy), ImVec2(ea_x1, yy), IM_COL32(40,40,55,255));
+                            char lbl[32]; snprintf(lbl, sizeof(lbl), "%.3f", freq_val / 1e6);
+                            ImVec2 tsz = ImGui::CalcTextSize(lbl);
+                            fg->AddText(ImVec2(ea_x0 - tsz.x - 4, yy - tsz.y * 0.5f), IM_COL32(130,130,160,255), lbl);
+                        }
+                        // Y축 단위 라벨
+                        fg->AddText(ImVec2(ov_x0 + 2, ea_y0 - 14), IM_COL32(100,100,130,200), "MHz");
+                    }
+
+                    // X축 라벨 (시간)
+                    if(v.sa_total_rows > 0 && v.sa_actual_fft_n > 0 && v.sa_sample_rate > 0){
+                        uint32_t sr = v.sa_sample_rate;
+                        double row_sec = (double)v.sa_actual_fft_n / (double)sr;
+                        double total_sec = v.sa_total_rows * row_sec;
+                        double t0_sec = tx0 * total_sec;
+                        double t1_sec = tx1 * total_sec;
+                        double dt = t1_sec - t0_sec;
+
+                        int n_divs = std::max(2, std::min(10, (int)(ea_w / 120.f)));
+                        // nice step
+                        double raw_step = dt / n_divs;
+                        double mag = pow(10.0, floor(log10(raw_step)));
+                        double nm = raw_step / mag;
+                        double nice_step = (nm<=1.0)?1.0*mag : (nm<=2.0)?2.0*mag : (nm<=5.0)?5.0*mag : 10.0*mag;
+                        double t_start = ceil(t0_sec / nice_step) * nice_step;
+
+                        const char* unit = "s"; double ud = 1.0;
+                        if(dt < 0.001){ unit = "us"; ud = 1e-6; }
+                        else if(dt < 1.0){ unit = "ms"; ud = 1e-3; }
+
+                        for(double ts = t_start; ts <= t1_sec + nice_step*0.1; ts += nice_step){
+                            float frac_t = (float)((ts - t0_sec) / dt);
+                            float xx = ea_x0 + frac_t * ea_w;
+                            if(xx < ea_x0 || xx > ea_x1) continue;
+                            fg->AddLine(ImVec2(xx, ea_y0), ImVec2(xx, ea_y1), IM_COL32(40,40,55,255));
+                            char lbl[32]; snprintf(lbl, sizeof(lbl), "%.4g%s", ts / ud, unit);
+                            ImVec2 tsz = ImGui::CalcTextSize(lbl);
+                            fg->AddText(ImVec2(xx - tsz.x*0.5f, ea_y1+4), IM_COL32(130,130,160,255), lbl);
+                        }
+                    }
+
+                    // 테두리
+                    fg->AddRect(ImVec2(ea_x0, ea_y0), ImVec2(ea_x1, ea_y1), IM_COL32(60,60,80,255));
+
+                    // 스크롤 줌 (시간축 = 화면 X)
+                    ImVec2 mp = io.MousePos;
+                    bool in_sa = (mp.x >= ea_x0 && mp.x < ea_x1 && mp.y >= ea_y0 && mp.y < ea_y1);
+                    if(in_sa && io.MouseWheel != 0.f){
+                        float zf = (io.MouseWheel > 0) ? 0.8f : 1.25f;
+                        float frac = (mp.x - ea_x0) / ea_w;
+                        float mt = v.sa_view_y0 + frac * (v.sa_view_y1 - v.sa_view_y0);
+                        float new_range = (v.sa_view_y1 - v.sa_view_y0) * zf;
+                        v.sa_view_y0 = mt - frac * new_range;
+                        v.sa_view_y1 = mt + (1.0f - frac) * new_range;
+                        if(v.sa_view_y0 < 0.f){ v.sa_view_y1 -= v.sa_view_y0; v.sa_view_y0 = 0.f; }
+                        if(v.sa_view_y1 > 1.f){ v.sa_view_y0 -= (v.sa_view_y1 - 1.f); v.sa_view_y1 = 1.f; }
+                        v.sa_view_y0 = std::max(0.f, v.sa_view_y0);
+                        v.sa_view_y1 = std::min(1.f, v.sa_view_y1);
+                    }
+
+                    // 커서 오버레이 (십자선 + Freq/Time 정보)
+                    if(in_sa){
+                        fg->AddLine(ImVec2(mp.x,ea_y0),ImVec2(mp.x,ea_y1),IM_COL32(255,255,255,60));
+                        fg->AddLine(ImVec2(ea_x0,mp.y),ImVec2(ea_x1,mp.y),IM_COL32(255,255,255,60));
+
+                        if(v.sa_center_freq_hz > 0 && v.sa_actual_fft_n > 0 && v.sa_sample_rate > 0){
+                            float fx = (mp.x - ea_x0) / ea_w;
+                            float fy = (mp.y - ea_y0) / ea_h;
+                            float tv = v.sa_view_y0 + fx * (v.sa_view_y1 - v.sa_view_y0);
+                            float fu = v.sa_view_x1 - fy * (v.sa_view_x1 - v.sa_view_x0);
+                            double freq_hz = (double)v.sa_center_freq_hz - (double)v.sa_sample_rate*0.5 + fu*(double)v.sa_sample_rate;
+                            double row_sec = (double)v.sa_actual_fft_n / (double)v.sa_sample_rate;
+                            double t_off = tv * v.sa_total_rows * row_sec;
+                            time_t ta = (time_t)(v.sa_start_time + (int64_t)t_off);
+                            struct tm* tmv = localtime(&ta);
+                            char tb[16]="--:--:--";
+                            if(tmv) strftime(tb, sizeof(tb), "%H:%M:%S", tmv);
+                            char fb[32]; snprintf(fb, sizeof(fb), "Freq : %.3fMHz", freq_hz/1e6);
+                            char tt[32]; snprintf(tt, sizeof(tt), "Time : %s", tb);
+                            float fw = std::max(ImGui::CalcTextSize(fb).x, ImGui::CalcTextSize(tt).x);
+                            float fh = ImGui::GetFontSize() * 2.5f;
+                            float ox = ea_x1 - fw - 14.f, oy = ea_y0 + 8.f;
+                            fg->AddRectFilled(ImVec2(ox-4,oy-2), ImVec2(ox+fw+4,oy+fh), IM_COL32(0,0,0,180), 4.f);
+                            fg->AddText(ImVec2(ox,oy), IM_COL32(200,230,255,255), fb);
+                            fg->AddText(ImVec2(ox,oy+ImGui::GetFontSize()+2.f), IM_COL32(200,230,255,255), tt);
+                        }
+                    }
+
+                    } // end if(ea_w > 10 && ea_h > 10)
+                } else {
+                    const char* msg = "No spectrogram data";
+                    ImVec2 msz = ImGui::CalcTextSize(msg);
+                    fg->AddText(ImVec2(ov_x0+(ov_w-msz.x)/2, ca_y0+(ca_h-msz.y)/2),
+                                IM_COL32(100,100,120,255), msg);
+                }
+
+            // ── Time-domain 모드 (Amp/Freq/Phase/IQ: mode 1-4) ──────────
+            } else if(v.eid_data_ready.load()){
+                const float LM = 60.f, RM = 10.f, TM = 24.f, BM = 30.f;
+                float ea_x0 = ov_x0 + LM, ea_y0 = ca_y0 + TM;
+                float ea_x1 = ov_x1 - RM, ea_y1 = ca_y1 - BM;
+                float ea_w = ea_x1 - ea_x0, ea_h = ea_y1 - ea_y0;
+                if(ea_w > 10.f && ea_h > 10.f){
+
+                // 파일 정보 헤더
+                {
+                    uint32_t sr = v.eid_sample_rate > 0 ? v.eid_sample_rate : 1;
+                    double dur = (double)v.eid_total_samples / sr;
+                    char hdr[256];
+                    if(v.eid_center_freq_hz > 0){
+                        double cf_mhz = v.eid_center_freq_hz / 1e6;
+                        snprintf(hdr, sizeof(hdr), "Samples: %lld | SR: %.2f MSPS | Duration: %.4fs | CF: %.3f MHz",
+                            (long long)v.eid_total_samples, sr/1e6, dur, cf_mhz);
+                    } else {
+                        snprintf(hdr, sizeof(hdr), "Samples: %lld | SR: %.2f MSPS | Duration: %.4fs",
+                            (long long)v.eid_total_samples, sr/1e6, dur);
+                    }
+                    fg->AddText(ImVec2(ea_x0, ca_y0 + 4), IM_COL32(160,160,180,220), hdr);
+                }
+
+                // 배경
+                fg->AddRectFilled(ImVec2(ea_x0, ea_y0), ImVec2(ea_x1, ea_y1), IM_COL32(8,8,12,255));
+                fg->AddRect(ImVec2(ea_x0, ea_y0), ImVec2(ea_x1, ea_y1), IM_COL32(60,60,80,255));
+
+                // 내부 모드 매핑: eid_view_mode 1=Amp, 2=Freq, 3=Phase, 4=I/Q
+                // → 내부: 0=envelope, 1=I/Q, 2=Phase, 3=Freq
+                int imode;
+                if(eid_mode == 1) imode = 0;      // Amp → envelope
+                else if(eid_mode == 2) imode = 3;  // Freq → inst_freq
+                else if(eid_mode == 3) imode = 2;  // Phase → phase
+                else imode = 1;                     // I/Q → ch_i/ch_q
+
+                double vt0 = v.eid_view_t0, vt1 = v.eid_view_t1;
+
+                // Y축 범위
+                float a_min, a_max;
+                if(imode == 0){ a_min = v.eid_amp_min; a_max = v.eid_amp_max; }
+                else if(imode == 1){ a_min = -1.0f; a_max = 1.0f; }
+                else if(imode == 2){ a_min = -3.14159265f; a_max = 3.14159265f; }
+                else {
+                    a_min = -0.5f; a_max = 0.5f;
+                    int64_t vs0 = std::max((int64_t)0, (int64_t)vt0);
+                    int64_t vs1 = std::min((int64_t)v.eid_inst_freq.size(), (int64_t)ceil(vt1));
+                    if(vs1 > vs0 && !v.eid_inst_freq.empty()){
+                        float flo = v.eid_inst_freq[vs0], fhi = flo;
+                        int64_t step = std::max((int64_t)1, (vs1-vs0)/2000);
+                        for(int64_t s = vs0; s < vs1; s += step){
+                            float fv = v.eid_inst_freq[s];
+                            if(fv < flo) flo = fv; if(fv > fhi) fhi = fv;
+                        }
+                        float fm = (fhi - flo) * 0.05f;
+                        a_min = flo - fm; a_max = fhi + fm;
+                    }
+                }
+                float a_rng = a_max - a_min;
+                if(a_rng < 1e-6f) a_rng = 1e-6f;
+                double vis_samp = vt1 - vt0;
+                if(vis_samp < 1.0) vis_samp = 1.0;
+                int pixels = (int)ea_w;
+                if(pixels < 1) pixels = 1;
+                double spp = vis_samp / pixels;
+
+                // Y축 그리드
+                {
+                    int n_divs = std::max(2, std::min(10, (int)(ea_h / 40.f)));
+                    for(int i = 0; i <= n_divs; i++){
+                        float frac = (float)i / n_divs;
+                        float yy = ea_y0 + frac * ea_h;
+                        float amp_val = a_max - frac * a_rng;
+                        fg->AddLine(ImVec2(ea_x0, yy), ImVec2(ea_x1, yy), IM_COL32(40,40,55,255));
+                        char lbl[32];
+                        if(imode == 2) snprintf(lbl, sizeof(lbl), "%.2f", amp_val);
+                        else if(imode == 3) snprintf(lbl, sizeof(lbl), "%.0f", amp_val);
+                        else snprintf(lbl, sizeof(lbl), "%.3f", amp_val);
+                        ImVec2 tsz = ImGui::CalcTextSize(lbl);
+                        fg->AddText(ImVec2(ea_x0 - tsz.x - 4, yy - tsz.y * 0.5f), IM_COL32(130,130,160,255), lbl);
+                    }
+                }
+
+                // X축 그리드 (시간)
+                {
+                    uint32_t sr = v.eid_sample_rate; if(sr == 0) sr = 1;
+                    double t0s = vt0 / sr, t1s = vt1 / sr, dts = t1s - t0s;
+                    const char* unit = "s"; double ud = 1.0;
+                    if(dts < 0.001){ unit = "us"; ud = 1e-6; }
+                    else if(dts < 1.0){ unit = "ms"; ud = 1e-3; }
+                    double ru = dts / ud;
+                    double rs = ru / std::max(2.0, (double)(pixels / 120));
+                    double mg = pow(10.0, floor(log10(rs)));
+                    double nm = rs / mg;
+                    double ns = (nm<=1.0)?1.0*mg : (nm<=2.0)?2.0*mg : (nm<=5.0)?5.0*mg : 10.0*mg;
+                    double su = ceil((t0s/ud)/ns)*ns;
+                    for(double tu = su; tu*ud <= t1s + ns*0.5; tu += ns){
+                        double ts = tu * ud;
+                        float xx = ea_x0 + (float)((ts*sr - vt0) / vis_samp) * ea_w;
+                        if(xx < ea_x0 || xx > ea_x1) continue;
+                        fg->AddLine(ImVec2(xx, ea_y0), ImVec2(xx, ea_y1), IM_COL32(40,40,55,255));
+                        char lbl[32]; snprintf(lbl, sizeof(lbl), "%.4g%s", tu, unit);
+                        ImVec2 tsz = ImGui::CalcTextSize(lbl);
+                        fg->AddText(ImVec2(xx - tsz.x*0.5f, ea_y1+4), IM_COL32(130,130,160,255), lbl);
+                    }
+                }
+
+                // 파형 렌더링
+                fg->PushClipRect(ImVec2(ea_x0, ea_y0), ImVec2(ea_x1, ea_y1), true);
+                {
+                    struct ECh { const std::vector<float>* d; ImU32 c; };
+                    ECh chs[2]; int nch = 0;
+                    if(imode == 0){ chs[0]={&v.eid_envelope, IM_COL32(80,255,140,255)}; nch=1; }
+                    else if(imode == 1){ chs[0]={&v.eid_ch_i, IM_COL32(80,255,140,255)};
+                                         chs[1]={&v.eid_ch_q, IM_COL32(80,140,255,255)}; nch=2; }
+                    else if(imode == 2){ chs[0]={&v.eid_phase, IM_COL32(255,200,80,255)}; nch=1; }
+                    else { chs[0]={&v.eid_inst_freq, IM_COL32(255,120,200,255)}; nch=1; }
+
+                    for(int ci = 0; ci < nch; ci++){
+                        const auto& dat = *chs[ci].d;
+                        ImU32 col = chs[ci].c;
+                        int64_t total = (int64_t)dat.size();
+                        if(total < 1) continue;
+                        if(spp <= 1.0){
+                            std::vector<ImVec2> pts;
+                            int64_t s0 = std::max((int64_t)0, (int64_t)vt0);
+                            int64_t s1 = std::min(total, (int64_t)ceil(vt1)+1);
+                            pts.reserve(s1-s0);
+                            for(int64_t s = s0; s < s1; s++){
+                                float xx = ea_x0 + (float)((s-vt0)/vis_samp)*ea_w;
+                                float yy = ea_y0 + (1.0f-(dat[s]-a_min)/a_rng)*ea_h;
+                                pts.push_back(ImVec2(xx,yy));
+                            }
+                            if(pts.size()>=2)
+                                fg->AddPolyline(pts.data(),(int)pts.size(),col,ImDrawFlags_None,1.5f);
+                            if(spp < 0.3 && pts.size() < 2000){
+                                ImU32 dc = (col&0xFF000000)|((col&0x00FEFEFE)>>1)|0x00808080;
+                                for(auto& p : pts) fg->AddCircleFilled(p, 2.5f, dc);
+                            }
+                        } else {
+                            for(int px = 0; px < pixels; px++){
+                                int64_t s0=(int64_t)(vt0+px*spp), s1=(int64_t)(vt0+(px+1)*spp);
+                                s0=std::max((int64_t)0,std::min(s0,total-1));
+                                s1=std::max(s0+1,std::min(s1,total));
+                                float lo=dat[s0], hi=dat[s0];
+                                for(int64_t s=s0+1;s<s1;s++){
+                                    float v2=dat[s]; if(v2<lo)lo=v2; if(v2>hi)hi=v2;
+                                }
+                                float xx=ea_x0+px;
+                                float yl=ea_y0+(1.0f-(hi-a_min)/a_rng)*ea_h;
+                                float yh=ea_y0+(1.0f-(lo-a_min)/a_rng)*ea_h;
+                                if(yl>yh) std::swap(yl,yh);
+                                if(yh-yl<1.0f) yh=yl+1.0f;
+                                ImU32 bc=(col&0x00FFFFFF)|0xC8000000;
+                                fg->AddLine(ImVec2(xx,yl),ImVec2(xx,yh),bc);
+                            }
+                        }
+                    }
+
+                    // 노이즈 레벨 라인 (Amp 모드만)
+                    if(imode == 0 && v.eid_noise_level > a_min && v.eid_noise_level < a_max){
+                        float ny = ea_y0 + (1.0f - (v.eid_noise_level - a_min) / a_rng) * ea_h;
+                        for(float nx = ea_x0; nx < ea_x1; nx += 8.f)
+                            fg->AddLine(ImVec2(nx,ny), ImVec2(std::min(nx+4.f,ea_x1),ny), IM_COL32(255,60,60,150));
+                        char nl[24]; snprintf(nl, sizeof(nl), "Noise %.4f", v.eid_noise_level);
+                        fg->AddText(ImVec2(ea_x1-ImGui::CalcTextSize(nl).x-4, ny-14), IM_COL32(255,60,60,180), nl);
+                    }
+
+                    // 태그 영역
+                    for(auto& tag : v.eid_tags){
+                        float tx0 = ea_x0 + (float)((tag.s0-vt0)/vis_samp)*ea_w;
+                        float tx1 = ea_x0 + (float)((tag.s1-vt0)/vis_samp)*ea_w;
+                        tx0=std::max(tx0,ea_x0); tx1=std::min(tx1,ea_x1);
+                        if(tx1<=tx0) continue;
+                        fg->AddRectFilled(ImVec2(tx0,ea_y0),ImVec2(tx1,ea_y1),(tag.color&0x00FFFFFF)|0x28000000);
+                        fg->AddLine(ImVec2(tx0,ea_y0),ImVec2(tx0,ea_y1),tag.color,1.5f);
+                        fg->AddLine(ImVec2(tx1,ea_y0),ImVec2(tx1,ea_y1),tag.color,1.5f);
+                        fg->AddText(ImVec2(tx0+3,ea_y0+2),tag.color,tag.label);
+                    }
+                }
+                fg->PopClipRect();
+
+                // 마우스 인터랙션
+                ImVec2 mp = io.MousePos;
+                bool mouse_in = (mp.x >= ea_x0 && mp.x < ea_x1 && mp.y >= ea_y0 && mp.y < ea_y1);
+
+                // 스크롤 줌 (마우스 위치 고정)
+                if(mouse_in && io.MouseWheel != 0.f){
+                    v.eid_view_stack.push_back({vt0,vt1});
+                    double zf = (io.MouseWheel > 0) ? 0.8 : 1.25;
+                    double frac = (double)(mp.x-ea_x0)/ea_w;
+                    double mt = vt0 + frac * vis_samp;
+                    double new_vis = vis_samp * zf;
+                    v.eid_view_t0 = mt - frac * new_vis;
+                    v.eid_view_t1 = mt + (1.0 - frac) * new_vis;
+                    if(v.eid_view_t0<0){ v.eid_view_t1-=v.eid_view_t0; v.eid_view_t0=0; }
+                    if(v.eid_view_t1>(double)v.eid_total_samples){
+                        v.eid_view_t0-=(v.eid_view_t1-(double)v.eid_total_samples);
+                        v.eid_view_t1=(double)v.eid_total_samples;
+                    }
+                    v.eid_view_t0=std::max(0.0,v.eid_view_t0);
+                    v.eid_view_t1=std::min((double)v.eid_total_samples,v.eid_view_t1);
+                    if(v.eid_view_t1-v.eid_view_t0<32.0){
+                        double mid=(v.eid_view_t0+v.eid_view_t1)*0.5;
+                        v.eid_view_t0=mid-16; v.eid_view_t1=mid+16;
+                    }
+                }
+
+                // 좌클릭 드래그 줌
+                if(mouse_in && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                    v.eid_sel_active=true; v.eid_sel_x0=mp.x; v.eid_sel_x1=mp.x;
+                }
+                if(v.eid_sel_active){
+                    if(ImGui::IsMouseDown(ImGuiMouseButton_Left)){
+                        v.eid_sel_x1=mp.x;
+                        float sx0=std::max(ea_x0,std::min(v.eid_sel_x0,v.eid_sel_x1));
+                        float sx1=std::min(ea_x1,std::max(v.eid_sel_x0,v.eid_sel_x1));
+                        if(sx1-sx0>1.f){
+                            fg->AddRectFilled(ImVec2(sx0,ea_y0),ImVec2(sx1,ea_y1),IM_COL32(200,200,220,50));
+                            fg->AddRect(ImVec2(sx0,ea_y0),ImVec2(sx1,ea_y1),IM_COL32(200,200,220,160),0.f,0,1.f);
+                            double ss0=vt0+((sx0-ea_x0)/ea_w)*vis_samp;
+                            double ss1=vt0+((sx1-ea_x0)/ea_w)*vis_samp;
+                            int64_t ns=(int64_t)ss1-(int64_t)ss0;
+                            uint32_t sr=v.eid_sample_rate>0?v.eid_sample_rate:1;
+                            char si[64]; snprintf(si,sizeof(si),"Sel: %lld samp | %.3fms",(long long)ns,(double)ns/sr*1000);
+                            ImVec2 tsz2=ImGui::CalcTextSize(si);
+                            float tx=sx0+(sx1-sx0-tsz2.x)*0.5f; tx=std::max(tx,sx0+2.f);
+                            fg->AddRectFilled(ImVec2(tx-2,ea_y0+2),ImVec2(tx+tsz2.x+2,ea_y0+tsz2.y+4),IM_COL32(0,0,0,180),3.f);
+                            fg->AddText(ImVec2(tx,ea_y0+3),IM_COL32(200,220,255,255),si);
+                        }
+                    } else {
+                        v.eid_sel_active=false;
+                        float sx0=std::min(v.eid_sel_x0,v.eid_sel_x1);
+                        float sx1=std::max(v.eid_sel_x0,v.eid_sel_x1);
+                        if(sx1-sx0>5.f){
+                            v.eid_view_stack.push_back({vt0,vt1});
+                            v.eid_view_t0=std::max(0.0,vt0+((sx0-ea_x0)/ea_w)*vis_samp);
+                            v.eid_view_t1=std::min((double)v.eid_total_samples,vt0+((sx1-ea_x0)/ea_w)*vis_samp);
+                            if(v.eid_view_t1-v.eid_view_t0<32.0){
+                                double mid=(v.eid_view_t0+v.eid_view_t1)*0.5;
+                                v.eid_view_t0=mid-16; v.eid_view_t1=mid+16;
+                            }
+                        }
+                    }
+                }
+
+                // 우클릭: 드래그→태그, 클릭→뒤로가기
+                if(mouse_in && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                    v.eid_tag_dragging=true; v.eid_tag_drag_x0=mp.x; v.eid_tag_drag_x1=mp.x;
+                }
+                if(v.eid_tag_dragging && ImGui::IsMouseDown(ImGuiMouseButton_Right)){
+                    v.eid_tag_drag_x1=mp.x;
+                    float sx0=std::max(ea_x0,std::min(v.eid_tag_drag_x0,v.eid_tag_drag_x1));
+                    float sx1=std::min(ea_x1,std::max(v.eid_tag_drag_x0,v.eid_tag_drag_x1));
+                    if(sx1-sx0>1.f){
+                        fg->AddRectFilled(ImVec2(sx0,ea_y0),ImVec2(sx1,ea_y1),IM_COL32(255,180,60,40));
+                        fg->AddRect(ImVec2(sx0,ea_y0),ImVec2(sx1,ea_y1),IM_COL32(255,180,60,180),0.f,0,1.f);
+                    }
+                }
+                if(v.eid_tag_dragging && ImGui::IsMouseReleased(ImGuiMouseButton_Right)){
+                    v.eid_tag_dragging=false;
+                    float dx=fabsf(v.eid_tag_drag_x1-v.eid_tag_drag_x0);
+                    if(dx>5.f){
+                        float sx0=std::max(ea_x0,std::min(v.eid_tag_drag_x0,v.eid_tag_drag_x1));
+                        float sx1=std::min(ea_x1,std::max(v.eid_tag_drag_x0,v.eid_tag_drag_x1));
+                        static const ImU32 tc[]={IM_COL32(255,180,60,200),IM_COL32(100,200,255,200),
+                            IM_COL32(255,100,255,200),IM_COL32(100,255,180,200),
+                            IM_COL32(255,255,100,200),IM_COL32(180,140,255,200)};
+                        FFTViewer::EidTag tag;
+                        tag.s0=std::max(0.0,vt0+((sx0-ea_x0)/ea_w)*vis_samp);
+                        tag.s1=std::min((double)v.eid_total_samples,vt0+((sx1-ea_x0)/ea_w)*vis_samp);
+                        tag.color=tc[v.eid_tags.size()%6];
+                        snprintf(tag.label,sizeof(tag.label),"Tag %d",(int)v.eid_tags.size()+1);
+                        v.eid_tags.push_back(tag);
+                    } else {
+                        if(!v.eid_view_stack.empty()){
+                            auto [pt0,pt1]=v.eid_view_stack.back(); v.eid_view_stack.pop_back();
+                            v.eid_view_t0=pt0; v.eid_view_t1=pt1;
+                        } else { v.eid_view_t0=0; v.eid_view_t1=(double)v.eid_total_samples; }
+                    }
+                }
+
+                // Home 키
+                if(mouse_in && ImGui::IsKeyPressed(ImGuiKey_Home,false)){
+                    v.eid_view_stack.clear(); v.eid_view_t0=0; v.eid_view_t1=(double)v.eid_total_samples;
+                }
+
+                // Delete 키: 태그 삭제
+                if(mouse_in && ImGui::IsKeyPressed(ImGuiKey_Delete,false)){
+                    double ms=vt0+((mp.x-ea_x0)/ea_w)*vis_samp;
+                    for(auto it=v.eid_tags.begin();it!=v.eid_tags.end();++it){
+                        if(ms>=it->s0&&ms<=it->s1){ v.eid_tags.erase(it); break; }
+                    }
+                }
+
+                // 커서 오버레이
+                if(mouse_in){
+                    fg->AddLine(ImVec2(mp.x,ea_y0),ImVec2(mp.x,ea_y1),IM_COL32(255,255,255,60));
+                    fg->AddLine(ImVec2(ea_x0,mp.y),ImVec2(ea_x1,mp.y),IM_COL32(255,255,255,60));
+                    double ms=vt0+((mp.x-ea_x0)/ea_w)*vis_samp;
+                    float mv=a_max-((mp.y-ea_y0)/ea_h)*a_rng;
+                    uint32_t sr=v.eid_sample_rate>0?v.eid_sample_rate:1;
+                    double msec=ms/sr;
+                    char i1[48],i2[48],i3[48];
+                    if(msec<0.001) snprintf(i1,sizeof(i1),"Time : %.3f us",msec*1e6);
+                    else if(msec<1.0) snprintf(i1,sizeof(i1),"Time : %.4f ms",msec*1e3);
+                    else snprintf(i1,sizeof(i1),"Time : %.6f s",msec);
+                    if(imode==0) snprintf(i2,sizeof(i2),"Amp  : %.5f",mv);
+                    else if(imode==1) snprintf(i2,sizeof(i2),"Val  : %.5f",mv);
+                    else if(imode==2) snprintf(i2,sizeof(i2),"Phase: %.4f rad",mv);
+                    else snprintf(i2,sizeof(i2),"Freq : %.1f Hz",mv);
+                    snprintf(i3,sizeof(i3),"Samp : %lld",(long long)(int64_t)ms);
+                    float fw=std::max({ImGui::CalcTextSize(i1).x,ImGui::CalcTextSize(i2).x,ImGui::CalcTextSize(i3).x});
+                    float fh=ImGui::GetFontSize()*3.8f;
+                    float ox=ea_x1-fw-14.f, oy=ea_y0+8.f;
+                    fg->AddRectFilled(ImVec2(ox-4,oy-2),ImVec2(ox+fw+4,oy+fh),IM_COL32(0,0,0,180),4.f);
+                    float lh=ImGui::GetFontSize()+2.f;
+                    fg->AddText(ImVec2(ox,oy),IM_COL32(255,180,220,255),i1);
+                    fg->AddText(ImVec2(ox,oy+lh),IM_COL32(255,180,220,255),i2);
+                    fg->AddText(ImVec2(ox,oy+lh*2),IM_COL32(255,180,220,255),i3);
+                }
+
+                } // end if(ea_w > 10 && ea_h > 10)
+            } else {
+                // 데이터 없음
+                const char* msg = "Load a WAV file from STAT (right-click > Signal Analysis)";
+                ImVec2 msz = ImGui::CalcTextSize(msg);
+                fg->AddText(ImVec2(ov_x0+(ov_w-msz.x)/2, ca_y0+(ca_h-msz.y)/2),
+                            IM_COL32(100,100,120,255), msg);
+            }
+            ImGui::End();
+            ImGui::PopStyleColor();
+            ImGui::PopStyleVar();
+        } // end Signal Analysis overlay
 
         ImGui::Render();
         int dw2,dh2; glfwGetFramebufferSize(win,&dw2,&dh2);
