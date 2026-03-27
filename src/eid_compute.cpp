@@ -135,6 +135,7 @@ void FFTViewer::eid_start(const std::string& wav_path){
         eid_noise_level    = noise_lvl;
         eid_center_freq_hz = meta_cf_hz;
         eid_view_mode      = 0; // reset to Signal on new load
+        eid_phase_detrend_hz = 0.0f;
         eid_data_ready.store(true);
         eid_computing.store(false);
         bewe_log("EID: loaded %lld samples, sr=%u, cf=%llu\n",
@@ -159,4 +160,5 @@ void FFTViewer::eid_cleanup(){
     eid_noise_level      = 0.f;
     eid_center_freq_hz   = 0;
     eid_view_mode        = 0;
+    eid_phase_detrend_hz = 0.0f;
 }

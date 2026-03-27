@@ -225,6 +225,8 @@ public:
     std::vector<float> eid_phase;      // atan2(Q,I)
     std::vector<float> eid_inst_freq;  // d(phase)/dt
 
+    float eid_phase_detrend_hz = 0.0f;  // sweep line 주파수 오프셋 (Hz)
+
     // 노이즈 레벨 (Signal 모드용)
     float eid_noise_level = 0.f;
 

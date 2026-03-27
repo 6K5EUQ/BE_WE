@@ -6941,6 +6941,29 @@ void run_streaming_viewer(){
                 fg->AddText(ImVec2(combo_x + combo_w + 4, btn_ty), IM_COL32(110,110,130,255), "FFT");
             }
 
+            // Phase 모드: Sweep line 슬라이더 (우측 정렬)
+            if(v.eid_view_mode == 3){
+                float max_hz = v.eid_sample_rate > 0 ? (float)v.eid_sample_rate * 0.5f : 10000.f;
+                ImVec2 swp_tsz = ImGui::CalcTextSize("Sweep");
+                float combo_w = 160;
+                float combo_x = ov_x1 - combo_w - 8.f;
+                float swp_lx = combo_x - swp_tsz.x - 8.f;
+                float combo_y = sb_y0 + (SB_H - ImGui::GetFontSize() - 4)/2;
+                fg->AddText(ImVec2(swp_lx, btn_ty), IM_COL32(255,200,80,255), "Sweep");
+                ImGui::SetCursorScreenPos(ImVec2(combo_x, combo_y));
+                ImGui::SetNextItemWidth(combo_w);
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4,2));
+                ImGui::SliderFloat("##sweep_hz", &v.eid_phase_detrend_hz, -max_hz, max_hz, "%.1f Hz");
+                bool sweep_hovered = ImGui::IsItemHovered();
+                if(sweep_hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                    v.eid_phase_detrend_hz = 0.0f;
+                if(sweep_hovered && io.MouseWheel != 0.f){
+                    v.eid_phase_detrend_hz += io.MouseWheel * 1.0f;
+                    v.eid_phase_detrend_hz = std::max(-max_hz, std::min(max_hz, v.eid_phase_detrend_hz));
+                }
+                ImGui::PopStyleVar();
+            }
+
             // 1/2/3/4/5 키로 뷰 전환
             if(!io.WantTextInput){
                 if(ImGui::IsKeyPressed(ImGuiKey_1, false)) v.eid_view_mode = 0;
@@ -7222,6 +7245,16 @@ void run_streaming_viewer(){
                     }
                 }
 
+                // Phase detrend slope (rad/sample)
+                float detrend_slope = 0.0f;
+                if(imode == 2 && v.eid_phase_detrend_hz != 0.0f && v.eid_sample_rate > 0)
+                    detrend_slope = 2.0f * (float)M_PI * v.eid_phase_detrend_hz / (float)v.eid_sample_rate;
+                auto wrap_pi = [](float x) -> float {
+                    x = fmodf(x + (float)M_PI, 2.0f * (float)M_PI);
+                    if(x < 0.0f) x += 2.0f * (float)M_PI;
+                    return x - (float)M_PI;
+                };
+
                 // 파형 렌더링
                 fg->PushClipRect(ImVec2(ea_x0, ea_y0), ImVec2(ea_x1, ea_y1), true);
                 {
@@ -7244,8 +7277,11 @@ void run_streaming_viewer(){
                             int64_t s1 = std::min(total, (int64_t)ceil(vt1)+1);
                             pts.reserve(s1-s0);
                             for(int64_t s = s0; s < s1; s++){
+                                float val = dat[s];
+                                if(detrend_slope != 0.0f)
+                                    val = wrap_pi(val - detrend_slope * (float)s);
                                 float xx = ea_x0 + (float)((s-vt0)/vis_samp)*ea_w;
-                                float yy = ea_y0 + (1.0f-(dat[s]-a_min)/a_rng)*ea_h;
+                                float yy = ea_y0 + (1.0f-(val-a_min)/a_rng)*ea_h;
                                 pts.push_back(ImVec2(xx,yy));
                             }
                             if(pts.size()>=2)
@@ -7259,9 +7295,13 @@ void run_streaming_viewer(){
                                 int64_t s0=(int64_t)(vt0+px*spp), s1=(int64_t)(vt0+(px+1)*spp);
                                 s0=std::max((int64_t)0,std::min(s0,total-1));
                                 s1=std::max(s0+1,std::min(s1,total));
-                                float lo=dat[s0], hi=dat[s0];
+                                float iv=dat[s0];
+                                if(detrend_slope!=0.0f) iv=wrap_pi(iv-detrend_slope*(float)s0);
+                                float lo=iv, hi=iv;
                                 for(int64_t s=s0+1;s<s1;s++){
-                                    float v2=dat[s]; if(v2<lo)lo=v2; if(v2>hi)hi=v2;
+                                    float v2=dat[s];
+                                    if(detrend_slope!=0.0f) v2=wrap_pi(v2-detrend_slope*(float)s);
+                                    if(v2<lo)lo=v2; if(v2>hi)hi=v2;
                                 }
                                 float xx=ea_x0+px;
                                 float yl=ea_y0+(1.0f-(hi-a_min)/a_rng)*ea_h;
@@ -7424,7 +7464,14 @@ void run_streaming_viewer(){
                     else snprintf(i1,sizeof(i1),"Time : %.6f s",msec);
                     if(imode==0) snprintf(i2,sizeof(i2),"Amp  : %.5f",mv);
                     else if(imode==1) snprintf(i2,sizeof(i2),"Val  : %.5f",mv);
-                    else if(imode==2) snprintf(i2,sizeof(i2),"Phase: %.4f rad",mv);
+                    else if(imode==2){
+                        if(detrend_slope!=0.0f){
+                            int64_t si=(int64_t)ms;
+                            if(si>=0&&si<(int64_t)v.eid_phase.size())
+                                mv=wrap_pi(v.eid_phase[si]-detrend_slope*(float)si);
+                        }
+                        snprintf(i2,sizeof(i2),"Phase: %.4f rad",mv);
+                    }
                     else snprintf(i2,sizeof(i2),"Freq : %.1f Hz",mv);
                     snprintf(i3,sizeof(i3),"Samp : %lld",(long long)(int64_t)ms);
                     float fw=std::max({ImGui::CalcTextSize(i1).x,ImGui::CalcTextSize(i2).x,ImGui::CalcTextSize(i3).x});
