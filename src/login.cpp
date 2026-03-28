@@ -1,12 +1,15 @@
 #include "login.hpp"
 #include "bewe_paths.hpp"
-#include <GL/glew.h>
-#include <imgui.h>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
-#include <png.h>
+
+#ifndef BEWE_HEADLESS
+  #include <GL/glew.h>
+  #include <imgui.h>
+  #include <png.h>
+#endif
 
 // ── 계정 getter ───────────────────────────────────────────────────────────
 static char g_login_id    [64]  = {};
@@ -19,6 +22,16 @@ const char* login_get_pw()     { return g_login_pw; }
 int         login_get_tier()   { return g_login_tier; }
 const char* login_get_server() { return g_login_server; }
 
+bool cli_login(const char* id, const char* pw, int tier, const char* server){
+    strncpy(g_login_id, id ? id : "", 63);
+    strncpy(g_login_pw, pw ? pw : "", 63);
+    g_login_tier = tier;
+    if(server && server[0])
+        strncpy(g_login_server, server, 127);
+    return true;
+}
+
+#ifndef BEWE_HEADLESS
 // ── 배경 텍스처 (티어별) ──────────────────────────────────────────────────
 static GLuint bg_tex[3] = {0,0,0};
 static int    bg_w  [3] = {0,0,0};
@@ -246,3 +259,4 @@ bool draw_login_screen(int win_w, int win_h){
     ImGui::PopStyleVar(4);
     return login_done;
 }
+#endif // BEWE_HEADLESS

@@ -158,6 +158,7 @@ void NetServer::client_loop(std::shared_ptr<ClientConn> c){
             break;
         }
         pkt_count++;
+        stat_rx_bytes_.fetch_add(PKT_HDR_SIZE + len, std::memory_order_relaxed);
         handle_packet(c, static_cast<PacketType>(hdr.type),
                       payload.data(), len);
     }

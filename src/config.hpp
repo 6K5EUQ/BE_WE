@@ -1,6 +1,13 @@
 #pragma once
 #include <cstdint>
-#include <imgui.h>
+
+#ifdef BEWE_HEADLESS
+  typedef uint32_t ImU32;
+  #define IM_COL32(R,G,B,A) \
+      (((ImU32)(A)<<24)|((ImU32)(B)<<16)|((ImU32)(G)<<8)|((ImU32)(R)))
+#else
+  #include <imgui.h>
+#endif
 
 // ── Hardware (hw_config.hpp 참조) ─────────────────────────────────────────
 // RX_GAIN: BladeRF=10, RTL-SDR=396 (39.6dB, 0.1dB 단위)

@@ -2,6 +2,13 @@
 #include "bewe_paths.hpp"
 #include <cstdlib>
 
+#ifdef BEWE_HEADLESS
+int main(){
+    BEWEPaths::ensure_dirs();
+    run_cli_host();
+    return 0;
+}
+#else
 int main(){
     BEWEPaths::ensure_dirs();
     setenv("GTK_IM_MODULE","none",1);
@@ -11,3 +18,4 @@ int main(){
     run_streaming_viewer();
     return 0;
 }
+#endif

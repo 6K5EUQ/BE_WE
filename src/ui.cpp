@@ -4343,6 +4343,75 @@ void run_streaming_viewer(){
                     }
                     ImGui::Spacing();
 
+                    // ── Network ──────────────────────────────────────────
+                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                    if(ImGui::CollapsingHeader("Network")){
+                        ImGui::Indent(8.f);
+                        auto fmt_bytes = [](uint64_t b) -> std::string {
+                            char buf[32];
+                            if(b < 1024)               snprintf(buf,sizeof(buf),"%llu B", (unsigned long long)b);
+                            else if(b < 1024*1024)     snprintf(buf,sizeof(buf),"%.1f KB",(double)b/1024);
+                            else if(b < 1024ULL*1024*1024) snprintf(buf,sizeof(buf),"%.1f MB",(double)b/(1024*1024));
+                            else                       snprintf(buf,sizeof(buf),"%.2f GB",(double)b/(1024ULL*1024*1024));
+                            return buf;
+                        };
+                        auto fmt_rate = [](double bps) -> std::string {
+                            char buf[32];
+                            if(bps < 1024)             snprintf(buf,sizeof(buf),"%.0f B/s", bps);
+                            else if(bps < 1024*1024)   snprintf(buf,sizeof(buf),"%.1f KB/s", bps/1024);
+                            else                       snprintf(buf,sizeof(buf),"%.2f MB/s", bps/(1024*1024));
+                            return buf;
+                        };
+
+                        // rate 계산 (1초마다 갱신)
+                        static uint64_t prev_tx=0, prev_rx=0;
+                        static double rate_tx=0, rate_rx=0;
+                        static auto rate_time = std::chrono::steady_clock::now();
+                        auto now_rate = std::chrono::steady_clock::now();
+                        float rate_dt = std::chrono::duration<float>(now_rate - rate_time).count();
+
+                        if(v.net_srv){
+                            auto ns = v.net_srv->collect_stats();
+                            if(rate_dt >= 1.0f){
+                                rate_tx = (double)(ns.tx_bytes - prev_tx) / rate_dt;
+                                rate_rx = (double)(ns.rx_bytes - prev_rx) / rate_dt;
+                                prev_tx = ns.tx_bytes; prev_rx = ns.rx_bytes;
+                                rate_time = now_rate;
+                            }
+                            ImGui::TextColored(ImVec4(0.5f,0.9f,1.f,1.f), "TX");
+                            ImGui::SameLine(0,4);
+                            ImGui::Text("%s  (%s)", fmt_bytes(ns.tx_bytes).c_str(), fmt_rate(rate_tx).c_str());
+                            ImGui::TextColored(ImVec4(0.5f,1.f,0.7f,1.f), "RX");
+                            ImGui::SameLine(0,4);
+                            ImGui::Text("%s  (%s)", fmt_bytes(ns.rx_bytes).c_str(), fmt_rate(rate_rx).c_str());
+                            if(ns.drops > 0)
+                                ImGui::TextColored(ImVec4(1.f,0.4f,0.4f,1.f), "Drops: %llu", (unsigned long long)ns.drops);
+                            ImGui::TextDisabled("Queue: FFT %zu  Audio %zu", ns.q_fft, ns.q_audio);
+                        } else if(v.net_cli){
+                            auto ns = v.net_cli->collect_stats();
+                            if(rate_dt >= 1.0f){
+                                rate_rx = (double)(ns.rx_bytes - prev_rx) / rate_dt;
+                                rate_tx = (double)(ns.tx_bytes - prev_tx) / rate_dt;
+                                prev_rx = ns.rx_bytes; prev_tx = ns.tx_bytes;
+                                rate_time = now_rate;
+                            }
+                            ImGui::TextColored(ImVec4(0.5f,1.f,0.7f,1.f), "RX");
+                            ImGui::SameLine(0,4);
+                            ImGui::Text("%s  (%s)", fmt_bytes(ns.rx_bytes).c_str(), fmt_rate(rate_rx).c_str());
+                            ImGui::TextColored(ImVec4(0.5f,0.9f,1.f,1.f), "TX");
+                            ImGui::SameLine(0,4);
+                            ImGui::Text("%s  (%s)", fmt_bytes(ns.tx_bytes).c_str(), fmt_rate(rate_tx).c_str());
+                            if(ns.underruns > 0)
+                                ImGui::TextColored(ImVec4(1.f,0.6f,0.3f,1.f), "Audio underruns: %llu", (unsigned long long)ns.underruns);
+                            ImGui::TextDisabled("Jitter buffer: %zu / %zu samples",
+                                ns.jitter_fill, NetAudioRing::SZ);
+                        } else {
+                            ImGui::TextDisabled("(not connected)");
+                        }
+                        ImGui::Unindent(8.f);
+                    }
+                    ImGui::Spacing();
+
                     // ── Operators ────────────────────────────────────────
                     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                     if(ImGui::CollapsingHeader("Operators")){

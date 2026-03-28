@@ -267,6 +267,7 @@ void NetClient::recv_loop(){
             }
         }
         pkt_count++;
+        stat_rx_bytes.fetch_add(PKT_HDR_SIZE + len, std::memory_order_relaxed);
         handle_packet(static_cast<PacketType>(hdr.type), payload.data(), len);
     }
     connected_.store(false);
@@ -496,7 +497,9 @@ void NetClient::handle_packet(PacketType type,
 // ── raw_send ──────────────────────────────────────────────────────────────
 bool NetClient::raw_send(PacketType type, const void* payload, uint32_t len){
     std::lock_guard<std::mutex> lk(send_mtx_);
-    return send_packet(fd_, type, payload, len);
+    bool ok = send_packet(fd_, type, payload, len);
+    if(ok) stat_tx_bytes.fetch_add(PKT_HDR_SIZE + len, std::memory_order_relaxed);
+    return ok;
 }
 
 // ── send_cmd ──────────────────────────────────────────────────────────────

@@ -25,6 +25,8 @@ struct NetAudioRing {
     std::atomic<size_t>     wp{0}, rp{0};
     bool                    primed = false; // jitter buffer 축적 완료 여부
 
+    std::atomic<uint64_t> stat_underruns{0};  // 언더런 횟수
+
     void push(float v, int8_t p){
         size_t w = wp.load(std::memory_order_relaxed);
         buf[w & MASK] = v;
@@ -47,6 +49,7 @@ struct NetAudioRing {
         if(avail == 0){
             // 언더런: 재축적 모드로 전환
             primed = false;
+            stat_underruns.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
         v = buf[r & MASK]; p = pan[r & MASK];
@@ -164,6 +167,29 @@ public:
 
     // JOIN이 수직바를 왼쪽 끝으로 밀면 FFT 수신을 멈춤 (서버로부터 패킷 미사용)
     std::atomic<bool> fft_recv_enabled{true};
+
+    // ── Traffic stats ────────────────────────────────────────────────────
+    std::atomic<uint64_t> stat_rx_bytes{0};   // 총 수신 바이트
+    std::atomic<uint64_t> stat_tx_bytes{0};   // 총 송신 바이트
+
+    struct NetStats {
+        uint64_t rx_bytes    = 0;
+        uint64_t tx_bytes    = 0;
+        uint64_t underruns   = 0;   // 전체 채널 언더런 합계
+        size_t   jitter_fill = 0;   // 현재 지터버퍼 샘플 수 (max across channels)
+    };
+    NetStats collect_stats() const {
+        NetStats s;
+        s.rx_bytes = stat_rx_bytes.load(std::memory_order_relaxed);
+        s.tx_bytes = stat_tx_bytes.load(std::memory_order_relaxed);
+        for(int i = 0; i < MAX_CHANNELS; i++){
+            s.underruns += audio[i].stat_underruns.load(std::memory_order_relaxed);
+            size_t avail = audio[i].wp.load(std::memory_order_relaxed)
+                         - audio[i].rp.load(std::memory_order_relaxed);
+            if(avail > s.jitter_fill) s.jitter_fill = avail;
+        }
+        return s;
+    }
 
     // ── Auth result ───────────────────────────────────────────────────────
     uint8_t my_op_index = 0;

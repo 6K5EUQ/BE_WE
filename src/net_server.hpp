@@ -43,6 +43,10 @@ struct ClientConn {
     std::atomic<bool>       send_stop{false};
     std::mutex              fd_write_mtx;  // fd write 직렬화 (send/audio/send_file_to)
 
+    // per-client traffic stats
+    std::atomic<uint64_t>   stat_tx{0};
+    std::atomic<uint64_t>   stat_drops{0};
+
     // fd로 패킷 전송 (non-blocking: socketpair 버퍼 가득 차면 드롭)
     void send_raw(const std::vector<uint8_t>& pkt){
         if(fd < 0 || !alive.load()) return;
@@ -51,13 +55,16 @@ struct ClientConn {
         while(sent < pkt.size()){
             ssize_t r = ::send(fd, pkt.data()+sent, pkt.size()-sent, MSG_NOSIGNAL | MSG_DONTWAIT);
             if(r < 0){
-                if(errno == EAGAIN || errno == EWOULDBLOCK)
+                if(errno == EAGAIN || errno == EWOULDBLOCK){
+                    stat_drops.fetch_add(1, std::memory_order_relaxed);
                     return;  // 버퍼 가득 → 이 패킷 드롭 (실시간 스트림)
+                }
                 alive.store(false); return;
             }
             if(r == 0){ alive.store(false); return; }
             sent += (size_t)r;
         }
+        stat_tx.fetch_add(pkt.size(), std::memory_order_relaxed);
     }
 
     // FFT/제어 전용 스레드
@@ -105,14 +112,16 @@ struct ClientConn {
     void enqueue(std::vector<uint8_t> pkt, bool is_fft = false, bool is_audio = false){
         if(is_audio){
             std::lock_guard<std::mutex> lk(audio_mtx);
-            if(audio_queue.size() >= AUDIO_QUEUE_MAX)
+            if(audio_queue.size() >= AUDIO_QUEUE_MAX){
                 audio_queue.pop_front();
+                stat_drops.fetch_add(1, std::memory_order_relaxed);
+            }
             audio_queue.push_back(std::move(pkt));
             audio_cv.notify_one();
         } else {
             std::lock_guard<std::mutex> lk(send_mtx);
             if(send_queue.size() >= SEND_QUEUE_MAX){
-                if(is_fft) send_queue.pop_front();
+                if(is_fft){ send_queue.pop_front(); stat_drops.fetch_add(1, std::memory_order_relaxed); }
                 else return;
             }
             send_queue.push_back(std::move(pkt));
@@ -281,6 +290,31 @@ private:
     // Forward declaration to avoid pulling udp_discovery.hpp into every TU
     class DiscoveryBroadcaster* discovery_bcast_ = nullptr;
     std::atomic<bool> bcast_pause_{false}; // /chassis 2 reset: 방송 일시 중단 플래그
+
+    // ── Traffic stats ────────────────────────────────────────────────────
+public:
+    struct NetStats {
+        uint64_t tx_bytes  = 0;  // 총 송신
+        uint64_t rx_bytes  = 0;  // 총 수신
+        uint64_t drops     = 0;  // 드롭 패킷
+        size_t   q_fft     = 0;  // 현재 FFT 큐 합계
+        size_t   q_audio   = 0;  // 현재 오디오 큐 합계
+    };
+    NetStats collect_stats() const {
+        NetStats s;
+        std::lock_guard<std::mutex> lk(clients_mtx_);
+        for(auto& c : clients_){
+            s.tx_bytes += c->stat_tx.load(std::memory_order_relaxed);
+            s.drops    += c->stat_drops.load(std::memory_order_relaxed);
+            {std::lock_guard<std::mutex> qlk(c->send_mtx);  s.q_fft   += c->send_queue.size();}
+            {std::lock_guard<std::mutex> qlk(c->audio_mtx); s.q_audio += c->audio_queue.size();}
+        }
+        s.rx_bytes = stat_rx_bytes_.load(std::memory_order_relaxed);
+        return s;
+    }
+
+private:
+    std::atomic<uint64_t> stat_rx_bytes_{0};  // 총 수신 바이트
 
     char    host_name_[32] = {};
     uint8_t host_tier_     = 1;

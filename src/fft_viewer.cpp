@@ -25,6 +25,12 @@ static constexpr int WF_TEX_MAX = 16384;
 
 // ── Waterfall texture ─────────────────────────────────────────────────────
 void FFTViewer::create_waterfall_texture(){
+#ifdef BEWE_HEADLESS
+    int tex_w = std::min(fft_size, WF_TEX_MAX);
+    if(tex_w < 1) tex_w = 1;
+    wf_row_buf.assign(tex_w, 0);
+    return;
+#else
     if(waterfall_texture) glDeleteTextures(1,&waterfall_texture);
     int tex_w = std::min(fft_size, WF_TEX_MAX);
     if(tex_w < 1) tex_w = 1;
@@ -36,9 +42,14 @@ void FFTViewer::create_waterfall_texture(){
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);
     glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,tex_w,MAX_FFTS_MEMORY,0,GL_RGBA,GL_UNSIGNED_BYTE,nullptr);
     glBindTexture(GL_TEXTURE_2D,0);
+#endif
 }
 
 void FFTViewer::update_wf_row(int fi){
+#ifdef BEWE_HEADLESS
+    (void)fi;
+    return;
+#else
     std::lock_guard<std::mutex> lk(data_mtx);
     int tex_w = std::min(fft_size, WF_TEX_MAX);
     if(tex_w < 1) tex_w = 1;
@@ -52,8 +63,6 @@ void FFTViewer::update_wf_row(int fi){
     int fft_half=fft_size/2;
     int tex_half=tex_w/2;
 
-    // fft_size → tex_w 매핑 (peak detection 다운샘플)
-    // ratio: 한 텍셀당 몇 개 빈 (fft_size > tex_w일 때 >1)
     float ratio = (float)fft_half / (float)tex_half;
 
     auto map_peak=[&](float bin_start_f, float bin_end_f)->uint32_t{
@@ -67,8 +76,6 @@ void FFTViewer::update_wf_row(int fi){
         return lut[idx];
     };
 
-    // FFT shift: bin [fft_half..fft_size-1] → tex [0..tex_half-1]
-    //            bin [0..fft_half-1]         → tex [tex_half..tex_w-1]
     for(int i=0;i<tex_half;i++){
         float b0 = fft_half + i * ratio;
         float b1 = fft_half + (i+1) * ratio - 1;
@@ -83,6 +90,7 @@ void FFTViewer::update_wf_row(int fi){
     glBindTexture(GL_TEXTURE_2D,waterfall_texture);
     glTexSubImage2D(GL_TEXTURE_2D,0,0,mi,tex_w,1,GL_RGBA,GL_UNSIGNED_BYTE,wf_row_buf.data());
     glBindTexture(GL_TEXTURE_2D,0);
+#endif
 }
 
 // ── Display helpers ───────────────────────────────────────────────────────

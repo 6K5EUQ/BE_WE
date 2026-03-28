@@ -29,13 +29,14 @@ static void sa_hann(float* buf, int n){
 }
 
 void FFTViewer::sa_cleanup(){
-    // 스레드 먼저 종료 대기 (this 캡처 스레드가 살아있으면 크래시)
-    sa_playing.store(false);  // 재생 중이면 중단
+    sa_playing.store(false);
     if(sa_play_thread.joinable()) sa_play_thread.join();
     if(sa_thread.joinable()) sa_thread.join();
 
     sa_temp_path.clear();
+#ifndef BEWE_HEADLESS
     if(sa_texture){ glDeleteTextures(1,&sa_texture); sa_texture=0; }
+#endif
     sa_tex_w=0; sa_tex_h=0;
     sa_pixel_ready.store(false);
     {
@@ -45,6 +46,9 @@ void FFTViewer::sa_cleanup(){
 }
 
 void FFTViewer::sa_upload_texture(){
+#ifdef BEWE_HEADLESS
+    return;
+#else
     std::lock_guard<std::mutex> lk(sa_pixel_mtx);
     if(sa_pixel_buf.empty()) return;
     if(sa_texture) glDeleteTextures(1,&sa_texture);
@@ -59,6 +63,7 @@ void FFTViewer::sa_upload_texture(){
                  GL_RGBA,GL_UNSIGNED_BYTE,sa_pixel_buf.data());
     glBindTexture(GL_TEXTURE_2D,0);
     sa_pixel_ready.store(false);
+#endif
 }
 
 void FFTViewer::sa_start(const std::string& wav_path){

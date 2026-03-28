@@ -6,9 +6,13 @@
 #include "hw_config.hpp"
 #include "channel.hpp"
 
-#include <GL/glew.h>
-#include <GLFW/glfw3.h>
-#include <imgui.h>
+#ifndef BEWE_HEADLESS
+  #include <GL/glew.h>
+  #include <GLFW/glfw3.h>
+  #include <imgui.h>
+#else
+  typedef unsigned int GLuint;
+#endif
 #include <libbladeRF.h>
 #include <rtl-sdr.h>
 #include <mbelib.h>
@@ -443,23 +447,31 @@ public:
     int   channel_at_x(float mx, float gx, float gw) const;
     int   freq_sorted_display_num(int arr_idx) const;
 
-    // ── ui.cpp ────────────────────────────────────────────────────────────
+#ifndef BEWE_HEADLESS
+    // ── ui.cpp (rendering — GUI only) ────────────────────────────────────
     void handle_new_channel_drag(float gx, float gw);
     void handle_channel_interactions(float gx, float gw, float gy, float gh);
     void draw_all_channels(ImDrawList* dl, float gx, float gw, float gy, float gh, bool show_label);
     void draw_freq_axis(ImDrawList* dl, float gx, float gw, float gy, float gh, bool ticks_only=false);
     void handle_zoom_scroll(float gx, float gw, float mouse_x);
     void draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, float total_w, float total_h);
+#endif
 
     // ── 주파수 축 드래그 (center frequency 이동) ────────────────────────
     bool   freq_drag_active = false;
     float  freq_drag_start_x = 0;     // 드래그 시작 시 마우스 x
     float  freq_drag_start_cf = 0;    // 드래그 시작 시 center_frequency (MHz)
+#ifndef BEWE_HEADLESS
     void draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, float total_w, float total_h);
+#endif
 };
 
 // ── Entry point ───────────────────────────────────────────────────────────
+#ifdef BEWE_HEADLESS
+void run_cli_host();
+#else
 void run_streaming_viewer();
+#endif
 
 // ── BladeRF USB 소프트 리셋 (sudo 불필요, udev rule 권한 사용) ─────────────
 // USBDEVFS_RESET ioctl: 물리적으로 뽑았다 꽂는 것과 동일한 효과

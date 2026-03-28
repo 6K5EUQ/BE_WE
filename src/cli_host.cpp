@@ -1,0 +1,1234 @@
+// ── BE_WE CLI Headless HOST Mode ─────────────────────────────────────────
+// 라즈베리파이5 등 디스플레이 없는 환경에서 HOST 모드 전용 실행
+// GLFW/OpenGL/ImGui 의존성 없음
+
+#include "fft_viewer.hpp"
+#include "login.hpp"
+#include "bewe_paths.hpp"
+#include "central_client.hpp"
+#include "udp_discovery.hpp"
+#include "net_protocol.hpp"
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <cstdarg>
+#include <csignal>
+#include <ctime>
+#include <string>
+#include <vector>
+#include <map>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <chrono>
+#include <poll.h>
+#include <unistd.h>
+#include <termios.h>
+#include <ifaddrs.h>
+#include <arpa/inet.h>
+#include <dirent.h>
+#include <sys/stat.h>
+
+// ── bewe_log (ui.cpp 대체) ───────────────────────────────────────────────
+void bewe_log(const char* fmt, ...){
+    char buf[256];
+    va_list ap; va_start(ap,fmt);
+    vsnprintf(buf,sizeof(buf),fmt,ap);
+    va_end(ap);
+    time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
+    char ts[16]; strftime(ts,sizeof(ts),"%H:%M:%S",&tm2);
+    fprintf(stderr,"[%s] %s\n",ts,buf);
+}
+
+// ── bladerf_usb_reset 선언 (hw_detect.cpp) ───────────────────────────────
+bool bladerf_usb_reset();
+
+// ── 채널 스컬치 (ui.cpp에서 추출 — GUI 의존성 없음) ──────────────────────
+void FFTViewer::update_channel_squelch(){
+    if(total_ffts < 1 || fft_size < 1) return;
+    std::lock_guard<std::mutex> lk(data_mtx);
+    float cf_mhz = (float)(header.center_frequency / 1e6);
+    float nyq_mhz = header.sample_rate / 2e6f;
+    if(nyq_mhz < 0.001f) return;
+    int hf = fft_size / 2;
+    int fi = (total_ffts > 0 ? total_ffts - 1 : 0) % MAX_FFTS_MEMORY;
+    const float* rowp = fft_data.data() + fi * fft_size;
+    auto freq_to_bin = [&](float rel_mhz) -> int {
+        int bin = (rel_mhz >= 0)
+            ? (int)((rel_mhz / nyq_mhz) * hf)
+            : fft_size + (int)((rel_mhz / nyq_mhz) * hf);
+        return std::max(0, std::min(fft_size - 1, bin));
+    };
+    for(int c = 0; c < MAX_CHANNELS; c++){
+        Channel& ch = channels[c];
+        if(!ch.filter_active) continue;
+        float s_mhz = std::min(ch.s, ch.e) - cf_mhz;
+        float e_mhz = std::max(ch.s, ch.e) - cf_mhz;
+        int bin_s = freq_to_bin(s_mhz);
+        int bin_e = freq_to_bin(e_mhz);
+        float peak_db = -120.0f;
+        if(bin_s <= bin_e){
+            for(int b = bin_s; b <= bin_e; b++)
+                if(rowp[b] > peak_db) peak_db = rowp[b];
+        } else {
+            for(int b = bin_s; b < fft_size; b++)
+                if(rowp[b] > peak_db) peak_db = rowp[b];
+            for(int b = 0; b <= bin_e; b++)
+                if(rowp[b] > peak_db) peak_db = rowp[b];
+        }
+        float prev = ch.sq_sig.load(std::memory_order_relaxed);
+        float sig = 0.3f * peak_db + 0.7f * prev;
+        ch.sq_sig.store(sig, std::memory_order_relaxed);
+        if(!ch.sq_calibrated.load(std::memory_order_relaxed)){
+            if(ch.sq_calib_cnt < 60)
+                ch.sq_calib_buf[ch.sq_calib_cnt++] = peak_db;
+            if(ch.sq_calib_cnt >= 60){
+                float tmp[60];
+                memcpy(tmp, ch.sq_calib_buf, sizeof(tmp));
+                std::nth_element(tmp, tmp + 12, tmp + 60);
+                ch.sq_threshold.store(tmp[12] + 10.0f, std::memory_order_relaxed);
+                ch.sq_calibrated.store(true, std::memory_order_relaxed);
+                ch.sq_calib_cnt = 0;
+            }
+        }
+        float thr = ch.sq_threshold.load(std::memory_order_relaxed);
+        bool gate = ch.sq_gate.load(std::memory_order_relaxed);
+        const float HYS = 3.0f;
+        const int HOLD_FRAMES = 18;
+        if(ch.sq_calibrated.load(std::memory_order_relaxed)){
+            if(!gate && sig >= thr){
+                gate = true;
+                ch.sq_gate_hold = HOLD_FRAMES;
+            }
+            if(gate){
+                if(sig >= thr - HYS)
+                    ch.sq_gate_hold = HOLD_FRAMES;
+                else if(--ch.sq_gate_hold <= 0)
+                    gate = false;
+            }
+        }
+        ch.sq_gate.store(gate, std::memory_order_relaxed);
+    }
+}
+
+static std::string get_local_ip(){
+    struct ifaddrs* ifa_list = nullptr;
+    if(getifaddrs(&ifa_list) != 0) return "127.0.0.1";
+    std::string result = "127.0.0.1";
+    for(auto* ifa = ifa_list; ifa; ifa = ifa->ifa_next){
+        if(!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
+        auto* sin = reinterpret_cast<sockaddr_in*>(ifa->ifa_addr);
+        uint32_t addr = ntohl(sin->sin_addr.s_addr);
+        if((addr >> 24) == 127) continue;
+        char buf[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf));
+        result = buf; break;
+    }
+    freeifaddrs(ifa_list);
+    return result;
+}
+
+// ── Signal handler ───────────────────────────────────────────────────────
+static std::atomic<bool> g_shutdown{false};
+static void sig_handler(int){ g_shutdown.store(true); }
+
+// ── System monitor helpers (from ui.cpp) ─────────────────────────────────
+static void read_cpu(long long& idle, long long& total){
+    FILE* f=fopen("/proc/stat","r"); if(!f){idle=total=0;return;}
+    long long u,n,s,i,iow,irq,sirq;
+    if(fscanf(f,"cpu %lld %lld %lld %lld %lld %lld %lld",&u,&n,&s,&i,&iow,&irq,&sirq)!=7)
+        { idle=total=0; fclose(f); return; }
+    fclose(f); idle=i+iow; total=u+n+s+i+iow+irq+sirq;
+}
+static float read_ram(){
+    FILE* f=fopen("/proc/meminfo","r"); if(!f) return 0.0f;
+    long long total=0,avail=0; char key[64]; long long val;
+    for(int i=0;i<10;i++){
+        if(fscanf(f,"%63s %lld kB",key,&val)!=2) break;
+        if(!strcmp(key,"MemTotal:"))      total=val;
+        else if(!strcmp(key,"MemAvailable:")) avail=val;
+    }
+    fclose(f);
+    return (total>0)?(float)(total-avail)/total*100.0f:0.0f;
+}
+static float read_ghz(){
+    double sum=0; int cnt=0;
+    for(int c=0;c<256;c++){
+        char path[128];
+        snprintf(path,sizeof(path),"/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq",c);
+        FILE* f=fopen(path,"r"); if(!f) break;
+        long long khz=0; if(fscanf(f,"%lld",&khz)){} fclose(f);
+        sum+=khz; cnt++;
+    }
+    return cnt>0?(float)(sum/cnt/1e6):0.0f;
+}
+static long long read_io_ms(){
+    FILE* f=fopen("/proc/diskstats","r"); if(!f) return 0;
+    long long sum=0; char dev[32]; unsigned int maj,min_;
+    long long f1,f2,f3,f4,f5,f6,f7,f8,f9,io_ticks;
+    while(fscanf(f,"%u %u %31s %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %*[^\n]",
+                 &maj,&min_,dev,&f1,&f2,&f3,&f4,&f5,&f6,&f7,&f8,&f9,&io_ticks)==13){
+        if(dev[0]=='s'&&dev[2]>='a'&&dev[2]<='z'&&dev[3]=='\0') sum+=io_ticks;
+        else if(dev[0]=='n'&&dev[1]=='v'&&strstr(dev,"p")==nullptr) sum+=io_ticks;
+        else if(dev[0]=='v'&&dev[1]=='d'&&dev[3]=='\0') sum+=io_ticks;
+    }
+    fclose(f); return sum;
+}
+
+// ── Prompt helper (with default value) ───────────────────────────────────
+static std::string prompt_input(const char* label, const char* def=nullptr){
+    if(def && def[0])
+        printf("%s [%s]: ", label, def);
+    else
+        printf("%s: ", label);
+    fflush(stdout);
+    char buf[128]={};
+    if(!fgets(buf,sizeof(buf),stdin)) return def ? def : "";
+    buf[strcspn(buf,"\r\n")]=0;
+    if(buf[0]=='\0' && def) return def;
+    return buf;
+}
+
+// ── stdin readline (non-blocking) ────────────────────────────────────────
+static bool read_line_nb(std::string& out){
+    struct pollfd pfd{STDIN_FILENO, POLLIN, 0};
+    if(poll(&pfd,1,0)<=0) return false;
+    char buf[512];
+    if(!fgets(buf,sizeof(buf),stdin)) return false;
+    size_t len=strlen(buf);
+    while(len>0 && (buf[len-1]=='\n'||buf[len-1]=='\r')) buf[--len]=0;
+    out=buf;
+    return len>0;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+void run_cli_host(){
+    signal(SIGINT,  sig_handler);
+    signal(SIGTERM, sig_handler);
+
+    // ── Interactive prompts ──────────────────────────────────────────────
+    printf("\n=== BE_WE Headless HOST ===\n\n");
+
+    std::string id_str = prompt_input("ID");
+    if(id_str.empty()){ printf("Aborted.\n"); return; }
+
+    // 패스워드 에코 숨기기
+    printf("Password: "); fflush(stdout);
+    struct termios old_t, new_t;
+    tcgetattr(STDIN_FILENO,&old_t); new_t=old_t;
+    new_t.c_lflag &= ~(ECHO);
+    tcsetattr(STDIN_FILENO,TCSANOW,&new_t);
+    char pw_buf[64]={};
+    if(!fgets(pw_buf,sizeof(pw_buf),stdin)){ printf("\nAborted.\n"); tcsetattr(STDIN_FILENO,TCSANOW,&old_t); return; }
+    tcsetattr(STDIN_FILENO,TCSANOW,&old_t);
+    pw_buf[strcspn(pw_buf,"\r\n")]=0;
+    printf("\n");
+
+    int tier = atoi(prompt_input("Tier (1/2)", "1").c_str());
+    if(tier<1||tier>2){ printf("CLI HOST requires tier 1 or 2.\n"); return; }
+
+    std::string server_str = prompt_input("Central server", "144.24.86.137");
+    std::string station_str = prompt_input("Station name");
+    if(station_str.empty()){ printf("Aborted.\n"); return; }
+
+    float lat = atof(prompt_input("Latitude",  "0.0").c_str());
+    float lon = atof(prompt_input("Longitude", "0.0").c_str());
+    float cf  = atof(prompt_input("Center freq MHz", "450.0").c_str());
+
+    printf("\n");
+
+    // ── Login ────────────────────────────────────────────────────────────
+    cli_login(id_str.c_str(), pw_buf, tier, server_str.c_str());
+    printf("[BEWE CLI] Login: %s (Tier %d)\n", login_get_id(), login_get_tier());
+
+    // ── FFTViewer init ───────────────────────────────────────────────────
+    FFTViewer v;
+    v.station_name = station_str;
+    v.station_lat  = lat;
+    v.station_lon  = lon;
+    v.station_location_set = true;
+    strncpy(v.host_name, login_get_id(), 31);
+
+    // ── SDR init ─────────────────────────────────────────────────────────
+    std::thread cap;
+    if(!v.initialize(cf)){
+        printf("[BEWE CLI] SDR init failed — running without hardware\n");
+        v.sdr_stream_error.store(true);
+        v.fft_size = DEFAULT_FFT_SIZE * FFT_PAD_FACTOR;
+        v.fft_input_size = DEFAULT_FFT_SIZE;
+        v.header.fft_size  = DEFAULT_FFT_SIZE;
+        v.header.power_min = -100.f;
+        v.header.power_max = 0.f;
+        v.display_power_min = -80.f;
+        v.display_power_max = 0.f;
+        v.fft_data.assign((size_t)MAX_FFTS_MEMORY * DEFAULT_FFT_SIZE * FFT_PAD_FACTOR, 0);
+        v.current_spectrum.assign(DEFAULT_FFT_SIZE * FFT_PAD_FACTOR, -80.f);
+        v.autoscale_active = false;
+        v.create_waterfall_texture();
+    } else {
+        printf("[BEWE CLI] SDR: %s detected\n",
+               v.hw.type==HWType::BLADERF ? "BladeRF" : "RTL-SDR");
+        if(v.hw.type == HWType::BLADERF)
+            cap = std::thread(&FFTViewer::capture_and_process, &v);
+        else
+            cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
+    }
+    v.mix_stop.store(false);
+    v.mix_thr = std::thread(&FFTViewer::mix_worker, &v);
+
+    // ── NetServer ────────────────────────────────────────────────────────
+    NetServer* srv = new NetServer();
+    int host_port = 0;
+
+    // Static state shared with callbacks
+    std::map<std::string,std::string> pub_owners;
+    std::map<std::string,std::vector<std::string>> pub_listeners;
+    std::vector<std::string> shared_files, pub_iq_files, pub_audio_files;
+    std::vector<std::string> rec_iq_files;
+    std::atomic<bool> pending_chassis1_reset{false};
+    std::atomic<bool> pending_chassis2_reset{false};
+    std::atomic<bool> pending_rx_stop{false};
+    std::atomic<bool> pending_rx_start{false};
+    bool usb_reset_pending = false;
+    std::atomic<bool> ch_sync_dirty_flag{false};
+
+    // Central client
+    CentralClient central_cli;
+    char central_host[128] = {};
+    strncpy(central_host, login_get_server(), 127);
+    constexpr int central_port = CENTRAL_PORT;
+
+    // ── Server callbacks (from ui.cpp 2243-2822) ─────────────────────────
+    srv->cb.on_auth = [&,srv](const char* id, const char* pw,
+                               uint8_t tier, uint8_t& idx) -> bool {
+        static uint8_t next=1;
+        idx = next++;
+        if(next>MAX_OPERATORS) next=1;
+        uint8_t new_idx = idx;
+        std::thread([srv, new_idx, &pub_owners](){
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
+            auto scan_pub = [&](const std::string& dir){
+                DIR* ds = opendir(dir.c_str());
+                if(!ds) return;
+                struct dirent* ent;
+                while((ent=readdir(ds))!=nullptr){
+                    const char* n = ent->d_name;
+                    size_t nl = strlen(n);
+                    if(nl>4 && strcmp(n+nl-4,".wav")==0){
+                        std::string fp = dir+"/"+n;
+                        struct stat st{}; uint64_t fsz=0;
+                        if(stat(fp.c_str(),&st)==0) fsz=(uint64_t)st.st_size;
+                        std::string upl;
+                        auto it=pub_owners.find(n);
+                        if(it!=pub_owners.end()) upl=it->second;
+                        slist.push_back({n, fsz, upl});
+                    }
+                }
+                closedir(ds);
+            };
+            scan_pub(BEWEPaths::public_iq_dir());
+            scan_pub(BEWEPaths::public_audio_dir());
+            if(!slist.empty()) srv->send_share_list((int)new_idx, slist);
+        }).detach();
+        printf("[CLI] Client authenticated: idx=%d\n", idx);
+        return true;
+    };
+
+    srv->cb.on_set_freq   = [&](float cf){ v.set_frequency(cf); };
+    srv->cb.on_set_gain   = [&](float db){ v.gain_db=db; v.set_gain(db); };
+    srv->cb.on_create_ch  = [&](int idx, float s, float e, const char* creator){
+        if(idx<0||idx>=MAX_CHANNELS) return;
+        v.channels[idx].s=s; v.channels[idx].e=e;
+        v.channels[idx].filter_active=true;
+        v.channels[idx].mode=Channel::DM_NONE;
+        v.channels[idx].pan=0;
+        v.channels[idx].sq_calibrated.store(false);
+        v.channels[idx].ar_wp.store(0); v.channels[idx].ar_rp.store(0);
+        strncpy(v.channels[idx].owner, creator?creator:"", 31);
+        v.channels[idx].audio_mask.store(0xFFFFFFFFu & ~0x1u);
+        v.local_ch_out[idx] = 3;
+        srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+    };
+    srv->cb.on_delete_ch  = [&](int idx){
+        if(idx<0||idx>=MAX_CHANNELS) return;
+        if(v.channels[idx].audio_rec_on.load())
+            v.stop_audio_rec(idx);
+        v.stop_dem(idx); v.stop_digi(idx); v.digi_panel_on[idx]=false;
+        v.channels[idx].filter_active=false;
+        v.channels[idx].mode=Channel::DM_NONE;
+        v.local_ch_out[idx] = 1;
+        srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+    };
+    srv->cb.on_set_ch_mode= [&](int idx, int mode){
+        if(idx<0||idx>=MAX_CHANNELS) return;
+        v.stop_dem(idx);
+        auto dm=(Channel::DemodMode)mode;
+        v.channels[idx].mode=dm;
+        if(dm!=Channel::DM_NONE && v.channels[idx].filter_active)
+            v.start_dem(idx,dm);
+        srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+    };
+    srv->cb.on_set_ch_audio=[&](int idx, uint32_t mask){
+        if(idx<0||idx>=MAX_CHANNELS) return;
+        v.channels[idx].audio_mask.store(mask);
+        srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+    };
+    srv->cb.on_set_ch_pan =[&](int idx, int pan){
+        if(idx<0||idx>=MAX_CHANNELS) return;
+        v.channels[idx].pan=pan;
+        srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+    };
+    srv->cb.on_set_sq_thresh = [&](int idx2, float thr){
+        if(idx2<0||idx2>=MAX_CHANNELS) return;
+        v.channels[idx2].sq_threshold.store(thr, std::memory_order_relaxed);
+        srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+    };
+    srv->cb.on_set_autoscale = [&](){
+        v.autoscale_active=true; v.autoscale_init=false;
+        v.autoscale_accum.clear();
+    };
+    srv->cb.on_toggle_tm_iq = [&](){
+        bool cur=v.tm_iq_on.load();
+        if(cur){
+            v.tm_iq_on.store(false); v.tm_add_event_tag(2); v.tm_iq_was_stopped=true;
+            srv->broadcast_wf_event(0,(int64_t)time(nullptr),2,"IQ Stop");
+        } else {
+            if(v.tm_iq_was_stopped){ v.tm_iq_close(); v.tm_iq_was_stopped=false; }
+            v.tm_iq_open();
+            if(v.tm_iq_file_ready){
+                v.tm_iq_on.store(true); v.tm_add_event_tag(1);
+                srv->broadcast_wf_event(0,(int64_t)time(nullptr),1,"IQ Start");
+            }
+        }
+    };
+    srv->cb.on_set_capture_pause = [&](bool pause){
+        v.capture_pause.store(pause);
+        srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+    };
+    srv->cb.on_set_spectrum_pause = [&](bool pause){
+        v.spectrum_pause.store(pause);
+    };
+
+    // Region IQ request from JOIN
+    srv->cb.on_request_region = [&](uint8_t op_idx, const char* op_name,
+                                     int32_t fft_top, int32_t fft_bot,
+                                     float freq_lo, float freq_hi,
+                                     int32_t time_start, int32_t time_end){
+        std::string fname;
+        {
+            std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+            FFTViewer::RecEntry e{};
+            time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
+            char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
+            float cf_mhz = (freq_lo+freq_hi)/2.0f;
+            char fn[128]; snprintf(fn,sizeof(fn),"IQ_%.3fMHz_%s.wav",cf_mhz,dts);
+            e.filename = fn;
+            e.is_region = true;
+            e.req_state = FFTViewer::RecEntry::REQ_CONFIRMED;
+            e.req_op_idx = op_idx;
+            strncpy(e.req_op_name, op_name?op_name:"?", 31);
+            e.req_fft_top=fft_top; e.req_fft_bot=fft_bot;
+            e.req_freq_lo=freq_lo; e.req_freq_hi=freq_hi;
+            e.req_time_start=time_start; e.req_time_end=time_end;
+            e.t_start=std::chrono::steady_clock::now();
+            v.rec_entries.push_back(e);
+            fname = fn;
+        }
+        float rps=(float)v.header.sample_rate/(float)v.fft_input_size/(float)v.time_average;
+        if(rps<=0.f) rps=37.5f;
+        time_t now_h=time(nullptr);
+        int cur_fi=v.current_fft_idx;
+        int32_t ft=(int32_t)(cur_fi-(int32_t)((now_h-(time_t)time_end)*rps));
+        int32_t fb=(int32_t)(cur_fi-(int32_t)((now_h-(time_t)time_start)*rps));
+        float fl=freq_lo, fh=freq_hi;
+        uint8_t oidx=op_idx;
+        std::string sid = v.station_name + "_" + std::string(login_get_id());
+        static std::atomic<uint32_t> g_req_id{1000};
+        uint32_t req_id_val = g_req_id.fetch_add(1);
+        std::thread([&v,srv,ft,fb,fl,fh,time_start,time_end,oidx,fname,sid,&central_cli,req_id_val](){
+            uint32_t req_id = req_id_val;
+            for(int w=0;w<200&&v.rec_busy_flag.load();w++)
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            v.region.fft_top=ft; v.region.fft_bot=fb;
+            v.region.freq_lo=fl; v.region.freq_hi=fh;
+            v.region.time_start=(time_t)time_start;
+            v.region.time_end=(time_t)time_end;
+            v.region.active=true;
+            v.rec_busy_flag.store(true);
+            v.rec_state = FFTViewer::REC_BUSY;
+            v.rec_anim_timer = 0.0f;
+            v.region.active = false;
+            if(srv){
+                PktIqProgress prog{};
+                prog.req_id = req_id;
+                strncpy(prog.filename, fname.c_str(), 127);
+                prog.done=0; prog.total=0; prog.phase=0;
+                srv->broadcast_iq_progress(prog);
+            }
+            v.do_region_save_work();
+            v.rec_state = FFTViewer::REC_SUCCESS;
+            v.rec_success_timer = 3.0f;
+            v.rec_busy_flag.store(false);
+            std::string path;
+            {
+                std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
+                for(auto it=v.rec_entries.rbegin();it!=v.rec_entries.rend();++it)
+                    if(!it->is_audio&&it->req_state==FFTViewer::RecEntry::REQ_NONE&&it->finished){
+                        path=it->path;
+                        v.rec_entries.erase(std::next(it).base());
+                        break;
+                    }
+            }
+            if(path.empty()){
+                if(srv) srv->send_region_response((int)oidx, false);
+                return;
+            }
+            uint64_t fsz=0;
+            {FILE* f=fopen(path.c_str(),"rb");if(f){fseek(f,0,SEEK_END);fsz=(uint64_t)ftell(f);fclose(f);}}
+            // IQ chunk transfer via central relay
+            if(srv && srv->cb.on_relay_broadcast){
+                const char* fn_only2 = strrchr(path.c_str(), '/');
+                fn_only2 = fn_only2 ? fn_only2+1 : path.c_str();
+                printf("[CLI] IQ_CHUNK transfer start: req_id=%u file='%s' size=%.1fMB\n",
+                       req_id, fn_only2, fsz/1048576.0);
+                {
+                    PktIqChunkHdr ch{};
+                    ch.req_id = req_id; ch.seq = 0;
+                    strncpy(ch.filename, fn_only2, 127);
+                    ch.filesize = fsz; ch.data_len = 0;
+                    auto bewe = make_packet(PacketType::IQ_CHUNK, &ch, sizeof(ch));
+                    srv->cb.on_relay_broadcast(bewe.data(), bewe.size(), true);
+                }
+                std::thread([&v, fname, path, fsz, srv, req_id,
+                             fn2 = std::string(fn_only2)](){
+                    FILE* fp = fopen(path.c_str(), "rb");
+                    if(!fp) return;
+                    const size_t CHUNK = 64 * 1024;
+                    std::vector<uint8_t> buf(sizeof(PktIqChunkHdr) + CHUNK);
+                    uint64_t sent = 0; uint32_t seq = 1;
+                    while(true){
+                        size_t n = fread(buf.data() + sizeof(PktIqChunkHdr), 1, CHUNK, fp);
+                        if(n == 0) break;
+                        auto* ch = reinterpret_cast<PktIqChunkHdr*>(buf.data());
+                        ch->req_id = req_id; ch->seq = seq++;
+                        strncpy(ch->filename, fn2.c_str(), 127);
+                        ch->filesize = fsz; ch->data_len = (uint32_t)n;
+                        auto bewe = make_packet(PacketType::IQ_CHUNK, buf.data(), (uint32_t)(sizeof(PktIqChunkHdr)+n));
+                        if(srv->cb.on_relay_broadcast)
+                            srv->cb.on_relay_broadcast(bewe.data(), bewe.size(), true);
+                        sent += n;
+                    }
+                    fclose(fp);
+                    {
+                        PktIqChunkHdr ch{};
+                        ch.req_id = req_id; ch.seq = 0xFFFFFFFF;
+                        strncpy(ch.filename, fn2.c_str(), 127);
+                        ch.filesize = fsz; ch.data_len = 0;
+                        auto bewe = make_packet(PacketType::IQ_CHUNK, &ch, sizeof(ch));
+                        if(srv->cb.on_relay_broadcast)
+                            srv->cb.on_relay_broadcast(bewe.data(), bewe.size(), true);
+                    }
+                    {
+                        PktIqProgress prog{};
+                        prog.req_id = req_id;
+                        strncpy(prog.filename, fname.c_str(), 127);
+                        prog.done = sent; prog.total = fsz; prog.phase = 2;
+                        srv->broadcast_iq_progress(prog);
+                    }
+                }).detach();
+            } else {
+                // Direct TCP send
+                srv->send_file_to((int)oidx, path.c_str(), 0);
+            }
+        }).detach();
+    };
+
+    srv->cb.on_toggle_recv = [&](int ch_idx, uint8_t op_idx, bool enable){
+        if(ch_idx<0||ch_idx>=MAX_CHANNELS) return;
+        uint32_t bit = 1u << op_idx;
+        uint32_t old_mask = v.channels[ch_idx].audio_mask.load();
+        uint32_t new_mask;
+        do {
+            new_mask = enable ? (old_mask | bit) : (old_mask & ~bit);
+        } while(!v.channels[ch_idx].audio_mask.compare_exchange_weak(old_mask, new_mask));
+    };
+    srv->cb.on_update_ch_range = [&](int idx, float s, float e){
+        if(idx<0||idx>=MAX_CHANNELS) return;
+        v.channels[idx].s = s;
+        v.channels[idx].e = e;
+        if(v.channels[idx].dem_run.load()){
+            Channel::DemodMode md = v.channels[idx].mode;
+            v.stop_dem(idx); v.start_dem(idx, md);
+        }
+        srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+    };
+    srv->cb.on_start_rec  = [&](int){ v.start_rec(); };
+    srv->cb.on_stop_rec   = [&](){ v.stop_rec(); };
+    srv->cb.on_chat       = [&](const char* from, const char* msg){
+        printf("[CHAT] %s: %s\n", from, msg);
+    };
+
+    // Share download
+    srv->cb.on_share_download_req = [&](uint8_t op_idx, const char* filename){
+        std::string fn(filename);
+        bool is_iq = (fn.size()>3 && fn.substr(0,3)=="IQ_") || (fn.size()>3 && fn.substr(0,3)=="sa_");
+        std::string path = (is_iq ? BEWEPaths::public_iq_dir() : BEWEPaths::public_audio_dir()) + "/" + fn;
+        struct stat st{};
+        if(stat(path.c_str(),&st)!=0) return;
+        uint8_t tid = v.next_transfer_id.fetch_add(1);
+        int op_int = (int)op_idx;
+        std::string path_copy = path;
+        std::thread([srv, path_copy, op_int, tid](){
+            srv->send_file_to(op_int, path_copy.c_str(), tid);
+        }).detach();
+    };
+
+    // Share upload done
+    srv->cb.on_share_upload_done = [&](uint8_t, const char* op_name, const char* tmp_path){
+        const char* fn = strrchr(tmp_path, '/'); fn = fn ? fn+1 : tmp_path;
+        if(strncmp(fn,"bewe_up_",8)==0) fn+=8;
+        bool is_iq = (strlen(fn)>3 && strncmp(fn,"IQ_",3)==0)
+                  || (strlen(fn)>3 && strncmp(fn,"sa_",3)==0);
+        std::string pub_dir = is_iq ? BEWEPaths::public_iq_dir() : BEWEPaths::public_audio_dir();
+        struct stat sd{}; if(stat(pub_dir.c_str(),&sd)!=0) mkdir(pub_dir.c_str(),0755);
+        std::string dst = pub_dir + "/" + fn;
+        FILE* fin = fopen(tmp_path,"rb"); FILE* fout = fopen(dst.c_str(),"wb");
+        if(fin&&fout){ char buf[65536]; size_t n; while((n=fread(buf,1,sizeof(buf),fin))>0) fwrite(buf,1,n,fout); }
+        if(fin) fclose(fin); if(fout) fclose(fout);
+        remove(tmp_path);
+        std::string fname(fn);
+        pub_owners[fname] = std::string(op_name);
+        if(is_iq){ bool dup=false; for(auto& sf:pub_iq_files) if(sf==fname){dup=true;break;} if(!dup) pub_iq_files.push_back(fname); }
+        else     { bool dup=false; for(auto& sf:pub_audio_files) if(sf==fname){dup=true;break;} if(!dup) pub_audio_files.push_back(fname); }
+        { bool dup=false; for(auto& sf:shared_files) if(sf==fname){dup=true;break;} if(!dup) shared_files.push_back(fname); }
+        // Broadcast updated list
+        std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
+        for(auto& sf : shared_files){
+            bool siq = (sf.size()>3&&sf.substr(0,3)=="IQ_")||(sf.size()>3&&sf.substr(0,3)=="sa_");
+            std::string sfp = (siq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+sf;
+            struct stat sst{}; uint64_t fsz=0;
+            if(stat(sfp.c_str(),&sst)==0) fsz=(uint64_t)sst.st_size;
+            std::string upl; auto it=pub_owners.find(sf); if(it!=pub_owners.end()) upl=it->second;
+            slist.push_back({sf,fsz,upl});
+        }
+        srv->send_share_list(-1, slist);
+        printf("[CLI] Public upload done: %s (from %s)\n", fn, op_name);
+    };
+
+    srv->cb.on_set_fft_size = [&](uint32_t size){
+        static const int valid[]={512,1024,2048,4096,8192,16384};
+        for(int vs : valid)
+            if((uint32_t)vs==size){ v.pending_fft_size=size; v.fft_size_change_req=true; break; }
+    };
+    srv->cb.on_set_sr = [&](float msps){
+        v.pending_sr_msps=msps; v.sr_change_req=true;
+        v.autoscale_active=true; v.autoscale_init=false; v.autoscale_accum.clear();
+    };
+    srv->cb.on_chassis_reset = [&](){ pending_chassis1_reset.store(true); };
+    srv->cb.on_net_reset     = [&](){ pending_chassis2_reset.store(true); };
+    srv->cb.on_rx_stop       = [&](){ pending_rx_stop.store(true); };
+    srv->cb.on_rx_start      = [&](){ pending_rx_start.store(true); };
+    srv->cb.on_pub_delete_req = [&](const char* op_name, const char* filename){
+        std::string fname(filename);
+        auto oit = pub_owners.find(fname);
+        if(oit == pub_owners.end() || oit->second != std::string(op_name)) return;
+        bool is_iq = (fname.size()>3&&fname.substr(0,3)=="IQ_")||(fname.size()>3&&fname.substr(0,3)=="sa_");
+        std::string fp = (is_iq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+fname;
+        remove(fp.c_str());
+        auto rm_from = [&](std::vector<std::string>& vec){
+            vec.erase(std::remove(vec.begin(),vec.end(),fname),vec.end());
+        };
+        rm_from(pub_iq_files); rm_from(pub_audio_files); rm_from(shared_files);
+        pub_owners.erase(fname); pub_listeners.erase(fname);
+        std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
+        for(auto& sf : shared_files){
+            bool siq2 = (sf.size()>3&&sf.substr(0,3)=="IQ_")||(sf.size()>3&&sf.substr(0,3)=="sa_");
+            std::string sfp = (siq2?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+sf;
+            struct stat sst{}; uint64_t fsz=0;
+            if(stat(sfp.c_str(),&sst)==0) fsz=(uint64_t)sst.st_size;
+            std::string upl; auto it=pub_owners.find(sf); if(it!=pub_owners.end()) upl=it->second;
+            slist.push_back({sf,fsz,upl});
+        }
+        srv->send_share_list(-1, slist);
+    };
+
+    // ── Start server ─────────────────────────────────────────────────────
+    if(!srv->start(0)){
+        printf("[BEWE CLI] Server start failed\n");
+        delete srv; srv=nullptr;
+        g_shutdown.store(true);
+    } else {
+        host_port = srv->listen_port();
+        v.net_srv = srv;
+        srv->set_host_info(login_get_id(), (uint8_t)login_get_tier());
+        printf("[BEWE CLI] Server started on port %d\n", host_port);
+
+        // LAN discovery broadcast
+        std::string lip = get_local_ip();
+        srv->start_discovery_broadcast(
+            v.station_name.c_str(),
+            v.station_lat, v.station_lon,
+            (uint16_t)host_port,
+            lip.c_str(),
+            (uint8_t)login_get_tier());
+        printf("[BEWE CLI] Discovery broadcast: %s (%s:%d)\n",
+               v.station_name.c_str(), lip.c_str(), host_port);
+
+        // Central MUX adapter
+        if(central_host[0] != '\0'){
+            std::string sid = v.station_name + "_" + std::string(login_get_id());
+            int rfd = central_cli.open_room(
+                central_host, central_port, sid, v.station_name,
+                v.station_lat, v.station_lon,
+                (uint8_t)login_get_tier());
+            if(rfd >= 0){
+                // Relay CHANNEL_SYNC callback
+                central_cli.set_on_central_ch_sync([&v](const uint8_t* pkt, size_t len){
+                    if(len < 9 + 60*10) return;
+                    const uint8_t* payload = pkt + 9;
+                    for(int i=0; i<MAX_CHANNELS && i<10; i++){
+                        uint32_t mask;
+                        memcpy(&mask, payload + i*60 + 12, sizeof(mask));
+                        v.channels[i].audio_mask.store(mask);
+                    }
+                });
+                srv->cb.on_relay_broadcast = [&central_cli](const uint8_t* pkt, size_t len, bool no_drop){
+                    central_cli.enqueue_relay_broadcast(pkt, len, no_drop);
+                };
+                // Auto-reconnect function
+                auto reconnect_fn = std::make_shared<std::function<void()>>();
+                *reconnect_fn = [&v, &central_cli,
+                                 rh = std::string(central_host), rp = central_port,
+                                 reconnect_fn](){
+                    std::thread([&v, &central_cli, rh, rp, reconnect_fn](){
+                        for(int attempt=0; attempt<5; attempt++){
+                            std::this_thread::sleep_for(std::chrono::seconds(3));
+                            if(!v.net_srv) return;
+                            printf("[CLI] Central auto-reconnect attempt %d/5\n", attempt+1);
+                            std::string sid2 = v.station_name + "_" + std::string(login_get_id());
+                            int rfd2 = central_cli.open_room(
+                                rh, rp, sid2, v.station_name,
+                                v.station_lat, v.station_lon,
+                                (uint8_t)login_get_tier());
+                            if(rfd2 >= 0){
+                                central_cli.start_mux_adapter(rfd2,
+                                    [&v](int fd2){ if(v.net_srv) v.net_srv->inject_fd(fd2); },
+                                    [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; },
+                                    *reconnect_fn);
+                                printf("[CLI] Central auto-reconnected\n");
+                                return;
+                            }
+                        }
+                        printf("[CLI] Central auto-reconnect failed after 5 attempts\n");
+                    }).detach();
+                };
+                central_cli.start_mux_adapter(rfd,
+                    [&v](int local_fd){ if(v.net_srv) v.net_srv->inject_fd(local_fd); },
+                    [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; },
+                    *reconnect_fn);
+                printf("[BEWE CLI] Central relay connected\n");
+            } else {
+                printf("[BEWE CLI] Central relay unavailable\n");
+            }
+        }
+
+        // Broadcast thread
+        v.net_bcast_stop.store(false);
+        v.net_bcast_thr = std::thread(&FFTViewer::net_bcast_worker, &v);
+    }
+
+    // TM IQ
+    if(!v.sdr_stream_error.load()){
+        v.tm_iq_open();
+        if(v.tm_iq_file_ready){
+            v.tm_iq_on.store(true);
+            printf("[BEWE CLI] IQ rolling enabled\n");
+        }
+    }
+
+    // ── System monitor state ─────────────────────────────────────────────
+    long long cpu_last_idle=0, cpu_last_total=0, io_last_ms=0;
+    read_cpu(cpu_last_idle, cpu_last_total);
+    io_last_ms = read_io_ms();
+
+    using clk = std::chrono::steady_clock;
+    auto sysmon_last   = clk::now();
+    auto sq_sync_last  = clk::now();
+    auto status_last   = clk::now();
+    auto heartbeat_last= clk::now();
+    auto status_print_last = clk::now();
+    auto loop_last     = clk::now();
+
+    // SDR reconnect state
+    bool     bg_join_started = false;
+    std::atomic<bool> cap_joined{false};
+    bool     usb_reset_done = false;
+    std::atomic<bool> usb_reset_in_progress{false};
+    float    sdr_retry_timer = 0.f;
+    float    chassis_unpause_timer = -1.f;
+
+    printf("[BEWE CLI] Ready. Type /help for commands.\n");
+    fflush(stdout);
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  Main loop
+    // ══════════════════════════════════════════════════════════════════════
+    while(!g_shutdown.load()){
+        // ~10Hz loop (100ms sleep)
+        auto now = clk::now();
+        float dt = std::chrono::duration<float>(now - loop_last).count();
+        loop_last = now;
+        int sleep_ms = 100 - (int)(dt * 1000);
+        if(sleep_ms > 0){
+            struct pollfd pfd{STDIN_FILENO, POLLIN, 0};
+            poll(&pfd, 1, sleep_ms);
+        }
+
+        // ── System monitor (1s) ──────────────────────────────────────────
+        {
+            float el = std::chrono::duration<float>(clk::now()-sysmon_last).count();
+            if(el >= 1.0f){
+                sysmon_last = clk::now();
+                long long idle,total; read_cpu(idle,total);
+                long long d_idle=idle-cpu_last_idle, d_total=total-cpu_last_total;
+                v.sysmon_cpu=(d_total>0)?(1.0f-(float)d_idle/d_total)*100.0f:0.0f;
+                cpu_last_idle=idle; cpu_last_total=total;
+                v.sysmon_ghz=read_ghz();
+                v.sysmon_ram=read_ram();
+                long long io_now=read_io_ms();
+                v.sysmon_io=std::min(100.0f,(float)(io_now-io_last_ms)/10.0f);
+                io_last_ms=io_now;
+            }
+        }
+
+        // ── Periodic status print (30s) ──────────────────────────────────
+        {
+            float el = std::chrono::duration<float>(clk::now()-status_print_last).count();
+            if(el >= 30.0f){
+                status_print_last = clk::now();
+                time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
+                char ts[16]; strftime(ts,sizeof(ts),"%H:%M:%S",&tm2);
+                int clients = v.net_srv ? v.net_srv->client_count() : 0;
+                uint64_t net_tx=0, net_drops=0;
+                if(v.net_srv){ auto ns=v.net_srv->collect_stats(); net_tx=ns.tx_bytes; net_drops=ns.drops; }
+                printf("[%s] CF=%.1fMHz SR=%.2fM Clients=%d CPU=%.0f%% RAM=%.0f%% SDR=%s IQ=%s TX=%.1fMB Drops=%llu\n",
+                       ts,
+                       v.header.center_frequency/1e6,
+                       v.header.sample_rate/1e6,
+                       clients,
+                       v.sysmon_cpu, v.sysmon_ram,
+                       v.sdr_stream_error.load()?"ERR":(v.rx_stopped.load()?"STOP":"OK"),
+                       v.tm_iq_on.load()?"ON":"OFF",
+                       (double)net_tx/(1024*1024),
+                       (unsigned long long)net_drops);
+                fflush(stdout);
+            }
+        }
+
+        // ── Channel sync broadcast (100ms) ───────────────────────────────
+        if(v.net_srv && v.net_srv->client_count()>0){
+            float el = std::chrono::duration<float>(clk::now()-sq_sync_last).count();
+            if(el >= 0.1f){
+                sq_sync_last = clk::now();
+                v.update_channel_squelch();
+                v.net_srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+            }
+        }
+
+        // ── STATUS broadcast (1s) ────────────────────────────────────────
+        if(v.net_srv && v.net_srv->client_count()>0){
+            float el = std::chrono::duration<float>(clk::now()-status_last).count();
+            if(el >= 1.0f){
+                status_last = clk::now();
+                v.net_srv->broadcast_status(
+                    (float)(v.header.center_frequency/1e6),
+                    v.gain_db, v.header.sample_rate,
+                    (v.hw.type==HWType::RTLSDR)?1:0);
+            }
+        }
+
+        // ── Heartbeat (3s) ───────────────────────────────────────────────
+        if(v.net_srv){
+            float el = std::chrono::duration<float>(clk::now()-heartbeat_last).count();
+            bool cur_sdr_err = v.sdr_stream_error.load();
+            if(el >= 3.0f){
+                heartbeat_last = clk::now();
+                uint8_t sdr_t_hb = 0;
+                if(v.dev_blade){
+                    float _t = 0.f;
+                    if(bladerf_get_rfic_temperature(v.dev_blade, &_t) == 0)
+                        sdr_t_hb = (uint8_t)std::min(255.f, std::max(0.f, _t));
+                }
+                uint8_t hst = v.spectrum_pause.load() ? 2 : 0;
+                uint8_t sdr_st = (cur_sdr_err || v.rx_stopped.load()) ? 1 : 0;
+                uint8_t iq_st = v.tm_iq_on.load() ? 1 : 0;
+                v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st, iq_st);
+            }
+        }
+
+        // ── Chassis/RX reset processing ──────────────────────────────────
+        if(v.net_srv && pending_chassis1_reset.load()){
+            pending_chassis1_reset.store(false);
+            printf("[CLI] Chassis 1 reset ...\n");
+            if(v.net_srv) v.net_srv->broadcast_chat("BEWE", "Chassis 1 reset ...");
+            if(v.net_srv) v.net_srv->broadcast_heartbeat(1);
+            v.is_running = false;
+            v.sdr_stream_error.store(true);
+            v.tm_iq_on.store(false);
+            v.spectrum_pause.store(true);
+            usb_reset_pending = true;
+        }
+        if(v.net_srv && pending_chassis2_reset.load()){
+            pending_chassis2_reset.store(false);
+            printf("[CLI] Chassis 2 reset ...\n");
+            if(v.net_srv) v.net_srv->broadcast_chat("BEWE", "Chassis 2 reset ...");
+            if(v.net_srv) v.net_srv->broadcast_heartbeat(2);
+            v.net_bcast_pause.store(true, std::memory_order_relaxed);
+            v.net_srv->pause_broadcast();
+            v.net_srv->flush_clients();
+            if(central_cli.is_central_connected())
+                central_cli.send_net_reset(0);
+            NetServer* srv_ptr = v.net_srv;
+            std::atomic<bool>* bcast_pause_ptr = &v.net_bcast_pause;
+            CentralClient* central_ptr = &central_cli;
+            FFTViewer* vp = &v;
+            std::string rh = central_host;
+            int rp = central_port;
+            std::thread([srv_ptr, bcast_pause_ptr, central_ptr, vp, rh, rp](){
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                srv_ptr->flush_clients();
+                srv_ptr->resume_broadcast();
+                bcast_pause_ptr->store(false, std::memory_order_relaxed);
+                srv_ptr->broadcast_heartbeat(0);
+                srv_ptr->broadcast_chat("BEWE", "Chassis 2 stable ...");
+                if(!central_ptr->is_central_connected() && !rh.empty()){
+                    central_ptr->stop_mux_adapter();
+                    std::string sid = vp->station_name + "_" + std::string(login_get_id());
+                    int rfd = central_ptr->open_room(
+                        rh, rp, sid, vp->station_name,
+                        vp->station_lat, vp->station_lon,
+                        (uint8_t)login_get_tier());
+                    if(rfd >= 0){
+                        central_ptr->start_mux_adapter(rfd,
+                            [vp](int fd2){ if(vp->net_srv) vp->net_srv->inject_fd(fd2); },
+                            [vp](){ return vp->net_srv ? (uint8_t)vp->net_srv->client_count() : (uint8_t)0; });
+                        printf("[CLI] Central reconnected after chassis 2 reset\n");
+                    }
+                } else if(central_ptr->is_central_connected()){
+                    central_ptr->send_net_reset(1);
+                }
+                printf("[CLI] Chassis 2 stable\n");
+            }).detach();
+        }
+
+        // RX stop/start from network
+        if(v.net_srv && pending_rx_stop.load()){
+            pending_rx_stop.store(false);
+            if(!v.rx_stopped.load() && (v.is_running || cap.joinable())){
+                printf("[CLI] RX stop (remote)\n");
+                v.net_srv->broadcast_chat("BEWE", "RX stop");
+                if(v.rec_on.load()) v.stop_rec();
+                if(v.tm_iq_on.load()){ v.tm_iq_on.store(false); v.tm_iq_close(); }
+                v.stop_all_dem();
+                v.is_running = false;
+                if(v.dev_rtl) rtlsdr_cancel_async(v.dev_rtl);
+                v.mix_stop.store(true);
+                if(v.mix_thr.joinable()) v.mix_thr.join();
+                if(cap.joinable()) cap.join();
+                if(v.fft_plan){ fftwf_destroy_plan(v.fft_plan); v.fft_plan=nullptr; }
+                if(v.fft_in)  { fftwf_free(v.fft_in);   v.fft_in=nullptr; }
+                if(v.fft_out) { fftwf_free(v.fft_out);  v.fft_out=nullptr; }
+                if(v.dev_blade){
+                    bladerf_enable_module(v.dev_blade, BLADERF_CHANNEL_RX(0), false);
+                    bladerf_close(v.dev_blade); v.dev_blade=nullptr;
+                }
+                if(v.dev_rtl){ rtlsdr_close(v.dev_rtl); v.dev_rtl=nullptr; }
+                v.rx_stopped.store(true);
+                v.sdr_stream_error.store(false);
+                v.spectrum_pause.store(false);
+                printf("[CLI] RX stopped\n");
+            }
+        }
+        if(v.net_srv && pending_rx_start.load()){
+            pending_rx_start.store(false);
+            if(v.rx_stopped.load()){
+                printf("[CLI] RX start (remote)\n");
+                v.rx_stopped.store(false);
+                float cur_cf = (float)(v.header.center_frequency / 1e6);
+                if(cur_cf < 0.1f) cur_cf = 100.f;
+                v.is_running = true;
+                if(v.initialize(cur_cf)){
+                    v.set_gain(v.gain_db);
+                    if(v.hw.type == HWType::BLADERF)
+                        cap = std::thread(&FFTViewer::capture_and_process, &v);
+                    else
+                        cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
+                    v.mix_stop.store(false);
+                    v.mix_thr = std::thread(&FFTViewer::mix_worker, &v);
+                    v.net_srv->broadcast_chat("BEWE", "RX start — SDR online");
+                    printf("[CLI] RX started\n");
+                } else {
+                    v.is_running = false;
+                    v.rx_stopped.store(true);
+                    printf("[CLI] RX start failed — SDR not found\n");
+                }
+            }
+        }
+
+        // ── Chassis 1 unpause timer ──────────────────────────────────────
+        if(chassis_unpause_timer > 0.f){
+            chassis_unpause_timer -= dt;
+            if(chassis_unpause_timer <= 0.f){
+                chassis_unpause_timer = -1.f;
+                v.spectrum_pause.store(false);
+                if(v.net_srv) v.net_srv->broadcast_heartbeat(0, 0, 0);
+                printf("[CLI] chassis 1 reset: spectrum_pause released\n");
+            }
+        }
+
+        // ── SDR reconnect logic ──────────────────────────────────────────
+        if(!v.remote_mode && v.sdr_stream_error.load() && !v.rx_stopped.load()){
+            if(!bg_join_started && v.hw.type == HWType::BLADERF)
+                usb_reset_pending = true;
+            if(!bg_join_started && cap.joinable()){
+                bg_join_started = true;
+                cap_joined.store(false);
+                usb_reset_done = false;
+                std::thread([&cap, &cap_joined](){
+                    if(cap.joinable()) cap.join();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+                    cap_joined.store(true);
+                }).detach();
+            } else if(!cap.joinable()){
+                cap_joined.store(true);
+            }
+
+            if(cap_joined.load() && usb_reset_pending && !usb_reset_done){
+                usb_reset_done = true;
+                usb_reset_pending = false;
+                usb_reset_in_progress.store(true);
+                if(v.dev_blade){ bladerf_close(v.dev_blade); v.dev_blade=nullptr; }
+                std::thread([&usb_reset_in_progress](){
+                    printf("[CLI] chassis 1 reset: USB reset BladeRF...\n");
+                    bladerf_usb_reset();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+                    usb_reset_in_progress.store(false);
+                }).detach();
+            }
+
+            sdr_retry_timer -= dt;
+            if(usb_reset_in_progress.load()) sdr_retry_timer = 1.f;
+            if(sdr_retry_timer <= 0.f && cap_joined.load() && !usb_reset_in_progress.load()){
+                sdr_retry_timer = 2.f;
+                if(v.fft_plan){ fftwf_destroy_plan(v.fft_plan); v.fft_plan=nullptr; }
+                if(v.fft_in)  { fftwf_free(v.fft_in);   v.fft_in=nullptr; }
+                if(v.fft_out) { fftwf_free(v.fft_out);  v.fft_out=nullptr; }
+                float cur_cf = (float)(v.header.center_frequency / 1e6);
+                if(cur_cf < 0.1f) cur_cf = 100.f;
+                v.is_running = true;
+                if(v.initialize(cur_cf)){
+                    printf("[CLI] SDR reconnected — resuming at %.2f MHz\n", cur_cf);
+                    v.sdr_stream_error.store(false);
+                    bg_join_started = false;
+                    cap_joined.store(false);
+                    usb_reset_in_progress.store(false);
+                    v.set_gain(v.gain_db);
+                    if(v.hw.type == HWType::BLADERF)
+                        cap = std::thread(&FFTViewer::capture_and_process, &v);
+                    else
+                        cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
+                    if(v.spectrum_pause.load())
+                        chassis_unpause_timer = 1.f;
+                    if(v.net_srv){
+                        uint8_t hst = v.spectrum_pause.load() ? 2 : 0;
+                        v.net_srv->broadcast_heartbeat(hst, 0, 0);
+                    }
+                } else {
+                    v.is_running = false;
+                }
+            }
+        }
+
+        // ── stdin command processing ─────────────────────────────────────
+        std::string line;
+        while(read_line_nb(line)){
+            if(line == "/shutdown"){
+                g_shutdown.store(true);
+            } else if(line == "/status"){
+                int clients = v.net_srv ? v.net_srv->client_count() : 0;
+                printf("  CF=%.3f MHz  SR=%.2f MSPS  Gain=%.1f dB\n",
+                       v.header.center_frequency/1e6,
+                       v.header.sample_rate/1e6,
+                       v.gain_db);
+                printf("  Clients=%d  SDR=%s  IQ=%s\n",
+                       clients,
+                       v.sdr_stream_error.load()?"ERROR":(v.rx_stopped.load()?"STOPPED":"OK"),
+                       v.tm_iq_on.load()?"ON":"OFF");
+                printf("  CPU=%.0f%%  RAM=%.0f%%  IO=%.0f%%  GHz=%.2f\n",
+                       v.sysmon_cpu, v.sysmon_ram, v.sysmon_io, v.sysmon_ghz);
+                if(v.net_srv){
+                    auto ns = v.net_srv->collect_stats();
+                    auto fb = [](uint64_t b) -> std::string {
+                        char buf[32];
+                        if(b < 1024)               snprintf(buf,sizeof(buf),"%llu B",(unsigned long long)b);
+                        else if(b < 1024*1024)     snprintf(buf,sizeof(buf),"%.1f KB",(double)b/1024);
+                        else if(b < 1024ULL*1024*1024) snprintf(buf,sizeof(buf),"%.1f MB",(double)b/(1024*1024));
+                        else                       snprintf(buf,sizeof(buf),"%.2f GB",(double)b/(1024ULL*1024*1024));
+                        return buf;
+                    };
+                    printf("  NET: TX=%s  RX=%s  Drops=%llu  Q(fft=%zu audio=%zu)\n",
+                           fb(ns.tx_bytes).c_str(), fb(ns.rx_bytes).c_str(),
+                           (unsigned long long)ns.drops, ns.q_fft, ns.q_audio);
+                }
+                fflush(stdout);
+            } else if(line == "/clients"){
+                if(v.net_srv){
+                    auto ops = v.net_srv->get_operators();
+                    printf("  Connected operators (%d):\n", (int)ops.size());
+                    for(auto& op : ops)
+                        printf("    [%d] %s (tier %d)\n", op.index, op.name, op.tier);
+                } else {
+                    printf("  No server running.\n");
+                }
+                fflush(stdout);
+            } else if(line == "/chassis 1 reset"){
+                printf("[CLI] Chassis 1 reset ...\n");
+                if(v.net_srv) v.net_srv->broadcast_chat("BEWE", "Chassis 1 reset ...");
+                if(v.net_srv) v.net_srv->broadcast_heartbeat(1);
+                if(v.is_running || cap.joinable()){
+                    v.is_running = false;
+                    v.sdr_stream_error.store(true);
+                    v.tm_iq_on.store(false);
+                    v.spectrum_pause.store(true);
+                    usb_reset_pending = true;
+                } else {
+                    printf("[CLI] No SDR connected — skip HW reset\n");
+                }
+            } else if(line == "/chassis 2 reset"){
+                pending_chassis2_reset.store(true);
+            } else if(line == "/rx stop"){
+                if(v.rx_stopped.load()){
+                    printf("[CLI] RX already stopped.\n");
+                } else if(!v.is_running && !cap.joinable()){
+                    printf("[CLI] No SDR running.\n");
+                } else {
+                    printf("[CLI] RX stop\n");
+                    if(v.net_srv) v.net_srv->broadcast_chat("BEWE", "RX stop");
+                    if(v.rec_on.load()) v.stop_rec();
+                    if(v.tm_iq_on.load()){ v.tm_iq_on.store(false); v.tm_iq_close(); }
+                    v.stop_all_dem();
+                    v.is_running = false;
+                    if(v.dev_rtl) rtlsdr_cancel_async(v.dev_rtl);
+                    v.mix_stop.store(true);
+                    if(v.mix_thr.joinable()) v.mix_thr.join();
+                    if(cap.joinable()) cap.join();
+                    if(v.fft_plan){ fftwf_destroy_plan(v.fft_plan); v.fft_plan=nullptr; }
+                    if(v.fft_in)  { fftwf_free(v.fft_in);   v.fft_in=nullptr; }
+                    if(v.fft_out) { fftwf_free(v.fft_out);  v.fft_out=nullptr; }
+                    if(v.dev_blade){
+                        bladerf_enable_module(v.dev_blade, BLADERF_CHANNEL_RX(0), false);
+                        bladerf_close(v.dev_blade); v.dev_blade=nullptr;
+                    }
+                    if(v.dev_rtl){ rtlsdr_close(v.dev_rtl); v.dev_rtl=nullptr; }
+                    v.rx_stopped.store(true);
+                    v.sdr_stream_error.store(false);
+                    v.spectrum_pause.store(false);
+                    printf("[CLI] RX stopped.\n");
+                }
+            } else if(line == "/rx start"){
+                if(!v.rx_stopped.load()){
+                    printf("[CLI] RX already running.\n");
+                } else {
+                    printf("[CLI] RX start — initializing SDR ...\n");
+                    v.rx_stopped.store(false);
+                    float cur_cf = (float)(v.header.center_frequency / 1e6);
+                    if(cur_cf < 0.1f) cur_cf = cf;
+                    v.is_running = true;
+                    if(v.initialize(cur_cf)){
+                        v.set_gain(v.gain_db);
+                        if(v.hw.type == HWType::BLADERF)
+                            cap = std::thread(&FFTViewer::capture_and_process, &v);
+                        else
+                            cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
+                        v.mix_stop.store(false);
+                        v.mix_thr = std::thread(&FFTViewer::mix_worker, &v);
+                        if(v.net_srv) v.net_srv->broadcast_chat("BEWE", "RX start — SDR online");
+                        printf("[CLI] RX started. SDR online.\n");
+                    } else {
+                        v.is_running = false;
+                        v.rx_stopped.store(true);
+                        printf("[CLI] RX start failed — SDR not found.\n");
+                    }
+                }
+            } else if(line == "/help"){
+                printf("Commands:\n");
+                printf("  /status          — Show system status\n");
+                printf("  /clients         — List connected operators\n");
+                printf("  /chassis 1 reset — USB SDR hardware reset\n");
+                printf("  /chassis 2 reset — Network broadcast reset\n");
+                printf("  /rx stop         — Stop SDR capture\n");
+                printf("  /rx start        — Restart SDR capture\n");
+                printf("  /shutdown        — Clean exit\n");
+                printf("  /help            — Show this help\n");
+                printf("  <text>           — Broadcast as chat message\n");
+                fflush(stdout);
+            } else if(!line.empty()){
+                // Chat message
+                if(v.net_srv)
+                    v.net_srv->broadcast_chat(login_get_id(), line.c_str());
+                printf("[CHAT] %s: %s\n", login_get_id(), line.c_str());
+            }
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  Cleanup
+    // ══════════════════════════════════════════════════════════════════════
+    printf("[BEWE CLI] Shutting down...\n");
+
+    v.is_running = false;
+    if(v.dev_rtl) rtlsdr_cancel_async(v.dev_rtl);
+    v.stop_all_dem();
+    if(v.rec_on.load()) v.stop_rec();
+    if(v.tm_iq_file_ready){
+        v.tm_iq_on.store(false);
+        v.tm_iq_close();
+    }
+    v.mix_stop.store(true); if(v.mix_thr.joinable()) v.mix_thr.join();
+    v.net_bcast_stop.store(true);
+    v.net_bcast_cv.notify_all();
+    if(v.net_bcast_thr.joinable()) v.net_bcast_thr.join();
+    central_cli.stop_mux_adapter();
+    central_cli.stop_polling();
+    if(v.net_srv){ v.net_srv->stop_discovery_broadcast(); v.net_srv->stop(); delete v.net_srv; v.net_srv=nullptr; }
+    if(!v.remote_mode && cap.joinable()) cap.join();
+    if(v.dev_blade){
+        bladerf_enable_module(v.dev_blade, BLADERF_CHANNEL_RX(0), false);
+        bladerf_close(v.dev_blade); v.dev_blade=nullptr;
+    }
+    if(v.dev_rtl){ rtlsdr_close(v.dev_rtl); v.dev_rtl=nullptr; }
+    v.sa_cleanup();
+
+    // record/ → private/ 이동
+    auto move_dir = [](const std::string& src_dir, const std::string& dst_dir){
+        DIR* d = opendir(src_dir.c_str());
+        if(!d) return;
+        struct dirent* ent;
+        while((ent=readdir(d))!=nullptr){
+            const char* n = ent->d_name;
+            size_t nl = strlen(n);
+            if(nl>4 && strcmp(n+nl-4,".wav")==0){
+                std::string src = src_dir+"/"+n;
+                std::string dst = dst_dir+"/"+n;
+                rename(src.c_str(), dst.c_str());
+            }
+        }
+        closedir(d);
+    };
+    move_dir(BEWEPaths::record_iq_dir(),    BEWEPaths::private_iq_dir());
+    move_dir(BEWEPaths::record_audio_dir(), BEWEPaths::private_audio_dir());
+
+    printf("[BEWE CLI] Stopped.\n");
+}
