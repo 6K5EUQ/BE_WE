@@ -1,6 +1,6 @@
 # BE_WE
 
-> Multi-user SDR spectrum analyzer with real-time network streaming, digital decoding, and 3D station discovery.
+> Multi-user SDR spectrum analyzer with real-time network streaming, signal analysis, and 3D station discovery.
 
 ![Main Interface](assets/BEWE.png)
 
@@ -12,11 +12,12 @@
 - [Why BE_WE](#why-be_we)
 - [Screenshots](#screenshots)
 - [Features](#features)
+- [Signal Analyzer](#signal-analyzer)
+- [EID Analysis](#eid-analysis)
 - [Supported Hardware](#supported-hardware)
 - [Architecture](#architecture)
 - [Build](#build)
 - [Usage](#usage)
-- [Network](#network)
 - [Troubleshooting](#troubleshooting)
 - [Project Structure](#project-structure)
 
@@ -30,31 +31,14 @@ BE_WE is a Linux-native SDR (Software Defined Radio) application built with C++1
 
 ## Why BE_WE
 
-Most SDR applications are designed for a single operator sitting in front of a single machine. BE_WE is built from the ground up for **distributed, multi-operator environments** where the SDR hardware may be remote and bandwidth is limited.
+Most SDR applications are designed for a single operator on a single machine. BE_WE is built from the ground up for **distributed, multi-operator environments**.
 
-### Multi-User Real-Time Collaboration
-
-Unlike any other desktop SDR software, BE_WE supports multiple operators working on the same spectrum simultaneously. Each operator can independently create channels, tune demodulators, control audio routing, and record — all in real-time over the network. Built-in chat, file sharing, and an operator list with tier-based permissions make it a true **multiplayer SDR platform**.
-
-### 3D Globe Station Discovery
-
-Stations running BE_WE appear as markers on an interactive 3D globe. Operators can visually browse available stations worldwide and connect with a single click — no IP addresses or manual configuration needed. LAN stations are discovered automatically; WAN stations are reachable through an optional relay server.
-
-### Time Machine — Rewind the Spectrum
-
-BE_WE continuously records a 60-second rolling IQ buffer to disk. When something interesting appears on the waterfall, press `Space` to freeze and scroll back in time. Missed a signal 30 seconds ago? It's still there. Select a region and export the IQ — no need to have been "recording" at the time.
-
-### Selective Region IQ Export
-
-Instead of capturing the entire wideband IQ stream (which can be tens of MB/s), operators can `Ctrl+Right-drag` on the waterfall to select a specific time-frequency region and export only that portion. This is critical in bandwidth-constrained remote environments where full IQ transfer is impractical. Combined with Time Machine, operators can retroactively extract only the signal of interest — saving storage, network bandwidth, and analysis time.
-
-### Per-Operator Audio Routing
-
-Each demodulated channel can be routed to specific operators using a per-channel bitmask. Operator A monitors channel 1, operator B monitors channels 2 and 3 — each with independent pan and volume control. This enables team-based division of labor across the spectrum.
-
-### Distributed Architecture (HOST / JOIN / Central Relay)
-
-Any machine with an SDR can HOST a station. Any machine without an SDR can JOIN and operate as if the hardware were local. A central relay server bridges stations across different networks using a multiplexed (MUX) protocol over a single port — HOST connects once and the relay fans out to all JOINs. LAN-priority connection logic minimizes latency when operators share the same subnet. The entire system is designed for real-world deployment where operators and hardware are rarely in the same room.
+- **Multi-User Collaboration** — Multiple operators work on the same spectrum simultaneously. Each can independently create channels, tune demodulators, control audio, and record. Built-in chat, file sharing, and tier-based permissions make it a true multiplayer SDR platform.
+- **3D Globe Station Discovery** — Stations appear as markers on an interactive 3D globe. Click to connect — no IP addresses needed. LAN stations auto-discovered via UDP; WAN stations reachable through the central relay.
+- **Time Machine** — 60-second rolling IQ buffer to disk. Press `Space` to freeze and scroll back. Missed a signal 30 seconds ago? It's still there.
+- **Selective Region IQ Export** — `Ctrl+Right-drag` on the waterfall to export only a specific time-frequency region. Combined with Time Machine, retroactively extract signals of interest without full wideband capture.
+- **Signal Analysis** — Built-in offline analyzer for WAV/IQ files with multi-domain views: spectrogram, amplitude, instantaneous frequency, and raw I/Q.
+- **EID Fingerprinting** — Emitter Identification system extracts RF characteristics (envelope, phase, instantaneous frequency) for transmitter authentication.
 
 ---
 
@@ -71,6 +55,10 @@ Any machine with an SDR can HOST a station. Any machine without an SDR can JOIN 
 | Time Machine + Region Export |
 |:---:|
 | ![Screen2](assets/Screen2.png) |
+
+| Amplitude Domain | Frequency Domain | I/Q View |
+|:---:|:---:|:---:|
+| ![Amp](assets/Amp_Domain.png) | ![Freq](assets/Freq_Domain.png) | ![IQ](assets/IQ_Analy.png) |
 
 ---
 
@@ -98,39 +86,70 @@ Any machine with an SDR can HOST a station. Any machine without an SDR can JOIN 
 ### Time Machine
 - 60-second rolling IQ recording to disk (toggle with `T`)
 - Freeze & seek through waterfall history (`Space`)
-- Region selection (Ctrl+Right-drag) for IQ export
-- IQ_CHUNK transfer: WAN-compatible file streaming from HOST to JOIN via MUX relay
-- Real-time transfer progress broadcast (REC → Transferring → Done)
+- Region selection (`Ctrl+Right-drag`) for IQ export
+- IQ_CHUNK transfer: WAN-compatible file streaming via MUX relay
 
 ### Network Streaming (HOST / JOIN)
-- HOST broadcasts FFT + audio over TCP
-- JOIN clients receive with jitter buffer for smooth playback
-- Per-client async send queues with priority (control > FFT > audio) — slow clients don't block the stream
+- HOST broadcasts FFT + audio over TCP; JOIN receives with jitter buffer
+- Per-client async send queues with priority (control > FFT > audio)
 - Tier-based authentication (Tier 1 / 2 / 3)
 - Bi-directional commands: JOIN can tune frequency, create channels, control gain
 - Dynamic FFT size and sample rate changes from JOIN
-- Remote chassis reset and RX start/stop commands
-- IQ_CHUNK streaming: WAN-compatible file transfer via MUX relay
 
 ### Station Discovery & Globe
 - 3D interactive globe with Blue Marble texture
 - UDP broadcast discovery on LAN
 - Central relay server for WAN connections (single port 7700)
-- LAN-priority connection: auto-detects same-subnet relay and connects locally
-- Continuous station list polling with live updates
-- Click globe to set your station location
+- LAN-priority connection: auto-detects same-subnet and connects locally
 
 ### Collaboration
 - Real-time chat between all connected operators
 - File sharing (upload / download recordings via public directory)
 - Operator list with tier and connection status
 - Channel ownership tracking
-- Public file deletion by owner
 
-### Signal Analyzer
-- Open exported WAV/IQ files for offline spectral analysis
-- Zoom / pan / region selection on SA waterfall
-- Demodulate and play back selected regions
+---
+
+## Signal Analyzer
+
+Open exported WAV/IQ files for offline multi-domain analysis. Switch between views using tabs at the top of the analyzer window.
+
+| View | Description |
+|------|-------------|
+| **Spectrogram** | Full FFT spectrogram with Hann window, Jet colormap, zoom/pan, and region selection |
+| **Amplitude** | Time-domain envelope waveform — visualize signal bursts, keying patterns, and pulse timing |
+| **Frequency** | Instantaneous frequency plot — identify FSK deviation, modulation index, and symbol timing |
+| **I/Q** | Raw In-phase / Quadrature sample view — inspect baseband signal structure and DC offset |
+
+- Demodulate and play back selected regions directly in the analyzer
+- Auto-scale with percentile-based range (1st–99th)
+- Sample-accurate cursor with time, amplitude, and sample index readout
+
+| Amplitude Domain | Frequency Domain | I/Q View |
+|:---:|:---:|:---:|
+| ![Amp](assets/Amp_Domain.png) | ![Freq](assets/Freq_Domain.png) | ![IQ](assets/IQ_Analy.png) |
+
+---
+
+## EID Analysis
+
+**EID (Emitter Identification)** extracts RF-level characteristics from recorded signals for transmitter fingerprinting.
+
+From a single WAV/IQ file, EID computes:
+
+| Domain | Extraction |
+|--------|-----------|
+| **Envelope** | Amplitude envelope `√(I² + Q²)` — turn-on/off transient shape unique to each transmitter |
+| **I/Q** | Raw in-phase and quadrature components — DC offset, gain imbalance signatures |
+| **Phase** | Instantaneous phase `atan2(Q, I)` — phase noise and unwrap characteristics |
+| **Inst. Frequency** | Phase derivative scaled to Hz — frequency settling behavior at key-up |
+
+Each domain uses automatic 1st–99th percentile scaling with 5% margin for consistent visualization regardless of signal level. Noise floor is estimated at the 5th percentile for reference.
+
+Use cases:
+- Verify transmitter identity by comparing RF fingerprints
+- Detect spoofed or cloned transmitters
+- Characterize oscillator stability and modulation quality
 
 ---
 
@@ -147,25 +166,78 @@ Hardware is auto-detected at startup. If no SDR is found, you can still JOIN a r
 
 ## Architecture
 
+### System Overview
+
 ```
-                        ┌──────────────────────────────────┐
-                        │        CENTRAL RELAY SERVER       │
-                        │   port 7700 (MUX)  │  7702 (IQ)  │
-                        └──────┬──────────────┬────────────┘
-                               │   WAN        │
-                 ┌─────────────┴───┐    ┌─────┴───────────┐
-                 │   HOST (SDR)    │    │   JOIN Client    │
-                 │   port 7701     │    │   (no hardware)  │
-                 │  ┌───────────┐  │    └──────────────────┘
-                 │  │ BladeRF / │  │         LAN
-                 │  │ RTL-SDR   │  ├─── UDP Discovery ───── JOIN Client
-                 │  └───────────┘  │
-                 └─────────────────┘
+ ┌──────────┐         ┌──────────┐         ┌──────────┐
+ │  HOST A  │         │  HOST B  │         │  HOST C  │
+ │  (SDR)   │         │  (SDR)   │         │  (SDR)   │
+ └────┬─────┘         └────┬─────┘         └────┬─────┘
+      │ WAN                │ WAN                │ WAN
+      │   ┌────────────────┴────────────────┐   │
+      └───┤       CENTRAL RELAY SERVER      ├───┘
+          │          port 7700 (MUX)         │
+          │          port 7702 (IQ Pipe)     │
+          └──┬──────────┬──────────┬────────┘
+             │          │          │
+          ┌──┴──┐    ┌──┴──┐   ┌──┴──┐
+          │JOIN │    │JOIN │   │JOIN │
+          │  1  │    │  2  │   │  3  │
+          └─────┘    └─────┘   └─────┘
 ```
 
-- **HOST** — Runs the SDR, computes FFT, streams to JOINs (direct on LAN, or via relay on WAN)
-- **JOIN** — Connects to HOST, receives spectrum + audio, sends commands
-- **Central Relay** — WAN bridge: HOST opens a room, JOINs connect through a single multiplexed port (7700). IQ file transfers use a dedicated pipe port (7702)
+### Central Relay Server Detail
+
+```
+┌──────────────────────────────────────────────────────┐
+│                 CENTRAL RELAY SERVER                  │
+│                                                      │
+│  ┌─────────────┐       ┌───────────────────────────┐ │
+│  │ Room Manager │       │     MUX Adapter           │ │
+│  │             │       │                           │ │
+│  │ • station   │       │  HOST fd ←→ socketpair    │ │
+│  │   registry  │       │       ↕  BRLY MUX hdr     │ │
+│  │ • list resp │       │  JOIN₁ fd  (conn_id 1)    │ │
+│  │ • heartbeat │       │  JOIN₂ fd  (conn_id 2)    │ │
+│  │             │       │  JOIN₃ fd  (conn_id 3)    │ │
+│  └─────────────┘       │                           │ │
+│                        │  Broadcast: conn_id=0xFFFF │ │
+│  ┌─────────────────────┴───────────────────────────┐ │
+│  │  Per-JOIN Send Queue (priority-based)           │ │
+│  │  ctrl_queue > send_queue(FFT) > audio_queue     │ │
+│  │  FFT: 2MB cap (drop oldest) │ Audio: 512KB cap  │ │
+│  └─────────────────────────────────────────────────┘ │
+│                                                      │
+│  ┌─────────────────────────────────────────────────┐ │
+│  │  IQ Pipe Bridge (port 7702)                     │ │
+│  │  PIPE_HOST (req_id) ←→ PIPE_JOIN (req_id)       │ │
+│  │  Matched by req_id → bidirectional relay        │ │
+│  └─────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────┘
+```
+
+### Connection Modes
+
+```
+ LAN (Direct)                    WAN (Relay)
+ ─────────────                   ────────────
+ HOST ──TCP:7701──→ JOIN         HOST ──TCP:7700──→ RELAY ──→ JOIN
+      ←UDP bcast──               BRLY MUX protocol
+                                  Single port, N clients
+```
+
+| Port | Role | Description |
+|------|------|-------------|
+| **7700** | Central Relay | MUX relay — HOST registers station, JOINs connect via relay |
+| **7701** | HOST ↔ JOIN | Direct BEWE protocol (LAN or relay-forwarded) |
+| **7702** | IQ Pipe | Dedicated IQ file transfer between HOST and JOIN |
+
+### Protocol
+
+- HOST ↔ JOIN: custom binary protocol (`BEWE` magic) over TCP
+- Central relay: `BRLY` magic with MUX headers to multiplex JOINs over one HOST connection
+- LAN discovery: UDP broadcast on local subnet
+- IQ Pipe: `PIPE` magic with req_id matching for HOST↔JOIN file transfer
 
 ---
 
@@ -263,26 +335,6 @@ make -j$(nproc)
 
 ---
 
-## Network
-
-### Ports
-
-| Port | Role | Description |
-|------|------|-------------|
-| **7700** | Central Relay | MUX relay — HOST registers station, JOINs connect via relay |
-| **7701** | HOST ↔ JOIN | Direct BEWE protocol (LAN or relay-forwarded) |
-| **7702** | IQ Pipe | Dedicated IQ file transfer between HOST and JOIN |
-
-### Protocol
-
-- HOST ↔ JOIN communication uses a custom binary protocol (`BEWE` magic) over TCP
-- Central relay uses a separate protocol (`BRLY` magic) with MUX headers to multiplex multiple JOINs over one HOST connection
-- LAN stations are discovered automatically via UDP broadcast
-- WAN stations are reachable through the central relay server
-- See `src/net_protocol.hpp` and `central/central_proto.hpp` for internal details
-
----
-
 ## Troubleshooting
 
 ### WiFi: Choppy / stuttering spectrum on JOIN
@@ -344,7 +396,7 @@ echo "blacklist dvb_usb_rtl28xxu" | sudo tee /etc/modprobe.d/blacklist-rtlsdr.co
 
 ### Build error: package not found
 
-See [System Dependencies](#system-dependencies) above. All required packages with their `apt` names:
+See [System Dependencies](#system-dependencies) above. All required packages:
 
 | CMake package | apt package |
 |---|---|
@@ -373,41 +425,44 @@ BE_WE/
 │   ├── bladerf_io.cpp        # BladeRF SDR capture
 │   ├── rtlsdr_io.cpp         # RTL-SDR capture
 │   ├── hw_detect.cpp         # Hardware auto-detection
-│   ├── hw_config.hpp         # Runtime hardware parameters (SR, freq range, gain mapping)
+│   ├── hw_config.hpp         # Runtime hardware parameters
 │   ├── demod.cpp             # AM / FM / MAGIC demodulation
 │   ├── audio.hpp/cpp         # ALSA output + 5 noise reduction algorithms
 │   ├── ais.cpp               # AIS digital decoder
 │   ├── dmr.cpp               # DMR digital decoder (AMBE+2)
+│   ├── sa_compute.cpp        # Signal Analyzer offline FFT
+│   ├── eid_compute.cpp       # EID transmitter fingerprint analysis
 │   ├── net_protocol.hpp      # Binary protocol specification (BEWE)
 │   ├── net_server.hpp/cpp    # HOST-side TCP server
 │   ├── net_client.hpp/cpp    # JOIN-side TCP client
 │   ├── net_stream.cpp        # Stream utilities
-│   ├── central_client.hpp/cpp # Central relay client (HOST/JOIN WAN relay)
+│   ├── central_client.hpp/cpp # Central relay client
 │   ├── iq_pipe_server.hpp/cpp # IQ file transfer server (port 7702)
 │   ├── udp_discovery.hpp/cpp # LAN station broadcast
 │   ├── globe.hpp/cpp         # 3D Earth renderer (OpenGL 3.3)
 │   ├── timemachine.cpp       # IQ rolling record & playback
 │   ├── region_save.cpp       # Region IQ export
-│   ├── sa_compute.cpp        # Signal Analyzer offline FFT
 │   ├── iq_record.cpp         # IQ / audio recording
 │   ├── login.hpp/cpp         # Authentication & tier selection
-│   ├── channel.hpp           # Per-channel state (freq, mode, squelch)
+│   ├── channel.hpp           # Per-channel state
 │   ├── config.hpp            # Global constants
-│   ├── bewe_paths.hpp        # Path management (recordings, assets, data dirs)
+│   ├── bewe_paths.hpp        # Path management
 │   └── world_map_data.hpp    # Embedded vector map for globe
 ├── central/
 │   ├── central_main.cpp      # Standalone central relay server
 │   ├── central_server.hpp/cpp # Central relay implementation
 │   ├── central_proto.hpp     # Central relay protocol (BRLY + MUX)
-│   └── CMakeLists.txt        # Build configuration for bewe_central
+│   └── CMakeLists.txt
 ├── libs/
 │   └── imgui/                # Dear ImGui (embedded)
 ├── assets/
 │   ├── BEWE.png              # Logo / main screenshot
 │   ├── earth.jpg             # Blue Marble texture
-│   ├── login_bg_Tier_*.png   # Tier-specific login backgrounds
-│   └── *.png                 # UI screenshots
-└── CMakeLists.txt            # Build configuration
+│   ├── Amp_Domain.png        # Signal Analyzer: amplitude domain
+│   ├── Freq_Domain.png       # Signal Analyzer: frequency domain
+│   ├── IQ_Analy.png          # Signal Analyzer: I/Q view
+│   └── *.png                 # UI screenshots & login backgrounds
+└── CMakeLists.txt
 ```
 
 ---
