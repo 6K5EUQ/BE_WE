@@ -4600,9 +4600,8 @@ void run_streaming_viewer(){
                                 static const DigiBtn dbtn[]={
                                     {"ADS-B", Channel::DIGI_ADSB},
                                     {"AIS",   Channel::DIGI_AIS},
-                                    {"DMR",   Channel::DIGI_DMR},
                                 };
-                                for(int di=0;di<3;di++){
+                                for(int di=0;di<2;di++){
                                     Channel::DigitalMode dm = dbtn[di].mode;
                                     bool dactive = (ch.digital_mode==dm && ch.digi_run.load());
                                     if(dactive)
@@ -4614,7 +4613,7 @@ void run_streaming_viewer(){
                                             v.stop_digi(ci);
                                         } else {
                                             v.stop_digi(ci);
-                                            if(dm == Channel::DIGI_AIS || dm == Channel::DIGI_DMR)
+                                            if(dm == Channel::DIGI_AIS)
                                                 v.start_digi(ci, dm);
                                             // ADS-B: 미구현
                                         }

@@ -74,7 +74,7 @@ struct Channel {
     enum DemodMode{ DM_NONE=0, DM_AM, DM_FM, DM_MAGIC } mode=DM_NONE;
 
     // Digital decode mode (D키로 토글, 음성 복조와 독립)
-    enum DigitalMode{ DIGI_NONE=0, DIGI_AIS, DIGI_ADSB, DIGI_DMR } digital_mode=DIGI_NONE;
+    enum DigitalMode{ DIGI_NONE=0, DIGI_AIS, DIGI_ADSB } digital_mode=DIGI_NONE;
 
     // Magic mode: detected modulation (0=analyzing, 1=AM, 2=FM, 3=DSB, 4=SSB, 5=CW)
     std::atomic<int> magic_det{0};

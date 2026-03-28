@@ -276,8 +276,6 @@ void FFTViewer::start_digi(int ch_idx, Channel::DigitalMode mode){
     ch.digi_run.store(true);
     if(mode==Channel::DIGI_AIS)
         ch.digi_thr=std::thread(&FFTViewer::ais_worker,this,ch_idx);
-    else if(mode==Channel::DIGI_DMR)
-        ch.digi_thr=std::thread(&FFTViewer::dmr_worker,this,ch_idx);
     printf("[DIGI ch%d] start mode=%d\n",ch_idx,(int)mode); fflush(stdout);
 }
 

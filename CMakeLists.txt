@@ -12,7 +12,6 @@ pkg_check_modules(FFTW    REQUIRED fftw3f)
 pkg_check_modules(ALSA    REQUIRED alsa)
 pkg_check_modules(MPG123  REQUIRED libmpg123)
 pkg_check_modules(RTLSDR  REQUIRED librtlsdr)
-pkg_check_modules(LIBMBE  REQUIRED libmbe)
 pkg_check_modules(LIBPNG  REQUIRED libpng)
 
 pkg_check_modules(VOLK REQUIRED volk)
@@ -34,7 +33,6 @@ if(BEWE_HEADLESS)
         src/rtlsdr_io.cpp
         src/hw_detect.cpp
         src/ais.cpp
-        src/dmr.cpp
         src/login.cpp
         src/net_server.cpp
         src/net_client.cpp
@@ -51,7 +49,6 @@ if(BEWE_HEADLESS)
         ${ALSA_INCLUDE_DIRS}
         ${MPG123_INCLUDE_DIRS}
         ${RTLSDR_INCLUDE_DIRS}
-        ${LIBMBE_INCLUDE_DIRS}
         ${LIBPNG_INCLUDE_DIRS}
         ${VOLK_INCLUDE_DIRS}
     )
@@ -62,7 +59,6 @@ if(BEWE_HEADLESS)
         ${ALSA_LIBRARIES}
         ${MPG123_LIBRARIES}
         ${RTLSDR_LIBRARIES}
-        ${LIBMBE_LIBRARIES}
         ${LIBPNG_LIBRARIES}
         ${VOLK_LIBRARIES}
         pthread
@@ -103,7 +99,6 @@ else()
         src/rtlsdr_io.cpp
         src/hw_detect.cpp
         src/ais.cpp
-        src/dmr.cpp
         src/login.cpp
         src/net_server.cpp
         src/net_client.cpp
@@ -120,7 +115,6 @@ else()
         ${ALSA_INCLUDE_DIRS}
         ${MPG123_INCLUDE_DIRS}
         ${RTLSDR_INCLUDE_DIRS}
-        ${LIBMBE_INCLUDE_DIRS}
         ${LIBPNG_INCLUDE_DIRS}
         ${VOLK_INCLUDE_DIRS}
         ${IMGUI_PATH}
@@ -133,7 +127,6 @@ else()
         ${ALSA_LIBRARIES}
         ${MPG123_LIBRARIES}
         ${RTLSDR_LIBRARIES}
-        ${LIBMBE_LIBRARIES}
         ${LIBPNG_LIBRARIES}
         OpenGL::GL
         GLEW::GLEW

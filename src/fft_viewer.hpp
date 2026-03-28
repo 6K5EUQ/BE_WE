@@ -15,7 +15,6 @@
 #endif
 #include <libbladeRF.h>
 #include <rtl-sdr.h>
-#include <mbelib.h>
 #include <fftw3.h>
 
 #include <cstdint>
@@ -420,7 +419,6 @@ public:
 
     // ── ais.cpp ───────────────────────────────────────────────────────────
     void ais_worker(int ch_idx);
-    void dmr_worker(int ch_idx);
     void start_digi(int ch_idx, Channel::DigitalMode mode);
     void stop_digi(int ch_idx);
     void stop_all_dem();
