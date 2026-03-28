@@ -629,9 +629,9 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
     ImGui::SetCursorScreenPos(ImVec2(gx,gy));
     ImGui::InvisibleButton("sp_graph",ImVec2(gw,gh));
     bool hov=ImGui::IsItemHovered();
-    if(!tm_active.load()) handle_new_channel_drag(gx,gw);
-    if(!region.active) handle_channel_interactions(gx,gw,gy,gh);
-    if(hov){
+    if(!tm_active.load() && !eid_panel_open) handle_new_channel_drag(gx,gw);
+    if(!region.active && !eid_panel_open) handle_channel_interactions(gx,gw,gy,gh);
+    if(hov && !eid_panel_open){
         ImVec2 mm=ImGui::GetIO().MousePos;
         float af=x_to_abs(mm.x,gx,gw);
         char info[48]; snprintf(info,48,"%.3f MHz",af);
@@ -783,8 +783,8 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
     ImGui::SetCursorScreenPos(ImVec2(gx,gy));
     ImGui::InvisibleButton("wf_graph",ImVec2(gw,gh));
     bool hov=ImGui::IsItemHovered();
-    if(!tm_active.load()) handle_new_channel_drag(gx,gw);
-    if(!region.active) handle_channel_interactions(gx,gw,gy,gh);
+    if(!tm_active.load() && !eid_panel_open) handle_new_channel_drag(gx,gw);
+    if(!region.active && !eid_panel_open) handle_channel_interactions(gx,gw,gy,gh);
 
     // ── Ctrl+우클릭 드래그: 영역 IQ 녹음 선택 ────────────────────────────
     {
@@ -6326,9 +6326,11 @@ void run_streaming_viewer(){
                 // 시간 도메인 데이터 로드
                 v.eid_cleanup();
                 v.eid_start(file_ctx.filepath);
-                // 스펙트로그램 데이터 로드
+                // 스펙트로그램 데이터 로드 (새 파일 → 뷰 리셋)
                 v.sa_cleanup();
                 v.sa_mode = false;
+                v.sa_view_x0=0.f; v.sa_view_x1=1.f;
+                v.sa_view_y0=0.f; v.sa_view_y1=1.f;
                 v.sa_start(file_ctx.filepath);
                 file_ctx.open = false;
             }
@@ -6830,6 +6832,8 @@ void run_streaming_viewer(){
         // ║  Signal Analysis 독립 오버레이 (E키 토글)                        ║
         // ╚══════════════════════════════════════════════════════════════════╝
         if(v.eid_panel_open){
+            // SA 텍스처 업로드 (right panel 없이 EID 오버레이만 열려있을 때도 동작)
+            if(v.sa_pixel_ready.load()){ v.sa_upload_texture(); v.sa_anim_timer=0.0f; }
             ImGui::SetNextWindowPos(ImVec2(0,0));
             ImGui::SetNextWindowSize(ImVec2(disp_w, disp_h));
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
@@ -6870,16 +6874,16 @@ void run_streaming_viewer(){
                     int prev_mode = v.eid_view_mode;
                     v.eid_view_mode = b.mode;
                     // 뷰 전환 시 줌 상태 동기화: 스펙트로그램 ↔ 시간 도메인
-                    double total_samp = (double)v.sa_total_rows * v.sa_actual_fft_n;
-                    if(total_samp > 0){
+                    double eid_total = (double)v.eid_total_samples;
+                    if(eid_total > 0){
                         if(prev_mode == 0 && b.mode != 0){
                             // 스펙트로그램 → 시간 도메인: UV → 샘플 인덱스
-                            v.eid_view_t0 = v.sa_view_y0 * total_samp;
-                            v.eid_view_t1 = v.sa_view_y1 * total_samp;
+                            v.eid_view_t0 = v.sa_view_y0 * eid_total;
+                            v.eid_view_t1 = v.sa_view_y1 * eid_total;
                         } else if(prev_mode != 0 && b.mode == 0){
                             // 시간 도메인 → 스펙트로그램: 샘플 인덱스 → UV
-                            v.sa_view_y0 = (float)(v.eid_view_t0 / total_samp);
-                            v.sa_view_y1 = (float)(v.eid_view_t1 / total_samp);
+                            v.sa_view_y0 = (float)(v.eid_view_t0 / eid_total);
+                            v.sa_view_y1 = (float)(v.eid_view_t1 / eid_total);
                             v.sa_view_y0 = std::max(0.f, std::min(1.f, v.sa_view_y0));
                             v.sa_view_y1 = std::max(0.f, std::min(1.f, v.sa_view_y1));
                         }
@@ -6888,32 +6892,63 @@ void run_streaming_viewer(){
                 bx += tsz.x + 14.f;
             }
 
-            // FFT size 콤보 (Spectrogram 모드일 때만)
+            // FFT size + Window 콤보 (Spectrogram 모드일 때만)
             if(v.eid_view_mode == 0){
+                bool computing = v.sa_computing.load();
+                float combo_y = sb_y0 + (SB_H - ImGui::GetFontSize() - 4)/2;
+
+                // ── FFT size 콤보 (우측 끝) ──────────────────────────────
                 static const int fft_sizes[] = {32,64,128,256,512,1024,2048,4096,8192};
                 static const char* fft_labels[] = {"32","64","128","256","512","1024","2048","4096","8192"};
-                char cur_lbl[16]; snprintf(cur_lbl,16,"%d",v.sa_fft_size);
-                float combo_w = 62;
-                float combo_x = ov_x1 - combo_w - 40;
-                float combo_y = sb_y0 + (SB_H - ImGui::GetFontSize() - 4)/2;
-                ImGui::SetCursorScreenPos(ImVec2(combo_x, combo_y));
-                ImGui::SetNextItemWidth(combo_w);
+                char cur_fft[16]; snprintf(cur_fft,16,"%d",v.sa_fft_size);
+                float fft_combo_w = 62;
+                float fft_combo_x = ov_x1 - fft_combo_w - 8;
+                ImGui::SetCursorScreenPos(ImVec2(fft_combo_x, combo_y));
+                ImGui::SetNextItemWidth(fft_combo_w);
                 ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4,2));
-                if(ImGui::BeginCombo("##ov_fft", cur_lbl)){
+                if(computing) ImGui::BeginDisabled();
+                if(ImGui::BeginCombo("##ov_fft", cur_fft)){
                     for(int i=0;i<9;i++){
                         bool sel = (v.sa_fft_size == fft_sizes[i]);
                         if(ImGui::Selectable(fft_labels[i], sel)){
                             if(v.sa_fft_size != fft_sizes[i]){
                                 v.sa_fft_size = fft_sizes[i];
-                                if(!v.sa_temp_path.empty() && !v.sa_computing.load())
-                                    v.sa_start(v.sa_temp_path);
+                                if(!v.sa_temp_path.empty()) v.sa_start(v.sa_temp_path);
                             }
                         }
                     }
                     ImGui::EndCombo();
                 }
+                if(computing) ImGui::EndDisabled();
                 ImGui::PopStyleVar();
-                fg->AddText(ImVec2(combo_x + combo_w + 4, btn_ty), IM_COL32(110,110,130,255), "FFT");
+                fg->AddText(ImVec2(fft_combo_x - ImGui::CalcTextSize("FFT").x - 6, btn_ty),
+                            IM_COL32(130,130,150,255), "FFT");
+
+                // ── Window 콤보 (FFT 왼쪽) ───────────────────────────────
+                static const char* win_labels[] = {"Blackman-Harris","Hann","Nuttall"};
+                const char* cur_win = win_labels[v.sa_window_type < 3 ? v.sa_window_type : 0];
+                float win_combo_w = 120;
+                float win_combo_x = fft_combo_x - ImGui::CalcTextSize("FFT").x - win_combo_w - 20;
+                ImGui::SetCursorScreenPos(ImVec2(win_combo_x, combo_y));
+                ImGui::SetNextItemWidth(win_combo_w);
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4,2));
+                if(computing) ImGui::BeginDisabled();
+                if(ImGui::BeginCombo("##ov_win", cur_win)){
+                    for(int i=0;i<3;i++){
+                        bool sel = (v.sa_window_type == i);
+                        if(ImGui::Selectable(win_labels[i], sel)){
+                            if(v.sa_window_type != i){
+                                v.sa_window_type = i;
+                                if(!v.sa_temp_path.empty()) v.sa_start(v.sa_temp_path);
+                            }
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                if(computing) ImGui::EndDisabled();
+                ImGui::PopStyleVar();
+                fg->AddText(ImVec2(win_combo_x - ImGui::CalcTextSize("Window").x - 6, btn_ty),
+                            IM_COL32(130,130,150,255), "Window");
             }
 
             // Phase 모드: Sweep line 슬라이더 (우측 정렬)
@@ -7005,25 +7040,28 @@ void run_streaming_viewer(){
                         uv_tl, uv_tr, uv_br, uv_bl);
 
                     // Y축 라벨 (주파수 MHz) — top=고주파, bottom=저주파
-                    if(v.sa_center_freq_hz > 0 && v.sa_sample_rate > 0){
-                        double cf = (double)v.sa_center_freq_hz;
-                        double sr_d = (double)v.sa_sample_rate;
+                    {
+                        double sr_d = v.sa_sample_rate > 0 ? (double)v.sa_sample_rate : 1.0;
+                        double cf = v.sa_center_freq_hz > 0 ? (double)v.sa_center_freq_hz : sr_d * 0.5;
                         double freq_lo = cf - sr_d * 0.5;
-                        // 보이는 범위 (view_x UV → 주파수)
                         double vis_flo = freq_lo + fy0 * sr_d;
                         double vis_fhi = freq_lo + fy1 * sr_d;
                         int n_divs = std::max(2, std::min(10, (int)(ea_h / 50.f)));
                         for(int i = 0; i <= n_divs; i++){
                             float frac = (float)i / n_divs;
                             float yy = ea_y0 + frac * ea_h;
-                            double freq_val = vis_fhi - frac * (vis_fhi - vis_flo); // top=high
-                            fg->AddLine(ImVec2(ea_x0, yy), ImVec2(ea_x1, yy), IM_COL32(40,40,55,255));
-                            char lbl[32]; snprintf(lbl, sizeof(lbl), "%.3f", freq_val / 1e6);
+                            double freq_val = vis_fhi - frac * (vis_fhi - vis_flo);
+                            fg->AddLine(ImVec2(ea_x0, yy), ImVec2(ea_x1, yy), IM_COL32(60,60,80,180));
+                            char lbl[32];
+                            if(v.sa_center_freq_hz > 0)
+                                snprintf(lbl, sizeof(lbl), "%.3f", freq_val / 1e6);
+                            else
+                                snprintf(lbl, sizeof(lbl), "%.1f", freq_val);
                             ImVec2 tsz = ImGui::CalcTextSize(lbl);
-                            fg->AddText(ImVec2(ea_x0 - tsz.x - 4, yy - tsz.y * 0.5f), IM_COL32(130,130,160,255), lbl);
+                            fg->AddText(ImVec2(ea_x0 - tsz.x - 4, yy - tsz.y * 0.5f), IM_COL32(150,150,180,255), lbl);
                         }
-                        // Y축 단위 라벨
-                        fg->AddText(ImVec2(ov_x0 + 2, ea_y0 - 14), IM_COL32(100,100,130,200), "MHz");
+                        const char* unit = v.sa_center_freq_hz > 0 ? "MHz" : "Hz";
+                        fg->AddText(ImVec2(ov_x0 + 2, ea_y0 - 14), IM_COL32(120,120,150,220), unit);
                     }
 
                     // X축 라벨 (시간)
@@ -7064,6 +7102,12 @@ void run_streaming_viewer(){
                     // 스크롤 줌 (시간축 = 화면 X)
                     ImVec2 mp = io.MousePos;
                     bool in_sa = (mp.x >= ea_x0 && mp.x < ea_x1 && mp.y >= ea_y0 && mp.y < ea_y1);
+                    // 스펙트로그램 줌 → eid_view 동기화 헬퍼
+                    auto sync_sa_to_eid = [&](){
+                        double et = (double)v.eid_total_samples;
+                        if(et > 0){ v.eid_view_t0 = v.sa_view_y0 * et; v.eid_view_t1 = v.sa_view_y1 * et; }
+                    };
+
                     if(in_sa && io.MouseWheel != 0.f){
                         float zf = (io.MouseWheel > 0) ? 0.8f : 1.25f;
                         float frac = (mp.x - ea_x0) / ea_w;
@@ -7075,6 +7119,101 @@ void run_streaming_viewer(){
                         if(v.sa_view_y1 > 1.f){ v.sa_view_y0 -= (v.sa_view_y1 - 1.f); v.sa_view_y1 = 1.f; }
                         v.sa_view_y0 = std::max(0.f, v.sa_view_y0);
                         v.sa_view_y1 = std::min(1.f, v.sa_view_y1);
+                        sync_sa_to_eid();
+                    }
+
+                    // 좌클릭 드래그 줌 (시간축 = X축)
+                    static bool sa_sel_drag = false;
+                    static float sa_sel_sx0 = 0, sa_sel_sx1 = 0;
+                    if(in_sa && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                        sa_sel_drag=true; sa_sel_sx0=mp.x; sa_sel_sx1=mp.x;
+                    }
+                    if(sa_sel_drag){
+                        if(ImGui::IsMouseDown(ImGuiMouseButton_Left)){
+                            sa_sel_sx1=mp.x;
+                            float sx0=std::max(ea_x0,std::min(sa_sel_sx0,sa_sel_sx1));
+                            float sx1=std::min(ea_x1,std::max(sa_sel_sx0,sa_sel_sx1));
+                            if(sx1-sx0>1.f){
+                                fg->AddRectFilled(ImVec2(sx0,ea_y0),ImVec2(sx1,ea_y1),IM_COL32(200,200,220,50));
+                                fg->AddRect(ImVec2(sx0,ea_y0),ImVec2(sx1,ea_y1),IM_COL32(200,200,220,160),0.f,0,1.f);
+                            }
+                        } else {
+                            sa_sel_drag=false;
+                            float sx0=std::min(sa_sel_sx0,sa_sel_sx1);
+                            float sx1=std::max(sa_sel_sx0,sa_sel_sx1);
+                            if(sx1-sx0>5.f){
+                                float f0=v.sa_view_y0+((sx0-ea_x0)/ea_w)*(v.sa_view_y1-v.sa_view_y0);
+                                float f1=v.sa_view_y0+((sx1-ea_x0)/ea_w)*(v.sa_view_y1-v.sa_view_y0);
+                                v.sa_view_y0=std::max(0.f,f0);
+                                v.sa_view_y1=std::min(1.f,f1);
+                                sync_sa_to_eid();
+                            }
+                        }
+                    }
+
+                    // 우클릭: 드래그→태그, 클릭→줌 뒤로가기
+                    static bool sa_tag_drag = false;
+                    static float sa_tag_dx0 = 0, sa_tag_dx1 = 0;
+                    static float sa_prev_y0 = 0, sa_prev_y1 = 1; // 줌 히스토리 1단계
+                    if(in_sa && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                        sa_tag_drag=true; sa_tag_dx0=mp.x; sa_tag_dx1=mp.x;
+                    }
+                    if(sa_tag_drag && ImGui::IsMouseDown(ImGuiMouseButton_Right)){
+                        sa_tag_dx1=mp.x;
+                        float sx0=std::max(ea_x0,std::min(sa_tag_dx0,sa_tag_dx1));
+                        float sx1=std::min(ea_x1,std::max(sa_tag_dx0,sa_tag_dx1));
+                        if(sx1-sx0>1.f){
+                            fg->AddRectFilled(ImVec2(sx0,ea_y0),ImVec2(sx1,ea_y1),IM_COL32(255,180,60,40));
+                            fg->AddRect(ImVec2(sx0,ea_y0),ImVec2(sx1,ea_y1),IM_COL32(255,180,60,180),0.f,0,1.f);
+                        }
+                    }
+                    if(sa_tag_drag && ImGui::IsMouseReleased(ImGuiMouseButton_Right)){
+                        sa_tag_drag=false;
+                        float dx=fabsf(sa_tag_dx1-sa_tag_dx0);
+                        if(dx>5.f){
+                            // 태그 생성 (시간축 UV → 샘플 인덱스)
+                            float sx0=std::max(ea_x0,std::min(sa_tag_dx0,sa_tag_dx1));
+                            float sx1=std::min(ea_x1,std::max(sa_tag_dx0,sa_tag_dx1));
+                            double total=(double)v.eid_total_samples;
+                            if(total>0){
+                                static const ImU32 tc[]={IM_COL32(255,180,60,200),IM_COL32(100,200,255,200),
+                                    IM_COL32(255,100,255,200),IM_COL32(100,255,180,200),
+                                    IM_COL32(255,255,100,200),IM_COL32(180,140,255,200)};
+                                float uv0=v.sa_view_y0+((sx0-ea_x0)/ea_w)*(v.sa_view_y1-v.sa_view_y0);
+                                float uv1=v.sa_view_y0+((sx1-ea_x0)/ea_w)*(v.sa_view_y1-v.sa_view_y0);
+                                FFTViewer::EidTag tag;
+                                tag.s0=std::max(0.0,(double)uv0*total);
+                                tag.s1=std::min(total,(double)uv1*total);
+                                tag.color=tc[v.eid_tags.size()%6];
+                                snprintf(tag.label,sizeof(tag.label),"Tag %d",(int)v.eid_tags.size()+1);
+                                v.eid_tags.push_back(tag);
+                            }
+                        } else {
+                            // 줌 뒤로가기
+                            sa_prev_y0=v.sa_view_y0; sa_prev_y1=v.sa_view_y1;
+                            v.sa_view_y0=0.f; v.sa_view_y1=1.f;
+                            sync_sa_to_eid();
+                        }
+                    }
+
+                    // Home 키: 전체 보기
+                    if(in_sa && ImGui::IsKeyPressed(ImGuiKey_Home,false)){
+                        v.sa_view_y0=0.f; v.sa_view_y1=1.f;
+                        v.sa_view_x0=0.f; v.sa_view_x1=1.f;
+                        sync_sa_to_eid();
+                    }
+
+                    // Delete 키: 태그 삭제 (마우스 위치 기반)
+                    if(in_sa && ImGui::IsKeyPressed(ImGuiKey_Delete,false)){
+                        double total=(double)v.eid_total_samples;
+                        if(total>0){
+                            float uv=(mp.x-ea_x0)/ea_w;
+                            float tv=v.sa_view_y0+uv*(v.sa_view_y1-v.sa_view_y0);
+                            double ms=tv*total;
+                            for(auto it=v.eid_tags.begin();it!=v.eid_tags.end();++it){
+                                if(ms>=it->s0&&ms<=it->s1){ v.eid_tags.erase(it); break; }
+                            }
+                        }
                     }
 
                     // 커서 오버레이 (십자선 + Freq/Time 정보)
@@ -7316,6 +7455,17 @@ void run_streaming_viewer(){
                 ImVec2 mp = io.MousePos;
                 bool mouse_in = (mp.x >= ea_x0 && mp.x < ea_x1 && mp.y >= ea_y0 && mp.y < ea_y1);
 
+                // eid_view → sa_view 역동기화 헬퍼
+                auto sync_eid_to_sa = [&](){
+                    double et = (double)v.eid_total_samples;
+                    if(et > 0){
+                        v.sa_view_y0 = (float)(v.eid_view_t0 / et);
+                        v.sa_view_y1 = (float)(v.eid_view_t1 / et);
+                        v.sa_view_y0 = std::max(0.f, std::min(1.f, v.sa_view_y0));
+                        v.sa_view_y1 = std::max(0.f, std::min(1.f, v.sa_view_y1));
+                    }
+                };
+
                 // 스크롤 줌 (마우스 위치 고정)
                 if(mouse_in && io.MouseWheel != 0.f){
                     v.eid_view_stack.push_back({vt0,vt1});
@@ -7336,6 +7486,7 @@ void run_streaming_viewer(){
                         double mid=(v.eid_view_t0+v.eid_view_t1)*0.5;
                         v.eid_view_t0=mid-16; v.eid_view_t1=mid+16;
                     }
+                    sync_eid_to_sa();
                 }
 
                 // 좌클릭 드래그 줌
@@ -7372,6 +7523,7 @@ void run_streaming_viewer(){
                                 double mid=(v.eid_view_t0+v.eid_view_t1)*0.5;
                                 v.eid_view_t0=mid-16; v.eid_view_t1=mid+16;
                             }
+                            sync_eid_to_sa();
                         }
                     }
                 }
@@ -7409,12 +7561,14 @@ void run_streaming_viewer(){
                             auto [pt0,pt1]=v.eid_view_stack.back(); v.eid_view_stack.pop_back();
                             v.eid_view_t0=pt0; v.eid_view_t1=pt1;
                         } else { v.eid_view_t0=0; v.eid_view_t1=(double)v.eid_total_samples; }
+                        sync_eid_to_sa();
                     }
                 }
 
                 // Home 키
                 if(mouse_in && ImGui::IsKeyPressed(ImGuiKey_Home,false)){
                     v.eid_view_stack.clear(); v.eid_view_t0=0; v.eid_view_t1=(double)v.eid_total_samples;
+                    sync_eid_to_sa();
                 }
 
                 // Delete 키: 태그 삭제

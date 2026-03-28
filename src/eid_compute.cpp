@@ -10,6 +10,7 @@ void FFTViewer::eid_start(const std::string& wav_path){
     if(eid_thread.joinable()) eid_thread.join();
     eid_computing.store(true);
     eid_data_ready.store(false);
+    sa_temp_path = wav_path;  // FFT 콤보에서 재계산할 때 사용
 
     eid_thread = std::thread([this, wav_path](){
         // ── WAV 파싱 (sa_start 패턴 동일) ───────────────────────────────────

@@ -158,6 +158,7 @@ public:
     // ── SA (Signal Analyzer) 패널 ─────────────────────────────────────────
     bool              sa_panel_open  = false;
     int               sa_fft_size    = 1024;
+    int               sa_window_type = 0;   // 0=Blackman-Harris 1=Hann 2=Nuttall
     GLuint            sa_texture     = 0;
     int               sa_tex_w       = 0;
     int               sa_tex_h       = 0;

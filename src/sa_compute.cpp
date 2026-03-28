@@ -10,6 +10,7 @@
 #include <thread>
 
 // ── Jet colormap (sa 전용) ─────────────────────────────────────────────────
+// Jet colormap (default)
 static uint32_t sa_jet(float t){
     t = t<0?0:t>1?1:t;
     float r = 1.5f-fabsf(4*t-3);
@@ -19,10 +20,17 @@ static uint32_t sa_jet(float t){
     return IM_COL32(c(r),c(g),c(b),255);
 }
 
-// Hann 윈도우
-static void sa_hann(float* buf, int n){
+// Window functions: 0=Blackman-Harris, 1=Hann, 2=Nuttall
+static void sa_apply_window(float* buf, int n, int type){
     for(int i=0;i<n;i++){
-        float w = 0.5f*(1.0f-cosf(2*M_PIf*i/(n-1)));
+        float w;
+        double x = 2.0*M_PI*i/(n-1);
+        switch(type){
+        default:
+        case 0: w = (float)(0.35875 - 0.48829*cos(x) + 0.14128*cos(2*x) - 0.01168*cos(3*x)); break; // Blackman-Harris
+        case 1: w = 0.5f*(1.0f-cosf((float)x)); break;         // Hann
+        case 2: w = (float)(0.355768 - 0.487396*cos(x) + 0.144232*cos(2*x) - 0.012604*cos(3*x)); break; // Nuttall
+        }
         buf[i*2  ] *= w;
         buf[i*2+1] *= w;
     }
@@ -71,10 +79,12 @@ void FFTViewer::sa_start(const std::string& wav_path){
     if(sa_thread.joinable()) sa_thread.join();
     sa_computing.store(true);
     sa_pixel_ready.store(false);
+    sa_temp_path = wav_path;  // 경로 보존 (FFT 재계산 시 사용)
 
     int fft_n = sa_fft_size;
+    int win_type = sa_window_type;
 
-    sa_thread = std::thread([this, wav_path, fft_n](){
+    sa_thread = std::thread([this, wav_path, fft_n, win_type](){
         // ── WAV 읽기 + bewe 청크 파싱 ────────────────────────────────────
         FILE* f = fopen(wav_path.c_str(),"rb");
         if(!f){ sa_computing.store(false); return; }
@@ -166,7 +176,7 @@ void FFTViewer::sa_start(const std::string& wav_path){
                 in_f[i*2  ] = raw[(r*hop+i)*2  ] * scale;
                 in_f[i*2+1] = raw[(r*hop+i)*2+1] * scale;
             }
-            sa_hann(in_f.data(), actual_fft_n);
+            sa_apply_window(in_f.data(), actual_fft_n, win_type);
             fftwf_execute(plan);
 
             int half = actual_fft_n/2;
@@ -252,10 +262,9 @@ void FFTViewer::sa_start(const std::string& wav_path){
         // SA 좌표 메타데이터 저장 (뷰 계산에 사용)
         sa_total_rows   = rows;    // 실제 FFT 행 수 (시간축)
         sa_actual_fft_n = actual_fft_n;
-        // 뷰 리셋 (새 SA 로드 시)
-        sa_view_x0 = 0.0f; sa_view_x1 = 1.0f;
-        sa_view_y0 = 0.0f; sa_view_y1 = 1.0f;
+        // 뷰 리셋은 호출부에서 관리 (FFT 변경 시 줌 유지)
         sa_sel_active = false;
+        printf("[SA] FFT done: %d bins, %lld rows\n", actual_fft_n, (long long)rows);
         sa_pixel_ready.store(true);
         sa_computing.store(false);
     });
