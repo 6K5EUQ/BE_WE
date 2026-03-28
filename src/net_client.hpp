@@ -66,10 +66,7 @@ struct NetAudioRing {
 // ── NetClient ─────────────────────────────────────────────────────────────
 class NetClient {
 public:
-    // ── Connection ───────────────────────────────────────────────────────
-    bool connect(const char* host, int port,
-                 const char* id, const char* pw, uint8_t tier);
-    // relay 모드: 이미 연결된 fd로 AUTH만 수행
+    // ── Connection (relay only) ─────────────────────────────────────────
     bool connect_fd(int fd, const char* id, const char* pw, uint8_t tier);
     void disconnect();
     bool is_connected() const { return connected_.load(); }
@@ -228,21 +225,12 @@ public:
     bool cmd_set_fft_size(uint32_t size); // JOIN → HOST: FFT 크기 변경
     bool cmd_set_sr(float msps);          // JOIN → HOST: SR 변경
 
-    // ── UDP Discovery Listener ────────────────────────────────────────────
-    // Note: DiscoveryAnnounce is defined in net_protocol.hpp (already included)
-    bool start_discovery_listen(
-        std::function<void(const DiscoveryAnnounce&)> callback);
-    void stop_discovery_listen();
-
 private:
     int  fd_ = -1;
     std::atomic<bool> connected_{false};
     std::thread       recv_thr_;
 
     mutable std::mutex send_mtx_;
-
-    // Discovery listener (forward declared to avoid pulling udp_discovery.hpp)
-    class DiscoveryListener* discovery_listener_ = nullptr;
 
     // FFT buffer queue (1s delay)
     std::mutex              fft_queue_mtx_;

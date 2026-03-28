@@ -1,5 +1,4 @@
 #include "net_client.hpp"
-#include "udp_discovery.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -15,93 +14,6 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <poll.h>
-
-// ── connect ───────────────────────────────────────────────────────────────
-bool NetClient::connect(const char* host, int port,
-                         const char* id, const char* pw, uint8_t tier){
-    // Resolve host
-    addrinfo hints{}, *res = nullptr;
-    hints.ai_family   = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    char port_str[16]; snprintf(port_str, sizeof(port_str), "%d", port);
-    if(getaddrinfo(host, port_str, &hints, &res) != 0){
-        printf("[NetClient] getaddrinfo failed for %s\n", host);
-        return false;
-    }
-
-    fd_ = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if(fd_ < 0){ freeaddrinfo(res); return false; }
-
-    // non-blocking connect → poll 3초 타임아웃
-    int flags = fcntl(fd_, F_GETFL, 0);
-    fcntl(fd_, F_SETFL, flags | O_NONBLOCK);
-    int cr = ::connect(fd_, res->ai_addr, res->ai_addrlen);
-    freeaddrinfo(res);
-    if(cr < 0 && errno != EINPROGRESS){
-        close(fd_); fd_=-1; return false;
-    }
-    if(cr < 0){
-        pollfd pfd{fd_, POLLOUT, 0};
-        int pr = poll(&pfd, 1, 3000);
-        if(pr <= 0){ close(fd_); fd_=-1; return false; }
-        int so_err = 0; socklen_t sl = sizeof(so_err);
-        getsockopt(fd_, SOL_SOCKET, SO_ERROR, &so_err, &sl);
-        if(so_err != 0){ close(fd_); fd_=-1; return false; }
-    }
-    fcntl(fd_, F_SETFL, flags);  // blocking 복원
-
-    // TCP_NODELAY: Nagle 비활성화 → 실시간 스트림 지연 방지
-    int nd=1; setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
-
-    // SO_RCVTIMEO: recv() 3초 타임아웃 → Host 무응답 시 UI 멈춤 방지
-    timeval tv{3, 0};
-    setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-    // SO_SNDTIMEO: send() 2초 타임아웃 → 네트워크 장애 시 채팅/명령 전송 블로킹 방지
-    timeval stv{2, 0};
-    setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &stv, sizeof(stv));
-
-    // Send AUTH_REQ
-    PktAuthReq req{};
-    strncpy(req.id, id, 31);
-    strncpy(req.pw, pw, 63);
-    req.tier = tier;
-    if(!raw_send(PacketType::AUTH_REQ, &req, sizeof(req))){
-        close(fd_); fd_=-1; return false;
-    }
-
-    // Wait for AUTH_ACK
-    PktHdr hdr{};
-    if(!recv_all(fd_, &hdr, PKT_HDR_SIZE) ||
-       static_cast<PacketType>(hdr.type) != PacketType::AUTH_ACK){
-        printf("[NetClient] no AUTH_ACK\n");
-        close(fd_); fd_=-1; return false;
-    }
-    std::vector<uint8_t> payload(hdr.len);
-    if(hdr.len > 0 && !recv_all(fd_, payload.data(), hdr.len)){
-        close(fd_); fd_=-1; return false;
-    }
-    if(hdr.len < sizeof(PktAuthAck)){
-        close(fd_); fd_=-1; return false;
-    }
-    auto* ack = reinterpret_cast<PktAuthAck*>(payload.data());
-    if(!ack->ok){
-        printf("[NetClient] auth failed: %s\n", ack->reason);
-        close(fd_); fd_=-1; return false;
-    }
-
-    my_op_index = ack->op_index;
-    my_tier     = tier;
-    strncpy(my_name, id, 31);
-    connected_.store(true);
-
-    printf("[NetClient] connected as op %d '%s' (Tier%d)\n",
-           my_op_index, my_name, my_tier);
-
-    if(recv_thr_.joinable()) recv_thr_.join();
-    recv_thr_ = std::thread(&NetClient::recv_loop, this);
-    return true;
-}
 
 // ── relay 모드: 이미 연결된 fd로 AUTH만 수행 ─────────────────────────────
 bool NetClient::connect_fd(int fd, const char* id, const char* pw, uint8_t tier){
@@ -189,7 +101,6 @@ bool NetClient::pop_fft_frame(FftFrame& out){
 
 // ── disconnect ────────────────────────────────────────────────────────────
 void NetClient::disconnect(){
-    stop_discovery_listen();
     connected_.store(false);
     if(fd_ >= 0){
         send_packet(fd_, PacketType::DISCONNECT, nullptr, 0);
@@ -197,28 +108,6 @@ void NetClient::disconnect(){
         close(fd_); fd_=-1;
     }
     if(recv_thr_.joinable()) recv_thr_.join();
-}
-
-// ── UDP Discovery Listener ────────────────────────────────────────────────
-bool NetClient::start_discovery_listen(
-        std::function<void(const DiscoveryAnnounce&)> callback) {
-    stop_discovery_listen();
-    auto* l = new DiscoveryListener();
-    l->on_station_found = std::move(callback);
-    if (!l->start()) {
-        delete l;
-        return false;
-    }
-    discovery_listener_ = l;
-    return true;
-}
-
-void NetClient::stop_discovery_listen() {
-    if (discovery_listener_) {
-        discovery_listener_->stop();
-        delete discovery_listener_;
-        discovery_listener_ = nullptr;
-    }
 }
 
 // ── recv loop ─────────────────────────────────────────────────────────────

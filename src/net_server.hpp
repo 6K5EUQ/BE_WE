@@ -271,13 +271,6 @@ public:
     // Operator list → all clients
     void broadcast_operator_list();
 
-    // ── UDP Discovery Broadcast ───────────────────────────────────────────
-    void start_discovery_broadcast(const char* station_name, float lat, float lon,
-                                    uint16_t tcp_port, const char* host_ip,
-                                    uint8_t host_tier = 1);
-    void stop_discovery_broadcast();
-    void update_discovery_user_count();
-
     // HOST 본인 정보 설정 (op_list index=0 으로 브로드캐스트)
     void set_host_info(const char* name, uint8_t tier){
         strncpy(host_name_, name, 31); host_name_[31]='\0';
@@ -287,8 +280,6 @@ public:
     // Get current operator list (for UI)
     
 private:
-    // Forward declaration to avoid pulling udp_discovery.hpp into every TU
-    class DiscoveryBroadcaster* discovery_bcast_ = nullptr;
     std::atomic<bool> bcast_pause_{false}; // /chassis 2 reset: 방송 일시 중단 플래그
 
     // ── Traffic stats ────────────────────────────────────────────────────

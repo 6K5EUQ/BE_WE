@@ -354,17 +354,3 @@ inline bool send_packet(int fd, PacketType type, const void* payload, uint32_t l
     return send_all(fd, pkt.data(), pkt.size());
 }
 
-// ── UDP Discovery (port 7701, independent of TCP protocol) ───────────────
-static constexpr int BEWE_DISCOVERY_PORT = 7701;
-
-struct __attribute__((packed)) DiscoveryAnnounce {
-    char     magic[4];          // 'B','E','W','G'
-    char     station_name[64];  // null-terminated UTF-8
-    float    lat;               // degrees [-90, +90]
-    float    lon;               // degrees [-180, +180]
-    uint16_t tcp_port;          // TCP listen port for connections
-    uint8_t  user_count;        // currently connected operator count
-    uint8_t  host_tier;         // host operator tier (1=Tier1, 2=Tier2)
-    char     host_ip[16];       // IPv4 dotted-decimal, null-terminated
-    uint8_t  _pad[8];           // reserved
-};                              // total: 104 bytes

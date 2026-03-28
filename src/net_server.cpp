@@ -1,5 +1,4 @@
 #include "net_server.hpp"
-#include "udp_discovery.hpp"
 #include "../central/central_proto.hpp"
 #include <cstdio>
 #include <cstring>
@@ -196,7 +195,6 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
         printf("[NetServer] AUTH_ACK sent op=%d ok=%u\n", idx, ack.ok);
         if(ack.ok){
             broadcast_operator_list();
-            update_discovery_user_count();
         }
         break;
     }
@@ -399,7 +397,6 @@ void NetServer::drop_client(std::shared_ptr<ClientConn> c){
     if(was_authed){
         printf("[NetServer] op %d '%s' disconnected\n", idx, name);
         broadcast_operator_list();
-        update_discovery_user_count();
     }
 }
 
@@ -805,31 +802,3 @@ std::vector<OpEntry> NetServer::get_operators() const {
     return ops;
 }
 
-// ── UDP Discovery Broadcast ───────────────────────────────────────────────
-void NetServer::start_discovery_broadcast(const char* station_name,
-                                           float lat, float lon,
-                                           uint16_t tcp_port,
-                                           const char* host_ip,
-                                           uint8_t host_tier) {
-    stop_discovery_broadcast();
-    auto* b = new DiscoveryBroadcaster();
-    b->set_info(station_name, lat, lon, tcp_port, host_ip, host_tier);
-    b->set_user_count((uint8_t)client_count());
-    if (b->start())
-        discovery_bcast_ = b;
-    else
-        delete b;
-}
-
-void NetServer::stop_discovery_broadcast() {
-    if (discovery_bcast_) {
-        discovery_bcast_->stop();
-        delete discovery_bcast_;
-        discovery_bcast_ = nullptr;
-    }
-}
-
-void NetServer::update_discovery_user_count() {
-    if (discovery_bcast_)
-        discovery_bcast_->set_user_count((uint8_t)client_count());
-}

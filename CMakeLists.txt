@@ -39,7 +39,6 @@ if(BEWE_HEADLESS)
         src/net_server.cpp
         src/net_client.cpp
         src/net_stream.cpp
-        src/udp_discovery.cpp
         src/central_client.cpp
     )
 
@@ -110,7 +109,6 @@ else()
         src/net_client.cpp
         src/net_stream.cpp
         src/globe.cpp
-        src/udp_discovery.cpp
         src/central_client.cpp
         ${IMGUI_SOURCES}
     )

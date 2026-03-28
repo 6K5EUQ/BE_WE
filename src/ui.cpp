@@ -4,7 +4,6 @@
 #include "net_client.hpp"
 #include "bewe_paths.hpp"
 #include "globe.hpp"
-#include "udp_discovery.hpp"
 #include "central_client.hpp"
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
@@ -22,30 +21,10 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <ifaddrs.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <netdb.h>
-
-// Returns the first non-loopback IPv4 address, or "127.0.0.1"
-static std::string get_local_ip(){
-    struct ifaddrs* ifa_list = nullptr;
-    if(getifaddrs(&ifa_list) != 0) return "127.0.0.1";
-    std::string result = "127.0.0.1";
-    for(auto* ifa = ifa_list; ifa; ifa = ifa->ifa_next){
-        if(!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
-        auto* sin = reinterpret_cast<sockaddr_in*>(ifa->ifa_addr);
-        uint32_t addr = ntohl(sin->sin_addr.s_addr);
-        if((addr >> 24) == 127) continue; // skip 127.x.x.x
-        char buf[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf));
-        result = buf;
-        break;
-    }
-    freeifaddrs(ifa_list);
-    return result;
-}
 
 void bewe_log(const char* fmt, ...){
     char buf[256];
@@ -1295,37 +1274,6 @@ void run_streaming_viewer(){
     GlobeRenderer globe;
     bool globe_ok = globe.init();
 
-    // Discovery listener: populate v.discovered_stations from LAN broadcasts
-    DiscoveryListener disc_listener;
-    disc_listener.on_station_found = [&](const DiscoveryAnnounce& ann){
-        std::lock_guard<std::mutex> lk(v.discovered_stations_mtx);
-        double now = glfwGetTime();
-        // Upsert by ip+port key
-        for(auto& s : v.discovered_stations){
-            if(s.ip == ann.host_ip && s.tcp_port == ann.tcp_port){
-                s.name             = ann.station_name;
-                s.lat              = ann.lat;
-                s.lon              = ann.lon;
-                s.user_count       = ann.user_count;
-                s.host_tier        = ann.host_tier ? ann.host_tier : 1;
-                s.last_seen        = now;
-                return;
-            }
-        }
-        FFTViewer::DiscoveredStation ns;
-        ns.name             = ann.station_name;
-        ns.lat              = ann.lat;
-        ns.lon              = ann.lon;
-        ns.tcp_port         = ann.tcp_port;
-        ns.ip               = ann.host_ip;
-        ns.user_count       = ann.user_count;
-        ns.host_tier        = ann.host_tier ? ann.host_tier : 1;
-        ns.last_seen        = now;
-        v.discovered_stations.push_back(ns);
-    };
-    disc_listener.start();
-
-
     // Relay 클라이언트: Relay 주소가 설정돼 있으면 인터넷 스테이션 폴링
     CentralClient central_cli;
     if(s_central_host[0] != '\0'){
@@ -1654,7 +1602,7 @@ void run_streaming_viewer(){
                 bool join_ok = false;
 
                 if(!pending_join.station_id.empty() && s_central_host[0] != '\0'){
-                    // ── 외부 Central Server 경유 JOIN ─────────────────────────────
+                    // ── Central Server 경유 JOIN ──────────────────────────────
                     int rfd = central_cli.join_room(s_central_host, s_central_port,
                                                   pending_join.station_id);
                     if(rfd >= 0){
@@ -1662,12 +1610,6 @@ void run_streaming_viewer(){
                                                   (uint8_t)login_get_tier());
                         if(!join_ok) close(rfd);
                     }
-                } else {
-                    // ── 직접 TCP JOIN (LAN) ───────────────────────────────
-                    join_ok = cli->connect(pending_join.ip.c_str(),
-                                           (int)pending_join.tcp_port,
-                                           login_get_id(), login_get_pw(),
-                                           (uint8_t)login_get_tier());
                 }
 
                 if(join_ok){
@@ -1713,7 +1655,6 @@ void run_streaming_viewer(){
         glfwSwapBuffers(win);
     }
 
-    disc_listener.stop();
     central_cli.stop_polling();
     globe.destroy();
 
@@ -1730,13 +1671,19 @@ void run_streaming_viewer(){
     if(!do_logout){
 
     // ── 모드에 따라 초기화 ────────────────────────────────────────────────
-    // /reset(JOIN): cli가 없으면 저장된 connect 정보로 자동 재접속
-    if(mode_sel==2 && !cli && connect_host[0] && connect_port > 0){
-        cli = new NetClient();
-        if(!cli->connect(connect_host, connect_port,
-                         connect_id, connect_pw, connect_tier)){
-            delete cli; cli = nullptr;
-            mode_sel = 0; // 접속 실패 시 LOCAL로 fallback
+    // /reset(JOIN): cli가 ��으면 저장된 connect 정보로 Central Relay 경유 자동 재접속
+    if(mode_sel==2 && !cli && !s_central_join_station_id.empty() && s_central_host[0] != '\0'){
+        int rfd = central_cli.join_room(s_central_host, s_central_port,
+                                       s_central_join_station_id);
+        if(rfd >= 0){
+            cli = new NetClient();
+            if(!cli->connect_fd(rfd, connect_id, connect_pw, connect_tier)){
+                close(rfd);
+                delete cli; cli = nullptr;
+                mode_sel = 0; // ���속 실패 시 LOCAL로 fallback
+            }
+        } else {
+            mode_sel = 0;
         }
     }
 
@@ -2716,16 +2663,6 @@ void run_streaming_viewer(){
                     s_station_lon  = v.station_lon;
                     s_station_set  = true;
                 }
-                // LAN 브로드캐스트 시작
-                if(v.station_location_set){
-                    std::string lip = get_local_ip();
-                    srv->start_discovery_broadcast(
-                        v.station_name.c_str(),
-                        v.station_lat, v.station_lon,
-                        (uint16_t)host_port,
-                        lip.c_str(),
-                        (uint8_t)login_get_tier());
-                }
                 // Central MUX 어댑터 시작 (Central Server)
                 if(s_central_host[0] != '\0' && v.station_location_set){
                     auto central_connect = [&v, &central_cli,
@@ -3277,8 +3214,6 @@ void run_streaming_viewer(){
                              central_host  = s_central_host,
                              central_port  = s_central_port,
                              station_id  = s_central_join_station_id,
-                             c_host = std::string(connect_host),
-                             c_port = connect_port,
                              c_id   = std::string(connect_id),
                              c_pw   = std::string(connect_pw),
                              c_tier = connect_tier](){
@@ -3289,9 +3224,6 @@ void run_streaming_viewer(){
                             ok = cli_ptr->connect_fd(rfd, c_id.c_str(), c_pw.c_str(), c_tier);
                             if(!ok) close(rfd);
                         }
-                    } else if(!c_host.empty()){
-                        ok = cli_ptr->connect(c_host.c_str(), c_port,
-                                              c_id.c_str(), c_pw.c_str(), c_tier);
                     }
                     if(ok){
                         for(int ci=0;ci<MAX_CHANNELS;ci++)
@@ -7591,7 +7523,7 @@ void run_streaming_viewer(){
     if(v.net_bcast_thr.joinable()) v.net_bcast_thr.join();
     central_cli.stop_mux_adapter();
     central_cli.stop_polling();
-    if(v.net_srv){ v.net_srv->stop_discovery_broadcast(); v.net_srv->stop(); delete v.net_srv; v.net_srv=nullptr; }
+    if(v.net_srv){ v.net_srv->stop(); delete v.net_srv; v.net_srv=nullptr; }
     if(v.net_cli){ v.net_cli->disconnect(); delete v.net_cli; v.net_cli=nullptr; }
     if(!v.remote_mode && cap.joinable()) cap.join();
     if(v.dev_blade){

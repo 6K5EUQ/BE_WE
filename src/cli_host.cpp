@@ -6,7 +6,6 @@
 #include "login.hpp"
 #include "bewe_paths.hpp"
 #include "central_client.hpp"
-#include "udp_discovery.hpp"
 #include "net_protocol.hpp"
 
 #include <cstdio>
@@ -25,7 +24,6 @@
 #include <poll.h>
 #include <unistd.h>
 #include <termios.h>
-#include <ifaddrs.h>
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -110,23 +108,6 @@ void FFTViewer::update_channel_squelch(){
         }
         ch.sq_gate.store(gate, std::memory_order_relaxed);
     }
-}
-
-static std::string get_local_ip(){
-    struct ifaddrs* ifa_list = nullptr;
-    if(getifaddrs(&ifa_list) != 0) return "127.0.0.1";
-    std::string result = "127.0.0.1";
-    for(auto* ifa = ifa_list; ifa; ifa = ifa->ifa_next){
-        if(!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
-        auto* sin = reinterpret_cast<sockaddr_in*>(ifa->ifa_addr);
-        uint32_t addr = ntohl(sin->sin_addr.s_addr);
-        if((addr >> 24) == 127) continue;
-        char buf[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf));
-        result = buf; break;
-    }
-    freeifaddrs(ifa_list);
-    return result;
 }
 
 // ── Signal handler ───────────────────────────────────────────────────────
@@ -665,17 +646,6 @@ void run_cli_host(){
         srv->set_host_info(login_get_id(), (uint8_t)login_get_tier());
         printf("[BEWE CLI] Server started on port %d\n", host_port);
 
-        // LAN discovery broadcast
-        std::string lip = get_local_ip();
-        srv->start_discovery_broadcast(
-            v.station_name.c_str(),
-            v.station_lat, v.station_lon,
-            (uint16_t)host_port,
-            lip.c_str(),
-            (uint8_t)login_get_tier());
-        printf("[BEWE CLI] Discovery broadcast: %s (%s:%d)\n",
-               v.station_name.c_str(), lip.c_str(), host_port);
-
         // Central MUX adapter
         if(central_host[0] != '\0'){
             std::string sid = v.station_name + "_" + std::string(login_get_id());
@@ -1202,7 +1172,7 @@ void run_cli_host(){
     if(v.net_bcast_thr.joinable()) v.net_bcast_thr.join();
     central_cli.stop_mux_adapter();
     central_cli.stop_polling();
-    if(v.net_srv){ v.net_srv->stop_discovery_broadcast(); v.net_srv->stop(); delete v.net_srv; v.net_srv=nullptr; }
+    if(v.net_srv){ v.net_srv->stop(); delete v.net_srv; v.net_srv=nullptr; }
     if(!v.remote_mode && cap.joinable()) cap.join();
     if(v.dev_blade){
         bladerf_enable_module(v.dev_blade, BLADERF_CHANNEL_RX(0), false);
