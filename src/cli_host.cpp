@@ -839,7 +839,7 @@ void run_cli_host(){
         if(v.net_srv && pending_chassis1_reset.load()){
             pending_chassis1_reset.store(false);
             printf("[CLI] Chassis 1 reset ...\n");
-            if(v.net_srv) v.net_srv->broadcast_chat("BEWE", "Chassis 1 reset ...");
+            if(v.net_srv) v.net_srv->broadcast_chat("SYSTEM", "Chassis 1 reset ...");
             if(v.net_srv) v.net_srv->broadcast_heartbeat(1);
             v.is_running = false;
             v.sdr_stream_error.store(true);
@@ -850,7 +850,7 @@ void run_cli_host(){
         if(v.net_srv && pending_chassis2_reset.load()){
             pending_chassis2_reset.store(false);
             printf("[CLI] Chassis 2 reset ...\n");
-            if(v.net_srv) v.net_srv->broadcast_chat("BEWE", "Chassis 2 reset ...");
+            if(v.net_srv) v.net_srv->broadcast_chat("SYSTEM", "Chassis 2 reset ...");
             if(v.net_srv) v.net_srv->broadcast_heartbeat(2);
             v.net_bcast_pause.store(true, std::memory_order_relaxed);
             v.net_srv->pause_broadcast();
@@ -869,7 +869,7 @@ void run_cli_host(){
                 srv_ptr->resume_broadcast();
                 bcast_pause_ptr->store(false, std::memory_order_relaxed);
                 srv_ptr->broadcast_heartbeat(0);
-                srv_ptr->broadcast_chat("BEWE", "Chassis 2 stable ...");
+                srv_ptr->broadcast_chat("SYSTEM", "Chassis 2 stable ...");
                 if(!central_ptr->is_central_connected() && !rh.empty()){
                     central_ptr->stop_mux_adapter();
                     std::string sid = vp->station_name + "_" + std::string(login_get_id());
@@ -895,7 +895,7 @@ void run_cli_host(){
             pending_rx_stop.store(false);
             if(!v.rx_stopped.load() && (v.is_running || cap.joinable())){
                 printf("[CLI] RX stop (remote)\n");
-                v.net_srv->broadcast_chat("BEWE", "RX stop");
+                v.net_srv->broadcast_chat("SYSTEM", "RX stop");
                 if(v.rec_on.load()) v.stop_rec();
                 if(v.tm_iq_on.load()){ v.tm_iq_on.store(false); v.tm_iq_close(); }
                 v.stop_all_dem();
@@ -934,7 +934,7 @@ void run_cli_host(){
                         cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
                     v.mix_stop.store(false);
                     v.mix_thr = std::thread(&FFTViewer::mix_worker, &v);
-                    v.net_srv->broadcast_chat("BEWE", "RX start — SDR online");
+                    v.net_srv->broadcast_chat("SYSTEM", "RX start");
                     printf("[CLI] RX started\n");
                 } else {
                     v.is_running = false;
@@ -1062,7 +1062,7 @@ void run_cli_host(){
                 fflush(stdout);
             } else if(line == "/chassis 1 reset"){
                 printf("[CLI] Chassis 1 reset ...\n");
-                if(v.net_srv) v.net_srv->broadcast_chat("BEWE", "Chassis 1 reset ...");
+                if(v.net_srv) v.net_srv->broadcast_chat("SYSTEM", "Chassis 1 reset ...");
                 if(v.net_srv) v.net_srv->broadcast_heartbeat(1);
                 if(v.is_running || cap.joinable()){
                     v.is_running = false;
@@ -1082,7 +1082,7 @@ void run_cli_host(){
                     printf("[CLI] No SDR running.\n");
                 } else {
                     printf("[CLI] RX stop\n");
-                    if(v.net_srv) v.net_srv->broadcast_chat("BEWE", "RX stop");
+                    if(v.net_srv) v.net_srv->broadcast_chat("SYSTEM", "RX stop");
                     if(v.rec_on.load()) v.stop_rec();
                     if(v.tm_iq_on.load()){ v.tm_iq_on.store(false); v.tm_iq_close(); }
                     v.stop_all_dem();
@@ -1121,7 +1121,7 @@ void run_cli_host(){
                             cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
                         v.mix_stop.store(false);
                         v.mix_thr = std::thread(&FFTViewer::mix_worker, &v);
-                        if(v.net_srv) v.net_srv->broadcast_chat("BEWE", "RX start — SDR online");
+                        if(v.net_srv) v.net_srv->broadcast_chat("SYSTEM", "RX start");
                         printf("[CLI] RX started. SDR online.\n");
                     } else {
                         v.is_running = false;

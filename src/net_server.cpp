@@ -592,11 +592,16 @@ void NetServer::broadcast_operator_list(){
             ++cnt;
         }
         ol.count = (uint8_t)cnt;
-        // relay 클라이언트는 제외 (중앙서버가 op_list 관리)
         for(auto& c : clients_){
-            if(c->is_relay || !c->authed || !c->alive.load()) continue;
+            if(!c->authed || !c->alive.load()) continue;
+            if(c->is_relay) continue; // relay 클라이언트는 아래에서 relay broadcast로 전달
             send_to(*c, PacketType::OPERATOR_LIST, &ol, sizeof(ol));
         }
+    }
+    // relay 경유 JOIN에도 전달: on_relay_broadcast 콜백 사용
+    if(cb.on_relay_broadcast){
+        auto pkt = make_packet(PacketType::OPERATOR_LIST, &ol, sizeof(ol));
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
     }
 }
 

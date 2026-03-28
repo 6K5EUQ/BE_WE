@@ -873,7 +873,7 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
             // Ctrl+좌클릭: SA 드래그 시작
             if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)&&in_wf&&ctrl&&
                region.edit_mode==RegionSel::EDIT_NONE&&inside_box&&
-               sa_panel_open){
+               false){ // SA panel removed
                 sa_drag_active = true;
                 ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
             }
@@ -943,7 +943,7 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
             if(sa_drag_active && ImGui::IsMouseReleased(ImGuiMouseButton_Left)){
                 sa_drag_active = false;
                 // 우측 패널 위에서 놓으면 SA 계산
-                if(mp.x >= right_panel_x && right_panel_x > 0 && sa_panel_open){
+                if(false){ // SA panel removed
                     sa_cleanup();
                     sa_mode = true;
                     region_save();
@@ -2834,7 +2834,7 @@ void run_streaming_viewer(){
     // chassis 1 reset 후 HOST 재시작: stable 메시지 (JOIN 재접속 전이므로 로컬만)
     if(mode_sel == 1 && chassis_reset_mode == 1 && v.net_srv){
         LocalChatMsg lm{}; lm.is_error = false;
-        strncpy(lm.from, "BEWE", 31);
+        strncpy(lm.from, "SYSTEM", 31);
         strncpy(lm.msg,  "Chassis 1 stable ...", 255);
         host_chat_log.push_back(lm);
     }
@@ -2948,11 +2948,11 @@ void run_streaming_viewer(){
         if(v.net_srv && pending_chassis1_reset.load()){
             pending_chassis1_reset.store(false);
             { std::lock_guard<std::mutex> lk(host_chat_mtx);
-              LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
+              LocalChatMsg lm{}; strncpy(lm.from,"SYSTEM",31);
               strncpy(lm.msg,"Chassis 1 reset ...",255);
               if((int)host_chat_log.size()>=200) host_chat_log.erase(host_chat_log.begin());
               host_chat_log.push_back(lm); }
-            v.net_srv->broadcast_chat("BEWE", "Chassis 1 reset ...");
+            v.net_srv->broadcast_chat("SYSTEM", "Chassis 1 reset ...");
             v.net_srv->broadcast_heartbeat(1);
             v.is_running = false;
             v.sdr_stream_error.store(true);
@@ -2964,12 +2964,12 @@ void run_streaming_viewer(){
             pending_chassis2_reset.store(false);
             // 1) 채팅 로그
             { std::lock_guard<std::mutex> lk(host_chat_mtx);
-              LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
+              LocalChatMsg lm{}; strncpy(lm.from,"SYSTEM",31);
               strncpy(lm.msg,"Chassis 2 reset ...",255);
               if((int)host_chat_log.size()>=200) host_chat_log.erase(host_chat_log.begin());
               host_chat_log.push_back(lm); }
             // 2) JOIN 클라이언트에게 리셋 알림
-            v.net_srv->broadcast_chat("BEWE", "Chassis 2 reset ...");
+            v.net_srv->broadcast_chat("SYSTEM", "Chassis 2 reset ...");
             v.net_srv->broadcast_heartbeat(2);
             // 3) 브로드캐스트 중단 + 송신 큐 flush
             v.net_bcast_pause.store(true, std::memory_order_relaxed);
@@ -2995,7 +2995,7 @@ void run_streaming_viewer(){
                 srv_ptr->resume_broadcast();
                 bcast_pause_ptr->store(false, std::memory_order_relaxed);
                 srv_ptr->broadcast_heartbeat(0);
-                srv_ptr->broadcast_chat("BEWE", "Chassis 2 stable ...");
+                srv_ptr->broadcast_chat("SYSTEM", "Chassis 2 stable ...");
                 // relay가 끊겨있으면 재연결
                 if(!central_ptr->is_central_connected() && !central_host_str.empty()){
                     central_ptr->stop_mux_adapter();
@@ -3017,7 +3017,7 @@ void run_streaming_viewer(){
                     central_ptr->send_net_reset(1);  // 1 = open
                 }
                 std::lock_guard<std::mutex> lk(*log_mtx_ptr2);
-                LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
+                LocalChatMsg lm{}; strncpy(lm.from,"SYSTEM",31);
                 strncpy(lm.msg,"Chassis 2 stable ...",255);
                 if((int)log_ptr2->size()>=200) log_ptr2->erase(log_ptr2->begin());
                 log_ptr2->push_back(lm);
@@ -3029,11 +3029,11 @@ void run_streaming_viewer(){
             pending_rx_stop.store(false);
             if(!v.rx_stopped.load() && (v.is_running || cap.joinable())){
                 { std::lock_guard<std::mutex> lk(host_chat_mtx);
-                  LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
+                  LocalChatMsg lm{}; strncpy(lm.from,"SYSTEM",31);
                   strncpy(lm.msg,"RX stop (remote)",255);
                   if((int)host_chat_log.size()>=200) host_chat_log.erase(host_chat_log.begin());
                   host_chat_log.push_back(lm); }
-                v.net_srv->broadcast_chat("BEWE", "RX stop");
+                v.net_srv->broadcast_chat("SYSTEM", "RX stop");
                 // 녹음/demod/TM 중지
                 if(v.rec_on.load()) v.stop_rec();
                 if(v.tm_iq_on.load()){ v.tm_iq_on.store(false); v.tm_iq_close(); }
@@ -3058,7 +3058,7 @@ void run_streaming_viewer(){
                 v.sdr_stream_error.store(false);
                 v.spectrum_pause.store(false);
                 { std::lock_guard<std::mutex> lk(host_chat_mtx);
-                  LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
+                  LocalChatMsg lm{}; strncpy(lm.from,"SYSTEM",31);
                   strncpy(lm.msg,"RX stopped.",255);
                   if((int)host_chat_log.size()>=200) host_chat_log.erase(host_chat_log.begin());
                   host_chat_log.push_back(lm); }
@@ -3068,7 +3068,7 @@ void run_streaming_viewer(){
             pending_rx_start.store(false);
             if(v.rx_stopped.load()){
                 { std::lock_guard<std::mutex> lk(host_chat_mtx);
-                  LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
+                  LocalChatMsg lm{}; strncpy(lm.from,"SYSTEM",31);
                   strncpy(lm.msg,"RX start (remote)",255);
                   if((int)host_chat_log.size()>=200) host_chat_log.erase(host_chat_log.begin());
                   host_chat_log.push_back(lm); }
@@ -3084,9 +3084,9 @@ void run_streaming_viewer(){
                         cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
                     v.mix_stop.store(false);
                     v.mix_thr = std::thread(&FFTViewer::mix_worker, &v);
-                    v.net_srv->broadcast_chat("BEWE", "RX start");
+                    v.net_srv->broadcast_chat("SYSTEM", "RX start");
                     { std::lock_guard<std::mutex> lk(host_chat_mtx);
-                      LocalChatMsg lm{}; strncpy(lm.from,"BEWE",31);
+                      LocalChatMsg lm{}; strncpy(lm.from,"SYSTEM",31);
                       strncpy(lm.msg,"RX started.",255);
                       if((int)host_chat_log.size()>=200) host_chat_log.erase(host_chat_log.begin());
                       host_chat_log.push_back(lm); }
@@ -4013,7 +4013,7 @@ void run_streaming_viewer(){
             dl->AddRectFilled(ImVec2(0,div_y+div_h),ImVec2(left_w,div_y+div_h+wf_h),IM_COL32(10,10,10,255));
 
         // SA 드래그 중 드롭 존 하이라이트
-        if(v.sa_drag_active && v.sa_panel_open && right_visible){
+        if(false){ // SA panel removed
             float rpx2=vdiv_x+vdiv_w;
             float rp_cy=content_y+TOPBAR_H*0.5f;
             dl->AddRectFilled(ImVec2(rpx2,rp_cy),ImVec2(disp_w,content_y+content_h),
@@ -4064,7 +4064,7 @@ void run_streaming_viewer(){
 
             // 패널이 처음 열릴 때 STAT 자동 활성화
             if(!prev_right_visible_outer){
-                if(!v.sa_panel_open && !board_open) stat_open = true;
+                if(!board_open) stat_open = true;
             }
             prev_right_visible_outer = true;
 
@@ -4088,55 +4088,16 @@ void run_streaming_viewer(){
 
             // ── STAT 버튼 ─────────────────────────────────────────────────
             float btn_x = rpx + 6;
-            if(subbar_btn(btn_x, "STAT", stat_open, IM_COL32(80,255,160,255))){
+            if(subbar_btn(btn_x, "STATUS", stat_open, IM_COL32(80,255,160,255))){
                 stat_open = !stat_open;
-                if(stat_open){ v.sa_panel_open=false; board_open=false; }
-            }
-
-            // ── SA 버튼 ──────────────────────────────────────────────────
-            float sa_btn_x = btn_x + 44;
-            if(subbar_btn(sa_btn_x, "SA", v.sa_panel_open, IM_COL32(80,180,255,255))){
-                v.sa_panel_open = !v.sa_panel_open;
-                if(v.sa_panel_open){ stat_open=false; board_open=false; }
+                if(stat_open){ board_open=false; }
             }
 
             // ── BOARD 버튼 ───────────────────────────────────────────────
-            float board_btn_x = sa_btn_x + 32;
+            float board_btn_x = btn_x + 56;
             if(subbar_btn(board_btn_x, "BOARD", board_open, IM_COL32(255,200,80,255))){
                 board_open = !board_open;
-                if(board_open){ stat_open=false; v.sa_panel_open=false; }
-            }
-
-            // ── FFT size 선택 (SA 활성화 시에만) ─────────────────────────
-            if(v.sa_panel_open){
-                static const int fft_sizes[] = {32,64,128,256,512,1024,2048,4096,8192};
-                static const char* fft_labels[] = {"32","64","128","256","512","1024","2048","4096","8192"};
-                const int n_sizes = 9;
-                char cur_label[16]; snprintf(cur_label,16,"%d",v.sa_fft_size);
-                float combo_w = 62;
-                float combo_x = disp_w - combo_w - 6;
-                float combo_y = content_y + (SUBBAR_H - ImGui::GetFontSize() - 4)/2;
-                ImGui::SetCursorScreenPos(ImVec2(combo_x, combo_y));
-                ImGui::SetNextItemWidth(combo_w);
-                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4,2));
-                if(ImGui::BeginCombo("##sa_fft", cur_label)){
-                    for(int i=0;i<n_sizes;i++){
-                        bool sel = (v.sa_fft_size == fft_sizes[i]);
-                        if(ImGui::Selectable(fft_labels[i], sel)){
-                            if(v.sa_fft_size != fft_sizes[i]){
-                                v.sa_fft_size = fft_sizes[i];
-                                if(!v.sa_temp_path.empty() && !v.sa_computing.load()){
-                                    v.sa_start(v.sa_temp_path);
-                                }
-                            }
-                        }
-                        if(sel) ImGui::SetItemDefaultFocus();
-                    }
-                    ImGui::EndCombo();
-                }
-                ImGui::PopStyleVar();
-                float lbl_x = combo_x - ImGui::CalcTextSize("FFT").x - 4;
-                dl->AddText(ImVec2(lbl_x, combo_y+1), IM_COL32(130,130,150,255), "FFT");
+                if(board_open){ stat_open=false; }
             }
 
             // ── 패널 콘텐츠 영역 ─────────────────────────────────────────
@@ -5149,16 +5110,9 @@ void run_streaming_viewer(){
                 ImGui::PopStyleVar();
             }
 
-                        if(v.sa_panel_open){
+                        if(false){ // SA panel removed — spectrogram is now in EID overlay (E key)
                 if(v.sa_mode || v.sa_computing.load()){
-                    // 로딩 애니메이션: "Loading ." → "Loading .." → "Loading ..."
-                    v.sa_anim_timer += io.DeltaTime;
-                    int dots = ((int)(v.sa_anim_timer / 0.5f) % 3) + 1;
-                    char msg[32];
-                    snprintf(msg, sizeof(msg), "Loading %.*s", dots, "...");
-                    ImVec2 msz = ImGui::CalcTextSize(msg);
-                    dl->AddText(ImVec2(rpx+(rp_w-msz.x)/2, rp_content_y+(rp_content_h-msz.y)/2),
-                                IM_COL32(180,180,100,255), msg);
+                    (void)0;
                 } else if(v.sa_texture){
                     // ── SA 텍스처 표시 (줌 뷰 적용) ─────────────────────
                     float sa_x0 = rpx, sa_y0 = rp_content_y;
@@ -6561,7 +6515,10 @@ void run_streaming_viewer(){
             auto print_chat=[&](const char* from, const char* msg){
                 const char* myname = v.net_cli ? v.net_cli->my_name : login_get_id();
                 bool is_me=(strcmp(from,myname)==0);
-                ImVec4 col = is_me ? ImVec4(0.3f,1.f,0.5f,1.f) : ImVec4(0.85f,0.85f,0.85f,1.f);
+                bool is_sys=(strcmp(from,"SYSTEM")==0);
+                ImVec4 col = is_sys  ? ImVec4(1.f,0.3f,0.3f,1.f) :
+                             is_me   ? ImVec4(0.3f,1.f,0.5f,1.f) :
+                                       ImVec4(0.85f,0.85f,0.85f,1.f);
                 ImGui::PushStyleColor(ImGuiCol_Text, col);
                 ImGui::TextWrapped("[%s] %s", from, msg);
                 ImGui::PopStyleColor();
@@ -6636,8 +6593,8 @@ void run_streaming_viewer(){
                     } else if(chat_str == "/chassis 1 reset"){
                         if(v.net_srv){
                             // HOST: 전체 채팅 알림 → CHASSIS_RESETTING 브로드캐스트 → SDR 백그라운드 리셋
-                            push_local("BEWE", "Chassis 1 reset ...", false);
-                            v.net_srv->broadcast_chat("BEWE", "Chassis 1 reset ...");
+                            push_local("SYSTEM", "Chassis 1 reset ...", false);
+                            v.net_srv->broadcast_chat("SYSTEM", "Chassis 1 reset ...");
                             v.net_srv->broadcast_heartbeat(1);
                             // SDR 연결 중일 때만 SDR 복구 경로 진입
                             if(v.is_running || cap.joinable()){
@@ -6647,15 +6604,15 @@ void run_streaming_viewer(){
                                 v.spectrum_pause.store(true);
                                 usb_reset_pending = true;
                             } else {
-                                push_local("BEWE", "No SDR connected — skip HW reset", false);
+                                push_local("SYSTEM", "No SDR connected — skip HW reset", false);
                             }
                         } else if(v.net_cli){
                             // JOIN: HOST에 명령 전달 + 로컬에 메시지 표시
-                            push_local("BEWE", "Chassis 1 reset ...", false);
+                            push_local("SYSTEM", "Chassis 1 reset ...", false);
                             v.net_cli->cmd_chassis_reset();
                         } else {
                             // LOCAL: SDR 백그라운드 리셋 (UI 유지)
-                            push_local("BEWE", "Chassis 1 reset ...", false);
+                            push_local("SYSTEM", "Chassis 1 reset ...", false);
                             if(v.is_running || cap.joinable()){
                                 v.is_running = false;
                                 v.sdr_stream_error.store(true);
@@ -6663,15 +6620,15 @@ void run_streaming_viewer(){
                                 v.spectrum_pause.store(true);
                                 usb_reset_pending = true;
                             } else {
-                                push_local("BEWE", "No SDR connected — skip HW reset", false);
+                                push_local("SYSTEM", "No SDR connected — skip HW reset", false);
                             }
                         }
 
                     } else if(chat_str == "/chassis 2 reset"){
                         if(v.net_srv){
                             // HOST: JOIN 전체에 reset 알림 → 방송 중단 → 1초 대기 → 재개
-                            push_local("BEWE", "Chassis 2 reset ...", false);
-                            v.net_srv->broadcast_chat("BEWE", "Chassis 2 reset ...");
+                            push_local("SYSTEM", "Chassis 2 reset ...", false);
+                            v.net_srv->broadcast_chat("SYSTEM", "Chassis 2 reset ...");
                             v.net_srv->broadcast_heartbeat(2); // JOIN에게 노란불
                             v.net_bcast_pause.store(true, std::memory_order_relaxed);
                             v.net_srv->pause_broadcast();
@@ -6694,7 +6651,7 @@ void run_streaming_viewer(){
                                 srv_ptr->resume_broadcast();
                                 bcast_pause_ptr->store(false, std::memory_order_relaxed);
                                 srv_ptr->broadcast_heartbeat(0);
-                                srv_ptr->broadcast_chat("BEWE", "Chassis 2 stable ...");
+                                srv_ptr->broadcast_chat("SYSTEM", "Chassis 2 stable ...");
                                 // Central Server 끊겨있으면 재연결
                                 if(!central_ptr->is_central_connected() && !rh.empty()){
                                     central_ptr->stop_mux_adapter();
@@ -6714,14 +6671,14 @@ void run_streaming_viewer(){
                                 }
                                 std::lock_guard<std::mutex> lk(*log_mtx_ptr);
                                 LocalChatMsg lm{}; lm.is_error = false;
-                                strncpy(lm.from, "BEWE", 31);
+                                strncpy(lm.from, "SYSTEM", 31);
                                 strncpy(lm.msg,  "Chassis 2 stable ...", 255);
                                 if((int)log_ptr->size() >= 200) log_ptr->erase(log_ptr->begin());
                                 log_ptr->push_back(lm);
                             }).detach();
                         } else if(v.net_cli){
                             // JOIN: HOST에게 명령 전달 + 로컬에 메시지 표시
-                            push_local("BEWE", "Chassis 2 reset ...", false);
+                            push_local("SYSTEM", "Chassis 2 reset ...", false);
                             v.net_cli->cmd_net_reset();
                         } else {
                             push_local("System", "/chassis 2 reset: not in HOST/JOIN mode.", true);
@@ -6730,7 +6687,7 @@ void run_streaming_viewer(){
                     } else if(chat_str == "/rx stop"){
                         if(v.net_cli){
                             // JOIN: HOST에 명령 전달
-                            push_local("BEWE", "RX stop ...", false);
+                            push_local("SYSTEM", "RX stop ...", false);
                             v.net_cli->cmd_rx_stop();
                         } else if(v.rx_stopped.load()){
                             push_local("System", "RX already stopped.", true);
@@ -6738,8 +6695,8 @@ void run_streaming_viewer(){
                             push_local("System", "No SDR running.", true);
                         } else {
                             // HOST / LOCAL: 직접 실행
-                            push_local("BEWE", "RX stop", false);
-                            if(v.net_srv) v.net_srv->broadcast_chat("BEWE", "RX stop");
+                            push_local("SYSTEM", "RX stop", false);
+                            if(v.net_srv) v.net_srv->broadcast_chat("SYSTEM", "RX stop");
                             // 녹음/demod/TM 중지
                             if(v.rec_on.load()) v.stop_rec();
                             if(v.tm_iq_on.load()){ v.tm_iq_on.store(false); v.tm_iq_close(); }
@@ -6763,19 +6720,19 @@ void run_streaming_viewer(){
                             v.rx_stopped.store(true);
                             v.sdr_stream_error.store(false);
                             v.spectrum_pause.store(false);
-                            push_local("BEWE", "RX stopped.", false);
+                            push_local("SYSTEM", "RX stopped.", false);
                         }
 
                     } else if(chat_str == "/rx start"){
                         if(v.net_cli){
                             // JOIN: HOST에 명령 전달
-                            push_local("BEWE", "RX start ...", false);
+                            push_local("SYSTEM", "RX start ...", false);
                             v.net_cli->cmd_rx_start();
                         } else if(!v.rx_stopped.load()){
                             push_local("System", "RX already running.", true);
                         } else {
                             // HOST / LOCAL: 직접 실행
-                            push_local("BEWE", "RX start — initializing SDR ...", false);
+                            push_local("SYSTEM", "RX start", false);
                             v.rx_stopped.store(false);
                             float cur_cf = (float)(v.header.center_frequency / 1e6);
                             if(cur_cf < 0.1f) cur_cf = 100.f;
@@ -6788,8 +6745,8 @@ void run_streaming_viewer(){
                                     cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
                                 v.mix_stop.store(false);
                                 v.mix_thr = std::thread(&FFTViewer::mix_worker, &v);
-                                push_local("BEWE", "RX started. SDR online.", false);
-                                if(v.net_srv) v.net_srv->broadcast_chat("BEWE", "RX start — SDR online");
+                                push_local("SYSTEM", "RX start", false);
+                                if(v.net_srv) v.net_srv->broadcast_chat("SYSTEM", "RX start");
                             } else {
                                 v.is_running = false;
                                 v.rx_stopped.store(true);
@@ -6909,8 +6866,25 @@ void run_streaming_viewer(){
                             io.MousePos.y >= sb_y0 && io.MousePos.y < sb_y1);
                 ImU32 col = active ? b.col : (hov ? IM_COL32(160,160,180,255) : IM_COL32(110,110,130,255));
                 fg->AddText(ImVec2(bx, btn_ty), col, b.lbl);
-                if(hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                if(hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                    int prev_mode = v.eid_view_mode;
                     v.eid_view_mode = b.mode;
+                    // 뷰 전환 시 줌 상태 동기화: 스펙트로그램 ↔ 시간 도메인
+                    double total_samp = (double)v.sa_total_rows * v.sa_actual_fft_n;
+                    if(total_samp > 0){
+                        if(prev_mode == 0 && b.mode != 0){
+                            // 스펙트로그램 → 시간 도메인: UV → 샘플 인덱스
+                            v.eid_view_t0 = v.sa_view_y0 * total_samp;
+                            v.eid_view_t1 = v.sa_view_y1 * total_samp;
+                        } else if(prev_mode != 0 && b.mode == 0){
+                            // 시간 도메인 → 스펙트로그램: 샘플 인덱스 → UV
+                            v.sa_view_y0 = (float)(v.eid_view_t0 / total_samp);
+                            v.sa_view_y1 = (float)(v.eid_view_t1 / total_samp);
+                            v.sa_view_y0 = std::max(0.f, std::min(1.f, v.sa_view_y0));
+                            v.sa_view_y1 = std::max(0.f, std::min(1.f, v.sa_view_y1));
+                        }
+                    }
+                }
                 bx += tsz.x + 14.f;
             }
 
