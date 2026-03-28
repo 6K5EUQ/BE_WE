@@ -321,12 +321,10 @@ void run_cli_host(){
     srv->cb.on_set_gain   = [&](float db){ v.gain_db=db; v.set_gain(db); };
     srv->cb.on_create_ch  = [&](int idx, float s, float e, const char* creator){
         if(idx<0||idx>=MAX_CHANNELS) return;
+        v.stop_dem(idx); v.stop_digi(idx);
+        v.channels[idx].reset_slot();
         v.channels[idx].s=s; v.channels[idx].e=e;
         v.channels[idx].filter_active=true;
-        v.channels[idx].mode=Channel::DM_NONE;
-        v.channels[idx].pan=0;
-        v.channels[idx].sq_calibrated.store(false);
-        v.channels[idx].ar_wp.store(0); v.channels[idx].ar_rp.store(0);
         strncpy(v.channels[idx].owner, creator?creator:"", 31);
         v.channels[idx].audio_mask.store(0xFFFFFFFFu & ~0x1u);
         v.local_ch_out[idx] = 3;
@@ -337,8 +335,7 @@ void run_cli_host(){
         if(v.channels[idx].audio_rec_on.load())
             v.stop_audio_rec(idx);
         v.stop_dem(idx); v.stop_digi(idx); v.digi_panel_on[idx]=false;
-        v.channels[idx].filter_active=false;
-        v.channels[idx].mode=Channel::DM_NONE;
+        v.channels[idx].reset_slot();
         v.local_ch_out[idx] = 1;
         srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
     };

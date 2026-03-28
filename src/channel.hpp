@@ -197,6 +197,45 @@ struct Channel {
     bool  resize_drag=false;
     int   resize_side=0;  // -1=left edge, +1=right edge
 
+    // 채널 슬롯 재사용 시 모든 비-스레드 상태를 초기값으로 복원
+    void reset_slot(){
+        s=0; e=0;
+        filter_active=false;
+        selected=false;
+        memset(owner, 0, sizeof(owner));
+        mode=DM_NONE;
+        digital_mode=DIGI_NONE;
+        magic_det.store(0);
+        pan=0;
+        audio_mask.store(0x1);
+        // demod/digi 스레드는 호출 전에 stop_dem/stop_digi로 정리할 것
+        dem_rp.store(0);
+        dem_paused=false;
+        dem_paused_mode=DM_NONE;
+        digi_rp.store(0);
+        // audio ring
+        ar_wp.store(0);
+        ar_rp.store(0);
+        // audio recording
+        sqr_state=SQR_IDLE;
+        sqr_tail_remain=0;
+        // squelch
+        sq_threshold.store(-50.0f);
+        sq_sig.store(-120.0f);
+        sq_nf.store(0.0f);
+        sq_gate.store(false);
+        sq_calibrated.store(false);
+        sq_calib_cnt=0;
+        memset(sq_calib_buf, 0, sizeof(sq_calib_buf));
+        sq_gate_hold=0;
+        // drag state
+        move_drag=false;
+        move_anchor=0;
+        move_s0=0; move_e0=0;
+        resize_drag=false;
+        resize_side=0;
+    }
+
     Channel()=default;
     Channel(const Channel&)=delete;
     Channel& operator=(const Channel&)=delete;

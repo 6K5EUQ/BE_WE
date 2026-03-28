@@ -172,12 +172,10 @@ void FFTViewer::handle_new_channel_drag(float gx, float gw){
                         net_cli->cmd_create_ch(slot, new_drag.s, new_drag.e);
                         ch_created_by_me[slot] = true; // 내가 만든 채널 → 초기 Mute 제외
                     } else {
+                        channels[slot].reset_slot();
                         channels[slot].s=new_drag.s; channels[slot].e=new_drag.e;
-                        channels[slot].filter_active=true; channels[slot].mode=Channel::DM_NONE;
-                        channels[slot].pan=0; channels[slot].selected=false;
+                        channels[slot].filter_active=true;
                         channels[slot].audio_mask.store(0xFFFFFFFFu);
-                        channels[slot].sq_calibrated.store(false);
-                        channels[slot].ar_wp.store(0); channels[slot].ar_rp.store(0);
                         strncpy(channels[slot].owner, host_name[0]?host_name:"Host", 31);
                         srv_audio_mask[slot] = channels[slot].audio_mask.load();
                         if(net_srv) net_srv->broadcast_channel_sync(channels, MAX_CHANNELS);
@@ -305,9 +303,8 @@ void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float 
             }
             // 로컬 즉시 반영 (서버 sync가 확인해줌)
             stop_dem(ci); stop_digi(ci); digi_panel_on[ci]=false;
-            channels[ci].filter_active=false;
-            channels[ci].selected=false;
-            channels[ci].mode=Channel::DM_NONE;
+            channels[ci].reset_slot();
+            if(net_cli) net_cli->audio[ci].clear();
             local_ch_out[ci] = 1;
             ch_created_by_me[ci] = false;
             if(selected_ch==ci) selected_ch=-1;
@@ -1735,6 +1732,14 @@ void run_streaming_viewer(){
 
                 // ── 채널 활성화 전이 처리 ──────────────────────────────
                 if(!was_active && now_active){
+                    // 채널 생성: 스컬치 상태 초기화 (auto-cal 재실행)
+                    v.channels[i].sq_calibrated.store(false);
+                    v.channels[i].sq_calib_cnt = 0;
+                    memset(v.channels[i].sq_calib_buf, 0, sizeof(v.channels[i].sq_calib_buf));
+                    v.channels[i].sq_gate_hold = 0;
+                    v.channels[i].digital_mode = Channel::DIGI_NONE;
+                    v.channels[i].magic_det.store(0);
+                    cli->audio[i].clear();
                     if(!v.ch_created_by_me[i]){
                         // 내가 만들지 않은 채널 → 초기 M(Mute) 적용
                         v.local_ch_out[i] = 3;
@@ -1743,7 +1748,8 @@ void run_streaming_viewer(){
                     // 내가 만든 채널은 local_ch_out 기본값(1=L+R) 유지
                 }
                 if(was_active && !now_active){
-                    // 채널 삭제 시 상태 초기화
+                    v.channels[i].reset_slot();
+                    cli->audio[i].clear();
                     v.ch_created_by_me[i] = false;
                     v.local_ch_out[i] = 1;
                 }
@@ -2237,12 +2243,10 @@ void run_streaming_viewer(){
             srv->cb.on_set_gain   = [&](float db){ v.gain_db=db; v.set_gain(db); };
             srv->cb.on_create_ch  = [&](int idx, float s, float e, const char* creator){
                 if(idx<0||idx>=MAX_CHANNELS) return;
+                v.stop_dem(idx); v.stop_digi(idx);
+                v.channels[idx].reset_slot();
                 v.channels[idx].s=s; v.channels[idx].e=e;
                 v.channels[idx].filter_active=true;
-                v.channels[idx].mode=Channel::DM_NONE;
-                v.channels[idx].pan=0;
-                v.channels[idx].sq_calibrated.store(false);
-                v.channels[idx].ar_wp.store(0); v.channels[idx].ar_rp.store(0);
                 strncpy(v.channels[idx].owner, creator?creator:"", 31);
                 // JOIN이 만든 채널: 모든 오퍼레이터 비트 ON, HOST bit(0) OFF → HOST 초기 Mute
                 v.channels[idx].audio_mask.store(0xFFFFFFFFu & ~0x1u);
@@ -2254,9 +2258,8 @@ void run_streaming_viewer(){
                 if(v.channels[idx].audio_rec_on.load())
                     v.stop_audio_rec(idx);
                 v.stop_dem(idx); v.stop_digi(idx); v.digi_panel_on[idx]=false;
-                v.channels[idx].filter_active=false;
-                v.channels[idx].mode=Channel::DM_NONE;
-                v.local_ch_out[idx] = 1; // 슬롯 재사용 대비 기본값 복원
+                v.channels[idx].reset_slot();
+                v.local_ch_out[idx] = 1;
                 srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
             };
             srv->cb.on_set_ch_mode= [&](int idx, int mode){
@@ -3556,9 +3559,7 @@ void run_streaming_viewer(){
                         v.net_cli->cmd_delete_ch(sci);
                     } else {
                         v.stop_dem(sci); v.stop_digi(sci); v.digi_panel_on[sci]=false;
-                        v.channels[sci].filter_active=false;
-                        v.channels[sci].selected=false;
-                        v.channels[sci].mode=Channel::DM_NONE;
+                        v.channels[sci].reset_slot();
                         if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
                     }
                     v.selected_ch=-1;
@@ -4543,8 +4544,8 @@ void run_streaming_viewer(){
                                     }
                                     if(v.net_cli) v.net_cli->cmd_delete_ch(ci);
                                     v.stop_dem(ci); v.stop_digi(ci);
-                                    v.channels[ci].filter_active=false;
-                                    v.channels[ci].selected=false;
+                                    v.channels[ci].reset_slot();
+                                    if(v.net_cli) v.net_cli->audio[ci].clear();
                                     v.local_ch_out[ci]=1;
                                     v.ch_created_by_me[ci]=false;
                                     v.digi_panel_on[ci]=false;
@@ -4566,8 +4567,8 @@ void run_streaming_viewer(){
                                 }
                                 if(v.net_cli) v.net_cli->cmd_delete_ch(ci);
                                 v.stop_dem(ci); v.stop_digi(ci);
-                                v.channels[ci].filter_active=false;
-                                v.channels[ci].selected=false;
+                                v.channels[ci].reset_slot();
+                                if(v.net_cli) v.net_cli->audio[ci].clear();
                                 v.local_ch_out[ci]=1;
                                 v.ch_created_by_me[ci]=false;
                                 v.digi_panel_on[ci]=false;
