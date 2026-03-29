@@ -107,6 +107,9 @@ void FFTViewer::dem_worker(int ch_idx){
             float p_inst=fi*fi+fq*fq;
             gate_open = ch.sq_gate.load(std::memory_order_relaxed);
 
+            // per-channel IQ recording (squelch-gated, decimated baseband)
+            ch.maybe_rec_iq(fi, fq, gate_open);
+
             // ── Demodulate ────────────────────────────────────────────────
             if(mode==Channel::DM_MAGIC){
                 // ── Phase 1: analysis ─────────────────────────────────────

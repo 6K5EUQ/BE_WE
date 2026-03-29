@@ -2964,6 +2964,9 @@ void run_streaming_viewer(){
             }
         }
 
+        // ── Scheduled recording tick ──────────────────────────────────────
+        if(!v.remote_mode) v.sched_tick();
+
         // ── JOIN>HOST chassis 명령: 네트워크 스레드 플래그 > 메인 루프 처리 ────
         // HOST 직접 입력과 완전히 동일한 경로로 실행 (race condition 방지)
         if(v.net_srv && pending_chassis1_reset.load()){
@@ -3446,6 +3449,18 @@ void run_streaming_viewer(){
                             else v.start_rec();
                         }
                     }
+                }
+            }
+
+            // I key: per-channel IQ recording toggle
+            if(ImGui::IsKeyPressed(ImGuiKey_I,false) && !io.WantTextInput){
+                int ci = v.selected_ch;
+                if(ci >= 0 && ci < MAX_CHANNELS && v.channels[ci].filter_active &&
+                   v.channels[ci].dem_run.load()){
+                    if(v.channels[ci].iq_rec_on.load())
+                        v.stop_iq_rec(ci);
+                    else
+                        v.start_iq_rec(ci);
                 }
             }
 
@@ -3936,6 +3951,23 @@ void run_streaming_viewer(){
                 ImVec2 psz=ImGui::CalcTextSize(ps); rx-=psz.x;
                 dl->AddText(ImVec2(rx,ty2),IM_COL32(255,180,0,255),ps);
             }
+            // SCHED indicator
+            {
+                std::lock_guard<std::mutex> lk(v.sched_mtx);
+                if(v.sched_active_idx >= 0){
+                    const char* st="SCHED REC  ";
+                    ImVec2 sz=ImGui::CalcTextSize(st); rx-=sz.x;
+                    dl->AddText(ImVec2(rx,ty2),IM_COL32(255,100,100,255),st);
+                } else {
+                    int waiting=0;
+                    for(auto& se:v.sched_entries) if(se.status==FFTViewer::SchedEntry::WAITING) waiting++;
+                    if(waiting>0){
+                        char buf[32]; snprintf(buf,sizeof(buf),"SCHED(%d)  ",waiting);
+                        ImVec2 sz=ImGui::CalcTextSize(buf); rx-=sz.x;
+                        dl->AddText(ImVec2(rx,ty2),IM_COL32(200,200,100,255),buf);
+                    }
+                }
+            }
 
         }
         ImGui::PopStyleVar(); // ItemSpacing
@@ -4120,14 +4152,21 @@ void run_streaming_viewer(){
             float btn_x = rpx + 6;
             if(subbar_btn(btn_x, "STATUS", stat_open, IM_COL32(80,255,160,255))){
                 stat_open = !stat_open;
-                if(stat_open){ board_open=false; }
+                if(stat_open){ board_open=false; v.sched_panel_open=false; }
             }
 
             // ── BOARD 버튼 ───────────────────────────────────────────────
             float board_btn_x = btn_x + 56;
             if(subbar_btn(board_btn_x, "BOARD", board_open, IM_COL32(255,200,80,255))){
                 board_open = !board_open;
-                if(board_open){ stat_open=false; }
+                if(board_open){ stat_open=false; v.sched_panel_open=false; }
+            }
+
+            // ── SCHED 버튼 ───────────────────────────────────────────────
+            float sched_btn_x = board_btn_x + 56;
+            if(subbar_btn(sched_btn_x, "SCHED", v.sched_panel_open, IM_COL32(255,100,100,255))){
+                v.sched_panel_open = !v.sched_panel_open;
+                if(v.sched_panel_open){ stat_open=false; board_open=false; }
             }
 
             // ── 패널 콘텐츠 영역 ─────────────────────────────────────────
@@ -5293,6 +5332,89 @@ void run_streaming_viewer(){
                     dl->AddText(ImVec2(rpx+(rp_w-msz.x)/2, rp_content_y+(rp_content_h-msz.y)/2),
                                 IM_COL32(100,100,120,255), msg);
                 }
+            }
+
+            // ── SCHED 패널 ────────────────────────────────────────────────
+            if(v.sched_panel_open){
+                float px=rpx, py=rp_content_y, pw=disp_w-rpx, ph=rp_content_h;
+                ImGui::SetNextWindowPos(ImVec2(px,py));
+                ImGui::SetNextWindowSize(ImVec2(pw,ph));
+                ImGui::SetNextWindowBgAlpha(0.0f);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8,8));
+                ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0,0,0,0));
+                ImGui::Begin("##sched_panel", nullptr,
+                    ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
+                    ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar|
+                    ImGuiWindowFlags_NoDecoration);
+
+                ImGui::TextColored(ImVec4(1.f,0.4f,0.4f,1.f), "Scheduled IQ Recording");
+                ImGui::Separator();
+
+                // Input form
+                static int sh=0,sm=0,ss=0;
+                static float sdur=60, sfreq=100.0f, sbw=25.0f;
+                ImGui::SetNextItemWidth(30); ImGui::InputInt("##sh",&sh,0,0); ImGui::SameLine();
+                ImGui::Text(":"); ImGui::SameLine();
+                ImGui::SetNextItemWidth(30); ImGui::InputInt("##sm",&sm,0,0); ImGui::SameLine();
+                ImGui::Text(":"); ImGui::SameLine();
+                ImGui::SetNextItemWidth(30); ImGui::InputInt("##ss",&ss,0,0); ImGui::SameLine();
+                ImGui::TextDisabled("(HH:MM:SS)");
+
+                ImGui::SetNextItemWidth(80); ImGui::InputFloat("Dur(s)",&sdur,1,10,"%.0f"); ImGui::SameLine();
+                ImGui::SetNextItemWidth(100); ImGui::InputFloat("Freq(MHz)",&sfreq,0.1f,1.0f,"%.4f");
+                ImGui::SetNextItemWidth(80); ImGui::InputFloat("BW(kHz)",&sbw,1,10,"%.1f");
+
+                bool can_add = !v.remote_mode && (v.dev_blade || v.dev_rtl);
+                if(!can_add) ImGui::BeginDisabled();
+                if(ImGui::Button("ADD")){
+                    time_t now=time(nullptr);
+                    struct tm tm2; localtime_r(&now,&tm2);
+                    tm2.tm_hour=sh; tm2.tm_min=sm; tm2.tm_sec=ss;
+                    time_t st=mktime(&tm2);
+                    if(st <= now) st += 86400; // if time already passed, schedule tomorrow
+                    std::lock_guard<std::mutex> lk(v.sched_mtx);
+                    FFTViewer::SchedEntry e;
+                    e.start_time=st; e.duration_sec=sdur;
+                    e.freq_mhz=sfreq; e.bw_khz=sbw;
+                    v.sched_entries.push_back(e);
+                    bewe_log_push(0,"[SCHED] Added: %02d:%02d:%02d dur=%.0fs freq=%.3fMHz bw=%.0fkHz\n",
+                                  sh,sm,ss,sdur,sfreq,sbw);
+                }
+                if(!can_add) ImGui::EndDisabled();
+                if(v.remote_mode) ImGui::TextColored(ImVec4(1,0.5f,0.3f,1),"HOST mode only");
+
+                ImGui::Separator();
+
+                // Schedule list
+                ImGui::BeginChild("##sched_list",ImVec2(0,0),false);
+                {
+                    std::lock_guard<std::mutex> lk(v.sched_mtx);
+                    for(int i=0;i<(int)v.sched_entries.size();i++){
+                        auto& e=v.sched_entries[i];
+                        ImGui::PushID(i);
+                        static const char* st_names[]={"WAIT","REC","DONE","FAIL"};
+                        static const ImVec4 st_cols[]={
+                            {0.6f,0.6f,0.7f,1},{1,0.3f,0.3f,1},{0.3f,0.9f,0.3f,1},{0.9f,0.2f,0.2f,1}};
+                        ImGui::TextColored(st_cols[e.status],"[%s]",st_names[e.status]);
+                        ImGui::SameLine();
+                        struct tm t2; localtime_r(&e.start_time,&t2);
+                        char tb[16]; strftime(tb,sizeof(tb),"%H:%M:%S",&t2);
+                        ImGui::Text("%s  %.3fMHz  BW=%.0fkHz  %.0fs",tb,e.freq_mhz,e.bw_khz,e.duration_sec);
+                        ImGui::SameLine();
+                        if(e.status!=FFTViewer::SchedEntry::RECORDING){
+                            if(ImGui::SmallButton("X")){
+                                v.sched_entries.erase(v.sched_entries.begin()+i);
+                                ImGui::PopID(); break;
+                            }
+                        }
+                        ImGui::PopID();
+                    }
+                }
+                ImGui::EndChild();
+
+                ImGui::End();
+                ImGui::PopStyleColor();
+                ImGui::PopStyleVar();
             }
 
             // (Signal Analysis는 별도 독립 오버레이로 이동 - 아래 참고)

@@ -25,6 +25,7 @@ if(BEWE_HEADLESS)
         src/bladerf_io.cpp
         src/demod.cpp
         src/iq_record.cpp
+        src/sched_record.cpp
         src/audio.cpp
         src/timemachine.cpp
         src/region_save.cpp
@@ -90,6 +91,7 @@ else()
         src/bladerf_io.cpp
         src/demod.cpp
         src/iq_record.cpp
+        src/sched_record.cpp
         src/audio.cpp
         src/ui.cpp
         src/timemachine.cpp

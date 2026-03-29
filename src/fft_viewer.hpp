@@ -207,6 +207,25 @@ public:
     std::thread       sa_play_thread;
     void sa_play_demod();         // 선택 영역 복조 재생 (별도 스레드)
 
+    // ── Scheduled IQ Recording ──────────────────────────────────────────
+    struct SchedEntry {
+        time_t  start_time   = 0;
+        float   duration_sec = 0;
+        float   freq_mhz     = 0;
+        float   bw_khz       = 0;
+        enum Status : int { WAITING=0, RECORDING=1, DONE=2, FAILED=3 } status = WAITING;
+        int     temp_ch_idx  = -1;
+        std::chrono::steady_clock::time_point rec_started;
+    };
+    std::vector<SchedEntry> sched_entries;
+    std::mutex              sched_mtx;
+    int   sched_active_idx  = -1;
+    float sched_saved_cf    = 0;
+    bool  sched_panel_open  = false;
+    void sched_tick();
+    void sched_start_entry(int idx);
+    void sched_stop_entry(int idx);
+
     // ── LOG 오버레이 (L키 토글) ──────────────────────────────────────────
     bool log_panel_open = false;
     struct LogEntry { char msg[512]; };
@@ -442,6 +461,8 @@ public:
     void stop_rec();
     void start_audio_rec(int ch_idx);
     void stop_audio_rec(int ch_idx);
+    void start_iq_rec(int ch_idx);
+    void stop_iq_rec(int ch_idx);
     void start_join_audio_rec(int ch_idx); // JOIN 모드 로컬 오디오 녹음
     void stop_join_audio_rec(int ch_idx);
 

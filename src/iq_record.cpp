@@ -186,6 +186,101 @@ void FFTViewer::stop_audio_rec(int ch_idx){
     ch.audio_rec_path.clear();
 }
 
+// ── Per-channel IQ recording (squelch-gated, decimated baseband) ──────────
+void FFTViewer::start_iq_rec(int ch_idx){
+    if(ch_idx<0||ch_idx>=MAX_CHANNELS) return;
+    Channel& ch=channels[ch_idx];
+    if(!ch.filter_active||!ch.dem_run.load()){
+        bewe_log("IQ REC: ch%d not running demod\n",ch_idx); return;
+    }
+    if(ch.iq_rec_on.load()) return;
+
+    // IQ SR = intermediate SR (after decimation, before audio decimation)
+    float bw_hz=fabsf(ch.e-ch.s)*1e6f;
+    uint32_t inter_sr,audio_decim,cap_decim;
+    demod_rates(header.sample_rate,bw_hz,inter_sr,audio_decim,cap_decim);
+    uint32_t actual_inter=header.sample_rate/cap_decim;
+    ch.iq_rec_sr=actual_inter;
+
+    time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
+    char fn[512];
+    std::string rec_dir=BEWEPaths::record_iq_dir();
+    float cf_mhz=(ch.s+ch.e)/2.0f;
+    char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
+    snprintf(fn,sizeof(fn),"%s/IQ_CH%d_%.3fMHz_%s.wav",
+             rec_dir.c_str(), ch_idx, cf_mhz, dts);
+
+    FILE* fp=fopen(fn,"wb");
+    if(!fp){ bewe_log("IQ REC: cannot open %s\n",fn); return; }
+    ch.iq_rec_frames=0;
+    ch.iq_rec_write_wav_hdr(fp,actual_inter,0);
+
+    // BEWE metadata chunk (center freq, start time, sample rate)
+    {
+        uint64_t cf_hz=(uint64_t)(cf_mhz*1e6);
+        int64_t  st=(int64_t)t;
+        uint32_t sr=actual_inter;
+        fwrite("bewe",1,4,fp);
+        uint32_t csz=8+8+4; fwrite(&csz,4,1,fp);
+        fwrite(&cf_hz,8,1,fp); fwrite(&st,8,1,fp); fwrite(&sr,4,1,fp);
+    }
+
+    ch.iq_rec_fp=fp;
+    ch.iq_rec_path=fn;
+    ch.iq_sqr_state=Channel::SQR_IDLE;
+    ch.iq_sqr_tail_remain=0;
+    ch.iq_rec_on.store(true,std::memory_order_release);
+
+    {
+        std::lock_guard<std::mutex> lk(rec_entries_mtx);
+        RecEntry e;
+        e.path=fn;
+        std::string s(fn); auto pos=s.rfind('/');
+        e.filename=(pos==std::string::npos)?s:s.substr(pos+1);
+        e.finished=false; e.is_audio=false; e.is_region=false;
+        e.ch_idx=ch_idx;
+        e.t_start=std::chrono::steady_clock::now();
+        rec_entries.push_back(e);
+    }
+    bewe_log("IQ REC start ch%d > %s  SR=%u\n",ch_idx,fn,actual_inter);
+}
+
+void FFTViewer::stop_iq_rec(int ch_idx){
+    if(ch_idx<0||ch_idx>=MAX_CHANNELS) return;
+    Channel& ch=channels[ch_idx];
+    if(!ch.iq_rec_on.load()) return;
+
+    ch.iq_rec_on.store(false,std::memory_order_release);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+
+    FILE* fp=ch.iq_rec_fp;
+    ch.iq_rec_fp=nullptr;
+    if(fp){
+        fseek(fp,0,SEEK_SET);
+        ch.iq_rec_write_wav_hdr(fp,ch.iq_rec_sr,ch.iq_rec_frames);
+        fclose(fp);
+    }
+
+    if(ch.iq_rec_frames==0){
+        remove(ch.iq_rec_path.c_str());
+        bewe_log("IQ REC empty, deleted: %s\n",ch.iq_rec_path.c_str());
+        std::lock_guard<std::mutex> lk(rec_entries_mtx);
+        rec_entries.erase(std::remove_if(rec_entries.begin(),rec_entries.end(),
+            [&](const RecEntry& e){return e.path==ch.iq_rec_path;}),rec_entries.end());
+        ch.iq_rec_path.clear();
+        return;
+    }
+
+    bewe_log("IQ REC done: %llu frames > %s\n",
+             (unsigned long long)ch.iq_rec_frames, ch.iq_rec_path.c_str());
+    {
+        std::lock_guard<std::mutex> lk(rec_entries_mtx);
+        for(auto& e : rec_entries)
+            if(e.path==ch.iq_rec_path){ e.finished=true; break; }
+    }
+    ch.iq_rec_path.clear();
+}
+
 // ── JOIN 모드 로컬 오디오 녹음 (mix_worker에서 채널 오디오를 WAV에 씀) ──────
 void FFTViewer::start_join_audio_rec(int ch_idx){
     if(ch_idx<0||ch_idx>=MAX_CHANNELS) return;

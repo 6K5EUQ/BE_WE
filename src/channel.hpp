@@ -178,6 +178,50 @@ struct Channel {
         audio_rec_frames++;
     }
 
+    // ── Per-channel IQ recording (demod 스레드 내에서만 접근) ────────────
+    std::atomic<bool> iq_rec_on{false};
+    FILE*             iq_rec_fp      = nullptr;
+    uint64_t          iq_rec_frames  = 0;
+    uint32_t          iq_rec_sr      = 0;
+    std::string       iq_rec_path;
+    int      iq_sqr_state       = SQR_IDLE;
+    uint32_t iq_sqr_tail_remain = 0;
+
+    void iq_rec_write_wav_hdr(FILE* fp, uint32_t sr, uint64_t frames){
+        auto w32=[&](uint32_t v){ fwrite(&v,4,1,fp); };
+        auto w16=[&](uint16_t v){ fwrite(&v,2,1,fp); };
+        uint32_t db=(uint32_t)(frames*4); // stereo int16 = 4 bytes/frame
+        fwrite("RIFF",1,4,fp); w32(36+db); fwrite("WAVE",1,4,fp);
+        fwrite("fmt ",1,4,fp); w32(16); w16(1); w16(2); // PCM, stereo
+        w32(sr); w32(sr*4); w16(4); w16(16);
+        fwrite("data",1,4,fp); w32(db);
+    }
+
+    inline void maybe_rec_iq(float fi, float fq, bool gate_open){
+        if(!iq_rec_on.load(std::memory_order_relaxed)) return;
+        if(!iq_rec_fp) return;
+        uint32_t tail_samples = iq_rec_sr; // 1 second tail
+        switch(iq_sqr_state){
+        case SQR_IDLE:
+            if(!gate_open) return;
+            iq_sqr_state = SQR_RECORDING;
+            break;
+        case SQR_RECORDING:
+            if(!gate_open){ iq_sqr_state = SQR_TAIL; iq_sqr_tail_remain = tail_samples; }
+            break;
+        case SQR_TAIL:
+            if(gate_open) iq_sqr_state = SQR_RECORDING;
+            else if(iq_sqr_tail_remain == 0){ iq_sqr_state = SQR_IDLE; return; }
+            else iq_sqr_tail_remain--;
+            break;
+        }
+        auto c16=[](float v)->int16_t{ return (int16_t)(v<-1.f?-32767:v>1.f?32767:(int)(v*32767.f)); };
+        int16_t si=c16(fi), sq=c16(fq);
+        fwrite(&si,2,1,iq_rec_fp);
+        fwrite(&sq,2,1,iq_rec_fp);
+        iq_rec_frames++;
+    }
+
     // Squelch (UI 스레드에서 FFT 기반으로 중앙 관리)
     std::atomic<float> sq_threshold{-50.0f};
     std::atomic<float> sq_sig{-120.0f}, sq_nf{0.0f};
@@ -219,6 +263,9 @@ struct Channel {
         // audio recording
         sqr_state=SQR_IDLE;
         sqr_tail_remain=0;
+        // iq recording
+        iq_sqr_state=SQR_IDLE;
+        iq_sqr_tail_remain=0;
         // squelch
         sq_threshold.store(-50.0f);
         sq_sig.store(-120.0f);
