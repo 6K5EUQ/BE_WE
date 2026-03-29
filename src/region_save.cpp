@@ -330,7 +330,7 @@ void FFTViewer::do_region_save_work(){
     write_wav_header(wf, out_sr, (uint32_t)actual_out, cf_hz_meta, t_start_meta);
     fclose(wf);
 
-    printf("Region IQ saved: %s  (%.1f sec  %.0f kHz SR)\n",
+    bewe_log_push(0,"Region IQ saved: %s  (%.1f sec  %.0f kHz SR)\n",
            outpath, (double)actual_out/out_sr, (double)out_sr/1000.0);
 
     // file_xfers에 추가

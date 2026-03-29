@@ -12,6 +12,8 @@
 #include <poll.h>
 #include <chrono>
 
+extern void bewe_log_push(int col, const char* fmt, ...);
+
 // ── TCP 연결 (non-blocking connect, 3초 타임아웃) ─────────────────────────
 int CentralClient::tcp_connect(const std::string& host, int port){
     addrinfo hints{}, *res = nullptr;
@@ -54,7 +56,7 @@ int CentralClient::tcp_connect_any(const std::vector<std::string>& candidates, i
         if(h.empty()) continue;
         int fd = tcp_connect(h, port);
         if(fd >= 0){
-            printf("[CentralClient] connected via %s:%d\n", h.c_str(), port);
+            bewe_log_push(1,"[CentralClient] connected via %s:%d\n", h.c_str(), port);
             return fd;
         }
     }
@@ -152,7 +154,7 @@ int CentralClient::open_room(const std::string& central_host, int central_port,
                             float lat, float lon, uint8_t host_tier){
     auto cands = make_candidates(central_host);
     int fd = tcp_connect_any(cands, central_port);
-    if(fd < 0){ printf("[CentralClient] open_room: connect failed\n"); return -1; }
+    if(fd < 0){ bewe_log_push(1,"[CentralClient] open_room: connect failed\n"); return -1; }
 
     // TCP 최적화: send/recv 버퍼 확대 + Nagle 비활성화
     int bufsize = 4 * 1024 * 1024;
@@ -169,7 +171,7 @@ int CentralClient::open_room(const std::string& central_host, int central_port,
     if(!central_send_pkt(fd, CentralPktType::HOST_OPEN, &op, sizeof(op))){
         close(fd); return -1;
     }
-    printf("[CentralClient] room '%s' opened\n", station_id.c_str());
+    bewe_log_push(1,"[CentralClient] room '%s' opened\n", station_id.c_str());
     return fd;
 }
 
@@ -223,7 +225,7 @@ void CentralClient::central_sender_loop(int central_fd){
         for(auto& pkt : batch){
             if(!central_send_all(central_fd, pkt.data(), pkt.size())){
                 int e = errno;
-                printf("[CentralClient] relay_sender: send failed errno=%d(%s), closing central_fd\n",
+                bewe_log_push(1,"[CentralClient] relay_sender: send failed errno=%d(%s), closing central_fd\n",
                        e, strerror(e));
                 shutdown(central_fd, SHUT_RDWR);
                 central_sender_running_.store(false);
@@ -299,11 +301,11 @@ void CentralClient::mux_loop(int central_fd,
         ssize_t r = recv(central_fd, &mux, CENTRAL_MUX_HDR_SIZE, MSG_WAITALL);
         if(r <= 0){
             if(r == 0){
-                printf("[CentralClient] mux_loop: relay connection closed (EOF)\n");
+                bewe_log_push(1,"[CentralClient] mux_loop: relay connection closed (EOF)\n");
                 break;
             }
             if(errno != EAGAIN && errno != EWOULDBLOCK && errno != ETIMEDOUT){
-                printf("[CentralClient] mux_loop: recv error errno=%d(%s)\n",
+                bewe_log_push(1,"[CentralClient] mux_loop: recv error errno=%d(%s)\n",
                        errno, strerror(errno));
                 break;
             }
@@ -315,12 +317,12 @@ void CentralClient::mux_loop(int central_fd,
                 CentralMuxHdr hb{}; hb.type = 0x00; hb.len = sizeof(CentralHostHb);
                 CentralHostHb hbp{}; hbp.user_count = count_fn ? count_fn() : 0;
                 enqueue_central(&hb, CENTRAL_MUX_HDR_SIZE, &hbp, sizeof(hbp));
-                printf("[CentralClient] HB enqueued (users=%u)\n", hbp.user_count);
+                bewe_log_push(1,"[CentralClient] HB enqueued (users=%u)\n", hbp.user_count);
             }
             continue;
         }
         if(r != CENTRAL_MUX_HDR_SIZE){
-            printf("[CentralClient] mux_loop: short read %zd/%d\n", r, CENTRAL_MUX_HDR_SIZE);
+            bewe_log_push(1,"[CentralClient] mux_loop: short read %zd/%d\n", r, CENTRAL_MUX_HDR_SIZE);
             break;
         }
 
@@ -359,13 +361,13 @@ void CentralClient::mux_loop(int central_fd,
                     mh.len  = (uint32_t)n;
                     enqueue_central(&mh, CENTRAL_MUX_HDR_SIZE, tbuf.data(), n);
                 }
-                printf("[CentralClient] pump exit conn_id=%u\n", cid);
+                bewe_log_push(1,"[CentralClient] pump exit conn_id=%u\n", cid);
             });
             jp->thr.detach();
 
             // NetServer에 새 JOIN 알림 (sv[0]를 client 소켓으로 inject)
             on_new_join(sv[0]);
-            printf("[CentralClient] new JOIN conn_id=%u, injected fd=%d\n", cid, sv[0]);
+            bewe_log_push(1,"[CentralClient] new JOIN conn_id=%u, injected fd=%d\n", cid, sv[0]);
 
         } else if(mux_type == CentralMuxType::DATA){
             if(mux.len > (uint32_t)buf.size()) buf.resize(mux.len);
@@ -416,7 +418,7 @@ void CentralClient::mux_loop(int central_fd,
                 if(jp->local_fd  >= 0){ shutdown(jp->local_fd,  SHUT_RDWR); jp->local_fd=-1;  }
                 if(jp->remote_fd >= 0){ shutdown(jp->remote_fd, SHUT_RDWR); close(jp->remote_fd); jp->remote_fd=-1; }
                 mux_joins_.erase(it);
-                printf("[CentralClient] JOIN conn_id=%u disconnected\n", cid);
+                bewe_log_push(1,"[CentralClient] JOIN conn_id=%u disconnected\n", cid);
             }
         }
     }
@@ -430,7 +432,7 @@ int CentralClient::join_room(const std::string& central_host, int central_port,
                             const std::string& station_id){
     auto cands = make_candidates(central_host);
     int fd = tcp_connect_any(cands, central_port);
-    if(fd < 0){ printf("[CentralClient] join_room: connect failed\n"); return -1; }
+    if(fd < 0){ bewe_log_push(1,"[CentralClient] join_room: connect failed\n"); return -1; }
 
     CentralJoinRoom jr{};
     strncpy(jr.station_id, station_id.c_str(), sizeof(jr.station_id)-1);
@@ -447,7 +449,7 @@ int CentralClient::join_room(const std::string& central_host, int central_port,
         CentralPktHdr ehdr{}; std::vector<uint8_t> ep;
         if(central_recv_pkt(fd, ehdr, ep, 256)){
             if(static_cast<CentralPktType>(ehdr.type) == CentralPktType::ERROR){
-                printf("[CentralClient] join_room error: %s\n",
+                bewe_log_push(1,"[CentralClient] join_room error: %s\n",
                        ep.size()>=sizeof(CentralError)
                        ? reinterpret_cast<const CentralError*>(ep.data())->msg : "unknown");
                 close(fd); return -1;
@@ -457,6 +459,6 @@ int CentralClient::join_room(const std::string& central_host, int central_port,
     timeval tv0{0,0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv0, sizeof(tv0));
 
-    printf("[CentralClient] joined room '%s'\n", station_id.c_str());
+    bewe_log_push(1,"[CentralClient] joined room '%s'\n", station_id.c_str());
     return fd;
 }

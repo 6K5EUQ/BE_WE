@@ -40,7 +40,7 @@ void FFTViewer::tm_iq_open(){
     tm_iq_total_samples=(int64_t)sr*(int64_t)TM_IQ_SECS;
     snprintf(s_iq_path,sizeof(s_iq_path),"%s/iq_rolling_%uMSPS.wav",TM_IQ_DIR,sr/1000000);
     // 기존 파일 항상 삭제 후 새로 생성
-    if(access(s_iq_path,F_OK)==0){ remove(s_iq_path); printf("TM: removed old %s\n",s_iq_path); }
+    if(access(s_iq_path,F_OK)==0){ remove(s_iq_path); bewe_log_push(0,"TM: removed old %s\n",s_iq_path); }
     tm_iq_fd=open(s_iq_path, O_RDWR|O_CREAT|O_TRUNC, 0644);
     if(tm_iq_fd<0){ fprintf(stderr,"TM: open failed: %s\n",strerror(errno)); return; }
     // WAV 헤더 placeholder (n_frames=0, Stop 시 갱신)
@@ -50,7 +50,7 @@ void FFTViewer::tm_iq_open(){
     tm_iq_batch_buf.assign(TM_IQ_BATCH*2, 0);
     tm_iq_batch_cnt=0;
     tm_iq_file_ready=true;
-    printf("TM IQ rolling: ready (wav)  max %.1f GB\n",
+    bewe_log_push(0,"TM IQ rolling: ready (wav)  max %.1f GB\n",
            (double)(tm_iq_total_samples*2*sizeof(int16_t))/1e9);
 }
 
@@ -61,7 +61,7 @@ void FFTViewer::tm_iq_close(){
         uint32_t actual = (uint32_t)std::min(tm_iq_write_sample, tm_iq_total_samples);
         write_rolling_wav_header(tm_iq_fd, header.sample_rate, actual);
         close(tm_iq_fd); tm_iq_fd=-1;
-        printf("TM IQ rolling: closed  %.2f sec\n",(double)actual/header.sample_rate);
+        bewe_log_push(0,"TM IQ rolling: closed  %.2f sec\n",(double)actual/header.sample_rate);
     }
     tm_iq_file_ready=false; tm_iq_write_sample=0; tm_iq_batch_cnt=0;
     memset(tm_iq_chunk_time,0,sizeof(tm_iq_chunk_time));

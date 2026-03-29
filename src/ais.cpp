@@ -36,19 +36,19 @@ static void print_frame(const uint8_t* bits, int nbits, int ch_idx){
     int fill=(6-(nbits%6))%6;
     char nmea[200]; snprintf(nmea,sizeof(nmea),"AIVDM,1,1,,A,%s,%d",pay,fill);
     uint8_t cs=0; for(int i=0;nmea[i];i++) cs^=(uint8_t)nmea[i];
-    printf("[AIS ch%d] !%s*%02X\n",ch_idx,nmea,cs);
+    bewe_log_push(0,"[AIS ch%d] !%s*%02X\n",ch_idx,nmea,cs);
     uint8_t mt=(uint8_t)bu(bits,0,6); uint32_t mm=bu(bits,8,30);
     if((mt>=1&&mt<=3)&&nbits>=168)
-        printf("  Type%u MMSI=%u lat=%.5f lon=%.5f SOG=%.1f\n",
+        bewe_log_push(0,"  Type%u MMSI=%u lat=%.5f lon=%.5f SOG=%.1f\n",
                mt,mm,bi(bits,89,27)/600000.f,bi(bits,61,28)/600000.f,bu(bits,50,10)/10.f);
     else if(mt==18&&nbits>=168)
-        printf("  Type18 MMSI=%u lat=%.5f lon=%.5f\n",
+        bewe_log_push(0,"  Type18 MMSI=%u lat=%.5f lon=%.5f\n",
                mm,bi(bits,85,27)/600000.f,bi(bits,57,28)/600000.f);
     else if(mt==5&&nbits>=426){
         char nm[21]={}; for(int i=0;i<20;i++) nm[i]=a6((uint8_t)bu(bits,112+i*6,6));
         for(int i=19;i>=0&&nm[i]==' ';i--) nm[i]=0;
-        printf("  Type5 MMSI=%u NAME='%s'\n",mm,nm);
-    } else printf("  Type%u MMSI=%u bits=%d\n",mt,mm,nbits);
+        bewe_log_push(0,"  Type5 MMSI=%u NAME='%s'\n",mm,nm);
+    } else bewe_log_push(0,"  Type%u MMSI=%u bits=%d\n",mt,mm,nbits);
     fflush(stdout);
 }
 
@@ -72,12 +72,12 @@ struct Hdlc {
     void try_decode(int ch_idx){
         int plen=nb-16;
         if(plen<56){
-            printf("[AIS ch%d] HDLC too_short nb=%d plen=%d\n",ch_idx,nb,plen);
+            bewe_log_push(0,"[AIS ch%d] HDLC too_short nb=%d plen=%d\n",ch_idx,nb,plen);
             fflush(stdout); return;
         }
         int nbytes=(plen+7)/8;
         if(nbytes>64){
-            printf("[AIS ch%d] HDLC too_long nbytes=%d\n",ch_idx,nbytes);
+            bewe_log_push(0,"[AIS ch%d] HDLC too_long nbytes=%d\n",ch_idx,nbytes);
             fflush(stdout); return;
         }
         uint8_t bytes[64]={};
@@ -86,7 +86,7 @@ struct Hdlc {
         for(int i=0;i<16;i++) rxfcs|=((uint16_t)raw[plen+i]<<i);
         uint16_t calcfcs=crc_ccitt(bytes,(plen+7)/8);
         if(calcfcs!=rxfcs){
-            printf("[AIS ch%d] HDLC crc_fail nb=%d calc=0x%04X rx=0x%04X\n",ch_idx,nb,calcfcs,rxfcs);
+            bewe_log_push(0,"[AIS ch%d] HDLC crc_fail nb=%d calc=0x%04X rx=0x%04X\n",ch_idx,nb,calcfcs,rxfcs);
             fflush(stdout); return;
         }
         fcs_ok++;
@@ -112,7 +112,7 @@ void FFTViewer::ais_worker(int ch_idx){
     const size_t MAX_LAG = (size_t)(msr*0.08);
     const size_t BATCH   = (size_t)(msr / 50);
 
-    printf("[AIS ch%d] start cf=%.4fMHz off=%.0fHz decim=%u work_sr=%u sps=%.2f\n",
+    bewe_log_push(0,"[AIS ch%d] start cf=%.4fMHz off=%.0fHz decim=%u work_sr=%u sps=%.2f\n",
            ch_idx,(ch.s+ch.e)/2.f,off_hz,total_decim,work_sr,sps);
     fflush(stdout);
 
@@ -234,7 +234,7 @@ void FFTViewer::ais_worker(int ch_idx){
             // 진단: gate 열린 구간에서 200샘플마다 출력
             diag_cnt++;
             if(diag_cnt>=200){
-                printf("[AIS ch%d] D fi=%.5f disc=%.3f dc=%.3f agc=%.4f sps=%.2f f0=%d ok0=%d\n",
+                bewe_log_push(0,"[AIS ch%d] D fi=%.5f disc=%.3f dc=%.3f agc=%.4f sps=%.2f f0=%d ok0=%d\n",
                        ch_idx,fi,disc,disc_dc,agc_peak,sps,
                        hdlc[0].flag_cnt,hdlc[0].fcs_ok);
                 fflush(stdout);
@@ -262,7 +262,7 @@ void FFTViewer::ais_worker(int ch_idx){
         }
         ch.digi_rp.store((rp+avail)&IQ_RING_MASK,std::memory_order_release);
     }
-    printf("[AIS ch%d] stopped f0=%d ok0=%d f1=%d ok1=%d\n",
+    bewe_log_push(0,"[AIS ch%d] stopped f0=%d ok0=%d f1=%d ok1=%d\n",
            ch_idx,hdlc[0].flag_cnt,hdlc[0].fcs_ok,hdlc[1].flag_cnt,hdlc[1].fcs_ok);
     fflush(stdout);
 }
@@ -276,7 +276,7 @@ void FFTViewer::start_digi(int ch_idx, Channel::DigitalMode mode){
     ch.digi_run.store(true);
     if(mode==Channel::DIGI_AIS)
         ch.digi_thr=std::thread(&FFTViewer::ais_worker,this,ch_idx);
-    printf("[DIGI ch%d] start mode=%d\n",ch_idx,(int)mode); fflush(stdout);
+    bewe_log_push(0,"[DIGI ch%d] start mode=%d\n",ch_idx,(int)mode); fflush(stdout);
 }
 
 void FFTViewer::stop_digi(int ch_idx){
@@ -286,5 +286,5 @@ void FFTViewer::stop_digi(int ch_idx){
     if(ch.digi_thr.joinable()) ch.digi_thr.join();
     ch.digi_run.store(false);
     ch.digital_mode=Channel::DIGI_NONE;
-    printf("[DIGI ch%d] stopped\n",ch_idx); fflush(stdout);
+    bewe_log_push(0,"[DIGI ch%d] stopped\n",ch_idx); fflush(stdout);
 }

@@ -14,8 +14,8 @@
 
 // ── BladeRF USB 소프트 리셋 (USBDEVFS_RESET ioctl) ───────────────────────
 // vendor=2cf0, product=5250 장치를 /dev/bus/usb에서 찾아 리셋
-// 효과: 물리적으로 뽑았다 꽂는 것과 동일 (드라이버 unbind→reenumerate)
-// sudo 불필요 — udev rule로 plugdev 그룹에 rw 권한 부여됨
+// 효과: 물리적으로 뽑았다 꽂는 것과 동일 (드라이버 unbind>reenumerate)
+// sudo 불필요 - udev rule로 plugdev 그룹에 rw 권한 부여됨
 bool bladerf_usb_reset(){
     // /dev/bus/usb/NNN/MMM 파일 순회해서 vendor/product 매칭
     DIR* bus_dir = opendir("/dev/bus/usb");
@@ -43,9 +43,9 @@ bool bladerf_usb_reset(){
                 uint16_t vid = (uint16_t)(desc[8]  | (desc[9]  << 8));
                 uint16_t pid = (uint16_t)(desc[10] | (desc[11] << 8));
                 if(vid == 0x2cf0 && pid == 0x5250){
-                    printf("[USBreset] found BladeRF at %s — issuing USBDEVFS_RESET\n", dev_path);
+                    bewe_log_push(0,"[USBreset] found BladeRF at %s - issuing USBDEVFS_RESET\n", dev_path);
                     if(ioctl(fd, USBDEVFS_RESET, nullptr) == 0){
-                        printf("[USBreset] reset OK\n");
+                        bewe_log_push(0,"[USBreset] reset OK\n");
                         found = true;
                     } else {
                         perror("[USBreset] ioctl USBDEVFS_RESET");
@@ -57,7 +57,7 @@ bool bladerf_usb_reset(){
         closedir(dev_dir);
     }
     closedir(bus_dir);
-    if(!found) printf("[USBreset] BladeRF not found in /dev/bus/usb\n");
+    if(!found) bewe_log_push(0,"[USBreset] BladeRF not found in /dev/bus/usb\n");
     return found;
 }
 
@@ -109,7 +109,7 @@ bool FFTViewer::initialize_bladerf(float cf_mhz, float sr_msps){
     fft_out=fftwf_alloc_complex(fft_size);
     memset(fft_in, 0, fft_size*sizeof(fftwf_complex));  // zero-pad region
     fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_MEASURE);
-    memset(fft_in, 0, fft_size*sizeof(fftwf_complex)); // MEASURE가 입력 파괴 → 재초기화
+    memset(fft_in, 0, fft_size*sizeof(fftwf_complex)); // MEASURE가 입력 파괴 > 재초기화
     // Pre-compute Nuttall window + allocate VOLK mag_sq buffer
     if(win_buf) free(win_buf);
     win_buf=(float*)volk_malloc(fft_input_size*sizeof(float), volk_get_alignment());
@@ -121,7 +121,7 @@ bool FFTViewer::initialize_bladerf(float cf_mhz, float sr_msps){
 }
 
 void FFTViewer::capture_and_process(){
-    // RX 버퍼: fft_size와 무관하게 최소 8192 샘플 고정 → USB 오버헤드 최소화
+    // RX 버퍼: fft_size와 무관하게 최소 8192 샘플 고정 > USB 오버헤드 최소화
     static constexpr int RX_MIN = 8192;
     int rx_chunk = std::max(fft_input_size, RX_MIN);
     int16_t* iq_buf=new int16_t[rx_chunk*2];
@@ -158,7 +158,7 @@ void FFTViewer::capture_and_process(){
             fft_out=fftwf_alloc_complex(fft_size);
             memset(fft_in, 0, fft_size*sizeof(fftwf_complex));
             fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_MEASURE);
-    memset(fft_in, 0, fft_size*sizeof(fftwf_complex)); // MEASURE가 입력 파괴 → 재초기화
+    memset(fft_in, 0, fft_size*sizeof(fftwf_complex)); // MEASURE가 입력 파괴 > 재초기화
             // Re-create window + mag_sq buffers
             if(win_buf) volk_free(win_buf);
             win_buf=(float*)volk_malloc(fft_input_size*sizeof(float), volk_get_alignment());
@@ -196,7 +196,7 @@ void FFTViewer::capture_and_process(){
                 if(access(old_path, F_OK)==0){ remove(old_path); }
             }
 
-            // 122.88M 이상 → SC8_Q7 (8bit) + OVERSAMPLE, 그 외 → SC16_Q11 (16bit)
+            // 122.88M 이상 > SC8_Q7 (8bit) + OVERSAMPLE, 그 외 > SC16_Q11 (16bit)
             bool was_sc8 = sc8_mode;
             sc8_mode = (new_sr >= 122880000);
             bladerf_format fmt = sc8_mode ? BLADERF_FORMAT_SC8_Q7 : BLADERF_FORMAT_SC16_Q11;
@@ -226,7 +226,7 @@ void FFTViewer::capture_and_process(){
 
             // HW 파라미터 갱신
             hw = make_bladerf_config(actual_sr);
-            if(sc8_mode) hw.iq_scale = 128.0f; // SC8_Q7: 7bit → 128
+            if(sc8_mode) hw.iq_scale = 128.0f; // SC8_Q7: 7bit > 128
             time_average = hw.compute_time_average(fft_input_size);
 
             {std::lock_guard<std::mutex> lk(data_mtx);
@@ -251,7 +251,7 @@ void FFTViewer::capture_and_process(){
             }
             // SR 변경 후 게인 재적용 (BladeRF가 SR 변경 시 게인을 리셋할 수 있음)
             set_gain(gain_db);
-            bewe_log("SR → %.2f MSPS  BW → %.2f MHz\n", actual_sr/1e6f, actual_bw/1e6f);
+            bewe_log("SR > %.2f MSPS  BW > %.2f MHz\n", actual_sr/1e6f, actual_bw/1e6f);
             continue;
         }
 
@@ -262,7 +262,7 @@ void FFTViewer::capture_and_process(){
             if(!s){
                 {std::lock_guard<std::mutex> lk(data_mtx);
                  header.center_frequency=(uint64_t)(pending_cf*1e6);}
-                bewe_log("Freq → %.2f MHz\n",pending_cf);
+                bewe_log("Freq > %.2f MHz\n",pending_cf);
                 autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
                 warmup_cnt=0;
                 update_dem_by_freq(pending_cf);
@@ -270,7 +270,7 @@ void FFTViewer::capture_and_process(){
             freq_req=false; freq_prog=false;
         }
 
-        // ── RX: 고정 청크(min 8192)로 읽기 → fft_size 무관 일정 throughput ──
+        // ── RX: 고정 청크(min 8192)로 읽기 > fft_size 무관 일정 throughput ──
         if(rx_avail == 0){
             int status=bladerf_sync_rx(dev_blade,iq_buf,rx_chunk,nullptr,3000);
             if(status){
@@ -288,14 +288,14 @@ void FFTViewer::capture_and_process(){
                 bewe_log("RX error: %s\n",bladerf_strerror(status));
                 if(status==BLADERF_ERR_IO || status==BLADERF_ERR_UNEXPECTED
                    || status==BLADERF_ERR_NODEV){
-                    fprintf(stderr,"BladeRF: fatal RX error (%d) — SDR disconnected\n", status);
+                    fprintf(stderr,"BladeRF: fatal RX error (%d) - SDR disconnected\n", status);
                     dev_blade = nullptr;
                     sdr_stream_error.store(true);
                     break;
                 }
                 continue;
             }
-            // SC8_Q7: int8 샘플을 int16으로 확장 (뒤에서부터 → in-place 안전)
+            // SC8_Q7: int8 샘플을 int16으로 확장 (뒤에서부터 > in-place 안전)
             if(sc8_mode){
                 int8_t* i8 = (int8_t*)iq_buf;
                 for(int k = rx_chunk*2 - 1; k >= 0; k--)
@@ -342,7 +342,7 @@ void FFTViewer::capture_and_process(){
             // Nuttall window via VOLK SIMD (complex × real element-wise)
             volk_32fc_32f_multiply_32fc((lv_32fc_t*)fft_in, (lv_32fc_t*)fft_in,
                                         win_buf, fft_input_size);
-            // pad region은 init/resize 시 한 번만 0 초기화 (out-of-place FFT → fft_in 불변)
+            // pad region은 init/resize 시 한 번만 0 초기화 (out-of-place FFT > fft_in 불변)
             fftwf_execute(fft_plan);
             {
                 // VOLK magnitude squared: |X[k]|² for all bins

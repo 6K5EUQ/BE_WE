@@ -1,5 +1,7 @@
 #include "net_client.hpp"
 #include <cstdio>
+
+extern void bewe_log_push(int col, const char* fmt, ...);
 #include <cstdlib>
 #include <string>
 #include <cstring>
@@ -29,22 +31,22 @@ bool NetClient::connect_fd(int fd, const char* id, const char* pw, uint8_t tier)
         fd_=-1; return false;
     }
 
-    printf("[NetClient] connect_fd: sent AUTH_REQ id='%s' tier=%u fd=%d\n", id, tier, fd);
+    bewe_log_push(2,"[NetClient] connect_fd: sent AUTH_REQ id='%s' tier=%u fd=%d\n", id, tier, fd);
 
     // AUTH_ACK가 올 때까지 앞에 도착한 다른 패킷은 드레인 (최대 32개)
-    printf("[NetClient] connect_fd: waiting for AUTH_ACK...\n");
+    bewe_log_push(2,"[NetClient] connect_fd: waiting for AUTH_ACK...\n");
     PktHdr hdr{};
     std::vector<uint8_t> payload;
     int skip_count = 0;
     while(true){
         ssize_t hr = recv(fd_, &hdr, PKT_HDR_SIZE, MSG_WAITALL);
         if(hr != PKT_HDR_SIZE){
-            printf("[NetClient] connect_fd: recv hdr failed hr=%zd errno=%d(%s)\n",
+            bewe_log_push(2,"[NetClient] connect_fd: recv hdr failed hr=%zd errno=%d(%s)\n",
                    hr, errno, strerror(errno));
             fd_=-1; return false;
         }
         if(memcmp(hdr.magic, BEWE_MAGIC, 4) != 0){
-            printf("[NetClient] connect_fd: bad magic\n");
+            bewe_log_push(2,"[NetClient] connect_fd: bad magic\n");
             fd_=-1; return false;
         }
         if(hdr.len > 4*1024*1024){ fd_=-1; return false; }
@@ -52,23 +54,23 @@ bool NetClient::connect_fd(int fd, const char* id, const char* pw, uint8_t tier)
         if(hdr.len > 0){
             ssize_t pr = recv(fd_, payload.data(), hdr.len, MSG_WAITALL);
             if(pr != (ssize_t)hdr.len){
-                printf("[NetClient] connect_fd: recv payload failed\n");
+                bewe_log_push(2,"[NetClient] connect_fd: recv payload failed\n");
                 fd_=-1; return false;
             }
         }
         if(static_cast<PacketType>(hdr.type) == PacketType::AUTH_ACK) break;
         // AUTH_ACK 아닌 패킷은 스킵 (IQ_PROGRESS, CH_SYNC 등이 먼저 올 수 있음)
-        printf("[NetClient] connect_fd: skipping pre-auth pkt type=0x%02x len=%u\n",
+        bewe_log_push(2,"[NetClient] connect_fd: skipping pre-auth pkt type=0x%02x len=%u\n",
                hdr.type, hdr.len);
         if(++skip_count > 64){ fd_=-1; return false; }
     }
     if(hdr.len < sizeof(PktAuthAck)){
-        printf("[NetClient] connect_fd: AUTH_ACK payload too short %u\n", hdr.len);
+        bewe_log_push(2,"[NetClient] connect_fd: AUTH_ACK payload too short %u\n", hdr.len);
         fd_=-1; return false;
     }
     auto* ack = reinterpret_cast<PktAuthAck*>(payload.data());
     if(!ack->ok){
-        printf("[NetClient] relay auth failed: %s\n", ack->reason);
+        bewe_log_push(2,"[NetClient] relay auth failed: %s\n", ack->reason);
         fd_=-1; return false;
     }
 
@@ -77,12 +79,12 @@ bool NetClient::connect_fd(int fd, const char* id, const char* pw, uint8_t tier)
     strncpy(my_name, id, 31);
     connected_.store(true);
 
-    printf("[NetClient] relay connected as op %d '%s' (Tier%d) fd=%d\n",
+    bewe_log_push(2,"[NetClient] relay connected as op %d '%s' (Tier%d) fd=%d\n",
            my_op_index, my_name, my_tier, fd_);
 
     if(recv_thr_.joinable()) recv_thr_.join();
     recv_thr_ = std::thread(&NetClient::recv_loop, this);
-    printf("[NetClient] connect_fd: recv_thr started\n");
+    bewe_log_push(2,"[NetClient] connect_fd: recv_thr started\n");
     return true;
 }
 
@@ -114,7 +116,7 @@ void NetClient::disconnect(){
 void NetClient::recv_loop(){
     uint64_t pkt_count = 0;
     const char* disc_reason = "unknown";
-    printf("[NetClient] recv_loop started fd=%d\n", fd_);
+    bewe_log_push(2,"[NetClient] recv_loop started fd=%d\n", fd_);
     while(connected_.load()){
         PktHdr hdr{};
         int rc = recv_all_ex(fd_, &hdr, PKT_HDR_SIZE, connected_);
@@ -122,7 +124,7 @@ void NetClient::recv_loop(){
         if(rc < 0){
             int e = errno;
             if(connected_.load()){
-                printf("[NetClient] recv hdr failed: errno=%d(%s) pkts=%llu\n",
+                bewe_log_push(2,"[NetClient] recv hdr failed: errno=%d(%s) pkts=%llu\n",
                        e, strerror(e), (unsigned long long)pkt_count);
                 disc_reason = "recv_hdr_fail";
             } else {
@@ -131,7 +133,7 @@ void NetClient::recv_loop(){
             break;
         }
         if(memcmp(hdr.magic, BEWE_MAGIC, 4) != 0){
-            printf("[NetClient] bad magic: %02x%02x%02x%02x type=0x%02x len=%u pkts=%llu\n",
+            bewe_log_push(2,"[NetClient] bad magic: %02x%02x%02x%02x type=0x%02x len=%u pkts=%llu\n",
                    hdr.magic[0], hdr.magic[1], hdr.magic[2], hdr.magic[3],
                    hdr.type, hdr.len, (unsigned long long)pkt_count);
             disc_reason = "bad_magic";
@@ -139,7 +141,7 @@ void NetClient::recv_loop(){
         }
         uint32_t len = hdr.len;
         if(len > 4*1024*1024){
-            printf("[NetClient] oversized pkt: type=0x%02x len=%u\n", hdr.type, len);
+            bewe_log_push(2,"[NetClient] oversized pkt: type=0x%02x len=%u\n", hdr.type, len);
             disc_reason = "oversized";
             break;
         }
@@ -149,7 +151,7 @@ void NetClient::recv_loop(){
             if(rc2 == 0) continue;  // timeout mid-packet → retry
             if(rc2 < 0){
                 int e = errno;
-                printf("[NetClient] recv payload failed: type=0x%02x len=%u errno=%d(%s)\n",
+                bewe_log_push(2,"[NetClient] recv payload failed: type=0x%02x len=%u errno=%d(%s)\n",
                        hdr.type, len, e, strerror(e));
                 disc_reason = "recv_payload_fail";
                 break;
@@ -160,7 +162,7 @@ void NetClient::recv_loop(){
         handle_packet(static_cast<PacketType>(hdr.type), payload.data(), len);
     }
     connected_.store(false);
-    printf("[NetClient] disconnected: reason=%s total_pkts=%llu fd=%d\n",
+    bewe_log_push(2,"[NetClient] disconnected: reason=%s total_pkts=%llu fd=%d\n",
            disc_reason, (unsigned long long)pkt_count, fd_);
 }
 

@@ -32,6 +32,8 @@
 
 // ── Global log helper (ui.cpp에서 정의, 모든 .cpp에서 사용 가능) ─────────
 extern void bewe_log(const char* fmt, ...);
+// LOG 오버레이용 글로벌 로그 (col: 0=HOST 1=SERVER 2=JOIN)
+extern void bewe_log_push(int col, const char* fmt, ...);
 
 // ── FFTViewer ─────────────────────────────────────────────────────────────
 class FFTViewer {
@@ -204,6 +206,15 @@ public:
     std::atomic<bool> sa_playing{false};
     std::thread       sa_play_thread;
     void sa_play_demod();         // 선택 영역 복조 재생 (별도 스레드)
+
+    // ── LOG 오버레이 (L키 토글) ──────────────────────────────────────────
+    bool log_panel_open = false;
+    struct LogEntry { char msg[512]; };
+    static constexpr int LOG_MAX = 500;
+    std::vector<LogEntry> log_buf[3];  // 0=HOST 1=SERVER 2=JOIN
+    std::mutex log_mtx;
+    bool log_scroll[3] = {true,true,true};
+    void log_push(int col, const char* fmt, ...);
 
     // ── EID (Emitter ID / RF Fingerprint) 패널 ─────────────────────────────
     bool              eid_panel_open = false;

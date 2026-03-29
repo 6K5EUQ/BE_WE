@@ -27,7 +27,7 @@ bool FFTViewer::initialize_rtlsdr(float cf_mhz){
     // Direct Sampling: HF (<24MHz) 시 Q-branch 자동 전환
     if(cf_mhz < 24.0f){
         rtlsdr_set_direct_sampling(dev_rtl, 2);  // Q-branch
-        printf("RTL-SDR: Direct Sampling ON (Q-branch) for HF\n");
+        bewe_log_push(0,"RTL-SDR: Direct Sampling ON (Q-branch) for HF\n");
     } else {
         rtlsdr_set_direct_sampling(dev_rtl, 0);  // 일반 모드
     }
@@ -52,7 +52,7 @@ bool FFTViewer::initialize_rtlsdr(float cf_mhz){
     hw = make_rtlsdr_config(actual_sr);
     gain_db = hw.gain_default;
 
-    printf("RTL-SDR: %.2f MHz  %.3f MSPS  gain %.1f dB\n",
+    bewe_log_push(0,"RTL-SDR: %.2f MHz  %.3f MSPS  gain %.1f dB\n",
            cf_mhz, actual_sr/1e6, RTLSDR_RX_GAIN_TENTHS/10.0);
 
     // FFT 헤더
@@ -97,7 +97,7 @@ void FFTViewer::set_frequency(float cf_mhz){
     }
     {std::lock_guard<std::mutex> lk(data_mtx);
      header.center_frequency=(uint64_t)(cf_mhz*1e6);}
-    printf("Freq → %.2f MHz\n", cf_mhz);
+    bewe_log_push(0,"Freq > %.2f MHz\n", cf_mhz);
     autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
 }
 
@@ -209,11 +209,11 @@ void FFTViewer::capture_and_process_rtl(){
                 tm_iq_open();
                 tm_iq_on.store(true);
             }
-            printf("SR → %.3f MSPS\n", actual_sr/1e6f);
+            bewe_log_push(0,"SR > %.3f MSPS\n", actual_sr/1e6f);
             continue;
         }
 
-        // 주파수 변경 — set 후 한 사이클 쉬고 read_sync 재개 (RTL-SDR v4 USB 안정화)
+        // 주파수 변경 - set 후 한 사이클 쉬고 read_sync 재개 (RTL-SDR v4 USB 안정화)
         if(freq_req && !freq_prog){
             freq_prog=true;
             // Direct Sampling 자동 전환
@@ -226,7 +226,7 @@ void FFTViewer::capture_and_process_rtl(){
             rx_pos=0; rx_avail=0;
             {std::lock_guard<std::mutex> lk(data_mtx);
              header.center_frequency=(uint64_t)(pending_cf*1e6);}
-            printf("Freq → %.2f MHz\n", pending_cf);
+            bewe_log_push(0,"Freq > %.2f MHz\n", pending_cf);
             autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
             warmup_cnt=0;
             update_dem_by_freq(pending_cf);
@@ -234,19 +234,19 @@ void FFTViewer::capture_and_process_rtl(){
             continue; // read_sync 호출을 다음 사이클로 미룸
         }
 
-        // ── RX: 고정 청크(min 8192)로 읽기 → USB 오버헤드 최소화 ──────────
+        // ── RX: 고정 청크(min 8192)로 읽기 > USB 오버헤드 최소화 ──────────
         if(rx_avail == 0){
             int n_read = 0;
             int r = rtlsdr_read_sync(dev_rtl, raw, (int)n_bytes, &n_read);
             if(r < 0 || n_read < (int)n_bytes){
-                fprintf(stderr,"RTL-SDR RX: r=%d n_read=%d — SDR disconnected\n", r, n_read);
+                fprintf(stderr,"RTL-SDR RX: r=%d n_read=%d - SDR disconnected\n", r, n_read);
                 sdr_stream_error.store(true);
-                // 디바이스 닫고 루프 종료 → ui는 sdr_stream_error 빨간불 표시
+                // 디바이스 닫고 루프 종료 > ui는 sdr_stream_error 빨간불 표시
                 rtlsdr_close(dev_rtl);
                 dev_rtl = nullptr;
                 break;
             }
-            // uint8 → int16 변환 (ring/TM IQ용)
+            // uint8 > int16 변환 (ring/TM IQ용)
             for(int i=0; i<rx_chunk*2; i++){
                 iq16[i] = (int16_t)((int)raw[i] - 128) << 4;
             }

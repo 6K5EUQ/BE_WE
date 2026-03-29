@@ -1,5 +1,6 @@
 #include "login.hpp"
 #include "bewe_paths.hpp"
+extern void bewe_log_push(int col, const char* fmt, ...);
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -121,7 +122,7 @@ bool draw_login_screen(int win_w, int win_h){
     if(!bg_tried[ti]){
         bg_tried[ti]=true;
         if(!load_png(BG_PATHS[ti],bg_tex[ti],bg_w[ti],bg_h[ti]))
-            printf("Login: bg not found: %s\n",BG_PATHS[ti]);
+            bewe_log_push(2,"Login: bg not found: %s\n",BG_PATHS[ti]);
     }
     if(ti!=prev_ti&&!fading){ fading=true; fade_alpha=0.0f; prev_ti=ti; }
     if(fading){ fade_alpha+=ImGui::GetIO().DeltaTime*3.0f; if(fade_alpha>=1.0f){fade_alpha=1.0f;fading=false;} }

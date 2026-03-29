@@ -23,11 +23,11 @@ bool FFTViewer::initialize(float cf_mhz){
     }
 
     if(has_blade){
-        printf("HW: BladeRF detected%s\n", has_rtl ? " (RTL-SDR also present, using BladeRF)" : "");
+        bewe_log_push(0,"HW: BladeRF detected%s\n", has_rtl ? " (RTL-SDR also present, using BladeRF)" : "");
         return initialize_bladerf(cf_mhz, 61.44f);
     }
 
-    printf("HW: RTL-SDR detected (no BladeRF)\n");
+    bewe_log_push(0,"HW: RTL-SDR detected (no BladeRF)\n");
     return initialize_rtlsdr(cf_mhz);
 }
 

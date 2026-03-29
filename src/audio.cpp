@@ -69,5 +69,5 @@ void FFTViewer::mix_worker(){
         alsa.write(sbuf.data(),PERIOD);
     }
     alsa.close();
-    printf("Mix worker exited\n");
+    bewe_log_push(0,"Mix worker exited\n");
 }

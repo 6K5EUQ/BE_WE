@@ -264,7 +264,7 @@ void FFTViewer::sa_start(const std::string& wav_path){
         sa_actual_fft_n = actual_fft_n;
         // 뷰 리셋은 호출부에서 관리 (FFT 변경 시 줌 유지)
         sa_sel_active = false;
-        printf("[SA] FFT done: %d bins, %lld rows\n", actual_fft_n, (long long)rows);
+        bewe_log_push(0,"[SA] FFT done: %d bins, %lld rows\n", actual_fft_n, (long long)rows);
         sa_pixel_ready.store(true);
         sa_computing.store(false);
     });

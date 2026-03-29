@@ -34,15 +34,13 @@ void bewe_log(const char* fmt, ...){
     va_list ap; va_start(ap,fmt);
     vsnprintf(buf,sizeof(buf),fmt,ap);
     va_end(ap);
-    time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
-    char ts[16]; strftime(ts,sizeof(ts),"%H:%M:%S",&tm2);
-    fprintf(stderr,"[%s] %s\n",ts,buf);
+    bewe_log_push(0, "%s", buf);
 }
 
 // ── bladerf_usb_reset 선언 (hw_detect.cpp) ───────────────────────────────
 bool bladerf_usb_reset();
 
-// ── 채널 스컬치 (ui.cpp에서 추출 — GUI 의존성 없음) ──────────────────────
+// ── 채널 스컬치 (ui.cpp에서 추출 - GUI 의존성 없음) ──────────────────────
 void FFTViewer::update_channel_squelch(){
     if(total_ffts < 1 || fft_size < 1) return;
     std::lock_guard<std::mutex> lk(data_mtx);
@@ -160,9 +158,9 @@ static long long read_io_ms(){
 // ── Prompt helper (with default value) ───────────────────────────────────
 static std::string prompt_input(const char* label, const char* def=nullptr){
     if(def && def[0])
-        printf("%s [%s]: ", label, def);
+        bewe_log_push(0,"%s [%s]: ", label, def);
     else
-        printf("%s: ", label);
+        bewe_log_push(0,"%s: ", label);
     fflush(stdout);
     char buf[128]={};
     if(!fgets(buf,sizeof(buf),stdin)) return def ? def : "";
@@ -189,42 +187,44 @@ void run_cli_host(){
     signal(SIGTERM, sig_handler);
 
     // ── Interactive prompts ──────────────────────────────────────────────
-    printf("\n=== BE_WE Headless HOST ===\n\n");
+    bewe_log_push(0,"\n=== BE_WE Headless HOST ===\n\n");
 
     std::string id_str = prompt_input("ID");
-    if(id_str.empty()){ printf("Aborted.\n"); return; }
+    if(id_str.empty()){ bewe_log_push(0,"Aborted.\n"); return; }
 
     // 패스워드 에코 숨기기
-    printf("Password: "); fflush(stdout);
+    bewe_log_push(0,"Password: "); fflush(stdout);
     struct termios old_t, new_t;
     tcgetattr(STDIN_FILENO,&old_t); new_t=old_t;
     new_t.c_lflag &= ~(ECHO);
     tcsetattr(STDIN_FILENO,TCSANOW,&new_t);
     char pw_buf[64]={};
-    if(!fgets(pw_buf,sizeof(pw_buf),stdin)){ printf("\nAborted.\n"); tcsetattr(STDIN_FILENO,TCSANOW,&old_t); return; }
+    if(!fgets(pw_buf,sizeof(pw_buf),stdin)){ bewe_log_push(0,"\nAborted.\n"); tcsetattr(STDIN_FILENO,TCSANOW,&old_t); return; }
     tcsetattr(STDIN_FILENO,TCSANOW,&old_t);
     pw_buf[strcspn(pw_buf,"\r\n")]=0;
-    printf("\n");
+    bewe_log_push(0,"\n");
 
     int tier = atoi(prompt_input("Tier (1/2)", "1").c_str());
-    if(tier<1||tier>2){ printf("CLI HOST requires tier 1 or 2.\n"); return; }
+    if(tier<1||tier>2){ bewe_log_push(0,"CLI HOST requires tier 1 or 2.\n"); return; }
 
     std::string server_str = prompt_input("Central server", "144.24.86.137");
     std::string station_str = prompt_input("Station name");
-    if(station_str.empty()){ printf("Aborted.\n"); return; }
+    if(station_str.empty()){ bewe_log_push(0,"Aborted.\n"); return; }
 
     float lat = atof(prompt_input("Latitude",  "0.0").c_str());
     float lon = atof(prompt_input("Longitude", "0.0").c_str());
     float cf  = atof(prompt_input("Center freq MHz", "450.0").c_str());
 
-    printf("\n");
+    bewe_log_push(0,"\n");
 
     // ── Login ────────────────────────────────────────────────────────────
     cli_login(id_str.c_str(), pw_buf, tier, server_str.c_str());
-    printf("[BEWE CLI] Login: %s (Tier %d)\n", login_get_id(), login_get_tier());
+    bewe_log_push(0,"[BEWE CLI] Login: %s (Tier %d)\n", login_get_id(), login_get_tier());
 
     // ── FFTViewer init ───────────────────────────────────────────────────
     FFTViewer v;
+    extern FFTViewer* g_log_viewer;
+    g_log_viewer = &v;
     v.station_name = station_str;
     v.station_lat  = lat;
     v.station_lon  = lon;
@@ -234,7 +234,7 @@ void run_cli_host(){
     // ── SDR init ─────────────────────────────────────────────────────────
     std::thread cap;
     if(!v.initialize(cf)){
-        printf("[BEWE CLI] SDR init failed — running without hardware\n");
+        bewe_log_push(0,"[BEWE CLI] SDR init failed - running without hardware\n");
         v.sdr_stream_error.store(true);
         v.fft_size = DEFAULT_FFT_SIZE * FFT_PAD_FACTOR;
         v.fft_input_size = DEFAULT_FFT_SIZE;
@@ -248,7 +248,7 @@ void run_cli_host(){
         v.autoscale_active = false;
         v.create_waterfall_texture();
     } else {
-        printf("[BEWE CLI] SDR: %s detected\n",
+        bewe_log_push(0,"[BEWE CLI] SDR: %s detected\n",
                v.hw.type==HWType::BLADERF ? "BladeRF" : "RTL-SDR");
         if(v.hw.type == HWType::BLADERF)
             cap = std::thread(&FFTViewer::capture_and_process, &v);
@@ -313,12 +313,18 @@ void run_cli_host(){
             scan_pub(BEWEPaths::public_audio_dir());
             if(!slist.empty()) srv->send_share_list((int)new_idx, slist);
         }).detach();
-        printf("[CLI] Client authenticated: idx=%d\n", idx);
+        bewe_log_push(0,"[CLI] Client authenticated: idx=%d\n", idx);
         return true;
     };
 
-    srv->cb.on_set_freq   = [&](float cf){ v.set_frequency(cf); };
-    srv->cb.on_set_gain   = [&](float db){ v.gain_db=db; v.set_gain(db); };
+    srv->cb.on_set_freq   = [&](const char* who, float cf){
+        bewe_log_push(0, "[CMD:%s] Freq > %.3f MHz\n", who, cf);
+        v.set_frequency(cf);
+    };
+    srv->cb.on_set_gain   = [&](const char* who, float db){
+        bewe_log_push(0, "[CMD:%s] Gain > %.1f dB\n", who, db);
+        v.gain_db=db; v.set_gain(db);
+    };
     srv->cb.on_create_ch  = [&](int idx, float s, float e, const char* creator){
         if(idx<0||idx>=MAX_CHANNELS) return;
         v.stop_dem(idx); v.stop_digi(idx);
@@ -330,8 +336,9 @@ void run_cli_host(){
         v.local_ch_out[idx] = 3;
         srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
     };
-    srv->cb.on_delete_ch  = [&](int idx){
+    srv->cb.on_delete_ch  = [&](const char* who, int idx){
         if(idx<0||idx>=MAX_CHANNELS) return;
+        bewe_log_push(0, "[CMD:%s] CH%d deleted\n", who, idx);
         if(v.channels[idx].audio_rec_on.load())
             v.stop_audio_rec(idx);
         v.stop_dem(idx); v.stop_digi(idx); v.digi_panel_on[idx]=false;
@@ -339,8 +346,10 @@ void run_cli_host(){
         v.local_ch_out[idx] = 1;
         srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
     };
-    srv->cb.on_set_ch_mode= [&](int idx, int mode){
+    srv->cb.on_set_ch_mode= [&](const char* who, int idx, int mode){
         if(idx<0||idx>=MAX_CHANNELS) return;
+        static const char* mn[]={"NONE","AM","FM","MAGIC"};
+        bewe_log_push(0, "[CMD:%s] CH%d mode > %s\n", who, idx, mn[mode<4?mode:0]);
         v.stop_dem(idx);
         auto dm=(Channel::DemodMode)mode;
         v.channels[idx].mode=dm;
@@ -469,7 +478,7 @@ void run_cli_host(){
             if(srv && srv->cb.on_relay_broadcast){
                 const char* fn_only2 = strrchr(path.c_str(), '/');
                 fn_only2 = fn_only2 ? fn_only2+1 : path.c_str();
-                printf("[CLI] IQ_CHUNK transfer start: req_id=%u file='%s' size=%.1fMB\n",
+                bewe_log_push(0,"[CLI] IQ_CHUNK transfer start: req_id=%u file='%s' size=%.1fMB\n",
                        req_id, fn_only2, fsz/1048576.0);
                 {
                     PktIqChunkHdr ch{};
@@ -545,7 +554,7 @@ void run_cli_host(){
     srv->cb.on_start_rec  = [&](int){ v.start_rec(); };
     srv->cb.on_stop_rec   = [&](){ v.stop_rec(); };
     srv->cb.on_chat       = [&](const char* from, const char* msg){
-        printf("[CHAT] %s: %s\n", from, msg);
+        bewe_log_push(0,"[CHAT] %s: %s\n", from, msg);
     };
 
     // Share download
@@ -592,22 +601,24 @@ void run_cli_host(){
             slist.push_back({sf,fsz,upl});
         }
         srv->send_share_list(-1, slist);
-        printf("[CLI] Public upload done: %s (from %s)\n", fn, op_name);
+        bewe_log_push(0,"[CLI] Public upload done: %s (from %s)\n", fn, op_name);
     };
 
-    srv->cb.on_set_fft_size = [&](uint32_t size){
+    srv->cb.on_set_fft_size = [&](const char* who, uint32_t size){
+        bewe_log_push(0, "[CMD:%s] FFT size > %u\n", who, size);
         static const int valid[]={512,1024,2048,4096,8192,16384};
         for(int vs : valid)
             if((uint32_t)vs==size){ v.pending_fft_size=size; v.fft_size_change_req=true; break; }
     };
-    srv->cb.on_set_sr = [&](float msps){
+    srv->cb.on_set_sr = [&](const char* who, float msps){
+        bewe_log_push(0, "[CMD:%s] SR > %.2f MSPS\n", who, msps);
         v.pending_sr_msps=msps; v.sr_change_req=true;
         v.autoscale_active=true; v.autoscale_init=false; v.autoscale_accum.clear();
     };
-    srv->cb.on_chassis_reset = [&](){ pending_chassis1_reset.store(true); };
-    srv->cb.on_net_reset     = [&](){ pending_chassis2_reset.store(true); };
-    srv->cb.on_rx_stop       = [&](){ pending_rx_stop.store(true); };
-    srv->cb.on_rx_start      = [&](){ pending_rx_start.store(true); };
+    srv->cb.on_chassis_reset = [&](const char* who){ bewe_log_push(0,"[CMD:%s] /chassis 1 reset\n",who); pending_chassis1_reset.store(true); };
+    srv->cb.on_net_reset     = [&](const char* who){ bewe_log_push(0,"[CMD:%s] /chassis 2 reset\n",who); pending_chassis2_reset.store(true); };
+    srv->cb.on_rx_stop       = [&](const char* who){ bewe_log_push(0,"[CMD:%s] /rx stop\n",who); pending_rx_stop.store(true); };
+    srv->cb.on_rx_start      = [&](const char* who){ bewe_log_push(0,"[CMD:%s] /rx start\n",who); pending_rx_start.store(true); };
     srv->cb.on_pub_delete_req = [&](const char* op_name, const char* filename){
         std::string fname(filename);
         auto oit = pub_owners.find(fname);
@@ -634,14 +645,14 @@ void run_cli_host(){
 
     // ── Start server ─────────────────────────────────────────────────────
     if(!srv->start(0)){
-        printf("[BEWE CLI] Server start failed\n");
+        bewe_log_push(0,"[BEWE CLI] Server start failed\n");
         delete srv; srv=nullptr;
         g_shutdown.store(true);
     } else {
         host_port = srv->listen_port();
         v.net_srv = srv;
         srv->set_host_info(login_get_id(), (uint8_t)login_get_tier());
-        printf("[BEWE CLI] Server started on port %d\n", host_port);
+        bewe_log_push(0,"[BEWE CLI] Server started on port %d\n", host_port);
 
         // Central MUX adapter
         if(central_host[0] != '\0'){
@@ -673,7 +684,7 @@ void run_cli_host(){
                         for(int attempt=0; attempt<5; attempt++){
                             std::this_thread::sleep_for(std::chrono::seconds(3));
                             if(!v.net_srv) return;
-                            printf("[CLI] Central auto-reconnect attempt %d/5\n", attempt+1);
+                            bewe_log_push(0,"[CLI] Central auto-reconnect attempt %d/5\n", attempt+1);
                             std::string sid2 = v.station_name + "_" + std::string(login_get_id());
                             int rfd2 = central_cli.open_room(
                                 rh, rp, sid2, v.station_name,
@@ -684,20 +695,20 @@ void run_cli_host(){
                                     [&v](int fd2){ if(v.net_srv) v.net_srv->inject_fd(fd2); },
                                     [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; },
                                     *reconnect_fn);
-                                printf("[CLI] Central auto-reconnected\n");
+                                bewe_log_push(0,"[CLI] Central auto-reconnected\n");
                                 return;
                             }
                         }
-                        printf("[CLI] Central auto-reconnect failed after 5 attempts\n");
+                        bewe_log_push(0,"[CLI] Central auto-reconnect failed after 5 attempts\n");
                     }).detach();
                 };
                 central_cli.start_mux_adapter(rfd,
                     [&v](int local_fd){ if(v.net_srv) v.net_srv->inject_fd(local_fd); },
                     [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; },
                     *reconnect_fn);
-                printf("[BEWE CLI] Central relay connected\n");
+                bewe_log_push(0,"[BEWE CLI] Central relay connected\n");
             } else {
-                printf("[BEWE CLI] Central relay unavailable\n");
+                bewe_log_push(0,"[BEWE CLI] Central relay unavailable\n");
             }
         }
 
@@ -711,7 +722,7 @@ void run_cli_host(){
         v.tm_iq_open();
         if(v.tm_iq_file_ready){
             v.tm_iq_on.store(true);
-            printf("[BEWE CLI] IQ rolling enabled\n");
+            bewe_log_push(0,"[BEWE CLI] IQ rolling enabled\n");
         }
     }
 
@@ -736,7 +747,7 @@ void run_cli_host(){
     float    sdr_retry_timer = 0.f;
     float    chassis_unpause_timer = -1.f;
 
-    printf("[BEWE CLI] Ready. Type /help for commands.\n");
+    bewe_log_push(0,"[BEWE CLI] Ready. Type /help for commands.\n");
     fflush(stdout);
 
     // ══════════════════════════════════════════════════════════════════════
@@ -780,7 +791,7 @@ void run_cli_host(){
                 int clients = v.net_srv ? v.net_srv->client_count() : 0;
                 uint64_t net_tx=0, net_drops=0;
                 if(v.net_srv){ auto ns=v.net_srv->collect_stats(); net_tx=ns.tx_bytes; net_drops=ns.drops; }
-                printf("[%s] CF=%.1fMHz SR=%.2fM Clients=%d CPU=%.0f%% RAM=%.0f%% SDR=%s IQ=%s TX=%.1fMB Drops=%llu\n",
+                bewe_log_push(0,"[%s] CF=%.1fMHz SR=%.2fM Clients=%d CPU=%.0f%% RAM=%.0f%% SDR=%s IQ=%s TX=%.1fMB Drops=%llu\n",
                        ts,
                        v.header.center_frequency/1e6,
                        v.header.sample_rate/1e6,
@@ -838,7 +849,7 @@ void run_cli_host(){
         // ── Chassis/RX reset processing ──────────────────────────────────
         if(v.net_srv && pending_chassis1_reset.load()){
             pending_chassis1_reset.store(false);
-            printf("[CLI] Chassis 1 reset ...\n");
+            bewe_log_push(0,"[CLI] Chassis 1 reset ...\n");
             if(v.net_srv) v.net_srv->broadcast_chat("SYSTEM", "Chassis 1 reset ...");
             if(v.net_srv) v.net_srv->broadcast_heartbeat(1);
             v.is_running = false;
@@ -849,7 +860,7 @@ void run_cli_host(){
         }
         if(v.net_srv && pending_chassis2_reset.load()){
             pending_chassis2_reset.store(false);
-            printf("[CLI] Chassis 2 reset ...\n");
+            bewe_log_push(0,"[CLI] Chassis 2 reset ...\n");
             if(v.net_srv) v.net_srv->broadcast_chat("SYSTEM", "Chassis 2 reset ...");
             if(v.net_srv) v.net_srv->broadcast_heartbeat(2);
             v.net_bcast_pause.store(true, std::memory_order_relaxed);
@@ -881,12 +892,12 @@ void run_cli_host(){
                         central_ptr->start_mux_adapter(rfd,
                             [vp](int fd2){ if(vp->net_srv) vp->net_srv->inject_fd(fd2); },
                             [vp](){ return vp->net_srv ? (uint8_t)vp->net_srv->client_count() : (uint8_t)0; });
-                        printf("[CLI] Central reconnected after chassis 2 reset\n");
+                        bewe_log_push(0,"[CLI] Central reconnected after chassis 2 reset\n");
                     }
                 } else if(central_ptr->is_central_connected()){
                     central_ptr->send_net_reset(1);
                 }
-                printf("[CLI] Chassis 2 stable\n");
+                bewe_log_push(0,"[CLI] Chassis 2 stable\n");
             }).detach();
         }
 
@@ -894,7 +905,7 @@ void run_cli_host(){
         if(v.net_srv && pending_rx_stop.load()){
             pending_rx_stop.store(false);
             if(!v.rx_stopped.load() && (v.is_running || cap.joinable())){
-                printf("[CLI] RX stop (remote)\n");
+                bewe_log_push(0,"[CLI] RX stop (remote)\n");
                 v.net_srv->broadcast_chat("SYSTEM", "RX stop");
                 if(v.rec_on.load()) v.stop_rec();
                 if(v.tm_iq_on.load()){ v.tm_iq_on.store(false); v.tm_iq_close(); }
@@ -915,13 +926,13 @@ void run_cli_host(){
                 v.rx_stopped.store(true);
                 v.sdr_stream_error.store(false);
                 v.spectrum_pause.store(false);
-                printf("[CLI] RX stopped\n");
+                bewe_log_push(0,"[CLI] RX stopped\n");
             }
         }
         if(v.net_srv && pending_rx_start.load()){
             pending_rx_start.store(false);
             if(v.rx_stopped.load()){
-                printf("[CLI] RX start (remote)\n");
+                bewe_log_push(0,"[CLI] RX start (remote)\n");
                 v.rx_stopped.store(false);
                 float cur_cf = (float)(v.header.center_frequency / 1e6);
                 if(cur_cf < 0.1f) cur_cf = 100.f;
@@ -935,11 +946,11 @@ void run_cli_host(){
                     v.mix_stop.store(false);
                     v.mix_thr = std::thread(&FFTViewer::mix_worker, &v);
                     v.net_srv->broadcast_chat("SYSTEM", "RX start");
-                    printf("[CLI] RX started\n");
+                    bewe_log_push(0,"[CLI] RX started\n");
                 } else {
                     v.is_running = false;
                     v.rx_stopped.store(true);
-                    printf("[CLI] RX start failed — SDR not found\n");
+                    bewe_log_push(0,"[CLI] RX start failed - SDR not found\n");
                 }
             }
         }
@@ -951,7 +962,7 @@ void run_cli_host(){
                 chassis_unpause_timer = -1.f;
                 v.spectrum_pause.store(false);
                 if(v.net_srv) v.net_srv->broadcast_heartbeat(0, 0, 0);
-                printf("[CLI] chassis 1 reset: spectrum_pause released\n");
+                bewe_log_push(0,"[CLI] chassis 1 reset: spectrum_pause released\n");
             }
         }
 
@@ -978,7 +989,7 @@ void run_cli_host(){
                 usb_reset_in_progress.store(true);
                 if(v.dev_blade){ bladerf_close(v.dev_blade); v.dev_blade=nullptr; }
                 std::thread([&usb_reset_in_progress](){
-                    printf("[CLI] chassis 1 reset: USB reset BladeRF...\n");
+                    bewe_log_push(0,"[CLI] chassis 1 reset: USB reset BladeRF...\n");
                     bladerf_usb_reset();
                     std::this_thread::sleep_for(std::chrono::milliseconds(3000));
                     usb_reset_in_progress.store(false);
@@ -996,7 +1007,7 @@ void run_cli_host(){
                 if(cur_cf < 0.1f) cur_cf = 100.f;
                 v.is_running = true;
                 if(v.initialize(cur_cf)){
-                    printf("[CLI] SDR reconnected — resuming at %.2f MHz\n", cur_cf);
+                    bewe_log_push(0,"[CLI] SDR reconnected - resuming at %.2f MHz\n", cur_cf);
                     v.sdr_stream_error.store(false);
                     bg_join_started = false;
                     cap_joined.store(false);
@@ -1025,15 +1036,15 @@ void run_cli_host(){
                 g_shutdown.store(true);
             } else if(line == "/status"){
                 int clients = v.net_srv ? v.net_srv->client_count() : 0;
-                printf("  CF=%.3f MHz  SR=%.2f MSPS  Gain=%.1f dB\n",
+                bewe_log_push(0,"  CF=%.3f MHz  SR=%.2f MSPS  Gain=%.1f dB\n",
                        v.header.center_frequency/1e6,
                        v.header.sample_rate/1e6,
                        v.gain_db);
-                printf("  Clients=%d  SDR=%s  IQ=%s\n",
+                bewe_log_push(0,"  Clients=%d  SDR=%s  IQ=%s\n",
                        clients,
                        v.sdr_stream_error.load()?"ERROR":(v.rx_stopped.load()?"STOPPED":"OK"),
                        v.tm_iq_on.load()?"ON":"OFF");
-                printf("  CPU=%.0f%%  RAM=%.0f%%  IO=%.0f%%  GHz=%.2f\n",
+                bewe_log_push(0,"  CPU=%.0f%%  RAM=%.0f%%  IO=%.0f%%  GHz=%.2f\n",
                        v.sysmon_cpu, v.sysmon_ram, v.sysmon_io, v.sysmon_ghz);
                 if(v.net_srv){
                     auto ns = v.net_srv->collect_stats();
@@ -1045,7 +1056,7 @@ void run_cli_host(){
                         else                       snprintf(buf,sizeof(buf),"%.2f GB",(double)b/(1024ULL*1024*1024));
                         return buf;
                     };
-                    printf("  NET: TX=%s  RX=%s  Drops=%llu  Q(fft=%zu audio=%zu)\n",
+                    bewe_log_push(0,"  NET: TX=%s  RX=%s  Drops=%llu  Q(fft=%zu audio=%zu)\n",
                            fb(ns.tx_bytes).c_str(), fb(ns.rx_bytes).c_str(),
                            (unsigned long long)ns.drops, ns.q_fft, ns.q_audio);
                 }
@@ -1053,15 +1064,15 @@ void run_cli_host(){
             } else if(line == "/clients"){
                 if(v.net_srv){
                     auto ops = v.net_srv->get_operators();
-                    printf("  Connected operators (%d):\n", (int)ops.size());
+                    bewe_log_push(0,"  Connected operators (%d):\n", (int)ops.size());
                     for(auto& op : ops)
-                        printf("    [%d] %s (tier %d)\n", op.index, op.name, op.tier);
+                        bewe_log_push(0,"    [%d] %s (tier %d)\n", op.index, op.name, op.tier);
                 } else {
-                    printf("  No server running.\n");
+                    bewe_log_push(0,"  No server running.\n");
                 }
                 fflush(stdout);
             } else if(line == "/chassis 1 reset"){
-                printf("[CLI] Chassis 1 reset ...\n");
+                bewe_log_push(0,"[CMD:CLI] /chassis 1 reset\n");
                 if(v.net_srv) v.net_srv->broadcast_chat("SYSTEM", "Chassis 1 reset ...");
                 if(v.net_srv) v.net_srv->broadcast_heartbeat(1);
                 if(v.is_running || cap.joinable()){
@@ -1071,17 +1082,19 @@ void run_cli_host(){
                     v.spectrum_pause.store(true);
                     usb_reset_pending = true;
                 } else {
-                    printf("[CLI] No SDR connected — skip HW reset\n");
+                    bewe_log_push(0,"[CLI] No SDR connected - skip HW reset\n");
                 }
             } else if(line == "/chassis 2 reset"){
+                bewe_log_push(0,"[CMD:CLI] /chassis 2 reset\n");
                 pending_chassis2_reset.store(true);
             } else if(line == "/rx stop"){
+                bewe_log_push(0,"[CMD:CLI] /rx stop\n");
                 if(v.rx_stopped.load()){
-                    printf("[CLI] RX already stopped.\n");
+                    bewe_log_push(0,"[CLI] RX already stopped.\n");
                 } else if(!v.is_running && !cap.joinable()){
-                    printf("[CLI] No SDR running.\n");
+                    bewe_log_push(0,"[CLI] No SDR running.\n");
                 } else {
-                    printf("[CLI] RX stop\n");
+                    bewe_log_push(0,"[CLI] RX stop\n");
                     if(v.net_srv) v.net_srv->broadcast_chat("SYSTEM", "RX stop");
                     if(v.rec_on.load()) v.stop_rec();
                     if(v.tm_iq_on.load()){ v.tm_iq_on.store(false); v.tm_iq_close(); }
@@ -1102,13 +1115,14 @@ void run_cli_host(){
                     v.rx_stopped.store(true);
                     v.sdr_stream_error.store(false);
                     v.spectrum_pause.store(false);
-                    printf("[CLI] RX stopped.\n");
+                    bewe_log_push(0,"[CLI] RX stopped.\n");
                 }
             } else if(line == "/rx start"){
+                bewe_log_push(0,"[CMD:CLI] /rx start\n");
                 if(!v.rx_stopped.load()){
-                    printf("[CLI] RX already running.\n");
+                    bewe_log_push(0,"[CLI] RX already running.\n");
                 } else {
-                    printf("[CLI] RX start — initializing SDR ...\n");
+                    bewe_log_push(0,"[CLI] RX start - initializing SDR ...\n");
                     v.rx_stopped.store(false);
                     float cur_cf = (float)(v.header.center_frequency / 1e6);
                     if(cur_cf < 0.1f) cur_cf = cf;
@@ -1122,30 +1136,30 @@ void run_cli_host(){
                         v.mix_stop.store(false);
                         v.mix_thr = std::thread(&FFTViewer::mix_worker, &v);
                         if(v.net_srv) v.net_srv->broadcast_chat("SYSTEM", "RX start");
-                        printf("[CLI] RX started. SDR online.\n");
+                        bewe_log_push(0,"[CLI] RX started. SDR online.\n");
                     } else {
                         v.is_running = false;
                         v.rx_stopped.store(true);
-                        printf("[CLI] RX start failed — SDR not found.\n");
+                        bewe_log_push(0,"[CLI] RX start failed - SDR not found.\n");
                     }
                 }
             } else if(line == "/help"){
-                printf("Commands:\n");
-                printf("  /status          — Show system status\n");
-                printf("  /clients         — List connected operators\n");
-                printf("  /chassis 1 reset — USB SDR hardware reset\n");
-                printf("  /chassis 2 reset — Network broadcast reset\n");
-                printf("  /rx stop         — Stop SDR capture\n");
-                printf("  /rx start        — Restart SDR capture\n");
-                printf("  /shutdown        — Clean exit\n");
-                printf("  /help            — Show this help\n");
-                printf("  <text>           — Broadcast as chat message\n");
+                bewe_log_push(0,"Commands:\n");
+                bewe_log_push(0,"  /status          - Show system status\n");
+                bewe_log_push(0,"  /clients         - List connected operators\n");
+                bewe_log_push(0,"  /chassis 1 reset - USB SDR hardware reset\n");
+                bewe_log_push(0,"  /chassis 2 reset - Network broadcast reset\n");
+                bewe_log_push(0,"  /rx stop         - Stop SDR capture\n");
+                bewe_log_push(0,"  /rx start        - Restart SDR capture\n");
+                bewe_log_push(0,"  /shutdown        - Clean exit\n");
+                bewe_log_push(0,"  /help            - Show this help\n");
+                bewe_log_push(0,"  <text>           - Broadcast as chat message\n");
                 fflush(stdout);
             } else if(!line.empty()){
                 // Chat message
                 if(v.net_srv)
                     v.net_srv->broadcast_chat(login_get_id(), line.c_str());
-                printf("[CHAT] %s: %s\n", login_get_id(), line.c_str());
+                bewe_log_push(0,"[CHAT] %s: %s\n", login_get_id(), line.c_str());
             }
         }
     }
@@ -1153,7 +1167,7 @@ void run_cli_host(){
     // ══════════════════════════════════════════════════════════════════════
     //  Cleanup
     // ══════════════════════════════════════════════════════════════════════
-    printf("[BEWE CLI] Shutting down...\n");
+    bewe_log_push(0,"[BEWE CLI] Shutting down...\n");
 
     v.is_running = false;
     if(v.dev_rtl) rtlsdr_cancel_async(v.dev_rtl);
@@ -1178,7 +1192,7 @@ void run_cli_host(){
     if(v.dev_rtl){ rtlsdr_close(v.dev_rtl); v.dev_rtl=nullptr; }
     v.sa_cleanup();
 
-    // record/ → private/ 이동
+    // record/ > private/ 이동
     auto move_dir = [](const std::string& src_dir, const std::string& dst_dir){
         DIR* d = opendir(src_dir.c_str());
         if(!d) return;
@@ -1197,5 +1211,5 @@ void run_cli_host(){
     move_dir(BEWEPaths::record_iq_dir(),    BEWEPaths::private_iq_dir());
     move_dir(BEWEPaths::record_audio_dir(), BEWEPaths::private_audio_dir());
 
-    printf("[BEWE CLI] Stopped.\n");
+    bewe_log_push(0,"[BEWE CLI] Stopped.\n");
 }

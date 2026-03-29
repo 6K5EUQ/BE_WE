@@ -14,6 +14,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+extern void bewe_log_push(int col, const char* fmt, ...);
+
 // IQ 파일 전송 속도: TCP send 실측 기반 적응형.
 // send_all이 blocking이므로 네트워크 병목(HOST 업로드, JOIN 다운로드)에 자동 적응.
 // FFT 스트림 보호를 위해 실측 속도의 90%만 사용.
@@ -52,7 +54,7 @@ bool NetServer::start(int port){
 
     running_.store(true);
     accept_thr_ = std::thread(&NetServer::accept_loop, this);
-    printf("[NetServer] listening on port %d\n", listen_port_);
+    bewe_log_push(0, "[NetServer] listening on port %d\n", listen_port_);
     return true;
 }
 
@@ -88,7 +90,7 @@ void NetServer::accept_loop(){
             if(running_.load()) perror("accept");
             break;
         }
-        // TCP_NODELAY: Nagle 알고리즘 비활성화 → FFT 스트림 지연 방지
+        // TCP_NODELAY: Nagle 알고리즘 비활성화 > FFT 스트림 지연 방지
         int nd=1; setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
         // set TCP keepalive
         int ka=1; setsockopt(cfd, SOL_SOCKET, SO_KEEPALIVE, &ka, sizeof(ka));
@@ -134,25 +136,25 @@ void NetServer::client_loop(std::shared_ptr<ClientConn> c){
         if(!recv_all(c->fd, &hdr, PKT_HDR_SIZE)){
             int e = errno;
             if(c->alive.load())  // 정상 stop이면 로그 생략
-                printf("[NetServer] recv hdr failed op=%d('%s') fd=%d errno=%d(%s) pkts=%llu\n",
+                bewe_log_push(0, "[NetServer] recv hdr failed op=%d('%s') fd=%d errno=%d(%s) pkts=%llu\n",
                        c->op_index, c->name, c->fd, e, strerror(e), (unsigned long long)pkt_count);
             break;
         }
         if(memcmp(hdr.magic, BEWE_MAGIC, 4) != 0){
-            printf("[NetServer] bad magic from op=%d('%s') fd=%d (type=0x%02x)\n",
+            bewe_log_push(0, "[NetServer] bad magic from op=%d('%s') fd=%d (type=0x%02x)\n",
                    c->op_index, c->name, c->fd, hdr.type);
             break;
         }
         uint32_t len = hdr.len;
         if(len > 1024*1024){
-            printf("[NetServer] oversized pkt op=%d type=0x%02x len=%u\n",
+            bewe_log_push(0, "[NetServer] oversized pkt op=%d type=0x%02x len=%u\n",
                    c->op_index, (uint8_t)hdr.type, len);
             break;
         }
         std::vector<uint8_t> payload(len);
         if(len > 0 && !recv_all(c->fd, payload.data(), len)){
             int e = errno;
-            printf("[NetServer] recv payload failed op=%d type=0x%02x len=%u errno=%d(%s)\n",
+            bewe_log_push(0, "[NetServer] recv payload failed op=%d type=0x%02x len=%u errno=%d(%s)\n",
                    c->op_index, (uint8_t)hdr.type, len, e, strerror(e));
             break;
         }
@@ -183,16 +185,16 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
             strncpy(c->name, req->id, 31);
             c->authed     = true;
             strncpy(ack.reason, "OK", sizeof(ack.reason));
-            printf("[NetServer] op %d '%s' (Tier%d) connected\n",
+            bewe_log_push(0, "[NetServer] op %d '%s' (Tier%d) connected\n",
                    idx, c->name, c->tier);
         } else {
             ack.ok = 0;
             strncpy(ack.reason, "Auth failed", sizeof(ack.reason));
         }
-        printf("[NetServer] AUTH_ACK sending op=%d ok=%u is_relay=%d fd=%d\n",
+        bewe_log_push(0, "[NetServer] AUTH_ACK sending op=%d ok=%u is_relay=%d fd=%d\n",
                idx, ack.ok, (int)c->is_relay, c->fd);
         send_to(*c, PacketType::AUTH_ACK, &ack, sizeof(ack));
-        printf("[NetServer] AUTH_ACK sent op=%d ok=%u\n", idx, ack.ok);
+        bewe_log_push(0, "[NetServer] AUTH_ACK sent op=%d ok=%u\n", idx, ack.ok);
         if(ack.ok){
             broadcast_operator_list();
         }
@@ -204,21 +206,21 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
         auto* cmd = reinterpret_cast<const PktCmd*>(payload);
         switch(static_cast<CmdType>(cmd->cmd)){
             case CmdType::SET_FREQ:
-                if(cb.on_set_freq) cb.on_set_freq(cmd->set_freq.cf_mhz);
+                if(cb.on_set_freq) cb.on_set_freq(c->name, cmd->set_freq.cf_mhz);
                 break;
             case CmdType::SET_GAIN:
-                if(cb.on_set_gain) cb.on_set_gain(cmd->set_gain.db);
+                if(cb.on_set_gain) cb.on_set_gain(c->name, cmd->set_gain.db);
                 break;
             case CmdType::CREATE_CH:
                 if(cb.on_create_ch)
                     cb.on_create_ch(cmd->create_ch.idx, cmd->create_ch.s, cmd->create_ch.e, c->name);
                 break;
             case CmdType::DELETE_CH:
-                if(cb.on_delete_ch) cb.on_delete_ch(cmd->delete_ch.idx);
+                if(cb.on_delete_ch) cb.on_delete_ch(c->name, cmd->delete_ch.idx);
                 break;
             case CmdType::SET_CH_MODE:
                 if(cb.on_set_ch_mode)
-                    cb.on_set_ch_mode(cmd->set_ch_mode.idx, cmd->set_ch_mode.mode);
+                    cb.on_set_ch_mode(c->name, cmd->set_ch_mode.idx, cmd->set_ch_mode.mode);
                 break;
             case CmdType::SET_CH_AUDIO:
                 if(cb.on_set_ch_audio)
@@ -271,22 +273,22 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
                         cmd->request_region.time_start, cmd->request_region.time_end);
                 break;
             case CmdType::CHASSIS_RESET:
-                if(cb.on_chassis_reset) cb.on_chassis_reset();
+                if(cb.on_chassis_reset) cb.on_chassis_reset(c->name);
                 break;
             case CmdType::NET_RESET:
-                if(cb.on_net_reset) cb.on_net_reset();
+                if(cb.on_net_reset) cb.on_net_reset(c->name);
                 break;
             case CmdType::RX_STOP:
-                if(cb.on_rx_stop) cb.on_rx_stop();
+                if(cb.on_rx_stop) cb.on_rx_stop(c->name);
                 break;
             case CmdType::RX_START:
-                if(cb.on_rx_start) cb.on_rx_start();
+                if(cb.on_rx_start) cb.on_rx_start(c->name);
                 break;
             case CmdType::SET_FFT_SIZE:
-                if(cb.on_set_fft_size) cb.on_set_fft_size(cmd->set_fft_size.size);
+                if(cb.on_set_fft_size) cb.on_set_fft_size(c->name, cmd->set_fft_size.size);
                 break;
             case CmdType::SET_SR:
-                if(cb.on_set_sr) cb.on_set_sr(cmd->set_sr.msps);
+                if(cb.on_set_sr) cb.on_set_sr(c->name, cmd->set_sr.msps);
                 break;
             default: break;
         }
@@ -336,7 +338,7 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
                  "/tmp/bewe_up_%s", c->upload.filename);
         c->upload.fp = fopen(c->upload.save_path, "wb");
         if(!c->upload.fp){
-            fprintf(stderr,"SHARE_UPLOAD_META: fopen failed %s\n", c->upload.save_path);
+            bewe_log_push(0, "SHARE_UPLOAD_META: fopen failed %s\n", c->upload.save_path);
             c->upload.active=false;
         }
         break;
@@ -380,7 +382,7 @@ void NetServer::drop_client(std::shared_ptr<ClientConn> c){
     uint8_t idx = c->op_index;
     char name[32]; strncpy(name, c->name, 31);
 
-    printf("[NetServer] drop_client op=%d '%s' fd=%d authed=%d is_relay=%d\n",
+    bewe_log_push(0, "[NetServer] drop_client op=%d '%s' fd=%d authed=%d is_relay=%d\n",
            idx, name, c->fd, (int)was_authed, (int)c->is_relay);
 
     c->alive.store(false);
@@ -395,7 +397,7 @@ void NetServer::drop_client(std::shared_ptr<ClientConn> c){
     }
 
     if(was_authed){
-        printf("[NetServer] op %d '%s' disconnected\n", idx, name);
+        bewe_log_push(0, "[NetServer] op %d '%s' disconnected\n", idx, name);
         broadcast_operator_list();
     }
 }
@@ -434,11 +436,11 @@ void NetServer::broadcast_fft(const float* data, int fft_size,
             cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
             fft_relay_count++;
             if(fft_relay_count % 600 == 1)
-                printf("[NetServer] broadcast_fft→relay: #%llu size=%zu\n",
+                bewe_log_push(0, "[NetServer] broadcast_fft>relay: #%llu size=%zu\n",
                        (unsigned long long)fft_relay_count, pkt.size());
         } else {
             if(fft_relay_count % 600 == 0)
-                printf("[NetServer] broadcast_fft: on_relay_broadcast is NULL (#%llu)\n",
+                bewe_log_push(0, "[NetServer] broadcast_fft: on_relay_broadcast is NULL (#%llu)\n",
                        (unsigned long long)fft_relay_count);
             fft_relay_count++;
         }
@@ -637,7 +639,7 @@ void NetServer::send_region_response(int op_index, bool allowed){
 void NetServer::send_file_to(int op_index, const char* path, uint8_t transfer_id,
                               std::function<void(uint64_t,uint64_t)> progress_cb){
     FILE* fp = fopen(path, "rb");
-    if(!fp){ fprintf(stderr,"send_file_to: open failed %s\n",path); return; }
+    if(!fp){ bewe_log_push(0, "send_file_to: open failed %s\n",path); return; }
     fseek(fp,0,SEEK_END); uint64_t total=(uint64_t)ftell(fp); fseek(fp,0,SEEK_SET);
 
     // find target client
@@ -664,7 +666,7 @@ void NetServer::send_file_to(int op_index, const char* path, uint8_t transfer_id
 
     // send chunks: 64KB 청크로 TCP 효율 극대화
     // send_file_to는 detach 스레드에서 실행되므로 캡처·오디오 스레드 차단 없음
-    // 속도: 측정 속도의 80% 사용 → FFT 스트림 보호하되 전송 속도 확보
+    // 속도: 측정 속도의 80% 사용 > FFT 스트림 보호하되 전송 속도 확보
     const uint32_t CHUNK = 256 * 1024;  // 256KB 청크
     std::vector<uint8_t> buf(sizeof(PktFileData)+CHUNK);
     uint64_t offset=0;
@@ -683,7 +685,7 @@ void NetServer::send_file_to(int op_index, const char* path, uint8_t transfer_id
         offset += n;
         uint32_t total_payload = (uint32_t)(sizeof(PktFileData)+n);
         auto pkt = make_packet(PacketType::FILE_DATA, buf.data(), total_payload);
-        // send 에 걸리는 시간 측정 → 실 TCP throughput
+        // send 에 걸리는 시간 측정 > 실 TCP throughput
         auto t0 = std::chrono::steady_clock::now();
         {
             std::lock_guard<std::mutex> slk(target->fd_write_mtx);
@@ -697,7 +699,7 @@ void NetServer::send_file_to(int op_index, const char* path, uint8_t transfer_id
                          + chunk_bps    *        FILE_RATE_EWMA_ALPHA;
         }
         if(progress_cb) progress_cb(offset, total);
-        // 목표: 측정 속도의 90% 사용 → 나머지 10%를 FFT 스트림에 양보
+        // 목표: 측정 속도의 90% 사용 > 나머지 10%를 FFT 스트림에 양보
         uint64_t target_bps = (uint64_t)(measured_bps * 0.90);
         if(target_bps < FILE_RATE_FLOOR) target_bps = FILE_RATE_FLOOR;
         // 누적 기준으로 sleep (drift 방지)
@@ -724,7 +726,7 @@ void NetServer::send_file_via_pipe(int pipe_fd, const char* path, uint32_t req_i
                                     std::function<void(uint64_t,uint64_t)> progress_cb){
     FILE* fp = fopen(path, "rb");
     if(!fp){
-        fprintf(stderr, "send_file_via_pipe: open failed %s\n", path);
+        bewe_log_push(0, "send_file_via_pipe: open failed %s\n", path);
         close(pipe_fd);
         return;
     }
@@ -758,7 +760,7 @@ void NetServer::send_file_via_pipe(int pipe_fd, const char* path, uint32_t req_i
         size_t n = fread(buf.data(), 1, CHUNK, fp);
         if(n == 0) break;
         if(!central_send_all(pipe_fd, buf.data(), n)){
-            fprintf(stderr, "send_file_via_pipe: pipe write failed\n");
+            bewe_log_push(0, "send_file_via_pipe: pipe write failed\n");
             break;
         }
         offset += n;

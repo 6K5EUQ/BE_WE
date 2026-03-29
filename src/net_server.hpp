@@ -151,11 +151,11 @@ struct ServerCallbacks {
     std::function<bool(const char* id, const char* pw,
                        uint8_t tier, uint8_t& op_index)> on_auth;
 
-    std::function<void(float cf_mhz)>               on_set_freq;
-    std::function<void(float db)>                    on_set_gain;
+    std::function<void(const char* who, float cf_mhz)>               on_set_freq;
+    std::function<void(const char* who, float db)>                    on_set_gain;
     std::function<void(int idx, float s, float e, const char* creator)> on_create_ch;
-    std::function<void(int idx)>                     on_delete_ch;
-    std::function<void(int idx, int mode)>           on_set_ch_mode;
+    std::function<void(const char* who, int idx)>                     on_delete_ch;
+    std::function<void(const char* who, int idx, int mode)>           on_set_ch_mode;
     std::function<void(int idx, uint32_t mask)>      on_set_ch_audio;
     std::function<void(int ch_idx)>                  on_start_rec;
     std::function<void()>                            on_stop_rec;
@@ -175,12 +175,12 @@ struct ServerCallbacks {
     std::function<void(uint8_t op_idx, const char* filename)> on_share_download_req;
     // JOIN이 파일 업로드 완료: op_idx, op_name, 저장된 절대경로
     std::function<void(uint8_t op_idx, const char* op_name, const char* saved_path)> on_share_upload_done;
-    std::function<void()> on_chassis_reset;  // JOIN이 /chassis 1 reset 명령 전송
-    std::function<void()> on_net_reset;      // JOIN이 /chassis 2 reset 명령 전송
-    std::function<void()> on_rx_stop;        // JOIN이 /rx stop 명령 전송
-    std::function<void()> on_rx_start;       // JOIN이 /rx start 명령 전송
-    std::function<void(uint32_t size)>       on_set_fft_size; // JOIN → HOST: FFT 크기 변경
-    std::function<void(float msps)>          on_set_sr;       // JOIN → HOST: SR 변경
+    std::function<void(const char* who)> on_chassis_reset;
+    std::function<void(const char* who)> on_net_reset;
+    std::function<void(const char* who)> on_rx_stop;
+    std::function<void(const char* who)> on_rx_start;
+    std::function<void(const char* who, uint32_t size)> on_set_fft_size;
+    std::function<void(const char* who, float msps)>    on_set_sr;
     // JOIN이 public 파일 삭제 요청: op_name, filename (소유자 검증은 ui.cpp에서)
     std::function<void(const char* op_name, const char* filename)> on_pub_delete_req;
     // 중앙서버 relay 브로드캐스트 콜백: BEWE 패킷 1회 전달 → 중앙서버가 N명에게 fan-out

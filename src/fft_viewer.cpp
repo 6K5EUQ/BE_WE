@@ -1,6 +1,46 @@
 #include "fft_viewer.hpp"
 #include <algorithm>
 #include <cfloat>
+#include <cstdarg>
+#include <ctime>
+
+// FFTViewer::log_push - LOG overlay buffer + console
+void FFTViewer::log_push(int col, const char* fmt, ...){
+    if(col < 0 || col > 2) col = 0;
+    char raw[480];
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(raw, sizeof(raw), fmt, ap);
+    va_end(ap);
+    // strip trailing newlines
+    size_t len = strlen(raw);
+    while(len > 0 && (raw[len-1]=='\n'||raw[len-1]=='\r')) raw[--len]='\0';
+    // timestamp prefix
+    time_t now = time(nullptr);
+    struct tm tm_buf; localtime_r(&now, &tm_buf);
+    char ts[12]; strftime(ts, sizeof(ts), "%H:%M:%S", &tm_buf);
+    char full[512];
+    snprintf(full, sizeof(full), "[%s] %s", ts, raw);
+    // console
+    fprintf(stdout, "%s\n", full);
+    fflush(stdout);
+    // buffer
+    std::lock_guard<std::mutex> lk(log_mtx);
+    LogEntry e{}; strncpy(e.msg, full, 511);
+    if(log_buf[col].size() >= (size_t)LOG_MAX) log_buf[col].erase(log_buf[col].begin());
+    log_buf[col].push_back(e);
+    log_scroll[col] = true;
+}
+
+// 글로벌 로그 (FFTViewer 인스턴스 없이도 호출 가능)
+FFTViewer* g_log_viewer = nullptr;
+void bewe_log_push(int col, const char* fmt, ...){
+    char buf[512];
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if(g_log_viewer) g_log_viewer->log_push(col, "%s", buf);
+    else fputs(buf, stdout);
+}
 
 // ── Jet colormap LUT (COLORMAP_LUT_SIZE entry, 한 번만 계산) ────────────
 static uint32_t g_jet_lut[COLORMAP_LUT_SIZE];

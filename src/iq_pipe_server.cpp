@@ -9,6 +9,8 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 
+extern void bewe_log_push(int col, const char* fmt, ...);
+
 int IqPipeServer::make_listen_sock(int port){
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if(fd < 0) return -1;
@@ -31,7 +33,7 @@ bool IqPipeServer::start(int port){
     }
     running_.store(true);
     accept_thr_ = std::thread(&IqPipeServer::accept_loop, this);
-    printf("[IqPipeServer] listening on port %d\n", port);
+    bewe_log_push(1,"[IqPipeServer] listening on port %d\n", port);
     return true;
 }
 
@@ -53,7 +55,7 @@ void IqPipeServer::register_send(uint32_t req_id, const std::string& file_path, 
     e.cb        = cb;
     e.created   = std::chrono::steady_clock::now();
     entries_.push_back(std::move(e));
-    printf("[IqPipeServer] registered req_id=%u file='%s'\n", req_id, file_path.c_str());
+    bewe_log_push(1,"[IqPipeServer] registered req_id=%u file='%s'\n", req_id, file_path.c_str());
 }
 
 void IqPipeServer::accept_loop(){
@@ -86,11 +88,11 @@ void IqPipeServer::handle_join(int fd){
         timeval tv0{0,0};
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv0, sizeof(tv0));
         if(r != 4){
-            printf("[IqPipeServer] handle_join: req_id recv failed r=%zd\n", r);
+            bewe_log_push(1,"[IqPipeServer] handle_join: req_id recv failed r=%zd\n", r);
             close(fd); return;
         }
     }
-    printf("[IqPipeServer] JOIN connected req_id=%u\n", req_id);
+    bewe_log_push(1,"[IqPipeServer] JOIN connected req_id=%u\n", req_id);
 
     // entries_에서 매칭되는 항목 찾기 (최대 60초 대기)
     std::string file_path;
@@ -112,14 +114,14 @@ void IqPipeServer::handle_join(int fd){
     }
 
     if(file_path.empty()){
-        printf("[IqPipeServer] req_id=%u: no matching send entry (timeout)\n", req_id);
+        bewe_log_push(1,"[IqPipeServer] req_id=%u: no matching send entry (timeout)\n", req_id);
         close(fd); return;
     }
 
     // 파일 열기
     FILE* fp = fopen(file_path.c_str(), "rb");
     if(!fp){
-        printf("[IqPipeServer] req_id=%u: cannot open '%s'\n", req_id, file_path.c_str());
+        bewe_log_push(1,"[IqPipeServer] req_id=%u: cannot open '%s'\n", req_id, file_path.c_str());
         if(cb) cb(0, 0, -1);
         close(fd); return;
     }
@@ -143,7 +145,7 @@ void IqPipeServer::handle_join(int fd){
         while(rem > 0){
             ssize_t r = send(fd, p, rem, MSG_NOSIGNAL);
             if(r <= 0){
-                printf("[IqPipeServer] req_id=%u: send failed r=%zd errno=%d(%s)\n",
+                bewe_log_push(1,"[IqPipeServer] req_id=%u: send failed r=%zd errno=%d(%s)\n",
                        req_id, r, errno, strerror(errno));
                 fclose(fp); close(fd);
                 if(cb) cb(sent, total, -1);
@@ -157,6 +159,6 @@ void IqPipeServer::handle_join(int fd){
 
     fclose(fp);
     close(fd);
-    printf("[IqPipeServer] req_id=%u: done %.2f MB\n", req_id, sent/1048576.0);
+    bewe_log_push(1,"[IqPipeServer] req_id=%u: done %.2f MB\n", req_id, sent/1048576.0);
     if(cb) cb(sent, total, 2);  // phase=2: 완료
 }

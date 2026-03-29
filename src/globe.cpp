@@ -1,6 +1,7 @@
 #include "globe.hpp"
 #include "world_map_data.hpp"
 #include "bewe_paths.hpp"
+extern void bewe_log_push(int col, const char* fmt, ...);
 #include <GL/glew.h>
 #include <cmath>
 #include <cstring>
@@ -569,7 +570,7 @@ GLuint GlobeRenderer::compile_shader(const char* vsrc, const char* fsrc) {
         GLint ok; glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
         if (!ok) {
             char log[512]; glGetShaderInfoLog(sh, sizeof(log), nullptr, log);
-            printf("[Globe] shader compile error: %s\n", log);
+            bewe_log_push(1,"[Globe] shader compile error: %s\n", log);
         }
         return sh;
     };
@@ -582,7 +583,7 @@ GLuint GlobeRenderer::compile_shader(const char* vsrc, const char* fsrc) {
     GLint ok; glGetProgramiv(prog, GL_LINK_STATUS, &ok);
     if (!ok) {
         char log[512]; glGetProgramInfoLog(prog, sizeof(log), nullptr, log);
-        printf("[Globe] shader link error: %s\n", log);
+        bewe_log_push(1,"[Globe] shader link error: %s\n", log);
         prog = 0;
     }
     glDeleteShader(vs);
@@ -713,7 +714,7 @@ void GlobeRenderer::build_map_lines() {
                           3*sizeof(float), (void*)0);
     glBindVertexArray(0);
 
-    printf("[Globe] map lines: %zu segments, %zu vertices\n",
+    bewe_log_push(1,"[Globe] map lines: %zu segments, %zu vertices\n",
            seg_starts_.size(), verts.size()/3);
 }
 
@@ -735,7 +736,7 @@ void GlobeRenderer::build_land() {
     glBindVertexArray(0);
 
     land_vtx_count_ = LAND_TRI_COUNT / 3; // 3 floats per vertex
-    printf("[Globe] land triangles: %d vertices\n", land_vtx_count_);
+    bewe_log_push(1,"[Globe] land triangles: %d vertices\n", land_vtx_count_);
 }
 
 bool GlobeRenderer::load_earth_texture() {
@@ -744,7 +745,7 @@ bool GlobeRenderer::load_earth_texture() {
     int w, h, ch;
     unsigned char* data = stbi_load(path.c_str(), &w, &h, &ch, 3);
     if (!data) {
-        printf("[Globe] earth texture not found: %s\n", path.c_str());
+        bewe_log_push(1,"[Globe] earth texture not found: %s\n", path.c_str());
         return false;
     }
     // Flip image horizontally (mirror each row) to match sphere u-direction
@@ -772,7 +773,7 @@ bool GlobeRenderer::load_earth_texture() {
         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, maxAniso);
     glBindTexture(GL_TEXTURE_2D, 0);
     stbi_image_free(data);
-    printf("[Globe] earth texture loaded: %dx%d\n", w, h);
+    bewe_log_push(1,"[Globe] earth texture loaded: %dx%d\n", w, h);
     return true;
 }
 
