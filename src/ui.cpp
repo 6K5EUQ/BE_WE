@@ -1027,20 +1027,39 @@ void run_streaming_viewer(){
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);
     glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_SAMPLES,4);
-    glfwWindowHint(GLFW_DECORATED,GLFW_FALSE);
+    glfwWindowHint(GLFW_DECORATED,GLFW_TRUE);
     GLFWmonitor* primary=glfwGetPrimaryMonitor();
     const GLFWvidmode* vmode=glfwGetVideoMode(primary);
     glfwWindowHint(GLFW_RED_BITS,  vmode->redBits);
     glfwWindowHint(GLFW_GREEN_BITS,vmode->greenBits);
     glfwWindowHint(GLFW_BLUE_BITS, vmode->blueBits);
     glfwWindowHint(GLFW_REFRESH_RATE,vmode->refreshRate);
-    GLFWwindow* win=glfwCreateWindow(vmode->width,vmode->height,"BEWE",primary,nullptr);
+    GLFWwindow* win=glfwCreateWindow(1400,900,"BEWE",nullptr,nullptr);
     glfwMakeContextCurrent(win); glfwSwapInterval(0);
     glewExperimental=GL_TRUE; glewInit();
     glEnable(GL_MULTISAMPLE);
     ImGui::CreateContext(); ImGui::StyleColorsDark();
     ImGui_ImplGlfw_InitForOpenGL(win,true);
     ImGui_ImplOpenGL3_Init("#version 330");
+
+    // ── Fullscreen toggle (F11) ────────────────────────────────────────────
+    static bool is_fullscreen = false;
+    static int saved_win_x=0, saved_win_y=0, saved_win_w=1400, saved_win_h=900;
+    auto toggle_fullscreen = [&](){
+        if(!ImGui::IsKeyPressed(ImGuiKey_F11,false)) return;
+        if(is_fullscreen){
+            glfwSetWindowMonitor(win,nullptr,saved_win_x,saved_win_y,saved_win_w,saved_win_h,0);
+            glfwSetWindowAttrib(win,GLFW_DECORATED,GLFW_TRUE);
+            is_fullscreen=false;
+        } else {
+            glfwGetWindowPos(win,&saved_win_x,&saved_win_y);
+            glfwGetWindowSize(win,&saved_win_w,&saved_win_h);
+            GLFWmonitor* mon=glfwGetPrimaryMonitor();
+            const GLFWvidmode* vm=glfwGetVideoMode(mon);
+            glfwSetWindowMonitor(win,mon,0,0,vm->width,vm->height,vm->refreshRate);
+            is_fullscreen=true;
+        }
+    };
 
     // ── Early chat state (login + globe loops 공유) ───────────────────────
     struct EarlyChatMsg { char from[32]; char msg[256]; bool is_error=false; };
@@ -1161,6 +1180,7 @@ void run_streaming_viewer(){
             glClearColor(0.047f,0.071f,0.137f,1.0f);
             glClear(GL_COLOR_BUFFER_BIT);
             ImGui_ImplOpenGL3_NewFrame(); ImGui_ImplGlfw_NewFrame(); ImGui::NewFrame();
+            toggle_fullscreen();
             logged_in = draw_login_screen(fw,fh);
             draw_early_chat(fw, fh);
             if(early_do_shutdown){ glfwSetWindowShouldClose(win, GLFW_TRUE); }
@@ -1341,6 +1361,7 @@ void run_streaming_viewer(){
         }
 
         ImGui_ImplOpenGL3_NewFrame(); ImGui_ImplGlfw_NewFrame(); ImGui::NewFrame();
+        toggle_fullscreen();
         ImGuiIO& io = ImGui::GetIO();
 
         // Purge stale stations (>6 s without announcement)
@@ -2102,6 +2123,7 @@ void run_streaming_viewer(){
             glClearColor(0.03f,0.05f,0.10f,1.0f);
             glClear(GL_COLOR_BUFFER_BIT);
             ImGui_ImplOpenGL3_NewFrame(); ImGui_ImplGlfw_NewFrame(); ImGui::NewFrame();
+            toggle_fullscreen();
 
             const float OW=320.f, OH=240.f;
             ImGui::SetNextWindowPos(ImVec2((fw-OW)*0.5f,(fh-OH)*0.5f));
@@ -3370,6 +3392,7 @@ void run_streaming_viewer(){
         }
 
         ImGui_ImplOpenGL3_NewFrame(); ImGui_ImplGlfw_NewFrame(); ImGui::NewFrame();
+        toggle_fullscreen();
         // TM 모드: freeze_idx는 스페이스바 진입 시점에만 세팅 (매 프레임 갱신 금지)
         // Ctrl+휠로 tm_offset 변경 시 tm_update_display()가 display_idx를 재계산함
         if(v.texture_needs_recreate){ v.texture_needs_recreate=false; v.create_waterfall_texture(); }
@@ -7957,6 +7980,7 @@ void run_streaming_viewer(){
         move_dir(BEWEPaths::record_audio_dir(), BEWEPaths::private_audio_dir());
     }
 
+    g_log_viewer = nullptr; // detached thread에서의 use-after-free 방지
     } while(do_main_menu && !glfwWindowShouldClose(win)); // ── 모드선택 outer 루프 끝
 
     if(do_logout){
