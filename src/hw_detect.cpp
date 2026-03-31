@@ -6,7 +6,7 @@
 // ── HW 자동 감지 후 초기화 ────────────────────────────────────────────────
 // 우선순위: BladeRF > RTL-SDR
 // 하나만 연결 시 자동 선택, 둘 다 있으면 BladeRF
-bool FFTViewer::initialize(float cf_mhz){
+bool FFTViewer::initialize(float cf_mhz, float sr_msps){
     // BladeRF 감지
     struct bladerf_devinfo* blade_list = nullptr;
     int n_blade = bladerf_get_device_list(&blade_list);
@@ -24,7 +24,7 @@ bool FFTViewer::initialize(float cf_mhz){
 
     if(has_blade){
         bewe_log_push(0,"HW: BladeRF detected%s\n", has_rtl ? " (RTL-SDR also present, using BladeRF)" : "");
-        return initialize_bladerf(cf_mhz, 61.44f);
+        return initialize_bladerf(cf_mhz, sr_msps > 0 ? sr_msps : 61.44f);
     }
 
     bewe_log_push(0,"HW: RTL-SDR detected (no BladeRF)\n");

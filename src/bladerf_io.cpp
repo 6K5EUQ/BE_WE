@@ -251,6 +251,7 @@ void FFTViewer::capture_and_process(){
             }
             // SR 변경 후 게인 재적용 (BladeRF가 SR 변경 시 게인을 리셋할 수 있음)
             set_gain(gain_db);
+            dem_restart_needed.store(true); // demod가 새 SR로 재초기화되도록
             bewe_log("SR > %.2f MSPS  BW > %.2f MHz\n", actual_sr/1e6f, actual_bw/1e6f);
             continue;
         }

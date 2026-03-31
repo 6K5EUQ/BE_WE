@@ -936,8 +936,10 @@ void run_cli_host(){
                 v.rx_stopped.store(false);
                 float cur_cf = (float)(v.header.center_frequency / 1e6);
                 if(cur_cf < 0.1f) cur_cf = 100.f;
+                float cur_sr = v.header.sample_rate / 1e6f;
+                if(cur_sr < 0.1f) cur_sr = 61.44f;
                 v.is_running = true;
-                if(v.initialize(cur_cf)){
+                if(v.initialize(cur_cf, cur_sr)){
                     v.set_gain(v.gain_db);
                     if(v.hw.type == HWType::BLADERF)
                         cap = std::thread(&FFTViewer::capture_and_process, &v);
@@ -1005,8 +1007,10 @@ void run_cli_host(){
                 if(v.fft_out) { fftwf_free(v.fft_out);  v.fft_out=nullptr; }
                 float cur_cf = (float)(v.header.center_frequency / 1e6);
                 if(cur_cf < 0.1f) cur_cf = 100.f;
+                float cur_sr2 = v.header.sample_rate / 1e6f;
+                if(cur_sr2 < 0.1f) cur_sr2 = 61.44f;
                 v.is_running = true;
-                if(v.initialize(cur_cf)){
+                if(v.initialize(cur_cf, cur_sr2)){
                     bewe_log_push(0,"[CLI] SDR reconnected - resuming at %.2f MHz\n", cur_cf);
                     v.sdr_stream_error.store(false);
                     bg_join_started = false;
@@ -1126,8 +1130,10 @@ void run_cli_host(){
                     v.rx_stopped.store(false);
                     float cur_cf = (float)(v.header.center_frequency / 1e6);
                     if(cur_cf < 0.1f) cur_cf = cf;
+                    float cur_sr3 = v.header.sample_rate / 1e6f;
+                    if(cur_sr3 < 0.1f) cur_sr3 = 61.44f;
                     v.is_running = true;
-                    if(v.initialize(cur_cf)){
+                    if(v.initialize(cur_cf, cur_sr3)){
                         v.set_gain(v.gain_db);
                         if(v.hw.type == HWType::BLADERF)
                             cap = std::thread(&FFTViewer::capture_and_process, &v);

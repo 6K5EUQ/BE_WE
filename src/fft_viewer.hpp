@@ -70,6 +70,7 @@ public:
     std::atomic<bool> capture_pause{false};// 캡처 스레드 pause (타임머신과 무관)
     std::atomic<bool> net_bcast_pause{false}; // /chassis 2 reset: 방송 일시 중단
     std::atomic<bool> sdr_stream_error{false};  // SDR 스트림 오류 (뽑힘/초기화 실패)
+    std::atomic<bool> dem_restart_needed{false}; // SR 변경 후 demod 재시작 필요
     std::atomic<bool> wf_area_visible{true};    // 워터폴 영역 실제 표시 여부 (수평바 포함)
     bool tm_iq_was_stopped=false;
     int  tm_freeze_idx=0;                  // 스페이스바 누른 시점의 fft 인덱스
@@ -285,7 +286,19 @@ public:
         double s0, s1;       // 샘플 인덱스 시작/끝
         ImU32  color;
         char   label[32];
+        bool   selected = false;    // 활성화 상태 (클릭 토글)
+        float  auto_pri_us = 0;     // 자동 검출 PRI (us)
+        float  auto_prf_hz = 0;     // 자동 검출 PRF (Hz)
+        int    auto_pulse_count = 0; // 검출된 펄스 수
     };
+    void eid_auto_analyze_tag(EidTag& tag);
+
+    // 비트 구분 모드 (B키 토글)
+    bool   eid_baud_mode = false;
+    double eid_baud_s0 = -1;     // 시작 샘플 인덱스 (-1=미설정)
+    double eid_baud_s1 = -1;     // 끝 샘플 인덱스 (-1=미설정)
+    int    eid_baud_click = 0;   // 0=대기, 1=시작설정됨
+    int    eid_baud_drag = -1;   // 드래그 중 선 (-1=없음, 0=시작, 1=끝)
     bool    eid_tag_dragging = false;
     float   eid_tag_drag_x0 = 0.f, eid_tag_drag_x1 = 0.f;
     std::vector<EidTag> eid_tags;
@@ -445,7 +458,7 @@ public:
     std::thread       mix_thr;
 
     // ── hw_detect / bladerf_io / rtlsdr_io ───────────────────────────────
-    bool initialize(float cf_mhz);          // HW 자동 감지 후 초기화
+    bool initialize(float cf_mhz, float sr_msps = 61.44f); // HW 자동 감지 후 초기화
     bool initialize_bladerf(float cf_mhz, float sr_msps);
     bool initialize_rtlsdr(float cf_mhz);
     void capture_and_process();

@@ -137,6 +137,23 @@ void FFTViewer::update_channel_squelch(){
             }
         }
         ch.sq_gate.store(gate, std::memory_order_relaxed);
+
+        // 스컬치 누적 시간 추적
+        if(ch.filter_active){
+            if(!ch.sq_tracking){
+                ch.sq_tracking = true;
+                ch.sq_track_start = std::chrono::steady_clock::now();
+                ch.sq_active_time = 0;
+            }
+            if(gate){
+                // FFT 프레임 간격 기반 누적 (~sample_rate/fft_input_size/time_average)
+                float fps = (float)header.sample_rate / (float)std::max(1,fft_input_size) / (float)std::max(1,time_average);
+                if(fps > 0) ch.sq_active_time += 1.0f / fps;
+            }
+        } else {
+            ch.sq_tracking = false;
+            ch.sq_active_time = 0;
+        }
     }
 }
 
@@ -296,11 +313,12 @@ void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float 
                 // JOIN: 서버에 삭제 요청 > 서버가 broadcast 처리
                 net_cli->cmd_delete_ch(ci);
             }
-            // 녹음 중이면 중지
+            // 녹음 중이면 중지 (audio + IQ)
             if(channels[ci].audio_rec_on.load()){
                 if(net_cli) stop_join_audio_rec(ci);
                 else stop_audio_rec(ci);
             }
+            if(channels[ci].iq_rec_on.load()) stop_iq_rec(ci);
             // 로컬 즉시 반영 (서버 sync가 확인해줌)
             stop_dem(ci); stop_digi(ci); digi_panel_on[ci]=false;
             channels[ci].reset_slot();
@@ -3160,6 +3178,18 @@ void run_streaming_viewer(){
             }
         }
 
+        // ── SR 변경 후 demod 재시작 ──────────────────────────────────────────
+        if(v.dem_restart_needed.load()){
+            v.dem_restart_needed.store(false);
+            for(int di=0;di<MAX_CHANNELS;di++){
+                if(v.channels[di].dem_run.load()){
+                    auto dm=v.channels[di].mode;
+                    v.stop_dem(di);
+                    v.start_dem(di,dm);
+                }
+            }
+        }
+
         // ── LOCAL/HOST: SDR 뽑힘 감지 > 백그라운드 join + 주기적 재탐지 ──────
         // /rx stop으로 의도적 중단 시 자동 재연결 하지 않음
         if(!v.remote_mode && v.sdr_stream_error.load() && !v.rx_stopped.load()){
@@ -3219,8 +3249,10 @@ void run_streaming_viewer(){
                 // SDR 재탐지: 현재 설정(주파수) 기반으로 재초기화
                 float cur_cf = (float)(v.header.center_frequency / 1e6);
                 if(cur_cf < 0.1f) cur_cf = 100.f;
+                float cur_sr = v.header.sample_rate / 1e6f;
+                if(cur_sr < 0.1f) cur_sr = 61.44f;
                 v.is_running = true; // 새 캡처 스레드를 위해 복구
-                if(v.initialize(cur_cf)){
+                if(v.initialize(cur_cf, cur_sr)){
                     bewe_log_push(2,"SDR reconnected - resuming at %.2f MHz\n", cur_cf);
                     v.sdr_stream_error.store(false);
                     bg_join_started = false;  // 다음 뽑힘을 위해 리셋
@@ -4532,10 +4564,18 @@ void run_streaming_viewer(){
                                     mode_col, gate?3.0f:1.5f);
                             }
 
-                            // 텍스트
-                            char label[64];
-                            snprintf(label,sizeof(label),"[%d] %s  %.3f MHz  %.0fkHz",
-                                v.freq_sorted_display_num(ci),mnames[mi],cf_mhz,bw_khz);
+                            // 텍스트 (고정폭 정렬)
+                            char label[96];
+                            int dn=v.freq_sorted_display_num(ci);
+                            float elapsed_ch=ch.sq_tracking ?
+                                std::chrono::duration<float>(std::chrono::steady_clock::now()-ch.sq_track_start).count() : 0;
+                            int act_s=(int)ch.sq_active_time, tot_s=(int)elapsed_ch;
+                            if(ch.sq_tracking && tot_s>0)
+                                snprintf(label,sizeof(label),"[%2d] %s %10.3f MHz %6.0fkHz [%d/%ds]",
+                                    dn,mnames[mi],cf_mhz,bw_khz,act_s,tot_s);
+                            else
+                                snprintf(label,sizeof(label),"[%2d] %s %10.3f MHz %6.0fkHz",
+                                    dn,mnames[mi],cf_mhz,bw_khz);
                             ImGui::PushID(ci*1000+700);
                             ImGui::PushStyleColor(ImGuiCol_Text,tc_v);
                             // gate open이면 볼드 효과 (1px offset)
@@ -4595,6 +4635,7 @@ void run_streaming_viewer(){
                                         if(v.remote_mode && v.net_cli) v.stop_join_audio_rec(ci);
                                         else v.stop_audio_rec(ci);
                                     }
+                                    if(v.channels[ci].iq_rec_on.load()) v.stop_iq_rec(ci);
                                     if(v.net_cli) v.net_cli->cmd_delete_ch(ci);
                                     v.stop_dem(ci); v.stop_digi(ci);
                                     v.channels[ci].reset_slot();
@@ -4618,6 +4659,7 @@ void run_streaming_viewer(){
                                     if(v.remote_mode && v.net_cli) v.stop_join_audio_rec(ci);
                                     else v.stop_audio_rec(ci);
                                 }
+                                if(v.channels[ci].iq_rec_on.load()) v.stop_iq_rec(ci);
                                 if(v.net_cli) v.net_cli->cmd_delete_ch(ci);
                                 v.stop_dem(ci); v.stop_digi(ci);
                                 v.channels[ci].reset_slot();
@@ -4837,10 +4879,22 @@ void run_streaming_viewer(){
                                 if(has_audio){
                                     ImGui::TextDisabled("  Audio");
                                     ImGui::Indent(6.f);
-                                    // Pass 1: [REC] 항목 (녹음 중) 먼저 표시
-                                    for(int ri=(int)v.rec_entries.size()-1;ri>=0;ri--){
+                                    // Pass 1: [REC] 항목 (녹음 중) - 주파수순 정렬
+                                    std::vector<int> aud_rec_order;
+                                    for(int ri=0;ri<(int)v.rec_entries.size();ri++){
                                         auto& re=v.rec_entries[ri];
-                                        if(!re.is_audio || re.finished) continue;
+                                        if(re.is_audio && !re.finished) aud_rec_order.push_back(ri);
+                                    }
+                                    std::sort(aud_rec_order.begin(),aud_rec_order.end(),[&](int a,int b){
+                                        int ca=v.rec_entries[a].ch_idx, cb=v.rec_entries[b].ch_idx;
+                                        if(ca<0||cb<0) return a<b;
+                                        float fa=(v.channels[ca].s+v.channels[ca].e)*0.5f;
+                                        float fb=(v.channels[cb].s+v.channels[cb].e)*0.5f;
+                                        return fa<fb;
+                                    });
+                                    for(int oi=0;oi<(int)aud_rec_order.size();oi++){
+                                        int ri=aud_rec_order[oi];
+                                        auto& re=v.rec_entries[ri];
                                         ImGui::PushID(ri+32000);
                                         {
                                             float elapsed=std::chrono::duration<float>(
@@ -4857,10 +4911,11 @@ void run_streaming_viewer(){
                                             auto& ac=aud_sz_cache[re.filename];
                                             if(t2-ac.first >= 0.5f){ ac.first=t2; ac.second=fmt_filesize("",re.path); }
                                             char rec_lbl[512];
+                                            int dn=re.ch_idx>=0?v.freq_sorted_display_num(re.ch_idx):0;
                                             if(!ac.second.empty())
-                                                snprintf(rec_lbl,sizeof(rec_lbl),"[REC]  %s  [%d/%ds]  %s", re.filename.c_str(), rec_secs, secs, ac.second.c_str());
+                                                snprintf(rec_lbl,sizeof(rec_lbl),"[REC] [%2d] %s  [%d/%ds]  %s", dn, re.filename.c_str(), rec_secs, secs, ac.second.c_str());
                                             else
-                                                snprintf(rec_lbl,sizeof(rec_lbl),"[REC]  %s  [%d/%ds]", re.filename.c_str(), rec_secs, secs);
+                                                snprintf(rec_lbl,sizeof(rec_lbl),"[REC] [%2d] %s  [%d/%ds]", dn, re.filename.c_str(), rec_secs, secs);
                                             ImGui::Selectable(rec_lbl, re.ch_idx>=0 && v.selected_ch==re.ch_idx);
                                             if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
                                                 if(re.ch_idx>=0){
@@ -5809,6 +5864,7 @@ void run_streaming_viewer(){
                             tag.color = tag_colors[v.eid_tags.size() % 6];
                             snprintf(tag.label, sizeof(tag.label), "Tag %d", (int)v.eid_tags.size() + 1);
                             v.eid_tags.push_back(tag);
+                        v.eid_auto_analyze_tag(v.eid_tags.back());
                         } else {
                             // 단순 클릭 > 뒤로가기
                             if(!v.eid_view_stack.empty()){
@@ -7203,6 +7259,26 @@ void run_streaming_viewer(){
                         else
                             snprintf(hdr, sizeof(hdr), "Duration: %.4fs", visible_time);
                         fg->AddText(ImVec2(ea_x0, ca_y0 + 4), IM_COL32(160,160,180,220), hdr);
+                        // 선택된 태그 PRI/PRF (spectrogram)
+                        {
+                            float hx = ea_x0 + ImGui::CalcTextSize(hdr).x + 12.f;
+                            uint32_t esr = v.eid_sample_rate > 0 ? v.eid_sample_rate : 1;
+                            for(auto& tag : v.eid_tags){
+                                if(!tag.selected) continue;
+                                double tdur = (tag.s1-tag.s0)/(double)esr;
+                                double tdur_us = tdur*1e6, trate = tdur>0?1.0/tdur:0;
+                                char ti[128]; snprintf(ti,sizeof(ti),"| PRI:%.2fus PRF:%.0fHz PD:%.2fus Baud:%.0f",
+                                                       tdur_us,trate,tdur_us,trate);
+                                fg->AddText(ImVec2(hx,ca_y0+4),IM_COL32(255,200,100,255),ti);
+                                hx+=ImGui::CalcTextSize(ti).x+10.f;
+                                if(tag.auto_pulse_count>=2){
+                                    char ai[96]; snprintf(ai,sizeof(ai),"[Auto] PRI:%.2fus PRF:%.0fHz Pulses:%d",
+                                                          tag.auto_pri_us,tag.auto_prf_hz,tag.auto_pulse_count);
+                                    fg->AddText(ImVec2(hx,ca_y0+4),IM_COL32(100,220,255,255),ai);
+                                }
+                                break;
+                            }
+                        }
                         if(!v.sa_temp_path.empty()){
                             const char* fn=v.sa_temp_path.c_str();
                             const char* sep=strrchr(fn,'/'); if(sep) fn=sep+1;
@@ -7419,6 +7495,7 @@ void run_streaming_viewer(){
                                 tag.color=tc[v.eid_tags.size()%6];
                                 snprintf(tag.label,sizeof(tag.label),"Tag %d",(int)v.eid_tags.size()+1);
                                 v.eid_tags.push_back(tag);
+                        v.eid_auto_analyze_tag(v.eid_tags.back());
                             }
                         } else {
                             // 태그 위 클릭 → 컨텍스트 메뉴
@@ -7538,6 +7615,36 @@ void run_streaming_viewer(){
                     else
                         snprintf(hdr, sizeof(hdr), "Duration: %.4fs", visible_dur);
                     fg->AddText(ImVec2(ea_x0, ca_y0 + 4), IM_COL32(160,160,180,220), hdr);
+                    // 선택된 태그 PRI/PRF 표시
+                    float hdr_next_x = ea_x0 + ImGui::CalcTextSize(hdr).x + 12.f;
+                    for(auto& tag : v.eid_tags){
+                        if(!tag.selected) continue;
+                        double tdur = (tag.s1-tag.s0) / (double)sr;
+                        double tdur_us = tdur * 1e6;
+                        double trate = (tdur > 0) ? 1.0/tdur : 0;
+                        char ti[128]; snprintf(ti,sizeof(ti),"| PRI:%.2fus PRF:%.0fHz PD:%.2fus Baud:%.0f",
+                                               tdur_us, trate, tdur_us, trate);
+                        fg->AddText(ImVec2(hdr_next_x, ca_y0+4), IM_COL32(255,200,100,255), ti);
+                        hdr_next_x += ImGui::CalcTextSize(ti).x + 10.f;
+                        // 자동 분석 결과
+                        if(tag.auto_pulse_count >= 2){
+                            char ai[96]; snprintf(ai,sizeof(ai),"[Auto] PRI:%.2fus PRF:%.0fHz Pulses:%d",
+                                                  tag.auto_pri_us, tag.auto_prf_hz, tag.auto_pulse_count);
+                            fg->AddText(ImVec2(hdr_next_x, ca_y0+4), IM_COL32(100,220,255,255), ai);
+                            hdr_next_x += ImGui::CalcTextSize(ai).x + 10.f;
+                        }
+                        break; // 첫 번째 선택 태그만
+                    }
+                    // Baud 모드 표시
+                    if(v.eid_baud_mode && v.eid_baud_s0>=0 && v.eid_baud_s1>=0){
+                        double baud_interval=v.eid_baud_s1-v.eid_baud_s0;
+                        if(baud_interval>0){
+                            double baud_rate=(double)sr/baud_interval;
+                            char bi[64]; snprintf(bi,sizeof(bi),"| Baud: %.0f",baud_rate);
+                            fg->AddText(ImVec2(hdr_next_x,ca_y0+4),IM_COL32(255,255,0,255),bi);
+                            hdr_next_x+=ImGui::CalcTextSize(bi).x+10.f;
+                        }
+                    }
                     if(!v.sa_temp_path.empty()){
                         const char* fn=v.sa_temp_path.c_str();
                         const char* sep=strrchr(fn,'/'); if(sep) fn=sep+1;
@@ -7670,10 +7777,6 @@ void run_streaming_viewer(){
                             }
                             if(pts.size()>=2)
                                 fg->AddPolyline(pts.data(),(int)pts.size(),col,ImDrawFlags_None,1.5f);
-                            if(spp < 0.3 && pts.size() < 2000){
-                                ImU32 dc = (col&0xFF000000)|((col&0x00FEFEFE)>>1)|0x00808080;
-                                for(auto& p : pts) fg->AddCircleFilled(p, 2.5f, dc);
-                            }
                         } else {
                             for(int px = 0; px < pixels; px++){
                                 int64_t s0=(int64_t)(vt0+px*spp), s1=(int64_t)(vt0+(px+1)*spp);
@@ -7713,14 +7816,41 @@ void run_streaming_viewer(){
                         float tx1 = ea_x0 + (float)((tag.s1-vt0)/vis_samp)*ea_w;
                         tx0=std::max(tx0,ea_x0); tx1=std::min(tx1,ea_x1);
                         if(tx1<=tx0) continue;
-                        fg->AddRectFilled(ImVec2(tx0,ea_y0),ImVec2(tx1,ea_y1),(tag.color&0x00FFFFFF)|0x28000000);
-                        fg->AddLine(ImVec2(tx0,ea_y0),ImVec2(tx0,ea_y1),tag.color,1.5f);
-                        fg->AddLine(ImVec2(tx1,ea_y0),ImVec2(tx1,ea_y1),tag.color,1.5f);
+                        ImU32 fill_alpha = tag.selected ? 0x50000000 : 0x28000000;
+                        fg->AddRectFilled(ImVec2(tx0,ea_y0),ImVec2(tx1,ea_y1),(tag.color&0x00FFFFFF)|fill_alpha);
+                        fg->AddLine(ImVec2(tx0,ea_y0),ImVec2(tx0,ea_y1),tag.color,tag.selected?2.5f:1.5f);
+                        fg->AddLine(ImVec2(tx1,ea_y0),ImVec2(tx1,ea_y1),tag.color,tag.selected?2.5f:1.5f);
                         { ImVec2 lsz=ImGui::CalcTextSize(tag.label);
                           float cx=tx0+(tx1-tx0-lsz.x)*0.5f; cx=std::max(cx,tx0+2.f);
                           fg->AddText(ImVec2(cx,ea_y0+2),tag.color,tag.label); }
                     }
                 }
+
+                // 비트 구분 격자 (baud mode)
+                if(v.eid_baud_mode && v.eid_baud_s0>=0 && v.eid_baud_s1>=0){
+                    double interval=v.eid_baud_s1-v.eid_baud_s0;
+                    if(interval>0){
+                        // 반복 격자선
+                        for(double s=v.eid_baud_s0; s<=vt1; s+=interval){
+                            float xx=ea_x0+(float)((s-vt0)/vis_samp)*ea_w;
+                            if(xx>=ea_x0&&xx<=ea_x1)
+                                fg->AddLine(ImVec2(xx,ea_y0),ImVec2(xx,ea_y1),IM_COL32(255,255,0,80),1.f);
+                        }
+                        for(double s=v.eid_baud_s0-interval; s>=vt0; s-=interval){
+                            float xx=ea_x0+(float)((s-vt0)/vis_samp)*ea_w;
+                            if(xx>=ea_x0&&xx<=ea_x1)
+                                fg->AddLine(ImVec2(xx,ea_y0),ImVec2(xx,ea_y1),IM_COL32(255,255,0,80),1.f);
+                        }
+                        // 시작/끝 선 (밝게)
+                        for(int bi=0;bi<2;bi++){
+                            double bs=bi==0?v.eid_baud_s0:v.eid_baud_s1;
+                            float bx=ea_x0+(float)((bs-vt0)/vis_samp)*ea_w;
+                            if(bx>=ea_x0&&bx<=ea_x1)
+                                fg->AddLine(ImVec2(bx,ea_y0),ImVec2(bx,ea_y1),IM_COL32(255,255,0,255),2.f);
+                        }
+                    }
+                }
+
                 fg->PopClipRect();
 
                 // 마우스 인터랙션
@@ -7761,6 +7891,8 @@ void run_streaming_viewer(){
                     sync_eid_to_sa();
                 }
 
+                // (태그 토글은 좌클릭 드래그 release에서 처리 — 드래그<5px일 때)
+
                 // Ctrl+좌클릭 드래그: Y축 영역 선택 (추후 기능 확장용)
                 static bool eid_ctrl_drag = false;
                 static float eid_ctrl_sy0 = 0, eid_ctrl_sy1 = 0;
@@ -7777,7 +7909,16 @@ void run_streaming_viewer(){
                             fg->AddRect(ImVec2(ea_x0,sy0),ImVec2(ea_x1,sy1),IM_COL32(100,200,255,160),0.f,0,1.f);
                             float val_top=a_max-((sy0-ea_y0)/ea_h)*a_rng;
                             float val_bot=a_max-((sy1-ea_y0)/ea_h)*a_rng;
-                            char yi[64]; snprintf(yi,sizeof(yi),"Y: %.4f - %.4f",val_bot,val_top);
+                            char yi[96];
+                            if(imode==3){ // Freq 모드: BW + Resolution 표시
+                                float bw_hz=fabsf(val_top-val_bot);
+                                float res_m=(bw_hz>0)?299792458.0f/(2.0f*bw_hz):0;
+                                if(bw_hz>=1e6f) snprintf(yi,sizeof(yi),"BW: %.2f MHz | Resolution: %.1fm",bw_hz/1e6f,res_m);
+                                else if(bw_hz>=1e3f) snprintf(yi,sizeof(yi),"BW: %.1f kHz | Resolution: %.1fm",bw_hz/1e3f,res_m);
+                                else snprintf(yi,sizeof(yi),"BW: %.1f Hz | Resolution: %.1fm",bw_hz,res_m);
+                            } else {
+                                snprintf(yi,sizeof(yi),"Y: %.4f - %.4f",val_bot,val_top);
+                            }
                             ImVec2 tsz=ImGui::CalcTextSize(yi);
                             float tx2=ea_x0+(ea_w-tsz.x)*0.5f;
                             float ty2=sy0+(sy1-sy0-tsz.y)*0.5f;
@@ -7790,8 +7931,8 @@ void run_streaming_viewer(){
                     }
                 }
 
-                // 좌클릭 드래그 줌
-                if(mouse_in && !io.KeyCtrl && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                // 좌클릭 드래그 줌 (baud 모드가 아닐 때만)
+                if(mouse_in && !io.KeyCtrl && !v.eid_baud_mode && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
                     v.eid_sel_active=true; v.eid_sel_x0=mp.x; v.eid_sel_x1=mp.x;
                 }
                 if(v.eid_sel_active){
@@ -7825,6 +7966,11 @@ void run_streaming_viewer(){
                                 v.eid_view_t0=mid-16; v.eid_view_t1=mid+16;
                             }
                             sync_eid_to_sa();
+                        } else {
+                            // 드래그<5px = 클릭 → 태그 선택 토글
+                            double click_s=vt0+((mp.x-ea_x0)/ea_w)*vis_samp;
+                            for(auto& tag : v.eid_tags)
+                                if(click_s>=tag.s0&&click_s<=tag.s1){ tag.selected=!tag.selected; break; }
                         }
                     }
                 }
@@ -7857,6 +8003,7 @@ void run_streaming_viewer(){
                         tag.color=tc[v.eid_tags.size()%6];
                         snprintf(tag.label,sizeof(tag.label),"Tag %d",(int)v.eid_tags.size()+1);
                         v.eid_tags.push_back(tag);
+                        v.eid_auto_analyze_tag(v.eid_tags.back());
                     } else {
                         // 태그 위 클릭 → 컨텍스트 메뉴
                         double click_s=vt0+((mp.x-ea_x0)/ea_w)*vis_samp;
@@ -7888,6 +8035,46 @@ void run_streaming_viewer(){
                     double ms=vt0+((mp.x-ea_x0)/ea_w)*vis_samp;
                     for(auto it=v.eid_tags.begin();it!=v.eid_tags.end();++it){
                         if(ms>=it->s0&&ms<=it->s1){ v.eid_tags.erase(it); break; }
+                    }
+                }
+
+                // B키: 비트 구분 모드 토글
+                if(mouse_in && ImGui::IsKeyPressed(ImGuiKey_B,false) && !io.WantTextInput){
+                    v.eid_baud_mode=!v.eid_baud_mode;
+                    if(!v.eid_baud_mode){ v.eid_baud_s0=-1; v.eid_baud_s1=-1; v.eid_baud_click=0; v.eid_baud_drag=-1; }
+                    else { v.eid_baud_s0=-1; v.eid_baud_s1=-1; v.eid_baud_click=0; v.eid_baud_drag=-1; }
+                }
+
+                // 비트 구분 모드: 좌클릭 인터랙션
+                if(v.eid_baud_mode && mouse_in && !io.KeyCtrl){
+                    const float SNAP_PX=6.f;
+                    double mouse_s=vt0+((mp.x-ea_x0)/ea_w)*vis_samp;
+                    // 드래그 시작: 기존 선 근처 클릭
+                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Left) && v.eid_baud_drag<0){
+                        for(int li=0;li<2;li++){
+                            double ls=(li==0)?v.eid_baud_s0:v.eid_baud_s1;
+                            if(ls<0) continue;
+                            float lx=ea_x0+(float)((ls-vt0)/vis_samp)*ea_w;
+                            if(fabsf(mp.x-lx)<SNAP_PX){ v.eid_baud_drag=li; break; }
+                        }
+                        // 선 근처 아니면 새 점 설정
+                        if(v.eid_baud_drag<0){
+                            if(v.eid_baud_click==0){
+                                v.eid_baud_s0=mouse_s; v.eid_baud_s1=-1; v.eid_baud_click=1;
+                            } else {
+                                v.eid_baud_s1=mouse_s; v.eid_baud_click=2;
+                                if(v.eid_baud_s1<v.eid_baud_s0) std::swap(v.eid_baud_s0,v.eid_baud_s1);
+                            }
+                        }
+                    }
+                    // 드래그 중
+                    if(v.eid_baud_drag>=0 && ImGui::IsMouseDown(ImGuiMouseButton_Left)){
+                        if(v.eid_baud_drag==0) v.eid_baud_s0=mouse_s;
+                        else v.eid_baud_s1=mouse_s;
+                        if(v.eid_baud_s0>v.eid_baud_s1) std::swap(v.eid_baud_s0,v.eid_baud_s1);
+                    }
+                    if(v.eid_baud_drag>=0 && ImGui::IsMouseReleased(ImGuiMouseButton_Left)){
+                        v.eid_baud_drag=-1;
                     }
                 }
 

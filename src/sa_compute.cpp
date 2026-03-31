@@ -135,6 +135,19 @@ void FFTViewer::sa_start(const std::string& wav_path){
         sa_sample_rate    = meta_sr > 0 ? meta_sr : wav_sr;
 
         fseek(f, data_offset, SEEK_SET);
+        // 기존 WAV: data 청크 안에 bewe 청크가 끼어있을 수 있음 → 스킵
+        {
+            char peek[4]={};
+            if(fread(peek,1,4,f)==4 && strncmp(peek,"bewe",4)==0){
+                uint32_t bsz=0; fread(&bsz,4,1,f);
+                fseek(f, ftell(f)+(long)bsz+((long)bsz&1), SEEK_SET);
+                long skipped = ftell(f) - data_offset;
+                data_size -= skipped;
+                data_offset = ftell(f);
+            } else {
+                fseek(f, data_offset, SEEK_SET);
+            }
+        }
         long data_bytes_actual = data_size;
         if(data_bytes_actual <= 0){ fclose(f); sa_computing.store(false); return; }
         int64_t n_samples = data_bytes_actual / (int64_t)(2*sizeof(int16_t));

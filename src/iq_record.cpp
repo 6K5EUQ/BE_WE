@@ -207,8 +207,8 @@ void FFTViewer::start_iq_rec(int ch_idx){
     std::string rec_dir=BEWEPaths::record_iq_dir();
     float cf_mhz=(ch.s+ch.e)/2.0f;
     char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
-    snprintf(fn,sizeof(fn),"%s/IQ_CH%d_%.3fMHz_%s.wav",
-             rec_dir.c_str(), ch_idx, cf_mhz, dts);
+    snprintf(fn,sizeof(fn),"%s/IQ_%.3fMHz_%s.wav",
+             rec_dir.c_str(), cf_mhz, dts);
 
     FILE* fp=fopen(fn,"wb");
     if(!fp){ bewe_log("IQ REC: cannot open %s\n",fn); return; }

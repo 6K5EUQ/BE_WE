@@ -55,6 +55,19 @@ void FFTViewer::eid_start(const std::string& wav_path){
         if(meta_sr == 0) meta_sr = wav_sr;
 
         fseek(f, data_offset, SEEK_SET);
+        // 기존 WAV: data 청크 안에 bewe 청크가 끼어있을 수 있음 → 스킵
+        {
+            char peek[4]={};
+            if(fread(peek,1,4,f)==4 && strncmp(peek,"bewe",4)==0){
+                uint32_t bsz=0; fread(&bsz,4,1,f);
+                fseek(f, ftell(f)+(long)bsz+((long)bsz&1), SEEK_SET);
+                long skipped = ftell(f) - data_offset;
+                data_size -= skipped;
+                data_offset = ftell(f);
+            } else {
+                fseek(f, data_offset, SEEK_SET);
+            }
+        }
         if(data_size <= 0){ fclose(f); eid_computing.store(false); return; }
         int64_t n_samples = data_size / (int64_t)(2 * sizeof(int16_t));
         if(n_samples < 1){ fclose(f); eid_computing.store(false); return; }
@@ -107,7 +120,7 @@ void FFTViewer::eid_start(const std::string& wav_path){
         std::vector<float> sorted_env(env);
         std::sort(sorted_env.begin(), sorted_env.end());
         float amp_lo = sorted_env[(size_t)(sorted_env.size() * 0.01f)];
-        float amp_hi = sorted_env[(size_t)(sorted_env.size() * 0.99f)];
+        float amp_hi = sorted_env.back();  // 실제 최대값 (클리핑 방지)
         if(amp_hi - amp_lo < 0.001f) amp_hi = amp_lo + 0.001f;
         // 여유 5%
         float margin = (amp_hi - amp_lo) * 0.05f;
@@ -144,6 +157,43 @@ void FFTViewer::eid_start(const std::string& wav_path){
     });
 }
 
+// ── 태그 내 펄스 자동 분석 (envelope rising edge 기반) ──────────────────────
+void FFTViewer::eid_auto_analyze_tag(EidTag& tag){
+    tag.auto_pri_us = 0; tag.auto_prf_hz = 0; tag.auto_pulse_count = 0;
+    int64_t i0 = std::max((int64_t)0, (int64_t)tag.s0);
+    int64_t i1 = std::min(eid_total_samples, (int64_t)ceil(tag.s1));
+    if(i1 - i0 < 4 || eid_envelope.empty()) return;
+
+    // threshold: 구간 내 median * 비율
+    std::vector<float> seg(eid_envelope.begin()+i0, eid_envelope.begin()+i1);
+    std::sort(seg.begin(), seg.end());
+    float median = seg[seg.size()/2];
+    float thr = median * 1.5f;
+    if(thr < eid_noise_level * 1.2f) thr = eid_noise_level * 1.2f;
+
+    // rising edge 검출
+    std::vector<int64_t> edges;
+    bool above = false;
+    for(int64_t i = i0; i < i1; i++){
+        if(!above && eid_envelope[i] >= thr){ above = true; edges.push_back(i); }
+        else if(above && eid_envelope[i] < thr * 0.7f) above = false;
+    }
+
+    tag.auto_pulse_count = (int)edges.size();
+    if(edges.size() < 2) return;
+
+    // 인접 edge 간격의 중앙값
+    std::vector<float> intervals;
+    for(size_t j = 1; j < edges.size(); j++)
+        intervals.push_back((float)(edges[j] - edges[j-1]));
+    std::sort(intervals.begin(), intervals.end());
+    float median_interval = intervals[intervals.size()/2];
+
+    uint32_t sr = eid_sample_rate > 0 ? eid_sample_rate : 1;
+    tag.auto_pri_us = median_interval / sr * 1e6f;
+    tag.auto_prf_hz = (float)sr / median_interval;
+}
+
 // ── ch_i/ch_q 로부터 envelope/phase/inst_freq 재계산 ─────────────────────────
 void FFTViewer::eid_recompute_derived(){
     std::lock_guard<std::mutex> lk(eid_data_mtx);
@@ -172,7 +222,7 @@ void FFTViewer::eid_recompute_derived(){
     std::vector<float> sorted_env(eid_envelope);
     std::sort(sorted_env.begin(), sorted_env.end());
     float lo = sorted_env[(size_t)(sorted_env.size()*0.01f)];
-    float hi = sorted_env[(size_t)(sorted_env.size()*0.99f)];
+    float hi = sorted_env.back();
     if(hi-lo<0.001f) hi=lo+0.001f;
     float margin = (hi-lo)*0.05f;
     eid_amp_min = std::max(0.f, lo-margin);
@@ -332,4 +382,8 @@ void FFTViewer::eid_cleanup(){
     eid_bpf_active       = false;
     eid_orig_ch_i.clear(); eid_orig_ch_i.shrink_to_fit();
     eid_orig_ch_q.clear(); eid_orig_ch_q.shrink_to_fit();
+    eid_tags.clear();
+    eid_view_stack.clear();
+    sa_view_history.clear();
+    eid_baud_mode=false; eid_baud_s0=-1; eid_baud_s1=-1; eid_baud_click=0; eid_baud_drag=-1;
 }
