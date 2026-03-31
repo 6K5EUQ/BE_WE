@@ -181,7 +181,8 @@ void FFTViewer::eid_recompute_derived(){
 }
 
 // ── FFT 기반 BPF (brick-wall, 블록 처리) ─────────────────────────────────────
-void FFTViewer::eid_apply_bpf(double freq_lo_hz, double freq_hi_hz){
+// uv_lo/uv_hi: 스펙트로그램 주파수축 UV [0,1] (0=-sr/2, 0.5=DC, 1=+sr/2)
+void FFTViewer::eid_apply_bpf(float uv_lo, float uv_hi){
     // 원본 백업 (첫 적용 시에만)
     if(!eid_bpf_active){
         eid_orig_ch_i = eid_ch_i;
@@ -204,9 +205,9 @@ void FFTViewer::eid_apply_bpf(double freq_lo_hz, double freq_hi_hz){
     fftwf_plan inv = fftwf_plan_dft_1d(fft_n, out, in, FFTW_BACKWARD, FFTW_ESTIMATE);
 
     double sr = (double)eid_sample_rate;
-    double cf = (double)eid_center_freq_hz;
-    double bpf_lo = freq_lo_hz - cf;  // baseband offset
-    double bpf_hi = freq_hi_hz - cf;
+    // UV → baseband Hz: UV 0 = -sr/2, UV 0.5 = DC, UV 1 = +sr/2
+    double bpf_lo = ((double)uv_lo - 0.5) * sr;
+    double bpf_hi = ((double)uv_hi - 0.5) * sr;
 
     for(int64_t offset = 0; offset < n; offset += fft_n){
         int64_t block_n = std::min((int64_t)fft_n, n - offset);
@@ -304,7 +305,7 @@ void FFTViewer::eid_remove_samples(double s0, double s1){
     eid_view_t1 = std::min((double)eid_total_samples, eid_view_t1);
     if(eid_view_t1 <= eid_view_t0){ eid_view_t0=0; eid_view_t1=(double)eid_total_samples; }
     eid_view_stack.clear();
-    sa_freq_view_stack.clear();
+    sa_view_history.clear();
 
     // 스펙트로그램 재계산
     sa_recompute_from_iq();

@@ -290,8 +290,9 @@ public:
     float   eid_tag_drag_x0 = 0.f, eid_tag_drag_x1 = 0.f;
     std::vector<EidTag> eid_tags;
 
-    // 스펙트로그램 주파수 줌 히스토리 (Ctrl+드래그 BPF 되돌리기용)
-    std::vector<std::pair<float,float>> sa_freq_view_stack;
+    // 스펙트로그램 통합 뷰 히스토리 (우클릭 1단계 undo)
+    struct SaViewEntry { float x0,x1,y0,y1; bool had_bpf; };
+    std::vector<SaViewEntry> sa_view_history;
 
     // BPF 상태 (원본 IQ 백업 + 필터 상태)
     std::vector<float> eid_orig_ch_i;   // 필터 전 원본 I

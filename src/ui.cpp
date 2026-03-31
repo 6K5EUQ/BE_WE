@@ -7203,6 +7203,12 @@ void run_streaming_viewer(){
                         else
                             snprintf(hdr, sizeof(hdr), "Duration: %.4fs", visible_time);
                         fg->AddText(ImVec2(ea_x0, ca_y0 + 4), IM_COL32(160,160,180,220), hdr);
+                        if(!v.sa_temp_path.empty()){
+                            const char* fn=v.sa_temp_path.c_str();
+                            const char* sep=strrchr(fn,'/'); if(sep) fn=sep+1;
+                            ImVec2 fsz=ImGui::CalcTextSize(fn);
+                            fg->AddText(ImVec2(ea_x1-fsz.x, ca_y0+4), IM_COL32(160,160,180,220), fn);
+                        }
                     }
 
                     // 배경
@@ -7240,8 +7246,7 @@ void run_streaming_viewer(){
                             ImVec2 tsz = ImGui::CalcTextSize(lbl);
                             fg->AddText(ImVec2(ea_x0 - tsz.x - 4, yy - tsz.y * 0.5f), IM_COL32(150,150,180,255), lbl);
                         }
-                        const char* unit = v.sa_center_freq_hz > 0 ? "MHz" : "Hz";
-                        fg->AddText(ImVec2(ov_x0 + 2, ea_y0 - 14), IM_COL32(120,120,150,220), unit);
+                        // (MHz/Hz 라벨 제거 - 파일명을 헤더에 표시)
                     }
 
                     // X축 라벨 (시간)
@@ -7336,21 +7341,14 @@ void run_streaming_viewer(){
                             float sy0=std::min(sa_ctrl_sy0,sa_ctrl_sy1);
                             float sy1=std::max(sa_ctrl_sy0,sa_ctrl_sy1);
                             if(sy1-sy0>5.f){
-                                v.sa_freq_view_stack.push_back({v.sa_view_x0,v.sa_view_x1});
+                                v.sa_view_history.push_back({v.sa_view_x0,v.sa_view_x1,v.sa_view_y0,v.sa_view_y1,true});
                                 float frac_top=(sy0-ea_y0)/ea_h;
                                 float frac_bot=(sy1-ea_y0)/ea_h;
                                 float new_x1=v.sa_view_x1-frac_top*(v.sa_view_x1-v.sa_view_x0);
                                 float new_x0=v.sa_view_x1-frac_bot*(v.sa_view_x1-v.sa_view_x0);
                                 new_x0=std::max(0.f,new_x0);
                                 new_x1=std::min(1.f,new_x1);
-                                // UV → 절대 주파수(Hz) → 실제 BPF 적용
-                                double sr_bpf=v.sa_sample_rate>0?(double)v.sa_sample_rate:1.0;
-                                double cf_bpf=v.sa_center_freq_hz>0?(double)v.sa_center_freq_hz:sr_bpf*0.5;
-                                double freq_lo_full=cf_bpf-sr_bpf*0.5;
-                                double bpf_lo=freq_lo_full+new_x0*sr_bpf;
-                                double bpf_hi=freq_lo_full+new_x1*sr_bpf;
-                                v.eid_apply_bpf(bpf_lo,bpf_hi);
-                                // BPF 후 전체 보기 (필터된 IQ로 스펙트로그램이 재계산됨)
+                                v.eid_apply_bpf(new_x0,new_x1);
                                 v.sa_view_x0=0.f; v.sa_view_x1=1.f;
                             }
                         }
@@ -7376,6 +7374,7 @@ void run_streaming_viewer(){
                             float sx0=std::min(sa_sel_sx0,sa_sel_sx1);
                             float sx1=std::max(sa_sel_sx0,sa_sel_sx1);
                             if(sx1-sx0>5.f){
+                                v.sa_view_history.push_back({v.sa_view_x0,v.sa_view_x1,v.sa_view_y0,v.sa_view_y1,false});
                                 float f0=v.sa_view_y0+((sx0-ea_x0)/ea_w)*(v.sa_view_y1-v.sa_view_y0);
                                 float f1=v.sa_view_y0+((sx1-ea_x0)/ea_w)*(v.sa_view_y1-v.sa_view_y0);
                                 v.sa_view_y0=std::max(0.f,f0);
@@ -7435,21 +7434,29 @@ void run_streaming_viewer(){
                                     eid_tag_ctx.tag_idx=hit_tag; eid_tag_ctx.renaming=false;
                                     strncpy(eid_tag_ctx.rename_buf,v.eid_tags[hit_tag].label,31);
                                 } else {
-                                    sa_prev_y0=v.sa_view_y0; sa_prev_y1=v.sa_view_y1;
-                                    v.sa_view_y0=0.f; v.sa_view_y1=1.f;
-                                    if(!v.sa_freq_view_stack.empty()){
-                                        auto [fx0,fx1]=v.sa_freq_view_stack.back(); v.sa_freq_view_stack.pop_back();
-                                        v.sa_view_x0=fx0; v.sa_view_x1=fx1;
-                                        if(v.eid_bpf_active) v.eid_undo_bpf();
+                                    // 통합 히스토리에서 1단계 undo
+                                    if(!v.sa_view_history.empty()){
+                                        auto e=v.sa_view_history.back(); v.sa_view_history.pop_back();
+                                        v.sa_view_x0=e.x0; v.sa_view_x1=e.x1;
+                                        v.sa_view_y0=e.y0; v.sa_view_y1=e.y1;
+                                        if(e.had_bpf) v.eid_undo_bpf();
                                     } else {
                                         v.sa_view_x0=0.f; v.sa_view_x1=1.f;
+                                        v.sa_view_y0=0.f; v.sa_view_y1=1.f;
                                         if(v.eid_bpf_active) v.eid_undo_bpf();
                                     }
                                     sync_sa_to_eid();
                                 }
                             } else {
-                                sa_prev_y0=v.sa_view_y0; sa_prev_y1=v.sa_view_y1;
-                                v.sa_view_y0=0.f; v.sa_view_y1=1.f;
+                                // total==0 fallback
+                                if(!v.sa_view_history.empty()){
+                                    auto e=v.sa_view_history.back(); v.sa_view_history.pop_back();
+                                    v.sa_view_x0=e.x0; v.sa_view_x1=e.x1;
+                                    v.sa_view_y0=e.y0; v.sa_view_y1=e.y1;
+                                    if(e.had_bpf) v.eid_undo_bpf();
+                                } else {
+                                    v.sa_view_y0=0.f; v.sa_view_y1=1.f;
+                                }
                                 sync_sa_to_eid();
                             }
                         }
@@ -7459,7 +7466,7 @@ void run_streaming_viewer(){
                     if(in_sa && ImGui::IsKeyPressed(ImGuiKey_Home,false)){
                         v.sa_view_y0=0.f; v.sa_view_y1=1.f;
                         v.sa_view_x0=0.f; v.sa_view_x1=1.f;
-                        v.sa_freq_view_stack.clear();
+                        v.sa_view_history.clear();
                         if(v.eid_bpf_active) v.eid_undo_bpf();
                         sync_sa_to_eid();
                     }
@@ -7531,6 +7538,12 @@ void run_streaming_viewer(){
                     else
                         snprintf(hdr, sizeof(hdr), "Duration: %.4fs", visible_dur);
                     fg->AddText(ImVec2(ea_x0, ca_y0 + 4), IM_COL32(160,160,180,220), hdr);
+                    if(!v.sa_temp_path.empty()){
+                        const char* fn=v.sa_temp_path.c_str();
+                        const char* sep=strrchr(fn,'/'); if(sep) fn=sep+1;
+                        ImVec2 fsz=ImGui::CalcTextSize(fn);
+                        fg->AddText(ImVec2(ea_x1-fsz.x, ca_y0+4), IM_COL32(160,160,180,220), fn);
+                    }
                 }
 
                 // 배경

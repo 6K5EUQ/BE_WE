@@ -73,13 +73,13 @@ static void write_wav_header(FILE* f, uint32_t sample_rate, uint32_t n_frames,
     fwrite(&audio_fmt,2,1,f); fwrite(&channels,2,1,f);
     fwrite(&sample_rate,4,1,f); fwrite(&byte_rate,4,1,f);
     fwrite(&block_align,2,1,f); fwrite(&bits,2,1,f);
-    fwrite("data",1,4,f); fwrite(&subchunk2,4,1,f);
-    // 표준 44바이트 헤더 끝 → bewe 청크
+    // bewe 청크 (data 앞에 배치 > 파서 안정성 향상)
     fwrite("bewe",1,4,f);
     uint32_t bewe_sz = BEWE_SIZE; fwrite(&bewe_sz,4,1,f);
     fwrite(&center_freq_hz,8,1,f);
     fwrite(&start_time,    8,1,f);
     fwrite(&sample_rate,   4,1,f);
+    fwrite("data",1,4,f); fwrite(&subchunk2,4,1,f);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

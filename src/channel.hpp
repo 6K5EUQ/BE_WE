@@ -187,13 +187,24 @@ struct Channel {
     int      iq_sqr_state       = SQR_IDLE;
     uint32_t iq_sqr_tail_remain = 0;
 
+    uint64_t iq_rec_cf_hz = 0;   // center freq for bewe chunk
+    int64_t  iq_rec_start_time = 0;
+
+    // WAV 헤더 + bewe 메타데이터 청크 (총 72바이트)
     void iq_rec_write_wav_hdr(FILE* fp, uint32_t sr, uint64_t frames){
         auto w32=[&](uint32_t v){ fwrite(&v,4,1,fp); };
         auto w16=[&](uint16_t v){ fwrite(&v,2,1,fp); };
-        uint32_t db=(uint32_t)(frames*4); // stereo int16 = 4 bytes/frame
-        fwrite("RIFF",1,4,fp); w32(36+db); fwrite("WAVE",1,4,fp);
-        fwrite("fmt ",1,4,fp); w32(16); w16(1); w16(2); // PCM, stereo
+        uint32_t db=(uint32_t)(frames*4);
+        uint32_t bewe_chunk=28; // "bewe"(4)+size(4)+payload(20)
+        fwrite("RIFF",1,4,fp); w32(36+db+bewe_chunk); fwrite("WAVE",1,4,fp);
+        fwrite("fmt ",1,4,fp); w32(16); w16(1); w16(2);
         w32(sr); w32(sr*4); w16(4); w16(16);
+        // bewe 청크 (data 앞에 배치)
+        fwrite("bewe",1,4,fp); w32(20);
+        fwrite(&iq_rec_cf_hz,8,1,fp);
+        fwrite(&iq_rec_start_time,8,1,fp);
+        fwrite(&sr,4,1,fp);
+        // data 청크
         fwrite("data",1,4,fp); w32(db);
     }
 

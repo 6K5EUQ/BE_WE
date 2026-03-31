@@ -213,17 +213,9 @@ void FFTViewer::start_iq_rec(int ch_idx){
     FILE* fp=fopen(fn,"wb");
     if(!fp){ bewe_log("IQ REC: cannot open %s\n",fn); return; }
     ch.iq_rec_frames=0;
+    ch.iq_rec_cf_hz=(uint64_t)(cf_mhz*1e6);
+    ch.iq_rec_start_time=(int64_t)t;
     ch.iq_rec_write_wav_hdr(fp,actual_inter,0);
-
-    // BEWE metadata chunk (center freq, start time, sample rate)
-    {
-        uint64_t cf_hz=(uint64_t)(cf_mhz*1e6);
-        int64_t  st=(int64_t)t;
-        uint32_t sr=actual_inter;
-        fwrite("bewe",1,4,fp);
-        uint32_t csz=8+8+4; fwrite(&csz,4,1,fp);
-        fwrite(&cf_hz,8,1,fp); fwrite(&st,8,1,fp); fwrite(&sr,4,1,fp);
-    }
 
     ch.iq_rec_fp=fp;
     ch.iq_rec_path=fn;
