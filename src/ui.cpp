@@ -138,21 +138,17 @@ void FFTViewer::update_channel_squelch(){
         }
         ch.sq_gate.store(gate, std::memory_order_relaxed);
 
-        // 스컬치 누적 시간 추적
+        // 스컬치 누적 시간 추적 (프레임 기반 — SDR 멈추면 시간도 정지)
         if(ch.filter_active){
-            if(!ch.sq_tracking){
-                ch.sq_tracking = true;
-                ch.sq_track_start = std::chrono::steady_clock::now();
-                ch.sq_active_time = 0;
-            }
-            if(gate){
-                // FFT 프레임 간격 기반 누적 (~sample_rate/fft_input_size/time_average)
-                float fps = (float)header.sample_rate / (float)std::max(1,fft_input_size) / (float)std::max(1,time_average);
-                if(fps > 0) ch.sq_active_time += 1.0f / fps;
+            float fps = (float)header.sample_rate / (float)std::max(1,fft_input_size) / (float)std::max(1,time_average);
+            if(fps > 0){
+                float dt = 1.0f / fps;
+                ch.sq_total_time += dt;
+                if(gate) ch.sq_active_time += dt;
             }
         } else {
-            ch.sq_tracking = false;
             ch.sq_active_time = 0;
+            ch.sq_total_time = 0;
         }
     }
 }
@@ -313,7 +309,8 @@ void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float 
                 // JOIN: 서버에 삭제 요청 > 서버가 broadcast 처리
                 net_cli->cmd_delete_ch(ci);
             }
-            // 녹음 중이면 중지 (audio + IQ)
+            // 녹음 중이면 중지 (R키 + audio + I키 IQ)
+            if(rec_on.load() && rec_ch==ci) stop_rec();
             if(channels[ci].audio_rec_on.load()){
                 if(net_cli) stop_join_audio_rec(ci);
                 else stop_audio_rec(ci);
@@ -4567,14 +4564,12 @@ void run_streaming_viewer(){
                             // 텍스트 (고정폭 정렬)
                             char label[96];
                             int dn=v.freq_sorted_display_num(ci);
-                            float elapsed_ch=ch.sq_tracking ?
-                                std::chrono::duration<float>(std::chrono::steady_clock::now()-ch.sq_track_start).count() : 0;
-                            int act_s=(int)ch.sq_active_time, tot_s=(int)elapsed_ch;
-                            if(ch.sq_tracking && tot_s>0)
-                                snprintf(label,sizeof(label),"[%2d] %s %10.3f MHz %6.0fkHz [%d/%ds]",
+                            int act_s=(int)ch.sq_active_time, tot_s=(int)ch.sq_total_time;
+                            if(tot_s>0)
+                                snprintf(label,sizeof(label),"[%2d] %-3s %10.3f MHz %6.0fkHz [%3d/%4ds]",
                                     dn,mnames[mi],cf_mhz,bw_khz,act_s,tot_s);
                             else
-                                snprintf(label,sizeof(label),"[%2d] %s %10.3f MHz %6.0fkHz",
+                                snprintf(label,sizeof(label),"[%2d] %-3s %10.3f MHz %6.0fkHz",
                                     dn,mnames[mi],cf_mhz,bw_khz);
                             ImGui::PushID(ci*1000+700);
                             ImGui::PushStyleColor(ImGuiCol_Text,tc_v);
@@ -4631,6 +4626,7 @@ void run_streaming_viewer(){
                                     ImGui::SetTooltip("%s",tip);
                                 }
                                 auto delete_ch = [&](){
+                                    if(v.rec_on.load() && v.rec_ch==ci) v.stop_rec();
                                     if(v.channels[ci].audio_rec_on.load()){
                                         if(v.remote_mode && v.net_cli) v.stop_join_audio_rec(ci);
                                         else v.stop_audio_rec(ci);
@@ -4655,6 +4651,7 @@ void run_streaming_viewer(){
                             }
                             // Del 키 (선택된 채널)
                             if(ch.selected && ImGui::IsKeyPressed(ImGuiKey_Delete,false)){
+                                if(v.rec_on.load() && v.rec_ch==ci) v.stop_rec();
                                 if(v.channels[ci].audio_rec_on.load()){
                                     if(v.remote_mode && v.net_cli) v.stop_join_audio_rec(ci);
                                     else v.stop_audio_rec(ci);
@@ -4811,10 +4808,18 @@ void run_streaming_viewer(){
                                                 static std::unordered_map<std::string,std::pair<float,std::string>> rec_sz_cache;
                                                 auto& rc=rec_sz_cache[re.filename];
                                                 if(t2-rc.first >= 0.5f){ rc.first=t2; rc.second=fmt_filesize("",re.path); }
+                                                float elapsed_iq=std::chrono::duration<float>(
+                                                    std::chrono::steady_clock::now()-re.t_start).count();
+                                                int iq_secs=(int)elapsed_iq;
+                                                int iq_dn=re.ch_idx>=0?v.freq_sorted_display_num(re.ch_idx):0;
+                                                char iq_lbl[512];
                                                 if(!rc.second.empty())
-                                                    ImGui::Text("[REC]  IQ Recording ...  %s", rc.second.c_str());
+                                                    snprintf(iq_lbl,sizeof(iq_lbl),"[REC] [%2d] %s  [%ds]  %s",
+                                                             iq_dn, re.filename.c_str(), iq_secs, rc.second.c_str());
                                                 else
-                                                    ImGui::Text("[REC]  IQ Recording ...");
+                                                    snprintf(iq_lbl,sizeof(iq_lbl),"[REC] [%2d] %s  [%ds]",
+                                                             iq_dn, re.filename.c_str(), iq_secs);
+                                                ImGui::Text("%s", iq_lbl);
                                                 ImGui::PopStyleColor();
                                             }
                                         } else {
@@ -7827,26 +7832,28 @@ void run_streaming_viewer(){
                 }
 
                 // 비트 구분 격자 (baud mode)
-                if(v.eid_baud_mode && v.eid_baud_s0>=0 && v.eid_baud_s1>=0){
-                    double interval=v.eid_baud_s1-v.eid_baud_s0;
-                    if(interval>0){
-                        // 반복 격자선
-                        for(double s=v.eid_baud_s0; s<=vt1; s+=interval){
-                            float xx=ea_x0+(float)((s-vt0)/vis_samp)*ea_w;
-                            if(xx>=ea_x0&&xx<=ea_x1)
-                                fg->AddLine(ImVec2(xx,ea_y0),ImVec2(xx,ea_y1),IM_COL32(255,255,0,80),1.f);
-                        }
-                        for(double s=v.eid_baud_s0-interval; s>=vt0; s-=interval){
-                            float xx=ea_x0+(float)((s-vt0)/vis_samp)*ea_w;
-                            if(xx>=ea_x0&&xx<=ea_x1)
-                                fg->AddLine(ImVec2(xx,ea_y0),ImVec2(xx,ea_y1),IM_COL32(255,255,0,80),1.f);
-                        }
-                        // 시작/끝 선 (밝게)
-                        for(int bi=0;bi<2;bi++){
-                            double bs=bi==0?v.eid_baud_s0:v.eid_baud_s1;
-                            float bx=ea_x0+(float)((bs-vt0)/vis_samp)*ea_w;
-                            if(bx>=ea_x0&&bx<=ea_x1)
-                                fg->AddLine(ImVec2(bx,ea_y0),ImVec2(bx,ea_y1),IM_COL32(255,255,0,255),2.f);
+                if(v.eid_baud_mode && v.eid_baud_s0>=0){
+                    // s0 선 항상 표시
+                    float bx0=ea_x0+(float)((v.eid_baud_s0-vt0)/vis_samp)*ea_w;
+                    if(bx0>=ea_x0&&bx0<=ea_x1)
+                        fg->AddLine(ImVec2(bx0,ea_y0),ImVec2(bx0,ea_y1),IM_COL32(255,255,0,255),2.f);
+                    // s1 설정 시 격자 + s1 선
+                    if(v.eid_baud_s1>=0){
+                        double interval=v.eid_baud_s1-v.eid_baud_s0;
+                        if(interval>0){
+                            for(double s=v.eid_baud_s0+interval; s<=vt1; s+=interval){
+                                float xx=ea_x0+(float)((s-vt0)/vis_samp)*ea_w;
+                                if(xx>=ea_x0&&xx<=ea_x1)
+                                    fg->AddLine(ImVec2(xx,ea_y0),ImVec2(xx,ea_y1),IM_COL32(255,255,0,80),1.f);
+                            }
+                            for(double s=v.eid_baud_s0-interval; s>=vt0; s-=interval){
+                                float xx=ea_x0+(float)((s-vt0)/vis_samp)*ea_w;
+                                if(xx>=ea_x0&&xx<=ea_x1)
+                                    fg->AddLine(ImVec2(xx,ea_y0),ImVec2(xx,ea_y1),IM_COL32(255,255,0,80),1.f);
+                            }
+                            float bx1=ea_x0+(float)((v.eid_baud_s1-vt0)/vis_samp)*ea_w;
+                            if(bx1>=ea_x0&&bx1<=ea_x1)
+                                fg->AddLine(ImVec2(bx1,ea_y0),ImVec2(bx1,ea_y1),IM_COL32(255,255,0,255),2.f);
                         }
                     }
                 }

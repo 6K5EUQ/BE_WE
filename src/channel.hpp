@@ -243,8 +243,7 @@ struct Channel {
     float sq_calib_buf[60] = {};  // ~1초 @ 60fps
     int   sq_gate_hold = 0;      // gate hold 카운터 (프레임 단위)
     float sq_active_time = 0.0f; // 스컬치 열린 누적 시간(초)
-    std::chrono::steady_clock::time_point sq_track_start;
-    bool  sq_tracking = false;
+    float sq_total_time  = 0.0f; // 전체 경과 시간 (프레임 기반 누적)
 
     // Filter move-drag state
     bool  move_drag=false;
@@ -289,7 +288,7 @@ struct Channel {
         sq_calib_cnt=0;
         memset(sq_calib_buf, 0, sizeof(sq_calib_buf));
         sq_gate_hold=0;
-        sq_active_time=0; sq_tracking=false;
+        sq_active_time=0; sq_total_time=0;
         // drag state
         move_drag=false;
         move_anchor=0;
