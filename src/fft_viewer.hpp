@@ -290,8 +290,21 @@ public:
     float   eid_tag_drag_x0 = 0.f, eid_tag_drag_x1 = 0.f;
     std::vector<EidTag> eid_tags;
 
+    // 스펙트로그램 주파수 줌 히스토리 (Ctrl+드래그 BPF 되돌리기용)
+    std::vector<std::pair<float,float>> sa_freq_view_stack;
+
+    // BPF 상태 (원본 IQ 백업 + 필터 상태)
+    std::vector<float> eid_orig_ch_i;   // 필터 전 원본 I
+    std::vector<float> eid_orig_ch_q;   // 필터 전 원본 Q
+    bool eid_bpf_active = false;
+
     void eid_start(const std::string& wav_path);
     void eid_cleanup();
+    void eid_remove_samples(double s0, double s1);
+    void eid_apply_bpf(float uv_lo, float uv_hi);  // UV [0,1] 주파수 좌표
+    void eid_undo_bpf();
+    void eid_recompute_derived();
+    void sa_recompute_from_iq();
 
     // tm_rec 내부 상태
     bool    tm_rec_active=false;

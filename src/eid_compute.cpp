@@ -144,6 +144,172 @@ void FFTViewer::eid_start(const std::string& wav_path){
     });
 }
 
+// ── ch_i/ch_q 로부터 envelope/phase/inst_freq 재계산 ─────────────────────────
+void FFTViewer::eid_recompute_derived(){
+    std::lock_guard<std::mutex> lk(eid_data_mtx);
+    int64_t n = eid_total_samples;
+    if(n <= 0 || (int64_t)eid_ch_i.size() < n) return;
+    eid_envelope.resize(n);
+    eid_phase.resize(n);
+    eid_inst_freq.resize(n);
+    float prev_ph = 0.f;
+    const float TWO_PI = 6.283185307f;
+    for(int64_t i = 0; i < n; i++){
+        float fi = eid_ch_i[i], fq = eid_ch_q[i];
+        eid_envelope[i] = sqrtf(fi*fi + fq*fq);
+        float ph = atan2f(fq, fi);
+        eid_phase[i] = ph;
+        float dp = ph - prev_ph;
+        if(dp >  3.14159265f) dp -= TWO_PI;
+        if(dp < -3.14159265f) dp += TWO_PI;
+        eid_inst_freq[i] = (i == 0) ? 0.f : dp;
+        prev_ph = ph;
+    }
+    float scale = (float)eid_sample_rate / TWO_PI;
+    for(int64_t i = 0; i < n; i++) eid_inst_freq[i] *= scale;
+
+    // auto-scale 재계산
+    std::vector<float> sorted_env(eid_envelope);
+    std::sort(sorted_env.begin(), sorted_env.end());
+    float lo = sorted_env[(size_t)(sorted_env.size()*0.01f)];
+    float hi = sorted_env[(size_t)(sorted_env.size()*0.99f)];
+    if(hi-lo<0.001f) hi=lo+0.001f;
+    float margin = (hi-lo)*0.05f;
+    eid_amp_min = std::max(0.f, lo-margin);
+    eid_amp_max = hi+margin;
+    eid_noise_level = sorted_env[(size_t)(sorted_env.size()*0.05f)];
+}
+
+// ── FFT 기반 BPF (brick-wall, 블록 처리) ─────────────────────────────────────
+void FFTViewer::eid_apply_bpf(double freq_lo_hz, double freq_hi_hz){
+    // 원본 백업 (첫 적용 시에만)
+    if(!eid_bpf_active){
+        eid_orig_ch_i = eid_ch_i;
+        eid_orig_ch_q = eid_ch_q;
+    }
+
+    // 항상 원본에서 시작 (중첩 BPF 방지)
+    std::vector<float> work_i = eid_orig_ch_i;
+    std::vector<float> work_q = eid_orig_ch_q;
+    int64_t n = (int64_t)work_i.size();
+    if(n < 1) return;
+
+    int fft_n = 65536;
+    while(fft_n > n) fft_n >>= 1;
+    if(fft_n < 64) fft_n = 64;
+
+    fftwf_complex* in  = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex)*fft_n);
+    fftwf_complex* out = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex)*fft_n);
+    fftwf_plan fwd = fftwf_plan_dft_1d(fft_n, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
+    fftwf_plan inv = fftwf_plan_dft_1d(fft_n, out, in, FFTW_BACKWARD, FFTW_ESTIMATE);
+
+    double sr = (double)eid_sample_rate;
+    double cf = (double)eid_center_freq_hz;
+    double bpf_lo = freq_lo_hz - cf;  // baseband offset
+    double bpf_hi = freq_hi_hz - cf;
+
+    for(int64_t offset = 0; offset < n; offset += fft_n){
+        int64_t block_n = std::min((int64_t)fft_n, n - offset);
+
+        for(int64_t i = 0; i < block_n; i++){
+            in[i][0] = work_i[offset+i];
+            in[i][1] = work_q[offset+i];
+        }
+        for(int64_t i = block_n; i < fft_n; i++){
+            in[i][0] = 0; in[i][1] = 0;
+        }
+
+        fftwf_execute(fwd);
+
+        // 대역 외 bin 제로화
+        for(int k = 0; k < fft_n; k++){
+            double freq_hz = (k <= fft_n/2) ? (double)k*sr/fft_n : (double)(k-fft_n)*sr/fft_n;
+            if(freq_hz < bpf_lo || freq_hz > bpf_hi){
+                out[k][0] = 0; out[k][1] = 0;
+            }
+        }
+
+        fftwf_execute(inv);
+
+        float inv_n = 1.0f / fft_n;
+        for(int64_t i = 0; i < block_n; i++){
+            work_i[offset+i] = in[i][0] * inv_n;
+            work_q[offset+i] = in[i][1] * inv_n;
+        }
+    }
+
+    fftwf_destroy_plan(fwd); fftwf_destroy_plan(inv);
+    fftwf_free(in); fftwf_free(out);
+
+    {
+        std::lock_guard<std::mutex> lk(eid_data_mtx);
+        eid_ch_i = std::move(work_i);
+        eid_ch_q = std::move(work_q);
+    }
+    eid_bpf_active = true;
+
+    eid_recompute_derived();
+    sa_recompute_from_iq();
+}
+
+void FFTViewer::eid_undo_bpf(){
+    if(!eid_bpf_active) return;
+    {
+        std::lock_guard<std::mutex> lk(eid_data_mtx);
+        eid_ch_i = eid_orig_ch_i;
+        eid_ch_q = eid_orig_ch_q;
+    }
+    eid_bpf_active = false;
+    eid_recompute_derived();
+    sa_recompute_from_iq();
+}
+
+void FFTViewer::eid_remove_samples(double s0, double s1){
+    int64_t i0 = std::max((int64_t)0, (int64_t)s0);
+    int64_t i1 = std::min(eid_total_samples, (int64_t)ceil(s1));
+    if(i1 <= i0) return;
+    int64_t count = i1 - i0;
+
+    {
+        std::lock_guard<std::mutex> lk(eid_data_mtx);
+        auto erase = [&](std::vector<float>& vec){
+            if(i0 < (int64_t)vec.size() && i1 <= (int64_t)vec.size())
+                vec.erase(vec.begin()+i0, vec.begin()+i1);
+        };
+        erase(eid_envelope);
+        erase(eid_ch_i);
+        erase(eid_ch_q);
+        erase(eid_phase);
+        erase(eid_inst_freq);
+        eid_total_samples -= count;
+    }
+
+    // 태그 조정
+    for(auto it = eid_tags.begin(); it != eid_tags.end(); ){
+        if(it->s0 >= s0 && it->s1 <= s1){
+            it = eid_tags.erase(it);
+        } else {
+            if(it->s0 > s1){ it->s0 -= count; it->s1 -= count; }
+            else if(it->s1 > s0){ it->s1 = std::min(it->s1, s0); }
+            ++it;
+        }
+    }
+
+    // 뷰 상태 조정
+    if(eid_view_t0 > s1) eid_view_t0 -= count;
+    else if(eid_view_t0 > s0) eid_view_t0 = s0;
+    if(eid_view_t1 > s1) eid_view_t1 -= count;
+    else if(eid_view_t1 > s0) eid_view_t1 = s0;
+    eid_view_t0 = std::max(0.0, eid_view_t0);
+    eid_view_t1 = std::min((double)eid_total_samples, eid_view_t1);
+    if(eid_view_t1 <= eid_view_t0){ eid_view_t0=0; eid_view_t1=(double)eid_total_samples; }
+    eid_view_stack.clear();
+    sa_freq_view_stack.clear();
+
+    // 스펙트로그램 재계산
+    sa_recompute_from_iq();
+}
+
 void FFTViewer::eid_cleanup(){
     if(eid_thread.joinable()) eid_thread.join();
     {
@@ -162,4 +328,7 @@ void FFTViewer::eid_cleanup(){
     eid_center_freq_hz   = 0;
     eid_view_mode        = 0;
     eid_phase_detrend_hz = 0.0f;
+    eid_bpf_active       = false;
+    eid_orig_ch_i.clear(); eid_orig_ch_i.shrink_to_fit();
+    eid_orig_ch_q.clear(); eid_orig_ch_q.shrink_to_fit();
 }
