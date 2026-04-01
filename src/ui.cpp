@@ -3743,9 +3743,15 @@ void run_streaming_viewer(){
 
         // ── Frequency input ───────────────────────────────────────────────
         static float new_freq=450.0f; static bool fdeact=false, focus_freq=false;
-        // Tab > 주파수 입력창 포커스 (스펙트럼 뷰에서만, 어떤 입력칸도 활성화 안 된 상태)
-        if(ImGui::IsKeyPressed(ImGuiKey_Tab, false) && !editing){
-            focus_freq = true;
+        // Tab > 주파수 입력창 포커스 (텍스트 입력 중이 아닐 때)
+        // GLFW 레벨에서 직접 감지 (ImGui가 Tab을 소비해도 동작)
+        {
+            static bool tab_was_down = false;
+            bool tab_down = glfwGetKey(win, GLFW_KEY_TAB) == GLFW_PRESS;
+            if(tab_down && !tab_was_down && !io.WantTextInput){
+                focus_freq = true;
+            }
+            tab_was_down = tab_down;
         }
         // 채팅창 열린 상태에서 Enter > 채팅 입력칸 포커스
         if(chat_open &&
@@ -7207,6 +7213,12 @@ void run_streaming_viewer(){
                 if(sweep_hovered && io.MouseWheel != 0.f){
                     v.eid_phase_detrend_hz += io.MouseWheel * 1.0f;
                     v.eid_phase_detrend_hz = std::max(-max_hz, std::min(max_hz, v.eid_phase_detrend_hz));
+                }
+                if(sweep_hovered){
+                    if(ImGui::IsKeyPressed(ImGuiKey_RightArrow,true))
+                        v.eid_phase_detrend_hz = std::min(max_hz, v.eid_phase_detrend_hz + 1.0f);
+                    if(ImGui::IsKeyPressed(ImGuiKey_LeftArrow,true))
+                        v.eid_phase_detrend_hz = std::max(-max_hz, v.eid_phase_detrend_hz - 1.0f);
                 }
                 ImGui::PopStyleVar();
             }
