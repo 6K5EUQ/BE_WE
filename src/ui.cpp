@@ -7103,6 +7103,8 @@ void run_streaming_viewer(){
                 {"Freq",        2, IM_COL32(255,120,200,255)},
                 {"Phase",       3, IM_COL32(255,220,80,255)},
                 {"I/Q",         4, IM_COL32(80,180,255,255)},
+                {"Const",       5, IM_COL32(200,80,255,255)},
+                {"Power",       6, IM_COL32(255,100,100,255)},
             };
             float bx = ov_x0 + 8.f;
             float btn_ty = sb_y0 + 3.f;
@@ -7230,6 +7232,8 @@ void run_streaming_viewer(){
                 if(ImGui::IsKeyPressed(ImGuiKey_3, false)) v.eid_view_mode = 2;
                 if(ImGui::IsKeyPressed(ImGuiKey_4, false)) v.eid_view_mode = 3;
                 if(ImGui::IsKeyPressed(ImGuiKey_5, false)) v.eid_view_mode = 4;
+                if(ImGui::IsKeyPressed(ImGuiKey_6, false)) v.eid_view_mode = 5;
+                if(ImGui::IsKeyPressed(ImGuiKey_7, false)) v.eid_view_mode = 6;
             }
 
             // ── 콘텐츠 영역 ────────────────────────────────────────────
@@ -7612,6 +7616,395 @@ void run_streaming_viewer(){
                     ImVec2 msz = ImGui::CalcTextSize(msg);
                     fg->AddText(ImVec2(ov_x0+(ov_w-msz.x)/2, ca_y0+(ca_h-msz.y)/2),
                                 IM_COL32(100,100,120,255), msg);
+                }
+
+            // ── Constellation 모드 (mode 5) ─────────────────────────────
+            } else if(eid_mode == 5 && v.eid_data_ready.load()){
+                const float LM=60.f, RM=10.f, TM=24.f, BM=50.f; // BM 늘려서 슬라이더 공간
+                float ea_x0=ov_x0+LM, ea_y0=ca_y0+TM;
+                float ea_x1=ov_x1-RM, ea_y1=ca_y1-BM;
+                float ea_w=ea_x1-ea_x0, ea_h=ea_y1-ea_y0;
+                if(ea_w>10.f && ea_h>10.f){
+                    uint32_t sr=v.eid_sample_rate>0?v.eid_sample_rate:1;
+                    // 헤더
+                    {
+                        double win_dur=(double)v.eid_const_win/sr;
+                        char hdr[256];
+                        if(v.eid_center_freq_hz>0)
+                            snprintf(hdr,sizeof(hdr),"Window: %d samp (%.3fms) | CF: %.3f MHz",
+                                     v.eid_const_win, win_dur*1e3, v.eid_center_freq_hz/1e6);
+                        else
+                            snprintf(hdr,sizeof(hdr),"Window: %d samp (%.3fms)",
+                                     v.eid_const_win, win_dur*1e3);
+                        fg->AddText(ImVec2(ea_x0,ca_y0+4),IM_COL32(160,160,180,220),hdr);
+                        if(!v.sa_temp_path.empty()){
+                            const char* fn=v.sa_temp_path.c_str();
+                            const char* sep=strrchr(fn,'/'); if(sep) fn=sep+1;
+                            ImVec2 fsz=ImGui::CalcTextSize(fn);
+                            fg->AddText(ImVec2(ea_x1-fsz.x,ca_y0+4),IM_COL32(160,160,180,220),fn);
+                        }
+                    }
+                    // 정사각형 플롯 영역
+                    float side=std::min(ea_w,ea_h);
+                    float plot_cx=ea_x0+ea_w*0.5f, plot_cy=ea_y0+ea_h*0.5f;
+                    float px0=plot_cx-side*0.5f, py0=plot_cy-side*0.5f;
+                    float px1=plot_cx+side*0.5f, py1=plot_cy+side*0.5f;
+
+                    // 자동 재생
+                    if(v.eid_const_playing){
+                        float speed=(float)sr*0.05f;
+                        v.eid_const_pos+=speed*io.DeltaTime*10.0;
+                        if(v.eid_const_pos+v.eid_const_win>=(double)v.eid_total_samples){
+                            v.eid_const_pos=0;
+                        }
+                    }
+                    // 클램프
+                    v.eid_const_pos=std::max(0.0,std::min(v.eid_const_pos,
+                        (double)(v.eid_total_samples-v.eid_const_win)));
+
+                    // 윈도우 범위 & 데시메이션
+                    int64_t w0=(int64_t)v.eid_const_pos;
+                    int64_t w1=std::min((int64_t)(w0+v.eid_const_win),v.eid_total_samples);
+                    int64_t win_n=w1-w0;
+                    int64_t step=std::max((int64_t)1,win_n/30000);
+
+                    // 자동 캐리어 주파수 추정: 누적 위상 선형회귀
+                    // 누적 위상에 직선 피팅 → 기울기 = 캐리어 오프셋 (rad/sample)
+                    // BPSK ±π 천이는 양방향 대칭이므로 회귀에서 자연 상쇄됨
+                    double phase_slope=0.0;
+                    if(win_n>1 && w1<=(int64_t)v.eid_ch_i.size()){
+                        int64_t reg_step=std::max((int64_t)1,win_n/10000);
+                        double cum=0.0, sx_r=0.0, sy_r=0.0, sxx_r=0.0, sxy_r=0.0;
+                        int64_t N_r=0;
+                        float pi2=v.eid_ch_i[w0], pq2=v.eid_ch_q[w0];
+                        for(int64_t s=w0+reg_step;s<w1;s+=reg_step){
+                            float ci=v.eid_ch_i[s], cq=v.eid_ch_q[s];
+                            float cross=ci*pq2-cq*pi2;
+                            float dot2=ci*pi2+cq*pq2;
+                            cum+=atan2f(cross,dot2+1e-20f);
+                            double x=(double)(s-w0);
+                            sx_r+=x; sy_r+=cum; sxx_r+=x*x; sxy_r+=x*cum;
+                            N_r++;
+                            pi2=ci; pq2=cq;
+                        }
+                        if(N_r>1){
+                            double denom=(double)N_r*sxx_r-sx_r*sx_r;
+                            if(fabs(denom)>1e-12)
+                                phase_slope=((double)N_r*sxy_r-sx_r*sy_r)/denom;
+                        }
+                    }
+                    double phase_inc=phase_slope; // rad/sample 직접 사용
+
+                    // 자동 스케일: 현재 윈도우의 IQ 최대 진폭 계산
+                    float max_amp=0.0f;
+                    for(int64_t s=w0;s<w1;s+=step){
+                        float ri=v.eid_ch_i[s], rq=v.eid_ch_q[s];
+                        float amp=ri*ri+rq*rq;
+                        if(amp>max_amp) max_amp=amp;
+                    }
+                    max_amp=sqrtf(max_amp);
+                    if(max_amp<1e-9f) max_amp=1.0f;
+
+                    float auto_scale=side*0.45f/max_amp;
+                    float scale;
+                    if(v.eid_const_zoom>0.0f)
+                        scale=side*0.5f*v.eid_const_zoom;
+                    else
+                        scale=auto_scale;
+
+                    // 배경
+                    fg->AddRectFilled(ImVec2(px0,py0),ImVec2(px1,py1),IM_COL32(8,8,12,255));
+                    // 십자 축선
+                    fg->AddLine(ImVec2(px0,plot_cy),ImVec2(px1,plot_cy),IM_COL32(60,60,80,180));
+                    fg->AddLine(ImVec2(plot_cx,py0),ImVec2(plot_cx,py1),IM_COL32(60,60,80,180));
+                    // 격자 (0.25 간격)
+                    for(int g=1;g<=3;g++){
+                        float off=g*0.25f*side*0.5f;
+                        fg->AddLine(ImVec2(plot_cx+off,py0),ImVec2(plot_cx+off,py1),IM_COL32(40,40,55,100));
+                        fg->AddLine(ImVec2(plot_cx-off,py0),ImVec2(plot_cx-off,py1),IM_COL32(40,40,55,100));
+                        fg->AddLine(ImVec2(px0,plot_cy+off),ImVec2(px1,plot_cy+off),IM_COL32(40,40,55,100));
+                        fg->AddLine(ImVec2(px0,plot_cy-off),ImVec2(px1,plot_cy-off),IM_COL32(40,40,55,100));
+                    }
+                    // 단위원
+                    fg->AddCircle(ImVec2(plot_cx,plot_cy),side*0.5f,IM_COL32(80,80,120,120),64,1.f);
+                    // 축 라벨
+                    fg->AddText(ImVec2(px1+4,plot_cy-7),IM_COL32(150,150,180,255),"I");
+                    fg->AddText(ImVec2(plot_cx-4,py0-16),IM_COL32(150,150,180,255),"Q");
+
+                    // 데이터 플로팅 (캐리어 제거)
+                    fg->PushClipRect(ImVec2(px0,py0),ImVec2(px1,py1),true);
+                    for(int64_t s=w0;s<w1;s+=step){
+                        float ri=v.eid_ch_i[s], rq=v.eid_ch_q[s];
+                        double theta=-phase_inc*(double)(s-w0);
+                        float ct=(float)cos(theta), st=(float)sin(theta);
+                        float iv=ri*ct-rq*st;
+                        float qv=ri*st+rq*ct;
+                        float sx=plot_cx+iv*scale;
+                        float sy=plot_cy-qv*scale;
+                        fg->AddCircleFilled(ImVec2(sx,sy),1.5f,IM_COL32(80,255,140,120));
+                    }
+                    fg->PopClipRect();
+                    // 테두리
+                    fg->AddRect(ImVec2(px0,py0),ImVec2(px1,py1),IM_COL32(60,60,80,255));
+
+                    // ── 하단 컨트롤: 슬라이더 + Play/Pause + Window 크기 ──
+                    float ctrl_y=ea_y1+6.f;
+                    // Play/Pause 버튼
+                    ImGui::SetCursorScreenPos(ImVec2(ea_x0,ctrl_y));
+                    if(ImGui::SmallButton(v.eid_const_playing?"||":" > ")){
+                        v.eid_const_playing=!v.eid_const_playing;
+                    }
+                    ImGui::SameLine(0,8);
+                    // 위치 슬라이더
+                    float slider_w=ea_w-160.f;
+                    if(slider_w<50.f) slider_w=50.f;
+                    ImGui::SetNextItemWidth(slider_w);
+                    float pos_f=(float)v.eid_const_pos;
+                    float pos_max=(float)std::max((int64_t)1,v.eid_total_samples-(int64_t)v.eid_const_win);
+                    if(ImGui::SliderFloat("##const_pos",&pos_f,0.f,pos_max,"")){
+                        v.eid_const_pos=(double)pos_f;
+                    }
+                    // 슬라이더 드래그 중이면 재생 일시정지
+                    if(ImGui::IsItemActive()) v.eid_const_playing=false;
+                    ImGui::SameLine(0,8);
+                    // Window 크기
+                    ImGui::SetNextItemWidth(80.f);
+                    ImGui::InputInt("##const_win",&v.eid_const_win,256,1024);
+                    v.eid_const_win=std::max(64,std::min(v.eid_const_win,
+                        (int)std::min((int64_t)1000000,v.eid_total_samples)));
+                    // 마우스 휠로 줌 조절 (플롯 위에서)
+                    ImVec2 mp2=io.MousePos;
+                    if(mp2.x>=px0&&mp2.x<=px1&&mp2.y>=py0&&mp2.y<=py1){
+                        if(io.MouseWheel!=0.f){
+                            if(v.eid_const_zoom<=0.0f)
+                                v.eid_const_zoom=auto_scale/(side*0.5f);
+                            float factor=io.MouseWheel>0?1.25f:0.8f;
+                            v.eid_const_zoom*=factor;
+                            v.eid_const_zoom=std::max(0.001f,std::min(v.eid_const_zoom,10000.f));
+                        }
+                        if(ImGui::IsMouseDoubleClicked(0))
+                            v.eid_const_zoom=0.0f;
+                    }
+                }
+
+            // ── M-th Power Spectrum 모드 (mode 6) ────────────────────────
+            } else if(eid_mode == 6 && v.eid_data_ready.load()){
+                const float LM=60.f, RM=10.f, TM=24.f, BM=50.f;
+                float ea_x0=ov_x0+LM, ea_y0=ca_y0+TM;
+                float ea_x1=ov_x1-RM, ea_y1=ca_y1-BM;
+                float ea_w=ea_x1-ea_x0, ea_h=ea_y1-ea_y0;
+                if(ea_w>10.f && ea_h>10.f){
+                    uint32_t sr=v.eid_sample_rate;
+                    if(sr==0) sr=1;
+                    ImDrawList* fg=ImGui::GetForegroundDrawList();
+
+                    // 헤더 정보
+                    {
+                        char hdr[256];
+                        snprintf(hdr,sizeof(hdr),"M=%d  |  FFT: %d  |  Window: %d samp  |  CF: %.3f MHz",
+                            v.eid_power_order, v.eid_power_fft_n, v.eid_power_win,
+                            v.eid_center_freq_hz/1e6);
+                        fg->AddText(ImVec2(ea_x0,ca_y0+4),IM_COL32(200,200,220,255),hdr);
+                        // 파일명 (우측)
+                        if(!v.sa_temp_path.empty()){
+                            const char* fn=v.sa_temp_path.c_str();
+                            const char* sep=strrchr(fn,'/'); if(sep) fn=sep+1;
+                            ImVec2 fsz=ImGui::CalcTextSize(fn);
+                            fg->AddText(ImVec2(ea_x1-fsz.x,ca_y0+4),IM_COL32(160,160,180,220),fn);
+                        }
+                    }
+
+                    // 윈도우 범위 클램프
+                    v.eid_power_win=std::max(64,std::min(v.eid_power_win,
+                        (int)std::min((int64_t)1000000,v.eid_total_samples)));
+                    v.eid_power_pos=std::max(0.0,std::min(v.eid_power_pos,
+                        (double)(v.eid_total_samples-v.eid_power_win)));
+                    int64_t pw0=(int64_t)v.eid_power_pos;
+                    int64_t pw1=std::min((int64_t)(pw0+v.eid_power_win),v.eid_total_samples);
+                    int64_t pwin=pw1-pw0;
+
+                    int fft_n=v.eid_power_fft_n;
+                    int M=v.eid_power_order;
+
+                    // M-th power FFT 계산
+                    // z^M 을 구한 뒤 FFT → power spectrum
+                    std::vector<float> psd(fft_n,0.f);
+                    int n_avg=0;
+                    {
+                        // Blackman-Harris 윈도우
+                        std::vector<float> win(fft_n);
+                        for(int i=0;i<fft_n;i++){
+                            double x=2.0*M_PI*i/(fft_n-1);
+                            win[i]=(float)(0.35875-0.48829*cos(x)+0.14128*cos(2*x)-0.01168*cos(3*x));
+                        }
+                        fftwf_complex* fin=(fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex)*fft_n);
+                        fftwf_complex* fout=(fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex)*fft_n);
+                        fftwf_plan plan=fftwf_plan_dft_1d(fft_n,fin,fout,FFTW_FORWARD,FFTW_ESTIMATE);
+
+                        // 오버랩 50% 세그먼트
+                        int hop=fft_n/2; if(hop<1)hop=1;
+                        for(int64_t seg=pw0; seg+fft_n<=pw1; seg+=hop){
+                            for(int i=0;i<fft_n;i++){
+                                float ri=v.eid_ch_i[seg+i], rq=v.eid_ch_q[seg+i];
+                                // z^M 계산 (복소수 거듭제곱)
+                                float zr=ri, zi=rq;
+                                for(int p=1;p<M;p++){
+                                    float nr=zr*ri-zi*rq;
+                                    float ni=zr*rq+zi*ri;
+                                    zr=nr; zi=ni;
+                                }
+                                fin[i][0]=zr*win[i];
+                                fin[i][1]=zi*win[i];
+                            }
+                            fftwf_execute(plan);
+                            for(int i=0;i<fft_n;i++){
+                                float mag=fout[i][0]*fout[i][0]+fout[i][1]*fout[i][1];
+                                psd[i]+=mag;
+                            }
+                            n_avg++;
+                        }
+                        fftwf_destroy_plan(plan);
+                        fftwf_free(fin);
+                        fftwf_free(fout);
+                    }
+                    // 평균 & dB 변환
+                    float psd_max=-999.f;
+                    std::vector<float> psd_db(fft_n);
+                    for(int i=0;i<fft_n;i++){
+                        float val=n_avg>0? psd[i]/n_avg : 1e-20f;
+                        psd_db[i]=10.f*log10f(val+1e-20f);
+                        if(psd_db[i]>psd_max) psd_max=psd_db[i];
+                    }
+                    float psd_min=psd_max-80.f; // 80dB 다이내믹 레인지
+
+                    // 배경
+                    fg->AddRectFilled(ImVec2(ea_x0,ea_y0),ImVec2(ea_x1,ea_y1),IM_COL32(8,8,12,255));
+
+                    // 주파수 축: FFT bin → Hz (M-th power이므로 실제 주파수 = bin_freq / M)
+                    // X축: -fs/2 ~ +fs/2 (M-th power 도메인), 실제 오프셋은 /M
+                    // 격자 & 라벨
+                    int n_grid=8;
+                    for(int g=0;g<=n_grid;g++){
+                        float frac=(float)g/n_grid;
+                        float gx=ea_x0+frac*ea_w;
+                        fg->AddLine(ImVec2(gx,ea_y0),ImVec2(gx,ea_y1),IM_COL32(40,40,55,100));
+                        // 주파수 라벨: bin → Hz (centered)
+                        float bin_freq=((float)g/n_grid-0.5f)*(float)sr;
+                        char flbl[32];
+                        if(fabsf(bin_freq)>=1000.f)
+                            snprintf(flbl,sizeof(flbl),"%.1fk",bin_freq/1000.f);
+                        else
+                            snprintf(flbl,sizeof(flbl),"%.0f",bin_freq);
+                        ImVec2 tsz=ImGui::CalcTextSize(flbl);
+                        fg->AddText(ImVec2(gx-tsz.x*0.5f,ea_y1+2),IM_COL32(140,140,160,255),flbl);
+                    }
+                    // Y축 격자 (dB)
+                    for(int g=0;g<=4;g++){
+                        float frac=(float)g/4;
+                        float gy=ea_y0+frac*ea_h;
+                        fg->AddLine(ImVec2(ea_x0,gy),ImVec2(ea_x1,gy),IM_COL32(40,40,55,100));
+                        float db_val=psd_max-(psd_max-psd_min)*frac;
+                        char dlbl[16]; snprintf(dlbl,sizeof(dlbl),"%.0fdB",db_val);
+                        ImVec2 tsz=ImGui::CalcTextSize(dlbl);
+                        fg->AddText(ImVec2(ea_x0-tsz.x-4,gy-tsz.y*0.5f),IM_COL32(140,140,160,255),dlbl);
+                    }
+
+                    // PSD 그리기 (FFT shift: DC를 중앙으로)
+                    fg->PushClipRect(ImVec2(ea_x0,ea_y0),ImVec2(ea_x1,ea_y1),true);
+                    float db_range=psd_max-psd_min;
+                    if(db_range<1.f) db_range=1.f;
+                    ImVec2 prev_pt;
+                    for(int i=0;i<fft_n;i++){
+                        // FFT shift: 0..N/2-1 → 우측, N/2..N-1 → 좌측
+                        int si=(i+fft_n/2)%fft_n;
+                        float fx=ea_x0+((float)i/(fft_n-1))*ea_w;
+                        float fy=ea_y0+(1.f-(psd_db[si]-psd_min)/db_range)*ea_h;
+                        fy=std::max(ea_y0,std::min(ea_y1,fy));
+                        ImVec2 pt(fx,fy);
+                        if(i>0)
+                            fg->AddLine(prev_pt,pt,IM_COL32(255,100,100,220),1.2f);
+                        prev_pt=pt;
+                    }
+                    fg->PopClipRect();
+
+                    // 테두리
+                    fg->AddRect(ImVec2(ea_x0,ea_y0),ImVec2(ea_x1,ea_y1),IM_COL32(60,60,80,255));
+
+                    // X축 라벨
+                    {
+                        const char* xlabel="Frequency (Hz) in M-th power domain";
+                        ImVec2 tsz=ImGui::CalcTextSize(xlabel);
+                        fg->AddText(ImVec2(ea_x0+ea_w*0.5f-tsz.x*0.5f,ea_y1+14),
+                            IM_COL32(120,120,140,200),xlabel);
+                    }
+
+                    // ── 하단 컨트롤 ──
+                    float ctrl_y=ea_y1+30.f;
+                    ImGui::SetCursorScreenPos(ImVec2(ea_x0,ctrl_y));
+
+                    // M 값 선택 버튼
+                    ImGui::Text("M:"); ImGui::SameLine(0,4);
+                    for(int mv : {2,4,8}){
+                        char ml[8]; snprintf(ml,sizeof(ml),"%d",mv);
+                        bool sel=(v.eid_power_order==mv);
+                        if(sel) ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(0.6f,0.2f,0.2f,1.f));
+                        if(ImGui::SmallButton(ml)) v.eid_power_order=mv;
+                        if(sel) ImGui::PopStyleColor();
+                        ImGui::SameLine(0,4);
+                    }
+                    ImGui::SameLine(0,12);
+
+                    // FFT size
+                    ImGui::Text("FFT:"); ImGui::SameLine(0,4);
+                    ImGui::SetNextItemWidth(70.f);
+                    ImGui::InputInt("##pw_fft",&v.eid_power_fft_n,0,0);
+                    // 2의 거듭제곱으로 클램프
+                    {
+                        int nf=v.eid_power_fft_n;
+                        if(nf<256) nf=256;
+                        if(nf>65536) nf=65536;
+                        int p2=256; while(p2*2<=nf) p2*=2;
+                        v.eid_power_fft_n=p2;
+                    }
+                    ImGui::SameLine(0,12);
+
+                    // Window size
+                    ImGui::Text("Win:"); ImGui::SameLine(0,4);
+                    ImGui::SetNextItemWidth(80.f);
+                    ImGui::InputInt("##pw_win",&v.eid_power_win,0,0);
+                    v.eid_power_win=std::max(v.eid_power_fft_n,std::min(v.eid_power_win,
+                        (int)std::min((int64_t)1000000,v.eid_total_samples)));
+                    ImGui::SameLine(0,12);
+
+                    // Position slider
+                    ImGui::Text("Pos:"); ImGui::SameLine(0,4);
+                    float slw=ea_w-ImGui::GetCursorScreenPos().x+ea_x0;
+                    if(slw<50.f) slw=50.f;
+                    ImGui::SetNextItemWidth(slw);
+                    float pf=(float)v.eid_power_pos;
+                    float pm=(float)std::max((int64_t)1,v.eid_total_samples-(int64_t)v.eid_power_win);
+                    if(ImGui::SliderFloat("##pw_pos",&pf,0.f,pm,""))
+                        v.eid_power_pos=(double)pf;
+
+                    // 마우스 호버 시 주파수 표시
+                    ImVec2 mpos=io.MousePos;
+                    if(mpos.x>=ea_x0&&mpos.x<=ea_x1&&mpos.y>=ea_y0&&mpos.y<=ea_y1){
+                        float frac=(mpos.x-ea_x0)/ea_w;
+                        float hz=(frac-0.5f)*(float)sr;         // M-th power 도메인 Hz
+                        float real_hz=hz/(float)M;               // 실제 주파수 오프셋
+                        // 해당 bin의 dB 값
+                        int bin=(int)(frac*fft_n);
+                        bin=std::max(0,std::min(fft_n-1,bin));
+                        int sbin=(bin+fft_n/2)%fft_n;
+                        float db=psd_db[sbin];
+                        char tip[128];
+                        snprintf(tip,sizeof(tip),"%.1f Hz (real: %.1f Hz)  %.1f dB",hz,real_hz,db);
+                        ImVec2 tsz=ImGui::CalcTextSize(tip);
+                        fg->AddText(ImVec2(mpos.x+12,mpos.y-18),IM_COL32(255,255,200,255),tip);
+                        // 수직 커서선
+                        fg->AddLine(ImVec2(mpos.x,ea_y0),ImVec2(mpos.x,ea_y1),
+                            IM_COL32(255,200,100,120));
+                    }
                 }
 
             // ── Time-domain 모드 (Amp/Freq/Phase/IQ: mode 1-4) ──────────

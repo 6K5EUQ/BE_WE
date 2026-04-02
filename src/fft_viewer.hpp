@@ -293,6 +293,18 @@ public:
     };
     void eid_auto_analyze_tag(EidTag& tag);
 
+    // 성상도 재생 상태
+    double eid_const_pos = 0;       // 현재 재생 위치 (샘플 인덱스)
+    bool   eid_const_playing = false; // 자동 재생 중
+    int    eid_const_win = 1024;    // 윈도우 크기 (샘플)
+    float  eid_const_zoom = 0.0f;   // 0 = 자동 스케일, >0 = 수동 줌 배율
+
+    // M-th power spectrum 분석 상태
+    int    eid_power_order = 2;     // M 값 (2, 4, 8)
+    int    eid_power_fft_n = 4096;  // FFT 크기
+    double eid_power_pos = 0;       // 윈도우 시작 위치 (샘플)
+    int    eid_power_win = 65536;   // 분석 윈도우 크기 (샘플)
+
     // 비트 구분 모드 (B키 토글)
     bool   eid_baud_mode = false;
     double eid_baud_s0 = -1;     // 시작 샘플 인덱스 (-1=미설정)
