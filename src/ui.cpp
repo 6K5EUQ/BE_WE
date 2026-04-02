@@ -7798,14 +7798,26 @@ void run_streaming_viewer(){
                     if(sr==0) sr=1;
                     ImDrawList* fg=ImGui::GetForegroundDrawList();
 
+                    // 현재 뷰 범위 사용 (다른 모드에서 줌한 상태 그대로)
+                    int64_t pw0=(int64_t)v.eid_view_t0;
+                    int64_t pw1=(int64_t)v.eid_view_t1;
+                    if(pw0<0) pw0=0;
+                    if(pw1>v.eid_total_samples) pw1=v.eid_total_samples;
+                    if(pw1<=pw0){ pw0=0; pw1=v.eid_total_samples; }
+                    int64_t pwin=pw1-pw0;
+
+                    int fft_n=v.eid_power_fft_n;
+                    int M=v.eid_power_order;
+
                     // 헤더 정보
                     {
+                        double t0_ms=pw0/(double)sr*1000.0;
+                        double t1_ms=pw1/(double)sr*1000.0;
                         char hdr[256];
-                        snprintf(hdr,sizeof(hdr),"M=%d  |  FFT: %d  |  Window: %d samp  |  CF: %.3f MHz",
-                            v.eid_power_order, v.eid_power_fft_n, v.eid_power_win,
+                        snprintf(hdr,sizeof(hdr),"M=%d  |  FFT: %d  |  %.1f-%.1fms (%lld samp)  |  CF: %.3f MHz",
+                            M, fft_n, t0_ms, t1_ms, (long long)pwin,
                             v.eid_center_freq_hz/1e6);
                         fg->AddText(ImVec2(ea_x0,ca_y0+4),IM_COL32(200,200,220,255),hdr);
-                        // 파일명 (우측)
                         if(!v.sa_temp_path.empty()){
                             const char* fn=v.sa_temp_path.c_str();
                             const char* sep=strrchr(fn,'/'); if(sep) fn=sep+1;
@@ -7814,24 +7826,10 @@ void run_streaming_viewer(){
                         }
                     }
 
-                    // 윈도우 범위 클램프
-                    v.eid_power_win=std::max(64,std::min(v.eid_power_win,
-                        (int)std::min((int64_t)1000000,v.eid_total_samples)));
-                    v.eid_power_pos=std::max(0.0,std::min(v.eid_power_pos,
-                        (double)(v.eid_total_samples-v.eid_power_win)));
-                    int64_t pw0=(int64_t)v.eid_power_pos;
-                    int64_t pw1=std::min((int64_t)(pw0+v.eid_power_win),v.eid_total_samples);
-                    int64_t pwin=pw1-pw0;
-
-                    int fft_n=v.eid_power_fft_n;
-                    int M=v.eid_power_order;
-
                     // M-th power FFT 계산
-                    // z^M 을 구한 뒤 FFT → power spectrum
                     std::vector<float> psd(fft_n,0.f);
                     int n_avg=0;
-                    {
-                        // Blackman-Harris 윈도우
+                    if(pwin>=fft_n){
                         std::vector<float> win(fft_n);
                         for(int i=0;i<fft_n;i++){
                             double x=2.0*M_PI*i/(fft_n-1);
@@ -7840,13 +7838,10 @@ void run_streaming_viewer(){
                         fftwf_complex* fin=(fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex)*fft_n);
                         fftwf_complex* fout=(fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex)*fft_n);
                         fftwf_plan plan=fftwf_plan_dft_1d(fft_n,fin,fout,FFTW_FORWARD,FFTW_ESTIMATE);
-
-                        // 오버랩 50% 세그먼트
                         int hop=fft_n/2; if(hop<1)hop=1;
                         for(int64_t seg=pw0; seg+fft_n<=pw1; seg+=hop){
                             for(int i=0;i<fft_n;i++){
                                 float ri=v.eid_ch_i[seg+i], rq=v.eid_ch_q[seg+i];
-                                // z^M 계산 (복소수 거듭제곱)
                                 float zr=ri, zi=rq;
                                 for(int p=1;p<M;p++){
                                     float nr=zr*ri-zi*rq;
@@ -7867,6 +7862,7 @@ void run_streaming_viewer(){
                         fftwf_free(fin);
                         fftwf_free(fout);
                     }
+
                     // 평균 & dB 변환
                     float psd_max=-999.f;
                     std::vector<float> psd_db(fft_n);
@@ -7875,20 +7871,18 @@ void run_streaming_viewer(){
                         psd_db[i]=10.f*log10f(val+1e-20f);
                         if(psd_db[i]>psd_max) psd_max=psd_db[i];
                     }
-                    float psd_min=psd_max-80.f; // 80dB 다이내믹 레인지
+                    psd_max+=10.f;
+                    float psd_min=psd_max-80.f;
 
                     // 배경
                     fg->AddRectFilled(ImVec2(ea_x0,ea_y0),ImVec2(ea_x1,ea_y1),IM_COL32(8,8,12,255));
 
-                    // 주파수 축: FFT bin → Hz (M-th power이므로 실제 주파수 = bin_freq / M)
-                    // X축: -fs/2 ~ +fs/2 (M-th power 도메인), 실제 오프셋은 /M
-                    // 격자 & 라벨
+                    // X축 격자 & 라벨
                     int n_grid=8;
                     for(int g=0;g<=n_grid;g++){
                         float frac=(float)g/n_grid;
                         float gx=ea_x0+frac*ea_w;
                         fg->AddLine(ImVec2(gx,ea_y0),ImVec2(gx,ea_y1),IM_COL32(40,40,55,100));
-                        // 주파수 라벨: bin → Hz (centered)
                         float bin_freq=((float)g/n_grid-0.5f)*(float)sr;
                         char flbl[32];
                         if(fabsf(bin_freq)>=1000.f)
@@ -7909,13 +7903,12 @@ void run_streaming_viewer(){
                         fg->AddText(ImVec2(ea_x0-tsz.x-4,gy-tsz.y*0.5f),IM_COL32(140,140,160,255),dlbl);
                     }
 
-                    // PSD 그리기 (FFT shift: DC를 중앙으로)
+                    // PSD 그리기 (FFT shift: DC 중앙)
                     fg->PushClipRect(ImVec2(ea_x0,ea_y0),ImVec2(ea_x1,ea_y1),true);
                     float db_range=psd_max-psd_min;
                     if(db_range<1.f) db_range=1.f;
                     ImVec2 prev_pt;
                     for(int i=0;i<fft_n;i++){
-                        // FFT shift: 0..N/2-1 → 우측, N/2..N-1 → 좌측
                         int si=(i+fft_n/2)%fft_n;
                         float fx=ea_x0+((float)i/(fft_n-1))*ea_w;
                         float fy=ea_y0+(1.f-(psd_db[si]-psd_min)/db_range)*ea_h;
@@ -7926,25 +7919,15 @@ void run_streaming_viewer(){
                         prev_pt=pt;
                     }
                     fg->PopClipRect();
-
-                    // 테두리
                     fg->AddRect(ImVec2(ea_x0,ea_y0),ImVec2(ea_x1,ea_y1),IM_COL32(60,60,80,255));
 
-                    // X축 라벨
-                    {
-                        const char* xlabel="Frequency (Hz) in M-th power domain";
-                        ImVec2 tsz=ImGui::CalcTextSize(xlabel);
-                        fg->AddText(ImVec2(ea_x0+ea_w*0.5f-tsz.x*0.5f,ea_y1+14),
-                            IM_COL32(120,120,140,200),xlabel);
-                    }
-
-                    // ── 하단 컨트롤 ──
-                    float ctrl_y=ea_y1+30.f;
+                    // ── 하단 컨트롤: M 버튼 + FFT size 콤보 ──
+                    float ctrl_y=ea_y1+20.f;
                     ImGui::SetCursorScreenPos(ImVec2(ea_x0,ctrl_y));
 
                     // M 값 선택 버튼
                     ImGui::Text("M:"); ImGui::SameLine(0,4);
-                    for(int mv : {2,4,8}){
+                    for(int mv : {1,2,4,8}){
                         char ml[8]; snprintf(ml,sizeof(ml),"%d",mv);
                         bool sel=(v.eid_power_order==mv);
                         if(sel) ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(0.6f,0.2f,0.2f,1.f));
@@ -7952,56 +7935,51 @@ void run_streaming_viewer(){
                         if(sel) ImGui::PopStyleColor();
                         ImGui::SameLine(0,4);
                     }
-                    ImGui::SameLine(0,12);
+                    ImGui::SameLine(0,16);
 
-                    // FFT size
+                    // FFT size 콤보
                     ImGui::Text("FFT:"); ImGui::SameLine(0,4);
-                    ImGui::SetNextItemWidth(70.f);
-                    ImGui::InputInt("##pw_fft",&v.eid_power_fft_n,0,0);
-                    // 2의 거듭제곱으로 클램프
                     {
-                        int nf=v.eid_power_fft_n;
-                        if(nf<256) nf=256;
-                        if(nf>65536) nf=65536;
-                        int p2=256; while(p2*2<=nf) p2*=2;
-                        v.eid_power_fft_n=p2;
+                        const int fft_sizes[]={256,512,1024,2048,4096,8192,16384,32768,65536};
+                        const char* fft_labels[]={"256","512","1024","2048","4096","8192","16384","32768","65536"};
+                        int cur_idx=4; // default 4096
+                        for(int i=0;i<9;i++) if(fft_sizes[i]==v.eid_power_fft_n) cur_idx=i;
+                        ImGui::SetNextItemWidth(80.f);
+                        if(ImGui::BeginCombo("##pw_fft",fft_labels[cur_idx],ImGuiComboFlags_NoArrowButton)){
+                            for(int i=0;i<9;i++){
+                                bool is_sel=(i==cur_idx);
+                                if(ImGui::Selectable(fft_labels[i],is_sel))
+                                    v.eid_power_fft_n=fft_sizes[i];
+                                if(is_sel) ImGui::SetItemDefaultFocus();
+                            }
+                            ImGui::EndCombo();
+                        }
                     }
-                    ImGui::SameLine(0,12);
 
-                    // Window size
-                    ImGui::Text("Win:"); ImGui::SameLine(0,4);
-                    ImGui::SetNextItemWidth(80.f);
-                    ImGui::InputInt("##pw_win",&v.eid_power_win,0,0);
-                    v.eid_power_win=std::max(v.eid_power_fft_n,std::min(v.eid_power_win,
-                        (int)std::min((int64_t)1000000,v.eid_total_samples)));
-                    ImGui::SameLine(0,12);
-
-                    // Position slider
-                    ImGui::Text("Pos:"); ImGui::SameLine(0,4);
-                    float slw=ea_w-ImGui::GetCursorScreenPos().x+ea_x0;
-                    if(slw<50.f) slw=50.f;
-                    ImGui::SetNextItemWidth(slw);
-                    float pf=(float)v.eid_power_pos;
-                    float pm=(float)std::max((int64_t)1,v.eid_total_samples-(int64_t)v.eid_power_win);
-                    if(ImGui::SliderFloat("##pw_pos",&pf,0.f,pm,""))
-                        v.eid_power_pos=(double)pf;
+                    // 뷰 범위 안내
+                    ImGui::SameLine(0,16);
+                    {
+                        char vinfo[128];
+                        if(pwin<fft_n)
+                            snprintf(vinfo,sizeof(vinfo),"View: %lld samp (need >= %d, zoom out)",(long long)pwin,fft_n);
+                        else
+                            snprintf(vinfo,sizeof(vinfo),"View: %lld samp (%d avg)",(long long)pwin,n_avg);
+                        ImGui::TextDisabled("%s",vinfo);
+                    }
 
                     // 마우스 호버 시 주파수 표시
                     ImVec2 mpos=io.MousePos;
                     if(mpos.x>=ea_x0&&mpos.x<=ea_x1&&mpos.y>=ea_y0&&mpos.y<=ea_y1){
                         float frac=(mpos.x-ea_x0)/ea_w;
-                        float hz=(frac-0.5f)*(float)sr;         // M-th power 도메인 Hz
-                        float real_hz=hz/(float)M;               // 실제 주파수 오프셋
-                        // 해당 bin의 dB 값
+                        float hz=(frac-0.5f)*(float)sr;
+                        float real_hz=hz/(float)M;
                         int bin=(int)(frac*fft_n);
                         bin=std::max(0,std::min(fft_n-1,bin));
                         int sbin=(bin+fft_n/2)%fft_n;
                         float db=psd_db[sbin];
                         char tip[128];
                         snprintf(tip,sizeof(tip),"%.1f Hz (real: %.1f Hz)  %.1f dB",hz,real_hz,db);
-                        ImVec2 tsz=ImGui::CalcTextSize(tip);
                         fg->AddText(ImVec2(mpos.x+12,mpos.y-18),IM_COL32(255,255,200,255),tip);
-                        // 수직 커서선
                         fg->AddLine(ImVec2(mpos.x,ea_y0),ImVec2(mpos.x,ea_y1),
                             IM_COL32(255,200,100,120));
                     }

@@ -300,10 +300,8 @@ public:
     float  eid_const_zoom = 0.0f;   // 0 = 자동 스케일, >0 = 수동 줌 배율
 
     // M-th power spectrum 분석 상태
-    int    eid_power_order = 2;     // M 값 (2, 4, 8)
+    int    eid_power_order = 1;     // M 값 (1, 2, 4, 8)
     int    eid_power_fft_n = 4096;  // FFT 크기
-    double eid_power_pos = 0;       // 윈도우 시작 위치 (샘플)
-    int    eid_power_win = 65536;   // 분석 윈도우 크기 (샘플)
 
     // 비트 구분 모드 (B키 토글)
     bool   eid_baud_mode = false;
