@@ -7225,15 +7225,32 @@ void run_streaming_viewer(){
                 ImGui::PopStyleVar();
             }
 
-            // 1/2/3/4/5 키로 뷰 전환
+            // 1~7 키로 뷰 전환 (뷰 동기화 포함)
             if(!io.WantTextInput){
-                if(ImGui::IsKeyPressed(ImGuiKey_1, false)) v.eid_view_mode = 0;
-                if(ImGui::IsKeyPressed(ImGuiKey_2, false)) v.eid_view_mode = 1;
-                if(ImGui::IsKeyPressed(ImGuiKey_3, false)) v.eid_view_mode = 2;
-                if(ImGui::IsKeyPressed(ImGuiKey_4, false)) v.eid_view_mode = 3;
-                if(ImGui::IsKeyPressed(ImGuiKey_5, false)) v.eid_view_mode = 4;
-                if(ImGui::IsKeyPressed(ImGuiKey_6, false)) v.eid_view_mode = 5;
-                if(ImGui::IsKeyPressed(ImGuiKey_7, false)) v.eid_view_mode = 6;
+                int new_mode=-1;
+                if(ImGui::IsKeyPressed(ImGuiKey_1,false)) new_mode=0;
+                if(ImGui::IsKeyPressed(ImGuiKey_2,false)) new_mode=1;
+                if(ImGui::IsKeyPressed(ImGuiKey_3,false)) new_mode=2;
+                if(ImGui::IsKeyPressed(ImGuiKey_4,false)) new_mode=3;
+                if(ImGui::IsKeyPressed(ImGuiKey_5,false)) new_mode=4;
+                if(ImGui::IsKeyPressed(ImGuiKey_6,false)) new_mode=5;
+                if(ImGui::IsKeyPressed(ImGuiKey_7,false)) new_mode=6;
+                if(new_mode>=0 && new_mode!=v.eid_view_mode){
+                    int prev=v.eid_view_mode;
+                    v.eid_view_mode=new_mode;
+                    double et=(double)v.eid_total_samples;
+                    if(et>0){
+                        if(prev==0 && new_mode!=0){
+                            v.eid_view_t0=v.sa_view_y0*et;
+                            v.eid_view_t1=v.sa_view_y1*et;
+                        } else if(prev!=0 && new_mode==0){
+                            v.sa_view_y0=(float)(v.eid_view_t0/et);
+                            v.sa_view_y1=(float)(v.eid_view_t1/et);
+                            v.sa_view_y0=std::max(0.f,std::min(1.f,v.sa_view_y0));
+                            v.sa_view_y1=std::max(0.f,std::min(1.f,v.sa_view_y1));
+                        }
+                    }
+                }
             }
 
             // ── 콘텐츠 영역 ────────────────────────────────────────────
@@ -7626,16 +7643,36 @@ void run_streaming_viewer(){
                 float ea_w=ea_x1-ea_x0, ea_h=ea_y1-ea_y0;
                 if(ea_w>10.f && ea_h>10.f){
                     uint32_t sr=v.eid_sample_rate>0?v.eid_sample_rate:1;
+
+                    // 뷰 범위 사용 (다른 모드와 동기화)
+                    int64_t vw0=(int64_t)v.eid_view_t0;
+                    int64_t vw1=(int64_t)v.eid_view_t1;
+                    if(vw0<0) vw0=0;
+                    if(vw1>v.eid_total_samples) vw1=v.eid_total_samples;
+                    if(vw1<=vw0){ vw0=0; vw1=v.eid_total_samples; }
+                    int64_t view_n=vw1-vw0;
+
+                    // 서브윈도우: 뷰 범위 내에서 eid_const_win 크기
+                    v.eid_const_win=std::max(64,std::min(v.eid_const_win,(int)view_n));
+
+                    // 자동 재생
+                    if(v.eid_const_playing){
+                        float speed=(float)sr*0.05f;
+                        v.eid_const_pos+=speed*io.DeltaTime*10.0;
+                        if(v.eid_const_pos+v.eid_const_win>=(double)vw1)
+                            v.eid_const_pos=(double)vw0;
+                    }
+                    // 클램프 (뷰 범위 내)
+                    v.eid_const_pos=std::max((double)vw0,std::min(v.eid_const_pos,
+                        (double)(vw1-v.eid_const_win)));
+
                     // 헤더
                     {
-                        double win_dur=(double)v.eid_const_win/sr;
+                        double t0_ms=v.eid_const_pos/(double)sr*1e3;
+                        double t1_ms=(v.eid_const_pos+v.eid_const_win)/(double)sr*1e3;
                         char hdr[256];
-                        if(v.eid_center_freq_hz>0)
-                            snprintf(hdr,sizeof(hdr),"Window: %d samp (%.3fms) | CF: %.3f MHz",
-                                     v.eid_const_win, win_dur*1e3, v.eid_center_freq_hz/1e6);
-                        else
-                            snprintf(hdr,sizeof(hdr),"Window: %d samp (%.3fms)",
-                                     v.eid_const_win, win_dur*1e3);
+                        snprintf(hdr,sizeof(hdr),"%.1f-%.1fms (%d samp) | CF: %.3f MHz",
+                            t0_ms,t1_ms,v.eid_const_win,v.eid_center_freq_hz/1e6);
                         fg->AddText(ImVec2(ea_x0,ca_y0+4),IM_COL32(160,160,180,220),hdr);
                         if(!v.sa_temp_path.empty()){
                             const char* fn=v.sa_temp_path.c_str();
@@ -7650,50 +7687,14 @@ void run_streaming_viewer(){
                     float px0=plot_cx-side*0.5f, py0=plot_cy-side*0.5f;
                     float px1=plot_cx+side*0.5f, py1=plot_cy+side*0.5f;
 
-                    // 자동 재생
-                    if(v.eid_const_playing){
-                        float speed=(float)sr*0.05f;
-                        v.eid_const_pos+=speed*io.DeltaTime*10.0;
-                        if(v.eid_const_pos+v.eid_const_win>=(double)v.eid_total_samples){
-                            v.eid_const_pos=0;
-                        }
-                    }
-                    // 클램프
-                    v.eid_const_pos=std::max(0.0,std::min(v.eid_const_pos,
-                        (double)(v.eid_total_samples-v.eid_const_win)));
-
                     // 윈도우 범위 & 데시메이션
                     int64_t w0=(int64_t)v.eid_const_pos;
                     int64_t w1=std::min((int64_t)(w0+v.eid_const_win),v.eid_total_samples);
                     int64_t win_n=w1-w0;
                     int64_t step=std::max((int64_t)1,win_n/30000);
 
-                    // 자동 캐리어 주파수 추정: 누적 위상 선형회귀
-                    // 누적 위상에 직선 피팅 → 기울기 = 캐리어 오프셋 (rad/sample)
-                    // BPSK ±π 천이는 양방향 대칭이므로 회귀에서 자연 상쇄됨
-                    double phase_slope=0.0;
-                    if(win_n>1 && w1<=(int64_t)v.eid_ch_i.size()){
-                        int64_t reg_step=std::max((int64_t)1,win_n/10000);
-                        double cum=0.0, sx_r=0.0, sy_r=0.0, sxx_r=0.0, sxy_r=0.0;
-                        int64_t N_r=0;
-                        float pi2=v.eid_ch_i[w0], pq2=v.eid_ch_q[w0];
-                        for(int64_t s=w0+reg_step;s<w1;s+=reg_step){
-                            float ci=v.eid_ch_i[s], cq=v.eid_ch_q[s];
-                            float cross=ci*pq2-cq*pi2;
-                            float dot2=ci*pi2+cq*pq2;
-                            cum+=atan2f(cross,dot2+1e-20f);
-                            double x=(double)(s-w0);
-                            sx_r+=x; sy_r+=cum; sxx_r+=x*x; sxy_r+=x*cum;
-                            N_r++;
-                            pi2=ci; pq2=cq;
-                        }
-                        if(N_r>1){
-                            double denom=(double)N_r*sxx_r-sx_r*sx_r;
-                            if(fabs(denom)>1e-12)
-                                phase_slope=((double)N_r*sxy_r-sx_r*sy_r)/denom;
-                        }
-                    }
-                    double phase_inc=phase_slope; // rad/sample 직접 사용
+                    // Phase 탭의 Sweep 값을 캐리어 오프셋으로 사용
+                    double phase_inc=2.0*M_PI*v.eid_phase_detrend_hz/(double)sr;
 
                     // 자동 스케일: 현재 윈도우의 IQ 최대 진폭 계산
                     float max_amp=0.0f;
@@ -7747,31 +7748,45 @@ void run_streaming_viewer(){
                     // 테두리
                     fg->AddRect(ImVec2(px0,py0),ImVec2(px1,py1),IM_COL32(60,60,80,255));
 
-                    // ── 하단 컨트롤: 슬라이더 + Play/Pause + Window 크기 ──
+                    // ── 하단 컨트롤: Play/Pause + 슬라이더 + Window 크기 ──
                     float ctrl_y=ea_y1+6.f;
-                    // Play/Pause 버튼
                     ImGui::SetCursorScreenPos(ImVec2(ea_x0,ctrl_y));
                     if(ImGui::SmallButton(v.eid_const_playing?"||":" > ")){
                         v.eid_const_playing=!v.eid_const_playing;
                     }
                     ImGui::SameLine(0,8);
-                    // 위치 슬라이더
-                    float slider_w=ea_w-160.f;
+                    // 위치 슬라이더 (뷰 범위 내에서)
+                    float slider_w=ea_w-240.f;
                     if(slider_w<50.f) slider_w=50.f;
                     ImGui::SetNextItemWidth(slider_w);
                     float pos_f=(float)v.eid_const_pos;
-                    float pos_max=(float)std::max((int64_t)1,v.eid_total_samples-(int64_t)v.eid_const_win);
-                    if(ImGui::SliderFloat("##const_pos",&pos_f,0.f,pos_max,"")){
+                    float pos_min_f=(float)vw0;
+                    float pos_max_f=(float)std::max((int64_t)1,vw1-(int64_t)v.eid_const_win);
+                    if(ImGui::SliderFloat("##const_pos",&pos_f,pos_min_f,pos_max_f,"")){
                         v.eid_const_pos=(double)pos_f;
                     }
-                    // 슬라이더 드래그 중이면 재생 일시정지
                     if(ImGui::IsItemActive()) v.eid_const_playing=false;
                     ImGui::SameLine(0,8);
-                    // Window 크기
-                    ImGui::SetNextItemWidth(80.f);
-                    ImGui::InputInt("##const_win",&v.eid_const_win,256,1024);
-                    v.eid_const_win=std::max(64,std::min(v.eid_const_win,
-                        (int)std::min((int64_t)1000000,v.eid_total_samples)));
+                    // Window 크기 콤보
+                    ImGui::Text("Win:"); ImGui::SameLine(0,4);
+                    {
+                        const int wsizes[]={64,128,256,512,1024,2048,4096,8192,16384,32768,65536};
+                        int cur_idx=4;
+                        for(int i=0;i<11;i++) if(wsizes[i]==v.eid_const_win) cur_idx=i;
+                        char wl[16]; snprintf(wl,sizeof(wl),"%d",v.eid_const_win);
+                        ImGui::SetNextItemWidth(80.f);
+                        if(ImGui::BeginCombo("##const_win",wl,ImGuiComboFlags_NoArrowButton)){
+                            for(int i=0;i<11;i++){
+                                if(wsizes[i]>(int)view_n) break;
+                                char ll[16]; snprintf(ll,sizeof(ll),"%d",wsizes[i]);
+                                bool is_sel=(wsizes[i]==v.eid_const_win);
+                                if(ImGui::Selectable(ll,is_sel))
+                                    v.eid_const_win=wsizes[i];
+                                if(is_sel) ImGui::SetItemDefaultFocus();
+                            }
+                            ImGui::EndCombo();
+                        }
+                    }
                     // 마우스 휠로 줌 조절 (플롯 위에서)
                     ImVec2 mp2=io.MousePos;
                     if(mp2.x>=px0&&mp2.x<=px1&&mp2.y>=py0&&mp2.y<=py1){
