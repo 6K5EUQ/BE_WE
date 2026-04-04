@@ -48,7 +48,16 @@ struct WAVWriter {
         buf.push_back(i); buf.push_back(q); ++num_samples;
         if(buf.size()>=BUF_FRAMES*2) flush();
     }
-    void flush(){ if(!fp||buf.empty()) return; fwrite(buf.data(),2,buf.size(),fp); buf.clear(); }
+    void flush(){
+        if(!fp||buf.empty()) return;
+        fwrite(buf.data(),2,buf.size(),fp);
+        buf.clear();
+        // 헤더 갱신 (녹음 중에도 파일을 읽을 수 있도록)
+        long pos=ftell(fp);
+        fseek(fp,0,SEEK_SET); write_hdr();
+        fseek(fp,pos,SEEK_SET);
+        fflush(fp);
+    }
     void close(){ flush(); if(!fp) return; fseek(fp,0,SEEK_SET); write_hdr(); fclose(fp); fp=nullptr; }
 private:
     void write_hdr(){
@@ -231,6 +240,14 @@ struct Channel {
         fwrite(&si,2,1,iq_rec_fp);
         fwrite(&sq,2,1,iq_rec_fp);
         iq_rec_frames++;
+        // 매 65536 샘플마다 헤더 갱신 (녹음 중 실시간 분석 가능)
+        if((iq_rec_frames & 0xFFFF) == 0){
+            long pos=ftell(iq_rec_fp);
+            fseek(iq_rec_fp,0,SEEK_SET);
+            iq_rec_write_wav_hdr(iq_rec_fp,iq_rec_sr,iq_rec_frames);
+            fseek(iq_rec_fp,pos,SEEK_SET);
+            fflush(iq_rec_fp);
+        }
     }
 
     // Squelch (UI 스레드에서 FFT 기반으로 중앙 관리)

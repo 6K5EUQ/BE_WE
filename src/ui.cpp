@@ -4549,18 +4549,29 @@ void run_streaming_viewer(){
                             ch.sq_gate_prev=gate;
                             bool recently_active=gate || (now_t-ch.sq_last_close_t<3.0f);
 
-                            // 스컬치 게이트: 열리면 밝게, 닫히면 50% 어둡게
-                            ImVec4 tc_v;
-                            if(gate){
-                                tc_v=ImVec4(
-                                    ((mode_col>>IM_COL32_R_SHIFT)&0xFF)/255.f,
-                                    ((mode_col>>IM_COL32_G_SHIFT)&0xFF)/255.f,
-                                    ((mode_col>>IM_COL32_B_SHIFT)&0xFF)/255.f, 1.f);
-                            } else {
-                                tc_v=ImVec4(
-                                    ((mode_col>>IM_COL32_R_SHIFT)&0xFF)/255.f*0.55f,
-                                    ((mode_col>>IM_COL32_G_SHIFT)&0xFF)/255.f*0.55f,
-                                    ((mode_col>>IM_COL32_B_SHIFT)&0xFF)/255.f*0.55f, 0.85f);
+                            // 스컬치 게이트: 열리면 밝게, 최근 활동이면 75%, 비활성이면 55%
+                            float bright = gate ? 1.0f : (recently_active ? 0.8f : 0.55f);
+                            float alpha = gate ? 1.0f : (recently_active ? 0.95f : 0.85f);
+                            ImVec4 tc_v=ImVec4(
+                                ((mode_col>>IM_COL32_R_SHIFT)&0xFF)/255.f*bright,
+                                ((mode_col>>IM_COL32_G_SHIFT)&0xFF)/255.f*bright,
+                                ((mode_col>>IM_COL32_B_SHIFT)&0xFF)/255.f*bright, alpha);
+
+                            // 최근 활동 배경 하이라이트
+                            if(recently_active && dem && !ch.selected){
+                                ImVec2 cp=ImGui::GetCursorScreenPos();
+                                float rw=ImGui::GetContentRegionAvail().x;
+                                ImGui::GetWindowDrawList()->AddRectFilled(
+                                    ImVec2(cp.x-4,cp.y-1),
+                                    ImVec2(cp.x+rw,cp.y+ImGui::GetTextLineHeight()+2),
+                                    IM_COL32(
+                                        (uint8_t)(((mode_col>>IM_COL32_R_SHIFT)&0xFF)*0.15f),
+                                        (uint8_t)(((mode_col>>IM_COL32_G_SHIFT)&0xFF)*0.15f),
+                                        (uint8_t)(((mode_col>>IM_COL32_B_SHIFT)&0xFF)*0.15f),120));
+                                ImGui::GetWindowDrawList()->AddLine(
+                                    ImVec2(cp.x-4,cp.y-1),
+                                    ImVec2(cp.x-4,cp.y+ImGui::GetTextLineHeight()+2),
+                                    mode_col, 2.0f);
                             }
 
                             // 선택 강조 배경
