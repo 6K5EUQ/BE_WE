@@ -311,6 +311,9 @@ public:
     int    eid_baud_drag = -1;   // 드래그 중 선 (-1=없음, 0=시작, 1=끝)
     bool    eid_tag_dragging = false;
     float   eid_tag_drag_x0 = 0.f, eid_tag_drag_x1 = 0.f;
+    // 임시 선택 영역 (우클릭 드래그 후 확정 전)
+    bool    eid_pending_active = false;
+    double  eid_pending_s0 = 0.0, eid_pending_s1 = 0.0;
     std::vector<EidTag> eid_tags;
 
     // 스펙트로그램 통합 뷰 히스토리 (우클릭 1단계 undo)
@@ -325,10 +328,11 @@ public:
     void eid_start(const std::string& wav_path);
     void eid_cleanup();
     void eid_remove_samples(double s0, double s1);
+    void eid_select_samples(double s0, double s1);
     void eid_apply_bpf(float uv_lo, float uv_hi);  // UV [0,1] 주파수 좌표
     void eid_undo_bpf();
     void eid_recompute_derived();
-    void sa_recompute_from_iq();
+    void sa_recompute_from_iq(bool reset_view = false);
 
     // tm_rec 내부 상태
     bool    tm_rec_active=false;

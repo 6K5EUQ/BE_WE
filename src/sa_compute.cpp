@@ -284,15 +284,17 @@ void FFTViewer::sa_start(const std::string& wav_path){
 }
 
 // ── 메모리 IQ에서 스펙트로그램 재계산 (Remove Samples 후) ──────────────────────
-void FFTViewer::sa_recompute_from_iq(){
+void FFTViewer::sa_recompute_from_iq(bool reset_view){
     if(sa_thread.joinable()) sa_thread.join();
     sa_computing.store(true);
     sa_pixel_ready.store(false);
 
     int fft_n = sa_fft_size;
     int win_type = sa_window_type;
+    double captured_t0 = eid_view_t0;
+    double captured_t1 = eid_view_t1;
 
-    sa_thread = std::thread([this, fft_n, win_type](){
+    sa_thread = std::thread([this, fft_n, win_type, reset_view, captured_t0, captured_t1](){
         // IQ 데이터 복사
         std::vector<float> chi_copy, chq_copy;
         uint32_t sr;
@@ -403,8 +405,20 @@ void FFTViewer::sa_recompute_from_iq(){
         sa_sample_rate = sr;
         sa_total_rows = rows;
         sa_actual_fft_n = actual_fft_n;
-        sa_view_y0=0.f; sa_view_y1=1.f;
-        sa_view_x0=0.f; sa_view_x1=1.f;
+        if(reset_view){
+            sa_view_y0=0.f; sa_view_y1=1.f;
+            sa_view_x0=0.f; sa_view_x1=1.f;
+        } else {
+            double et = (double)n_samples;
+            if(et > 0.0){
+                sa_view_y0 = std::max(0.f, std::min(1.f, (float)(captured_t0 / et)));
+                sa_view_y1 = std::max(0.f, std::min(1.f, (float)(captured_t1 / et)));
+            } else {
+                sa_view_y0=0.f; sa_view_y1=1.f;
+            }
+            if(sa_view_y1 - sa_view_y0 < 0.001f){ sa_view_y0=0.f; sa_view_y1=1.f; }
+            // x축(주파수)은 보존 — BPF/remove 후에도 주파수 줌 유지
+        }
         sa_sel_active = false;
         bewe_log_push(0,"[SA] recomputed: %d bins, %lld rows\n", actual_fft_n, (long long)rows);
         sa_pixel_ready.store(true);

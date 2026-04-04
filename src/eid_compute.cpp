@@ -361,6 +361,52 @@ void FFTViewer::eid_remove_samples(double s0, double s1){
     sa_recompute_from_iq();
 }
 
+void FFTViewer::eid_select_samples(double s0, double s1){
+    int64_t i0 = std::max((int64_t)0, (int64_t)s0);
+    int64_t i1 = std::min(eid_total_samples, (int64_t)ceil(s1));
+    if(i1 <= i0) return;
+    if(i0 == 0 && i1 == eid_total_samples) return;
+
+    {
+        std::lock_guard<std::mutex> lk(eid_data_mtx);
+        auto crop = [&](std::vector<float>& vec){
+            if((int64_t)vec.size() < i1) return;
+            vec = std::vector<float>(vec.begin()+i0, vec.begin()+i1);
+        };
+        crop(eid_envelope);
+        crop(eid_ch_i);
+        crop(eid_ch_q);
+        crop(eid_phase);
+        crop(eid_inst_freq);
+        eid_total_samples = i1 - i0;
+    }
+
+    // BPF 백업 무효화 (길이 불일치 방지)
+    eid_bpf_active = false;
+    eid_orig_ch_i.clear(); eid_orig_ch_q.clear();
+
+    // 태그 조정: 범위 밖 삭제, 범위 안은 좌표 이동
+    double new_len = (double)(i1 - i0);
+    for(auto it = eid_tags.begin(); it != eid_tags.end(); ){
+        if(it->s1 <= (double)i0 || it->s0 >= (double)i1){
+            it = eid_tags.erase(it); continue;
+        }
+        it->s0 = std::max(0.0, it->s0 - (double)i0);
+        it->s1 = std::min(new_len, it->s1 - (double)i0);
+        if(it->s1 <= it->s0){ it = eid_tags.erase(it); continue; }
+        ++it;
+    }
+
+    // 뷰 전체로 리셋
+    eid_view_t0 = 0.0;
+    eid_view_t1 = new_len;
+    eid_view_stack.clear();
+    sa_view_history.clear();
+
+    // 스펙트로그램 재계산 (전체 보기로 리셋)
+    sa_recompute_from_iq(true);
+}
+
 void FFTViewer::eid_cleanup(){
     if(eid_thread.joinable()) eid_thread.join();
     {
