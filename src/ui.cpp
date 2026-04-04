@@ -4868,6 +4868,11 @@ void run_streaming_viewer(){
                                                             v.channels[re.ch_idx].selected=true;
                                                         }
                                                     }
+                                                    // 우클릭: 녹음 중 파일 컨텍스트 메뉴 (실시간 분석용)
+                                                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                                                        file_ctx={true,io.MousePos.x,io.MousePos.y,re.path,re.filename};
+                                                        file_ctx.selected=true;
+                                                    }
                                                     // 더블클릭: IQ 녹음 중지 + 채널 삭제
                                                     if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
                                                         if(re.ch_idx>=0){
@@ -7277,6 +7282,10 @@ void run_streaming_viewer(){
                         v.eid_phase_detrend_hz = std::min(max_hz, v.eid_phase_detrend_hz + 1.0f);
                     if(ImGui::IsKeyPressed(ImGuiKey_LeftArrow,true))
                         v.eid_phase_detrend_hz = std::max(-max_hz, v.eid_phase_detrend_hz - 1.0f);
+                    if(ImGui::IsKeyPressed(ImGuiKey_UpArrow,true))
+                        v.eid_phase_detrend_hz = std::min(max_hz, v.eid_phase_detrend_hz + 10.0f);
+                    if(ImGui::IsKeyPressed(ImGuiKey_DownArrow,true))
+                        v.eid_phase_detrend_hz = std::max(-max_hz, v.eid_phase_detrend_hz - 10.0f);
                 }
                 ImGui::PopStyleVar();
             }
