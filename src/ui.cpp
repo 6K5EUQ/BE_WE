@@ -7528,7 +7528,11 @@ void run_streaming_viewer(){
                                 double vis_flo=freq_lo_full+fy0v*sr_d, vis_fhi=freq_lo_full+fy1v*sr_d;
                                 float ft=(sy0-ea_y0)/ea_h, fb=(sy1-ea_y0)/ea_h;
                                 double f_hi=vis_fhi-ft*(vis_fhi-vis_flo), f_lo=vis_fhi-fb*(vis_fhi-vis_flo);
-                                char fi[64]; snprintf(fi,sizeof(fi),"BPF: %.3f - %.3f MHz",f_lo/1e6,f_hi/1e6);
+                                double bw_hz=f_hi-f_lo;
+                                char fi[96];
+                                if(bw_hz>=1e6) snprintf(fi,sizeof(fi),"BPF: %.3f - %.3f MHz  |  BW: %.3f MHz",f_lo/1e6,f_hi/1e6,bw_hz/1e6);
+                                else if(bw_hz>=1e3) snprintf(fi,sizeof(fi),"BPF: %.3f - %.3f MHz  |  BW: %.1f kHz",f_lo/1e6,f_hi/1e6,bw_hz/1e3);
+                                else snprintf(fi,sizeof(fi),"BPF: %.3f - %.3f MHz  |  BW: %.1f Hz",f_lo/1e6,f_hi/1e6,bw_hz);
                                 ImVec2 tsz=ImGui::CalcTextSize(fi);
                                 float tx2=ea_x0+(ea_w-tsz.x)*0.5f;
                                 float ty2=sy0+(sy1-sy0-tsz.y)*0.5f;
@@ -8433,14 +8437,25 @@ void run_streaming_viewer(){
                             float val_top=a_max-((sy0-ea_y0)/ea_h)*a_rng;
                             float val_bot=a_max-((sy1-ea_y0)/ea_h)*a_rng;
                             char yi[96];
-                            if(imode==3){ // Freq 모드: BW + Resolution 표시
+                            if(imode==0){ // Amp: dB range
+                                float db_top = (val_top > 0.f) ? 20.f*log10f(val_top) : -99.f;
+                                float db_bot = (val_bot > 0.f) ? 20.f*log10f(val_bot) : -99.f;
+                                float db_rng = fabsf(db_top - db_bot);
+                                snprintf(yi,sizeof(yi),"Amp: %.1f dB ~ %.1f dB  |  \xce\x94: %.1f dB",db_bot,db_top,db_rng);
+                            } else if(imode==1){ // I/Q: amplitude range
+                                float rng=fabsf(val_top-val_bot);
+                                snprintf(yi,sizeof(yi),"I/Q: %.4f ~ %.4f  |  \xce\x94: %.4f",val_bot,val_top,rng);
+                            } else if(imode==2){ // Phase: degrees
+                                float deg_top=val_top*(180.f/(float)M_PI);
+                                float deg_bot=val_bot*(180.f/(float)M_PI);
+                                float deg_rng=fabsf(deg_top-deg_bot);
+                                snprintf(yi,sizeof(yi),"Phase: %.1f\xc2\xb0 ~ %.1f\xc2\xb0  |  \xce\x94: %.1f\xc2\xb0",deg_bot,deg_top,deg_rng);
+                            } else { // Freq: BW + Resolution
                                 float bw_hz=fabsf(val_top-val_bot);
                                 float res_m=(bw_hz>0)?299792458.0f/(2.0f*bw_hz):0;
-                                if(bw_hz>=1e6f) snprintf(yi,sizeof(yi),"BW: %.2f MHz | Resolution: %.1fm",bw_hz/1e6f,res_m);
-                                else if(bw_hz>=1e3f) snprintf(yi,sizeof(yi),"BW: %.1f kHz | Resolution: %.1fm",bw_hz/1e3f,res_m);
-                                else snprintf(yi,sizeof(yi),"BW: %.1f Hz | Resolution: %.1fm",bw_hz,res_m);
-                            } else {
-                                snprintf(yi,sizeof(yi),"Y: %.4f - %.4f",val_bot,val_top);
+                                if(bw_hz>=1e6f) snprintf(yi,sizeof(yi),"BW: %.2f MHz | Res: %.1fm",bw_hz/1e6f,res_m);
+                                else if(bw_hz>=1e3f) snprintf(yi,sizeof(yi),"BW: %.1f kHz | Res: %.1fm",bw_hz/1e3f,res_m);
+                                else snprintf(yi,sizeof(yi),"BW: %.1f Hz | Res: %.1fm",bw_hz,res_m);
                             }
                             ImVec2 tsz=ImGui::CalcTextSize(yi);
                             float tx2=ea_x0+(ea_w-tsz.x)*0.5f;
