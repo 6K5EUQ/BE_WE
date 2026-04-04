@@ -77,7 +77,7 @@ Most SDR applications are designed for a single operator on a single machine. BE
 
 ### Demodulation
 - **Analog** — AM, FM, MAGIC (auto-detect AM/FM/DSB/SSB/CW)
-- **Digital** — AIS (marine vessel tracking), DMR (AMBE+2 voice via mbelib)
+- **Digital** — AIS (marine vessel tracking)
 - Up to 10 simultaneous channels with independent mode selection
 
 ### Audio
@@ -88,10 +88,20 @@ Most SDR applications are designed for a single operator on a single machine. BE
 - 5 noise reduction algorithms: Spectral Subtraction, Spectral Gate, Wiener Filter, MMSE-STSA, Log-MMSE
 
 ### Time Machine
-- 60-second rolling IQ recording to disk (toggle with `T`)
+- 60-second rolling IQ buffer to disk (toggle with `T`)
 - Freeze & seek through waterfall history (`Space`)
 - Region selection (`Ctrl+Right-drag`) for IQ export
 - IQ_CHUNK transfer: WAN-compatible file streaming via MUX relay
+
+### Recording
+- **Per-Channel IQ Recording** — Press `I` on an active channel to start squelch-gated IQ capture at the channel's intermediate sample rate; stops automatically when squelch closes or `I` pressed again
+- **Scheduled Recording** — Configure time-based automatic IQ recording (frequency, bandwidth, duration, start time); status tracks WAITING → RECORDING → COMPLETED
+- **Live Analysis During Recording** — WAV headers updated every 65,536 samples; right-click any active recording in the Recording panel to open it in Signal Analyzer without stopping the capture
+
+### LOG Panel
+- Press `L` to toggle a full-screen real-time log overlay
+- Two-column layout: HOST events (green) and SERVER events (orange)
+- Live TX/RX network rate display; auto-scrolls with latest events
 
 ### Network Streaming (HOST / JOIN)
 - HOST broadcasts FFT + audio over TCP; JOIN receives with jitter buffer
@@ -111,8 +121,11 @@ Most SDR applications are designed for a single operator on a single machine. BE
 ### Station Discovery & Globe
 - 3D interactive globe with Blue Marble texture
 - UDP broadcast discovery on LAN
-- Central relay server for WAN connections (single port 7700)
-- LAN-priority connection: auto-detects same-subnet and connects locally
+- Central relay server for all connections (single port 7700) — no direct TCP required
+
+### Window Management
+- Starts in windowed mode by default (1400×900)
+- `F11` toggles fullscreen; restores previous window position and size on exit
 
 ### Collaboration
 - Real-time chat between all connected operators
@@ -149,19 +162,50 @@ Open exported WAV/IQ files for offline multi-domain analysis. Switch between vie
 
 From a single WAV/IQ file, EID computes:
 
-| Domain | Extraction |
-|--------|-----------|
-| **Envelope** | Amplitude envelope `√(I² + Q²)` — turn-on/off transient shape unique to each transmitter |
-| **I/Q** | Raw in-phase and quadrature components — DC offset, gain imbalance signatures |
-| **Phase** | Instantaneous phase `atan2(Q, I)` — phase noise and unwrap characteristics |
-| **Inst. Frequency** | Phase derivative scaled to Hz — frequency settling behavior at key-up |
+| Domain | Key | Extraction |
+|--------|-----|-----------|
+| **Envelope** | `1` | Amplitude envelope `√(I² + Q²)` — turn-on/off transient shape unique to each transmitter |
+| **I/Q** | `2` | Raw in-phase and quadrature components — DC offset, gain imbalance signatures |
+| **Phase** | `3` | Instantaneous phase `atan2(Q, I)` — phase noise and unwrap characteristics |
+| **Inst. Frequency** | `4` | Phase derivative scaled to Hz — frequency settling behavior at key-up |
+| **Constellation** | `5` | I/Q constellation plot with automatic carrier recovery (linear regression on cumulative phase) |
+| **M-th Power Spectrum** | `6` | High-order (M=1/2/4/8) power spectrum for cyclostationary feature extraction |
 
-Each domain uses automatic 1st–99th percentile scaling with 5% margin for consistent visualization regardless of signal level. Noise floor is estimated at the 5th percentile for reference.
+Each domain uses automatic 1st–99th percentile scaling with 5% margin for consistent visualization regardless of signal level. Noise floor is estimated at the 5th percentile for reference. View range is synchronized across all modes.
+
+### Band Pass Filter
+
+Apply an FFT-based brick-wall band pass filter before analysis:
+- Configure high-pass and low-pass cutoff frequencies (Hz)
+- Always filters from original data — no cascading degradation
+- Recomputes all derived domains (envelope, phase, instantaneous frequency) after filtering
+- Undo restores the original unfiltered signal
+
+### Constellation View
+
+Visualize the baseband I/Q signal on a Cartesian plot:
+- **Auto Carrier Recovery** — estimates and removes carrier frequency offset via linear regression on the unwrapped phase slope
+- Manual zoom mode and configurable window size
+- Unit circle and grid overlay for reference
+
+### M-th Power Spectrum
+
+Raises the complex signal to the M-th power before computing the DFT:
+- M=1 (normal), M=2, M=4, M=8
+- Higher orders reveal hidden cyclostationary features obscured in the linear spectrum
+- Useful for blind modulation classification and symbol rate estimation
+
+### Arrow Key Sweep (Phase View)
+
+In the Phase view, manually adjust carrier offset for detrending:
+- `←` / `→` — ±1 Hz per step
+- `↑` / `↓` — ±10 Hz per step
 
 Use cases:
 - Verify transmitter identity by comparing RF fingerprints
 - Detect spoofed or cloned transmitters
 - Characterize oscillator stability and modulation quality
+- Blind modulation classification via cyclostationary analysis
 
 ---
 
@@ -230,19 +274,21 @@ Hardware is auto-detected at startup. If no SDR is found, you can still JOIN a r
 
 ### Connection Modes
 
+All connections are routed through the central relay server — no direct TCP between HOST and JOIN is required.
+
 ```
- LAN (Direct)                    WAN (Relay)
- ─────────────                   ────────────
- HOST ──TCP:7701──→ JOIN         HOST ──TCP:7700──→ RELAY ──→ JOIN
-      ←UDP bcast──               BRLY MUX protocol
-                                  Single port, N clients
+ All connections (LAN + WAN)
+ ────────────────────────────
+ HOST ──TCP:7700──→ RELAY ──→ JOIN
+                  BRLY MUX protocol
+                  Single port, N clients
 ```
 
 | Port | Role | Description |
 |------|------|-------------|
 | **7700** | Central Relay | MUX relay — HOST registers station, JOINs connect via relay |
-| **7701** | HOST ↔ JOIN | Direct BEWE protocol (LAN or relay-forwarded) |
-| **7702** | IQ Pipe | Dedicated IQ file transfer between HOST and JOIN |
+| **7701** | HOST ↔ JOIN | BEWE protocol (relay-forwarded; not exposed externally) |
+| **7702** | IQ Pipe | Dedicated IQ file transfer between HOST and JOIN (relay-forwarded) |
 
 ### Protocol
 
@@ -278,21 +324,6 @@ sudo apt install -y libglew-dev libglfw3-dev libgl-dev libpng-dev
 
 # Image loading
 sudo apt install -y libstb-dev
-```
-
-#### mbelib (manual build required)
-
-`libmbe` is not available in Ubuntu's default repositories. Build from source:
-
-```bash
-cd /tmp
-git clone https://github.com/szechyjs/mbelib.git
-cd mbelib
-mkdir build && cd build
-cmake ..
-make -j$(nproc)
-sudo make install
-sudo ldconfig
 ```
 
 ### One-liner (all deps — GUI)
@@ -404,8 +435,13 @@ System status is printed automatically every 30 seconds.
 | `Space` | Freeze waterfall and enter Time Machine view |
 | `Scroll` | Zoom frequency axis |
 | `Ctrl+Right-drag` | Select region for IQ export |
+| `I` | Toggle per-channel IQ recording on selected channel (squelch-gated) |
 | `D` | Toggle digital decode panel for selected channel |
+| `L` | Toggle LOG panel (real-time HOST/SERVER log overlay) |
+| `F11` | Toggle fullscreen / windowed mode |
 | `Ctrl+1/2/3` | Select Tier on login screen |
+| `← / →` *(EID Phase)* | Carrier offset sweep ±1 Hz per step |
+| `↑ / ↓` *(EID Phase)* | Carrier offset sweep ±10 Hz per step |
 
 ---
 
@@ -445,21 +481,16 @@ sudo apt install -y build-essential cmake pkg-config \
   libbladerf-dev librtlsdr-dev libfftw3-dev libasound2-dev \
   libmpg123-dev libvolk-dev libpng-dev
 
-# 2. Build mbelib (if DMR decode needed)
-cd /tmp && git clone https://github.com/szechyjs/mbelib.git
-cd mbelib && mkdir build && cd build
-cmake .. && make -j4 && sudo make install && sudo ldconfig
-
-# 3. Clone and build
+# 2. Clone and build
 cd ~ && git clone https://github.com/6K5EUQ/BE_WE.git
 cd BE_WE && mkdir build_cli && cd build_cli
 cmake -DBEWE_HEADLESS=ON .. && make -j4
 
-# 4. Apply performance tuning
+# 3. Apply performance tuning
 sudo bash ~/BE_WE/setup_pi_performance.sh
 sudo reboot
 
-# 5. Run
+# 4. Run
 cd ~/BE_WE/build_cli
 ./BE_WE
 ```
@@ -558,7 +589,6 @@ See [System Dependencies](#system-dependencies) above. All required packages:
 | `alsa` | `libasound2-dev` |
 | `libmpg123` | `libmpg123-dev` |
 | `librtlsdr` | `librtlsdr-dev` |
-| `libmbe` | [build from source](#mbelib-manual-build-required) |
 | `volk` | `libvolk-dev` |
 | `libpng` | `libpng-dev` |
 | OpenGL | `libgl-dev` |
@@ -582,7 +612,6 @@ BE_WE/
 │   ├── demod.cpp             # AM / FM / MAGIC demodulation
 │   ├── audio.hpp/cpp         # ALSA output + 5 noise reduction algorithms
 │   ├── ais.cpp               # AIS digital decoder
-│   ├── dmr.cpp               # DMR digital decoder (AMBE+2)
 │   ├── sa_compute.cpp        # Signal Analyzer offline FFT
 │   ├── eid_compute.cpp       # EID transmitter fingerprint analysis
 │   ├── net_protocol.hpp      # Binary protocol specification (BEWE)
@@ -595,7 +624,7 @@ BE_WE/
 │   ├── globe.hpp/cpp         # 3D Earth renderer (OpenGL 3.3)
 │   ├── timemachine.cpp       # IQ rolling record & playback
 │   ├── region_save.cpp       # Region IQ export
-│   ├── iq_record.cpp         # IQ / audio recording
+│   ├── iq_record.cpp         # IQ / audio recording + per-channel squelch-gated recording
 │   ├── cli_host.cpp          # Headless CLI host mode (BEWE_HEADLESS)
 │   ├── login.hpp/cpp         # Authentication & tier selection
 │   ├── channel.hpp           # Per-channel state
