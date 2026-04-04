@@ -242,6 +242,8 @@ struct Channel {
     int   sq_calib_cnt = 0;
     float sq_calib_buf[60] = {};  // ~1초 @ 60fps
     int   sq_gate_hold = 0;      // gate hold 카운터 (프레임 단위)
+    float sq_last_close_t = -10.f; // 게이트 마지막 닫힌 시점 (ImGui::GetTime)
+    bool  sq_gate_prev = false;  // 이전 프레임 게이트 상태
     float sq_active_time = 0.0f; // 스컬치 열린 누적 시간(초)
     float sq_total_time  = 0.0f; // 전체 경과 시간 (프레임 기반 누적)
 

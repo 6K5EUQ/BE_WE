@@ -143,8 +143,10 @@ void FFTViewer::update_channel_squelch(){
             float fps = (float)header.sample_rate / (float)std::max(1,fft_input_size) / (float)std::max(1,time_average);
             if(fps > 0){
                 float dt = 1.0f / fps;
-                ch.sq_total_time += dt;
-                if(gate) ch.sq_active_time += dt;
+                if(!sdr_stream_error.load()){
+                    ch.sq_total_time += dt;
+                    if(gate) ch.sq_active_time += dt;
+                }
             }
         } else {
             ch.sq_active_time = 0;
@@ -644,7 +646,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
     ImGui::SetCursorScreenPos(ImVec2(gx,gy));
     ImGui::InvisibleButton("sp_graph",ImVec2(gw,gh));
     bool hov=ImGui::IsItemHovered();
-    if(!tm_active.load() && !eid_panel_open && !log_panel_open) handle_new_channel_drag(gx,gw);
+    if(!eid_panel_open && !log_panel_open) handle_new_channel_drag(gx,gw);
     if(!region.active && !eid_panel_open && !log_panel_open) handle_channel_interactions(gx,gw,gy,gh);
     if(hov && !eid_panel_open && !log_panel_open){
         ImVec2 mm=ImGui::GetIO().MousePos;
@@ -798,7 +800,7 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
     ImGui::SetCursorScreenPos(ImVec2(gx,gy));
     ImGui::InvisibleButton("wf_graph",ImVec2(gw,gh));
     bool hov=ImGui::IsItemHovered();
-    if(!tm_active.load() && !eid_panel_open && !log_panel_open) handle_new_channel_drag(gx,gw);
+    if(!eid_panel_open && !log_panel_open) handle_new_channel_drag(gx,gw);
     if(!region.active && !eid_panel_open && !log_panel_open) handle_channel_interactions(gx,gw,gy,gh);
 
     // ── Ctrl+우클릭 드래그: 영역 IQ 녹음 선택 ────────────────────────────
@@ -3628,6 +3630,9 @@ void run_streaming_viewer(){
             }
             if(ImGui::IsKeyPressed(ImGuiKey_Delete,false)){
                 if(sci>=0&&v.channels[sci].filter_active){
+                    // IQ 녹음 중이면 중지
+                    if(v.channels[sci].iq_rec_on.load())
+                        v.stop_iq_rec(sci);
                     // 오디오 녹음 중이면 중지 + 파일 삭제
                     if(v.channels[sci].audio_rec_on.load()){
                         if(v.remote_mode && v.net_cli)
@@ -3643,6 +3648,8 @@ void run_streaming_viewer(){
                             }
                         }
                     }
+                    // 전체 IQ 녹음 중이면 중지
+                    if(v.rec_on.load() && v.rec_ch==sci) v.stop_rec();
                     if(v.remote_mode && v.net_cli){
                         v.net_cli->cmd_delete_ch(sci);
                     } else {
@@ -3997,7 +4004,7 @@ void run_streaming_viewer(){
             float ty2=(TOPBAR_H-ImGui::GetFontSize())/2;
 
             if(v.rec_on.load()){
-                float el=std::chrono::duration<float>(std::chrono::steady_clock::now()-v.rec_t0).count();
+                float el=v.rec_sr>0 ? (float)v.rec_frames.load()/(float)v.rec_sr : 0.f;
                 uint64_t fr=v.rec_frames.load(); float mb=(float)(fr*4)/1048576.0f;
                 int mm2=(int)(el/60), ss2=(int)(el)%60;
                 char rbuf[80]; snprintf(rbuf,sizeof(rbuf),"REC %d:%02d %.1fMB  ",mm2,ss2,mb);
@@ -4535,6 +4542,13 @@ void run_streaming_viewer(){
                             else
                                 mode_col=IM_COL32(180,80,255,255);
 
+                            // 게이트 닫힌 시점 추적
+                            float now_t=(float)ImGui::GetTime();
+                            if(ch.sq_gate_prev && !gate)
+                                ch.sq_last_close_t=now_t;
+                            ch.sq_gate_prev=gate;
+                            bool recently_active=gate || (now_t-ch.sq_last_close_t<3.0f);
+
                             // 스컬치 게이트: 열리면 밝게, 닫히면 50% 어둡게
                             ImVec4 tc_v;
                             if(gate){
@@ -4564,7 +4578,7 @@ void run_streaming_viewer(){
                                 ImGui::GetWindowDrawList()->AddLine(
                                     ImVec2(cp.x-4,cp.y-1),
                                     ImVec2(cp.x-4,cp.y+ImGui::GetTextLineHeight()+2),
-                                    mode_col, gate?3.0f:1.5f);
+                                    mode_col, recently_active?3.0f:1.5f);
                             }
 
                             // 텍스트 (고정폭 정렬)
@@ -4579,8 +4593,8 @@ void run_streaming_viewer(){
                                     dn,mnames[mi],cf_mhz,bw_khz);
                             ImGui::PushID(ci*1000+700);
                             ImGui::PushStyleColor(ImGuiCol_Text,tc_v);
-                            // gate open이면 볼드 효과 (1px offset)
-                            if(gate && dem){
+                            // gate open 또는 최근 활동이면 볼드 효과 (1px offset)
+                            if(recently_active && dem){
                                 ImVec2 cp2=ImGui::GetCursorScreenPos();
                                 ImGui::GetWindowDrawList()->AddText(
                                     ImVec2(cp2.x+1,cp2.y),
@@ -4780,6 +4794,14 @@ void run_streaming_viewer(){
                                             ImGui::PopStyleColor();
                                         }
                                     }
+                                    // 채널이 삭제된 IQ REC 항목 자동 정리
+                                    for(int ri=(int)v.rec_entries.size()-1;ri>=0;ri--){
+                                        auto& re=v.rec_entries[ri];
+                                        if(re.is_audio || re.finished || re.is_region) continue;
+                                        if(re.ch_idx>=0 && !v.channels[re.ch_idx].filter_active){
+                                            v.stop_iq_rec(re.ch_idx);
+                                        }
+                                    }
                                     using RS = FFTViewer::RecEntry::ReqState;
                                     for(int ri=(int)v.rec_entries.size()-1;ri>=0;ri--){
                                         auto& re=v.rec_entries[ri];
@@ -4814,18 +4836,43 @@ void run_streaming_viewer(){
                                                 static std::unordered_map<std::string,std::pair<float,std::string>> rec_sz_cache;
                                                 auto& rc=rec_sz_cache[re.filename];
                                                 if(t2-rc.first >= 0.5f){ rc.first=t2; rc.second=fmt_filesize("",re.path); }
-                                                float elapsed_iq=std::chrono::duration<float>(
-                                                    std::chrono::steady_clock::now()-re.t_start).count();
-                                                int iq_secs=(int)elapsed_iq;
+                                                int iq_rec_secs=0;
+                                                if(re.ch_idx>=0 && v.channels[re.ch_idx].iq_rec_sr>0)
+                                                    iq_rec_secs=(int)(v.channels[re.ch_idx].iq_rec_frames/v.channels[re.ch_idx].iq_rec_sr);
+                                                int iq_secs=iq_rec_secs;
                                                 int iq_dn=re.ch_idx>=0?v.freq_sorted_display_num(re.ch_idx):0;
                                                 char iq_lbl[512];
                                                 if(!rc.second.empty())
-                                                    snprintf(iq_lbl,sizeof(iq_lbl),"[REC] [%2d] %s  [%ds]  %s",
-                                                             iq_dn, re.filename.c_str(), iq_secs, rc.second.c_str());
+                                                    snprintf(iq_lbl,sizeof(iq_lbl),"[REC] [%2d] %s  [%d/%ds]  %s",
+                                                             iq_dn, re.filename.c_str(), iq_rec_secs, iq_secs, rc.second.c_str());
                                                 else
-                                                    snprintf(iq_lbl,sizeof(iq_lbl),"[REC] [%2d] %s  [%ds]",
-                                                             iq_dn, re.filename.c_str(), iq_secs);
-                                                ImGui::Text("%s", iq_lbl);
+                                                    snprintf(iq_lbl,sizeof(iq_lbl),"[REC] [%2d] %s  [%d/%ds]",
+                                                             iq_dn, re.filename.c_str(), iq_rec_secs, iq_secs);
+                                                ImGui::Selectable(iq_lbl, re.ch_idx>=0 && v.selected_ch==re.ch_idx);
+                                                if(ImGui::IsItemHovered()){
+                                                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                                                        if(re.ch_idx>=0){
+                                                            if(v.selected_ch>=0) v.channels[v.selected_ch].selected=false;
+                                                            v.selected_ch=re.ch_idx;
+                                                            v.channels[re.ch_idx].selected=true;
+                                                        }
+                                                    }
+                                                    // 더블클릭: IQ 녹음 중지 + 채널 삭제
+                                                    if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
+                                                        if(re.ch_idx>=0){
+                                                            int ci=re.ch_idx;
+                                                            v.stop_iq_rec(ci);
+                                                            if(v.channels[ci].audio_rec_on.load()){
+                                                                if(v.remote_mode && v.net_cli) v.stop_join_audio_rec(ci);
+                                                                else v.stop_audio_rec(ci);
+                                                            }
+                                                            if(v.net_cli) v.net_cli->cmd_delete_ch(ci);
+                                                            v.stop_dem(ci); v.stop_digi(ci);
+                                                            v.channels[ci].reset_slot();
+                                                            if(v.selected_ch==ci) v.selected_ch=-1;
+                                                        }
+                                                    }
+                                                }
                                                 ImGui::PopStyleColor();
                                             }
                                         } else {
@@ -4908,12 +4955,10 @@ void run_streaming_viewer(){
                                         auto& re=v.rec_entries[ri];
                                         ImGui::PushID(ri+32000);
                                         {
-                                            float elapsed=std::chrono::duration<float>(
-                                                std::chrono::steady_clock::now()-re.t_start).count();
-                                            int secs=(int)elapsed;
                                             int rec_secs=0;
                                             if(re.ch_idx>=0 && v.channels[re.ch_idx].audio_rec_sr>0)
                                                 rec_secs=(int)(v.channels[re.ch_idx].audio_rec_frames/v.channels[re.ch_idx].audio_rec_sr);
+                                            int secs=rec_secs;
                                             float t2=(float)ImGui::GetTime();
                                             bool blink=(fmodf(t2,0.8f)<0.4f);
                                             ImGui::PushStyleColor(ImGuiCol_Text,

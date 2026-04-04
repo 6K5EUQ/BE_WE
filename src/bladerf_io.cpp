@@ -287,14 +287,10 @@ void FFTViewer::capture_and_process(){
                     continue;
                 }
                 bewe_log("RX error: %s\n",bladerf_strerror(status));
-                if(status==BLADERF_ERR_IO || status==BLADERF_ERR_UNEXPECTED
-                   || status==BLADERF_ERR_NODEV){
-                    fprintf(stderr,"BladeRF: fatal RX error (%d) - SDR disconnected\n", status);
-                    dev_blade = nullptr;
-                    sdr_stream_error.store(true);
-                    break;
-                }
-                continue;
+                fprintf(stderr,"BladeRF: fatal RX error (%d) - SDR disconnected\n", status);
+                dev_blade = nullptr;
+                sdr_stream_error.store(true);
+                break;
             }
             // SC8_Q7: int8 샘플을 int16으로 확장 (뒤에서부터 > in-place 안전)
             if(sc8_mode){
