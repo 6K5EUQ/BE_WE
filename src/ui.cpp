@@ -8194,7 +8194,22 @@ void run_streaming_viewer(){
 
                 // Y축 범위
                 float a_min, a_max;
-                if(imode == 0){ a_min = v.eid_amp_min; a_max = v.eid_amp_max; }
+                if(imode == 0){
+                    a_min = v.eid_amp_min; a_max = v.eid_amp_max;
+                    int64_t vs0 = std::max((int64_t)0, (int64_t)vt0);
+                    int64_t vs1 = std::min((int64_t)v.eid_envelope.size(), (int64_t)ceil(vt1));
+                    if(vs1 > vs0 && !v.eid_envelope.empty()){
+                        int64_t step = std::max((int64_t)1, (vs1-vs0)/2000);
+                        float vlo = v.eid_envelope[vs0], vhi = vlo;
+                        for(int64_t s = vs0; s < vs1; s += step){
+                            float fv = v.eid_envelope[s];
+                            if(fv < vlo) vlo = fv; if(fv > vhi) vhi = fv;
+                        }
+                        float fm = (vhi - vlo) * 0.05f;
+                        a_min = std::max(0.f, vlo - fm);
+                        a_max = vhi + fm;
+                    }
+                }
                 else if(imode == 1){ a_min = -1.0f; a_max = 1.0f; }
                 else if(imode == 2){ a_min = -3.14159265f; a_max = 3.14159265f; }
                 else {
@@ -8229,8 +8244,13 @@ void run_streaming_viewer(){
                         float amp_val = a_max - frac * a_rng;
                         fg->AddLine(ImVec2(ea_x0, yy), ImVec2(ea_x1, yy), IM_COL32(40,40,55,255));
                         char lbl[32];
-                        if(imode == 2) snprintf(lbl, sizeof(lbl), "%.2f", amp_val);
-                        else if(imode == 3) snprintf(lbl, sizeof(lbl), "%.0f", amp_val);
+                        if(imode == 0) snprintf(lbl, sizeof(lbl), "%.3f", amp_val);
+                        else if(imode == 2) snprintf(lbl, sizeof(lbl), "%.0f\xc2\xb0", amp_val*(180.f/(float)M_PI));
+                        else if(imode == 3){
+                            float fabs_val = fabsf(amp_val);
+                            if(fabs_val >= 1e6f) snprintf(lbl, sizeof(lbl), "%.3fMHz", amp_val/1e6f);
+                            else snprintf(lbl, sizeof(lbl), "%.1fkHz", amp_val/1e3f);
+                        }
                         else snprintf(lbl, sizeof(lbl), "%.3f", amp_val);
                         ImVec2 tsz = ImGui::CalcTextSize(lbl);
                         fg->AddText(ImVec2(ea_x0 - tsz.x - 4, yy - tsz.y * 0.5f), IM_COL32(130,130,160,255), lbl);
@@ -8437,19 +8457,19 @@ void run_streaming_viewer(){
                             float val_top=a_max-((sy0-ea_y0)/ea_h)*a_rng;
                             float val_bot=a_max-((sy1-ea_y0)/ea_h)*a_rng;
                             char yi[96];
-                            if(imode==0){ // Amp: dB range
-                                float db_top = (val_top > 0.f) ? 20.f*log10f(val_top) : -99.f;
-                                float db_bot = (val_bot > 0.f) ? 20.f*log10f(val_bot) : -99.f;
+                            if(imode==0){ // Amp: 두 지점의 실제 dB 차
+                                float db_top = (val_top > 0.f) ? 20.f*log10f(val_top) : -120.f;
+                                float db_bot = (val_bot > 0.f) ? 20.f*log10f(val_bot) : -120.f;
                                 float db_rng = fabsf(db_top - db_bot);
-                                snprintf(yi,sizeof(yi),"Amp: %.1f dB ~ %.1f dB  |  \xce\x94: %.1f dB",db_bot,db_top,db_rng);
+                                snprintf(yi,sizeof(yi),"Amp: %.2f dB",db_rng);
                             } else if(imode==1){ // I/Q: amplitude range
                                 float rng=fabsf(val_top-val_bot);
                                 snprintf(yi,sizeof(yi),"I/Q: %.4f ~ %.4f  |  \xce\x94: %.4f",val_bot,val_top,rng);
-                            } else if(imode==2){ // Phase: degrees
+                            } else if(imode==2){ // Phase: delta degrees only
                                 float deg_top=val_top*(180.f/(float)M_PI);
                                 float deg_bot=val_bot*(180.f/(float)M_PI);
                                 float deg_rng=fabsf(deg_top-deg_bot);
-                                snprintf(yi,sizeof(yi),"Phase: %.1f\xc2\xb0 ~ %.1f\xc2\xb0  |  \xce\x94: %.1f\xc2\xb0",deg_bot,deg_top,deg_rng);
+                                snprintf(yi,sizeof(yi),"Phase: %.1f\xc2\xb0",deg_rng);
                             } else { // Freq: BW + Resolution
                                 float bw_hz=fabsf(val_top-val_bot);
                                 float res_m=(bw_hz>0)?299792458.0f/(2.0f*bw_hz):0;
@@ -8661,9 +8681,13 @@ void run_streaming_viewer(){
                             if(si>=0&&si<(int64_t)v.eid_phase.size())
                                 mv=wrap_pi(v.eid_phase[si]-detrend_slope*(float)si);
                         }
-                        snprintf(i2,sizeof(i2),"Phase: %.4f rad",mv);
+                        float deg_mv = mv * (180.f / (float)M_PI);
+                        snprintf(i2,sizeof(i2),"Phase: %.2f\xc2\xb0",deg_mv);
+                    } else {
+                        float fabs_mv = fabsf(mv);
+                        if(fabs_mv >= 1e6f) snprintf(i2,sizeof(i2),"Freq : %.3f MHz",mv/1e6f);
+                        else snprintf(i2,sizeof(i2),"Freq : %.3f kHz",mv/1e3f);
                     }
-                    else snprintf(i2,sizeof(i2),"Freq : %.1f Hz",mv);
                     float fw=std::max(ImGui::CalcTextSize(i1).x,ImGui::CalcTextSize(i2).x);
                     float fh=ImGui::GetFontSize()*2.6f;
                     float ox=ea_x1-fw-14.f, oy=ea_y0+8.f;
