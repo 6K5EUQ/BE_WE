@@ -307,6 +307,11 @@ public:
     float  eid_y_min[4] = {0.f,   -1.f,              -(float)M_PI, -1.f};
     float  eid_y_max[4] = {1.f,    1.f,               (float)M_PI,  1.f};
 
+    // 비트 판단선 (baud mode에서 우클릭 Make Baseline으로 설정)
+    bool   eid_baseline_active = false;
+    float  eid_baseline_val = 0.f;   // Y축 데이터 값 기준
+    int    eid_baseline_imode = 0;   // 설정된 모드 (0=envelope,1=IQ,2=phase,3=freq)
+
     // 비트 구분 모드 (B키 토글)
     bool   eid_baud_mode = false;
     double eid_baud_s0 = -1;     // 시작 샘플 인덱스 (-1=미설정)

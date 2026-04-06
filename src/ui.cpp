@@ -7163,6 +7163,7 @@ void run_streaming_viewer(){
                 {"I/Q",         4, IM_COL32(80,180,255,255)},
                 {"Const",       5, IM_COL32(200,80,255,255)},
                 {"Power",       6, IM_COL32(255,100,100,255)},
+                {"Bits",        7, IM_COL32(120,220,255,255)},
             };
             float bx = ov_x0 + 8.f;
             float btn_ty = sb_y0 + 3.f;
@@ -8115,7 +8116,7 @@ void run_streaming_viewer(){
                 }
 
             // ── Time-domain 모드 (Amp/Freq/Phase/IQ: mode 1-4) ──────────
-            } else if(v.eid_data_ready.load()){
+            } else if(eid_mode <= 4 && v.eid_data_ready.load()){
                 const float LM = 60.f, RM = 10.f, TM = 24.f, BM = 30.f;
                 float ea_x0 = ov_x0 + LM, ea_y0 = ca_y0 + TM;
                 float ea_x1 = ov_x1 - RM, ea_y1 = ca_y1 - BM;
@@ -8371,6 +8372,18 @@ void run_streaming_viewer(){
                         fg->AddLine(ImVec2(bx0,ea_y0),ImVec2(bx0,ea_y1),IM_COL32(255,255,0,255),2.f);
                 }
 
+                // 비트 판단선 렌더링 (baud mode + baseline 설정 시)
+                if(v.eid_baud_mode && v.eid_baseline_active){
+                    float a_rng_ = v.eid_y_max[imode] - v.eid_y_min[imode];
+                    if(a_rng_ > 1e-9f){
+                        float by = ea_y0 + (1.f - (v.eid_baseline_val - v.eid_y_min[imode]) / a_rng_) * ea_h;
+                        if(by >= ea_y0 && by <= ea_y1){
+                            fg->AddLine(ImVec2(ea_x0, by), ImVec2(ea_x1, by), IM_COL32(255,80,80,220), 1.5f);
+                            fg->AddText(ImVec2(ea_x0+4, by-14), IM_COL32(255,80,80,220), "Baseline");
+                        }
+                    }
+                }
+
                 fg->PopClipRect();
 
                 // 마우스 인터랙션
@@ -8607,15 +8620,17 @@ void run_streaming_viewer(){
                     v.eid_sel_active=false; // 더블클릭 시 줌 드래그 시작 방지
                 }
 
-                // B키: 비트 구분 모드 토글
+                // B키: 비트 구분 모드 토글 (비트 판단선도 함께 초기화)
                 if(mouse_in && ImGui::IsKeyPressed(ImGuiKey_B,false) && !io.WantTextInput){
                     v.eid_baud_mode=!v.eid_baud_mode;
                     v.eid_baud_s0=-1; v.eid_baud_s1=-1; v.eid_baud_click=0;
                     v.eid_baud_drag=-1; v.eid_baud_drag_band=false;
+                    v.eid_baseline_active=false;
                 }
 
-                // 비트 구분 모드: 좌클릭 인터랙션
-                if(v.eid_baud_mode && mouse_in && !io.KeyCtrl){
+                // 비트 구분 모드: 좌클릭 인터랙션 (팝업 열린 동안 차단)
+                if(v.eid_baud_mode && mouse_in && !io.KeyCtrl
+                   && !ImGui::IsPopupOpen("##baud_ctx")){
                     const float SNAP_PX=6.f;
                     double mouse_s=vt0+((mp.x-ea_x0)/ea_w)*vis_samp;
                     uint32_t baud_sr=v.eid_sample_rate>0?v.eid_sample_rate:1;
@@ -8674,6 +8689,23 @@ void run_streaming_viewer(){
                     if(v.eid_baud_drag_band && ImGui::IsMouseReleased(ImGuiMouseButton_Left)){
                         v.eid_baud_drag_band=false;
                     }
+                    // 우클릭 컨텍스트 메뉴: Make Baseline
+                    if(mouse_in && ImGui::IsMouseClicked(ImGuiMouseButton_Right)
+                       && !v.eid_baud_drag_band && v.eid_baud_drag<0){
+                        ImGui::OpenPopup("##baud_ctx");
+                        // 클릭 시점의 Y값과 모드를 저장
+                        float a_rng_ = a_max - a_min;
+                        v.eid_baseline_val = a_max - ((mp.y - ea_y0) / ea_h) * a_rng_;
+                        v.eid_baseline_imode = imode;
+                    }
+                }
+                if(ImGui::BeginPopup("##baud_ctx")){
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f,1.f,1.f,1.f));
+                    if(ImGui::Selectable("Make Baseline", false, 0, ImVec2(140.f,0.f))){
+                        v.eid_baseline_active = true;
+                    }
+                    ImGui::PopStyleColor();
+                    ImGui::EndPopup();
                 }
 
                 // 커서 오버레이
@@ -8713,8 +8745,141 @@ void run_streaming_viewer(){
                 }
 
                 } // end if(ea_w > 10 && ea_h > 10)
-            } else {
+
+            // ── Bit Viewer (mode 7) ──────────────────────────────────────
+            } else if(eid_mode == 7 && v.eid_data_ready.load()){
+                const float LM=10.f, RM=10.f, TM=24.f, BM=10.f;
+                float ea_x0=ov_x0+LM, ea_y0=ca_y0+TM;
+                float ea_x1=ov_x1-RM, ea_y1=ca_y1-BM;
+                float ea_w=ea_x1-ea_x0, ea_h=ea_y1-ea_y0;
+                fg->AddRectFilled(ImVec2(ea_x0,ea_y0),ImVec2(ea_x1,ea_y1),IM_COL32(8,8,12,255));
+                fg->AddRect(ImVec2(ea_x0,ea_y0),ImVec2(ea_x1,ea_y1),IM_COL32(60,60,80,255));
+
+                if(!v.eid_baud_mode || v.eid_baud_s0<0 || v.eid_baud_s1<0 || !v.eid_baseline_active){
+                    const char* hint = "Set baud lines (B) and baseline (right-click > Make Baseline) in Amp/Freq/Phase tab";
+                    ImVec2 hsz=ImGui::CalcTextSize(hint);
+                    fg->AddText(ImVec2(ea_x0+(ea_w-hsz.x)*0.5f, ea_y0+(ea_h-hsz.y)*0.5f),
+                                IM_COL32(120,120,140,255), hint);
+                } else {
+                    // 비트 추출
+                    uint32_t sr=v.eid_sample_rate>0?v.eid_sample_rate:1;
+                    double interval=v.eid_baud_s1-v.eid_baud_s0;
+                    if(interval>0){
+                        // 소스 데이터: baseline 설정 당시의 모드 사용
+                        const std::vector<float>* src_data = nullptr;
+                        switch(v.eid_baseline_imode){
+                            case 0: src_data = v.eid_envelope.empty()   ? nullptr : &v.eid_envelope;  break;
+                            case 1: src_data = v.eid_ch_i.empty()       ? nullptr : &v.eid_ch_i;      break;
+                            case 2: src_data = v.eid_phase.empty()      ? nullptr : &v.eid_phase;     break;
+                            case 3: src_data = v.eid_inst_freq.empty()  ? nullptr : &v.eid_inst_freq; break;
+                            default: src_data = nullptr; break;
+                        }
+
+                        if(src_data && !src_data->empty()){
+                            int64_t total=(int64_t)src_data->size();
+                            float baseline=v.eid_baseline_val;
+
+                            // 비트 추출: 각 구간 경계선 사이의 중앙 샘플 1개만 판단
+                            std::vector<uint8_t> bits;
+                            // s0부터 forward: s0, s0+interval, s0+2*interval, ...
+                            // 각 구간 [s0+n*interval, s0+(n+1)*interval] 중앙 샘플
+                            double first_edge = v.eid_baud_s0;
+                            // 데이터 시작(0)까지 역방향 확장
+                            while(first_edge - interval >= 0) first_edge -= interval;
+                            for(double edge = first_edge; edge + interval <= (double)total; edge += interval){
+                                double mid = edge + interval * 0.5;
+                                int64_t si = (int64_t)mid;
+                                if(si < 0 || si >= total) continue;
+                                bits.push_back((*src_data)[si] > baseline ? 1 : 0);
+                            }
+
+                            // 렌더링: 텍스트로 비트열 표시
+                            float font_h=ImGui::GetFontSize();
+                            float line_h=font_h+4.f;
+                            float cx=ea_x0+8.f, cy=ea_y0+8.f;
+
+                            // 헤더
+                            double baud_rate=(double)sr/interval;
+                            char hdr[128];
+                            snprintf(hdr,sizeof(hdr),
+                                "Baud: %.0f | Baseline: %.5f | Total bits: %d | Bytes: %d",
+                                baud_rate, baseline, (int)bits.size(), (int)bits.size()/8);
+                            fg->AddText(ImVec2(cx,cy),IM_COL32(160,160,180,255),hdr);
+                            cy+=line_h+4.f;
+
+                            // 비트열: 8비트씩 묶어서 표시
+                            // 컬럼 너비 계산
+                            const int BITS_PER_LINE=64; // 8바이트
+                            float ch_w=ImGui::CalcTextSize("0").x;
+                            float group_w=ch_w*8+6.f; // 8비트 + 간격
+                            float addr_w=ch_w*6+8.f;  // "0000: "
+                            float hex_w=ch_w*3+4.f;   // "FF "
+
+                            // 컬럼 헤더
+                            fg->AddText(ImVec2(cx,cy),IM_COL32(100,100,130,255),"Offset");
+                            float hx=cx+addr_w;
+                            fg->AddText(ImVec2(hx,cy),IM_COL32(100,100,130,255),"Bits (binary, 8 per group)");
+                            float hex_start=hx+(ch_w*8+6.f)*(BITS_PER_LINE/8)+16.f;
+                            fg->AddText(ImVec2(hex_start,cy),IM_COL32(100,100,130,255),"Hex");
+                            float ascii_start=hex_start+hex_w*(BITS_PER_LINE/8)+8.f;
+                            fg->AddText(ImVec2(ascii_start,cy),IM_COL32(100,100,130,255),"ASCII");
+                            cy+=line_h;
+                            fg->AddLine(ImVec2(ea_x0+4,cy-1),ImVec2(ea_x1-4,cy-1),IM_COL32(50,50,70,255));
+
+                            // 클리핑
+                            fg->PushClipRect(ImVec2(ea_x0,cy),ImVec2(ea_x1,ea_y1),true);
+                            int n_bits=(int)bits.size();
+                            for(int bi=0;bi<n_bits&&cy<ea_y1-line_h;bi+=BITS_PER_LINE){
+                                // 오프셋
+                                char addr[16]; snprintf(addr,sizeof(addr),"%5d:",bi);
+                                fg->AddText(ImVec2(cx,cy),IM_COL32(100,100,130,255),addr);
+                                float bx2=cx+addr_w;
+
+                                // 비트 그룹
+                                float hex_x=hex_start;
+                                float ascii_x=ascii_start;
+                                for(int gi=0;gi<BITS_PER_LINE&&bi+gi<n_bits;gi+=8){
+                                    // 8비트 이진수
+                                    char bstr[9]={};
+                                    uint8_t byte_val=0;
+                                    int valid=0;
+                                    for(int k=0;k<8&&bi+gi+k<n_bits;k++){
+                                        bstr[k]=bits[bi+gi+k]?'1':'0';
+                                        byte_val=(byte_val<<1)|bits[bi+gi+k];
+                                        valid++;
+                                    }
+                                    for(int k=valid;k<8;k++) bstr[k]=' ';
+                                    // 1은 밝게, 0은 어둡게
+                                    for(int k=0;k<8;k++){
+                                        char c[2]={bstr[k],0};
+                                        ImU32 bc=bstr[k]=='1'?IM_COL32(80,255,140,255):IM_COL32(80,80,100,255);
+                                        fg->AddText(ImVec2(bx2+k*ch_w,cy),bc,c);
+                                    }
+                                    bx2+=group_w;
+
+                                    // Hex
+                                    if(valid==8){
+                                        char hstr[4]; snprintf(hstr,sizeof(hstr),"%02X ",byte_val);
+                                        fg->AddText(ImVec2(hex_x,cy),IM_COL32(120,200,255,255),hstr);
+                                    }
+                                    hex_x+=hex_w;
+
+                                    // ASCII
+                                    if(valid==8){
+                                        char astr[2]={(byte_val>=32&&byte_val<127)?(char)byte_val:'.',0};
+                                        fg->AddText(ImVec2(ascii_x,cy),IM_COL32(200,200,160,255),astr);
+                                    }
+                                    ascii_x+=ch_w+1.f;
+                                }
+                                cy+=line_h;
+                            }
+                            fg->PopClipRect();
+                        }
+                    }
+                }
+
                 // 데이터 없음
+            } else {
                 const char* msg = "Load a WAV file from STAT (right-click > Signal Analysis)";
                 ImVec2 msz = ImGui::CalcTextSize(msg);
                 fg->AddText(ImVec2(ov_x0+(ov_w-msz.x)/2, ca_y0+(ca_h-msz.y)/2),
