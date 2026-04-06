@@ -613,7 +613,6 @@ void run_cli_host(){
     srv->cb.on_set_sr = [&](const char* who, float msps){
         bewe_log_push(0, "[CMD:%s] SR > %.2f MSPS\n", who, msps);
         v.pending_sr_msps=msps; v.sr_change_req=true;
-        v.autoscale_active=true; v.autoscale_init=false; v.autoscale_accum.clear();
     };
     srv->cb.on_chassis_reset = [&](const char* who){ bewe_log_push(0,"[CMD:%s] /chassis 1 reset\n",who); pending_chassis1_reset.store(true); };
     srv->cb.on_net_reset     = [&](const char* who){ bewe_log_push(0,"[CMD:%s] /chassis 2 reset\n",who); pending_chassis2_reset.store(true); };

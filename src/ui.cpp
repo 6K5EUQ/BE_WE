@@ -2662,7 +2662,6 @@ void run_streaming_viewer(){
             srv->cb.on_set_sr = [&](const char* who, float msps){
                 bewe_log_push(0, "[CMD:%s] SR > %.2f MSPS\n", who, msps);
                 v.pending_sr_msps=msps; v.sr_change_req=true;
-                v.autoscale_active=true; v.autoscale_init=false; v.autoscale_accum.clear();
             };
             srv->cb.on_chassis_reset = [&](const char* who){
                 bewe_log_push(0, "[CMD:%s] /chassis 1 reset\n", who);
@@ -3308,8 +3307,6 @@ void run_streaming_viewer(){
                     if(ok){
                         for(int ci=0;ci<MAX_CHANNELS;ci++)
                             if(v_ptr->local_ch_out[ci]==3) cli_ptr->cmd_toggle_recv(ci,false);
-                        v_ptr->autoscale_active=true; v_ptr->autoscale_init=false;
-                        v_ptr->autoscale_accum.clear();
                         v_ptr->join_manual_scale=false;
                         { std::lock_guard<std::mutex> wlk(v_ptr->wf_events_mtx);
                           v_ptr->wf_events.clear(); }
@@ -3880,9 +3877,6 @@ void run_streaming_viewer(){
                             } else {
                             v.pending_sr_msps = sr_list[i];
                             v.sr_change_req   = true;
-                            // autoscale 리셋
-                            v.autoscale_active=true; v.autoscale_init=false;
-                            v.autoscale_accum.clear();
                             // SR 변경 시 digi 워커 재시작 (새 SR 파라미터로)
                             for(int ci=0;ci<MAX_CHANNELS;ci++){
                                 if(v.channels[ci].digi_run.load()){
@@ -5753,6 +5747,8 @@ void run_streaming_viewer(){
                                         dl->AddCircleFilled(p, 2.5f, dot_col);
                                 }
                             } else {
+                                ImU32 band_col = (col & 0x00FFFFFF) | 0xC8000000;
+                                float prev_lo = FLT_MAX, prev_hi = -FLT_MAX;
                                 for(int px = 0; px < pixels; px++){
                                     int64_t s0 = (int64_t)(vt0 + px * spp);
                                     int64_t s1 = (int64_t)(vt0 + (px + 1) * spp);
@@ -5764,13 +5760,18 @@ void run_streaming_viewer(){
                                         if(v2 < lo) lo = v2;
                                         if(v2 > hi) hi = v2;
                                     }
+                                    // 이전 픽셀과 gap이 생기면 브릿지 (원본 lo/hi 기준)
+                                    float draw_lo = lo, draw_hi = hi;
+                                    if(prev_lo != FLT_MAX){
+                                        if(prev_hi < lo) draw_lo = prev_hi;
+                                        else if(prev_lo > hi) draw_hi = prev_lo;
+                                    }
+                                    prev_lo = lo; prev_hi = hi; // 원본 값 저장
                                     float xx = ea_x0 + px;
-                                    float yy_lo = ea_y0 + (1.0f - (hi - a_min) / a_rng) * ea_h;
-                                    float yy_hi = ea_y0 + (1.0f - (lo - a_min) / a_rng) * ea_h;
+                                    float yy_lo = ea_y0 + (1.0f - (draw_hi - a_min) / a_rng) * ea_h;
+                                    float yy_hi = ea_y0 + (1.0f - (draw_lo - a_min) / a_rng) * ea_h;
                                     if(yy_lo > yy_hi) std::swap(yy_lo, yy_hi);
                                     if(yy_hi - yy_lo < 1.0f) yy_hi = yy_lo + 1.0f;
-                                    ImU32 band_col = (col & 0xFF000000) | ((col & 0x00FFFFFF));
-                                    band_col = (band_col & 0x00FFFFFF) | 0xC8000000; // alpha ~200
                                     dl->AddLine(ImVec2(xx, yy_lo), ImVec2(xx, yy_hi), band_col);
                                 }
                             }
@@ -8323,6 +8324,8 @@ void run_streaming_viewer(){
                             if(pts.size()>=2)
                                 fg->AddPolyline(pts.data(),(int)pts.size(),col,ImDrawFlags_None,1.5f);
                         } else {
+                            ImU32 bc=(col&0x00FFFFFF)|0xC8000000;
+                            float prev_lo=FLT_MAX, prev_hi=-FLT_MAX;
                             for(int px = 0; px < pixels; px++){
                                 int64_t s0=(int64_t)(vt0+px*spp), s1=(int64_t)(vt0+(px+1)*spp);
                                 s0=std::max((int64_t)0,std::min(s0,total-1));
@@ -8335,12 +8338,18 @@ void run_streaming_viewer(){
                                     if(detrend_slope!=0.0f) v2=wrap_pi(v2-detrend_slope*(float)s);
                                     if(v2<lo)lo=v2; if(v2>hi)hi=v2;
                                 }
+                                // 이전 픽셀과 gap이 생기면 브릿지 (원본 lo/hi 기준)
+                                float draw_lo=lo, draw_hi=hi;
+                                if(prev_lo!=FLT_MAX){
+                                    if(prev_hi<lo) draw_lo=prev_hi;
+                                    else if(prev_lo>hi) draw_hi=prev_lo;
+                                }
+                                prev_lo=lo; prev_hi=hi;
                                 float xx=ea_x0+px;
-                                float yl=ea_y0+(1.0f-(hi-a_min)/a_rng)*ea_h;
-                                float yh=ea_y0+(1.0f-(lo-a_min)/a_rng)*ea_h;
+                                float yl=ea_y0+(1.0f-(draw_hi-a_min)/a_rng)*ea_h;
+                                float yh=ea_y0+(1.0f-(draw_lo-a_min)/a_rng)*ea_h;
                                 if(yl>yh) std::swap(yl,yh);
                                 if(yh-yl<1.0f) yh=yl+1.0f;
-                                ImU32 bc=(col&0x00FFFFFF)|0xC8000000;
                                 fg->AddLine(ImVec2(xx,yl),ImVec2(xx,yh),bc);
                             }
                         }

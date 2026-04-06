@@ -68,7 +68,7 @@ void FFTViewer::dem_worker(int ch_idx){
     const size_t MAX_LAG=(size_t)(msr*0.08);
     const size_t BATCH  =(size_t)cap_decim*actual_asr/50;
 
-    while(!ch.dem_stop_req.load(std::memory_order_relaxed)){
+    while(!ch.dem_stop_req.load(std::memory_order_relaxed) && !sdr_stream_error.load()){
         // center frequency 변경 감지 → 오실레이터 재설정
         { uint64_t cur_cf=header.center_frequency;
           if(cur_cf!=prev_cf){

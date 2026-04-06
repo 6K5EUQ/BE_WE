@@ -7,7 +7,8 @@
 void FFTViewer::rec_worker(){
     uint32_t msr=header.sample_rate;
     float off=(rec_cf_mhz-(float)(header.center_frequency/1e6f))*1e6f;
-    uint32_t decim=std::max(1u,msr/rec_sr), actual_sr=msr/decim;
+    uint32_t safe_sr=std::max(1u,rec_sr);
+    uint32_t decim=std::max(1u,msr/safe_sr), actual_sr=msr/decim;
     WAVWriter wav;
     if(!wav.open(rec_filename,actual_sr)){ rec_on.store(false); return; }
     bewe_log("REC IQ: %.4f MHz  off=%.0fHz  decim=%u  SR=%u\n",rec_cf_mhz,off,decim,actual_sr);
@@ -18,7 +19,7 @@ void FFTViewer::rec_worker(){
         return (int16_t)(std::max(-1.0f,std::min(1.0f,v))*32767.0f);
     };
 
-    while(!rec_stop.load(std::memory_order_relaxed)){
+    while(!rec_stop.load(std::memory_order_relaxed) && !sdr_stream_error.load()){
         size_t wp=ring_wp.load(std::memory_order_acquire);
         size_t rp=rec_rp.load(std::memory_order_relaxed);
         if(rp==wp){ std::this_thread::sleep_for(std::chrono::microseconds(100)); continue; }

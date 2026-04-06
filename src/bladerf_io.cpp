@@ -104,7 +104,6 @@ bool FFTViewer::initialize_bladerf(float cf_mhz, float sr_msps){
 
     char title[256]; snprintf(title,256,"BEWE - %.2f MHz",cf_mhz);
     window_title=title; display_power_min=-100; display_power_max=0;
-    autoscale_active=true; autoscale_init=false;
     fft_in =fftwf_alloc_complex(fft_size);
     fft_out=fftwf_alloc_complex(fft_size);
     memset(fft_in, 0, fft_size*sizeof(fftwf_complex));  // zero-pad region
@@ -173,8 +172,7 @@ void FFTViewer::capture_and_process(){
              header.fft_size=fft_size;
              fft_data.assign(MAX_FFTS_MEMORY*fft_size,0);
              current_spectrum.assign(fft_size,-80.0f);
-             total_ffts=0; current_fft_idx=0; cached_sp_idx=-1;
-             autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;}
+             total_ffts=0; current_fft_idx=0; cached_sp_idx=-1;}
             texture_needs_recreate=true; continue;
         }
 
@@ -234,8 +232,7 @@ void FFTViewer::capture_and_process(){
              header.time_average = time_average;
              fft_data.assign(MAX_FFTS_MEMORY*fft_size,0);
              current_spectrum.assign(fft_size,-80.0f);
-             total_ffts=0; current_fft_idx=0; cached_sp_idx=-1;
-             autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;}
+             total_ffts=0; current_fft_idx=0; cached_sp_idx=-1;}
             {std::lock_guard<std::mutex> lk(wf_events_mtx);
              wf_events.clear(); last_tagged_sec=-1;}
 
