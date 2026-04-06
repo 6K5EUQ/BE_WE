@@ -131,6 +131,17 @@ void FFTViewer::eid_start(const std::string& wav_path){
         // 노이즈 레벨: 5th percentile
         float noise_lvl = sorted_env[(size_t)(sorted_env.size() * 0.05f)];
 
+        // inst_freq Y범위 초기화
+        float freq_lo = inst_freq[0], freq_hi = freq_lo;
+        { int64_t step = std::max((int64_t)1, done/4000);
+          for(int64_t i = 0; i < done; i += step){
+              if(inst_freq[i] < freq_lo) freq_lo = inst_freq[i];
+              if(inst_freq[i] > freq_hi) freq_hi = inst_freq[i];
+          }
+          float fm = (freq_hi - freq_lo) * 0.05f;
+          freq_lo -= fm; freq_hi += fm;
+        }
+
         // ── 데이터 전달 ─────────────────────────────────────────────────────
         {
             std::lock_guard<std::mutex> lk(eid_data_mtx);
@@ -146,6 +157,10 @@ void FFTViewer::eid_start(const std::string& wav_path){
         eid_view_t1        = (double)done;
         eid_amp_min        = amp_lo;
         eid_amp_max        = amp_hi;
+        eid_y_min[0]       = amp_lo;
+        eid_y_max[0]       = amp_hi;
+        eid_y_min[3]       = freq_lo;
+        eid_y_max[3]       = freq_hi;
         eid_noise_level    = noise_lvl;
         eid_center_freq_hz = meta_cf_hz;
         eid_view_mode      = 0; // reset to Signal on new load
@@ -228,6 +243,8 @@ void FFTViewer::eid_recompute_derived(){
     float margin_hi = hi*0.20f;
     eid_amp_min = std::max(0.f, lo-margin_lo);
     eid_amp_max = hi+margin_hi;
+    eid_y_min[0] = eid_amp_min;
+    eid_y_max[0] = eid_amp_max;
     eid_noise_level = sorted_env[(size_t)(sorted_env.size()*0.05f)];
 }
 

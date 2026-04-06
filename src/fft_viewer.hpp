@@ -303,6 +303,10 @@ public:
     int    eid_power_order = 1;     // M 값 (1, 2, 4, 8)
     int    eid_power_fft_n = 4096;  // FFT 크기
 
+    // Y축 수동 스케일 (per mode: 0=Amp, 1=I/Q, 2=Phase, 3=Freq)
+    float  eid_y_min[4] = {0.f,   -1.f,              -(float)M_PI, -1.f};
+    float  eid_y_max[4] = {1.f,    1.f,               (float)M_PI,  1.f};
+
     // 비트 구분 모드 (B키 토글)
     bool   eid_baud_mode = false;
     double eid_baud_s0 = -1;     // 시작 샘플 인덱스 (-1=미설정)

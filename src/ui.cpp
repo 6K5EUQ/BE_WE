@@ -5612,33 +5612,10 @@ void run_streaming_viewer(){
                     double vt0 = v.eid_view_t0, vt1 = v.eid_view_t1;
                     int eid_mode = v.eid_view_mode;
 
-                    // Y축 범위: 모드별
-                    float a_min, a_max;
-                    if(eid_mode == 0){ // Signal
-                        a_min = v.eid_amp_min; a_max = v.eid_amp_max;
-                    } else if(eid_mode == 1){ // I/Q
-                        a_min = -1.0f; a_max = 1.0f;
-                    } else if(eid_mode == 2){ // Phase
-                        a_min = -3.14159265f; a_max = 3.14159265f;
-                    } else { // Frequency: auto-scale from visible range
-                        // 일단 넓은 범위, 아래서 실제 데이터로 갱신
-                        a_min = -0.5f; a_max = 0.5f;
-                        // visible range에서 inst_freq min/max 계산
-                        int64_t vs0 = std::max((int64_t)0, (int64_t)vt0);
-                        int64_t vs1 = std::min((int64_t)v.eid_inst_freq.size(), (int64_t)ceil(vt1));
-                        if(vs1 > vs0 && !v.eid_inst_freq.empty()){
-                            float flo = v.eid_inst_freq[vs0], fhi = flo;
-                            // 1st/99th percentile 대신 sampling으로 빠르게
-                            int64_t step = std::max((int64_t)1, (vs1-vs0)/2000);
-                            for(int64_t s = vs0; s < vs1; s += step){
-                                float fv = v.eid_inst_freq[s];
-                                if(fv < flo) flo = fv;
-                                if(fv > fhi) fhi = fv;
-                            }
-                            float fm = (fhi - flo) * 0.05f;
-                            a_min = flo - fm; a_max = fhi + fm;
-                        }
-                    }
+                    // Y축 범위: 수동 스케일 사용 (Ctrl+휠로 조절)
+                    int eid_y_idx = (eid_mode==0)?0:(eid_mode==1)?1:(eid_mode==2)?2:3;
+                    float a_min = v.eid_y_min[eid_y_idx];
+                    float a_max = v.eid_y_max[eid_y_idx];
 
                     float  a_rng = a_max - a_min;
                     if(a_rng < 1e-6f) a_rng = 1e-6f;
@@ -5809,25 +5786,39 @@ void run_streaming_viewer(){
                     bool mouse_in_eid = (mp.x >= ea_x0 && mp.x < ea_x1 &&
                                          mp.y >= ea_y0 && mp.y < ea_y1);
 
-                    // 스크롤 휠 줌 (시간축)
+                    // 스크롤 휠 줌 (시간축) / Ctrl+휠 = Y축 줌
                     if(mouse_in_eid && io.MouseWheel != 0.f){
-                        // 줌 전 현재 뷰를 스택에 저장
-                        v.eid_view_stack.push_back({v.eid_view_t0, v.eid_view_t1});
-                        double zoom_f = (io.MouseWheel > 0) ? 0.8 : 1.25;
-                        double mouse_t = vt0 + ((mp.x - ea_x0) / ea_w) * vis_samp;
-                        double new_half = vis_samp * 0.5 * zoom_f;
-                        v.eid_view_t0 = mouse_t - new_half;
-                        v.eid_view_t1 = mouse_t + new_half;
-                        if(v.eid_view_t0 < 0){ v.eid_view_t1 -= v.eid_view_t0; v.eid_view_t0 = 0; }
-                        if(v.eid_view_t1 > (double)v.eid_total_samples){
-                            v.eid_view_t0 -= (v.eid_view_t1 - (double)v.eid_total_samples);
-                            v.eid_view_t1 = (double)v.eid_total_samples;
-                        }
-                        v.eid_view_t0 = std::max(0.0, v.eid_view_t0);
-                        v.eid_view_t1 = std::min((double)v.eid_total_samples, v.eid_view_t1);
-                        if(v.eid_view_t1 - v.eid_view_t0 < 32.0){
-                            double mid = (v.eid_view_t0 + v.eid_view_t1) * 0.5;
-                            v.eid_view_t0 = mid - 16.0; v.eid_view_t1 = mid + 16.0;
+                        int yi = (eid_mode==0)?0:(eid_mode==1)?1:(eid_mode==2)?2:3;
+                        if(io.KeyCtrl){
+                            // Y축 줌: 마우스 Y값 기준
+                            float a_rng_ = v.eid_y_max[yi] - v.eid_y_min[yi];
+                            if(a_rng_ < 1e-9f) a_rng_ = 1e-9f;
+                            float mouse_val = v.eid_y_max[yi] - ((mp.y - ea_y0) / ea_h) * a_rng_;
+                            float frac_y = (mouse_val - v.eid_y_min[yi]) / a_rng_;
+                            float zf = (io.MouseWheel > 0) ? 0.8f : 1.25f;
+                            float new_rng = a_rng_ * zf;
+                            if(new_rng < 1e-9f) new_rng = 1e-9f;
+                            v.eid_y_min[yi] = mouse_val - frac_y * new_rng;
+                            v.eid_y_max[yi] = mouse_val + (1.f - frac_y) * new_rng;
+                        } else {
+                            // X축 줌
+                            v.eid_view_stack.push_back({v.eid_view_t0, v.eid_view_t1});
+                            double zoom_f = (io.MouseWheel > 0) ? 0.8 : 1.25;
+                            double mouse_t = vt0 + ((mp.x - ea_x0) / ea_w) * vis_samp;
+                            double new_half = vis_samp * 0.5 * zoom_f;
+                            v.eid_view_t0 = mouse_t - new_half;
+                            v.eid_view_t1 = mouse_t + new_half;
+                            if(v.eid_view_t0 < 0){ v.eid_view_t1 -= v.eid_view_t0; v.eid_view_t0 = 0; }
+                            if(v.eid_view_t1 > (double)v.eid_total_samples){
+                                v.eid_view_t0 -= (v.eid_view_t1 - (double)v.eid_total_samples);
+                                v.eid_view_t1 = (double)v.eid_total_samples;
+                            }
+                            v.eid_view_t0 = std::max(0.0, v.eid_view_t0);
+                            v.eid_view_t1 = std::min((double)v.eid_total_samples, v.eid_view_t1);
+                            if(v.eid_view_t1 - v.eid_view_t0 < 32.0){
+                                double mid = (v.eid_view_t0 + v.eid_view_t1) * 0.5;
+                                v.eid_view_t0 = mid - 16.0; v.eid_view_t1 = mid + 16.0;
+                            }
                         }
                     }
 
@@ -8193,48 +8184,9 @@ void run_streaming_viewer(){
 
                 double vt0 = v.eid_view_t0, vt1 = v.eid_view_t1;
 
-                // Y축 범위
-                float a_min, a_max;
-                if(imode == 0){
-                    a_min = v.eid_amp_min; a_max = v.eid_amp_max;
-                    int64_t vs0 = std::max((int64_t)0, (int64_t)vt0);
-                    int64_t vs1 = std::min((int64_t)v.eid_envelope.size(), (int64_t)ceil(vt1));
-                    if(vs1 > vs0 && !v.eid_envelope.empty()){
-                        // vhi: 전체 스캔 (스파이크 누락 방지)
-                        // vlo: step 샘플링으로 바닥 근사
-                        int64_t step = std::max((int64_t)1, (vs1-vs0)/2000);
-                        float vlo = v.eid_envelope[vs0], vhi = vlo;
-                        for(int64_t s = vs0; s < vs1; s += step){
-                            float fv = v.eid_envelope[s];
-                            if(fv < vlo) vlo = fv;
-                        }
-                        for(int64_t s = vs0; s < vs1; s++){
-                            float fv = v.eid_envelope[s];
-                            if(fv > vhi) vhi = fv;
-                        }
-                        float fm_lo = (vhi - vlo) * 0.05f;
-                        float fm_hi = vhi * 0.20f;
-                        a_min = std::max(0.f, vlo - fm_lo);
-                        a_max = vhi + fm_hi;
-                    }
-                }
-                else if(imode == 1){ a_min = -1.0f; a_max = 1.0f; }
-                else if(imode == 2){ a_min = -3.14159265f; a_max = 3.14159265f; }
-                else {
-                    a_min = -0.5f; a_max = 0.5f;
-                    int64_t vs0 = std::max((int64_t)0, (int64_t)vt0);
-                    int64_t vs1 = std::min((int64_t)v.eid_inst_freq.size(), (int64_t)ceil(vt1));
-                    if(vs1 > vs0 && !v.eid_inst_freq.empty()){
-                        float flo = v.eid_inst_freq[vs0], fhi = flo;
-                        int64_t step = std::max((int64_t)1, (vs1-vs0)/2000);
-                        for(int64_t s = vs0; s < vs1; s += step){
-                            float fv = v.eid_inst_freq[s];
-                            if(fv < flo) flo = fv; if(fv > fhi) fhi = fv;
-                        }
-                        float fm = (fhi - flo) * 0.05f;
-                        a_min = flo - fm; a_max = fhi + fm;
-                    }
-                }
+                // Y축 범위: 수동 스케일 사용 (Ctrl+휠로 조절)
+                float a_min = v.eid_y_min[imode];
+                float a_max = v.eid_y_max[imode];
                 float a_rng = a_max - a_min;
                 if(a_rng < 1e-6f) a_rng = 1e-6f;
                 double vis_samp = vt1 - vt0;
@@ -8436,27 +8388,40 @@ void run_streaming_viewer(){
                     }
                 };
 
-                // 스크롤 줌 (마우스 위치 고정)
+                // 스크롤 줌 (마우스 위치 고정) / Ctrl+휠 = Y축 줌
                 if(mouse_in && io.MouseWheel != 0.f){
-                    v.eid_view_stack.push_back({vt0,vt1});
-                    double zf = (io.MouseWheel > 0) ? 0.8 : 1.25;
-                    double frac = (double)(mp.x-ea_x0)/ea_w;
-                    double mt = vt0 + frac * vis_samp;
-                    double new_vis = vis_samp * zf;
-                    v.eid_view_t0 = mt - frac * new_vis;
-                    v.eid_view_t1 = mt + (1.0 - frac) * new_vis;
-                    if(v.eid_view_t0<0){ v.eid_view_t1-=v.eid_view_t0; v.eid_view_t0=0; }
-                    if(v.eid_view_t1>(double)v.eid_total_samples){
-                        v.eid_view_t0-=(v.eid_view_t1-(double)v.eid_total_samples);
-                        v.eid_view_t1=(double)v.eid_total_samples;
+                    if(io.KeyCtrl){
+                        // Y축 줌: 마우스 Y값 기준
+                        float a_rng_ = v.eid_y_max[imode] - v.eid_y_min[imode];
+                        if(a_rng_ < 1e-9f) a_rng_ = 1e-9f;
+                        float mouse_val = v.eid_y_max[imode] - ((mp.y - ea_y0) / ea_h) * a_rng_;
+                        float frac_y = (mouse_val - v.eid_y_min[imode]) / a_rng_;
+                        float zf = (io.MouseWheel > 0) ? 0.8f : 1.25f;
+                        float new_rng = a_rng_ * zf;
+                        if(new_rng < 1e-9f) new_rng = 1e-9f;
+                        v.eid_y_min[imode] = mouse_val - frac_y * new_rng;
+                        v.eid_y_max[imode] = mouse_val + (1.f - frac_y) * new_rng;
+                    } else {
+                        v.eid_view_stack.push_back({vt0,vt1});
+                        double zf = (io.MouseWheel > 0) ? 0.8 : 1.25;
+                        double frac = (double)(mp.x-ea_x0)/ea_w;
+                        double mt = vt0 + frac * vis_samp;
+                        double new_vis = vis_samp * zf;
+                        v.eid_view_t0 = mt - frac * new_vis;
+                        v.eid_view_t1 = mt + (1.0 - frac) * new_vis;
+                        if(v.eid_view_t0<0){ v.eid_view_t1-=v.eid_view_t0; v.eid_view_t0=0; }
+                        if(v.eid_view_t1>(double)v.eid_total_samples){
+                            v.eid_view_t0-=(v.eid_view_t1-(double)v.eid_total_samples);
+                            v.eid_view_t1=(double)v.eid_total_samples;
+                        }
+                        v.eid_view_t0=std::max(0.0,v.eid_view_t0);
+                        v.eid_view_t1=std::min((double)v.eid_total_samples,v.eid_view_t1);
+                        if(v.eid_view_t1-v.eid_view_t0<32.0){
+                            double mid=(v.eid_view_t0+v.eid_view_t1)*0.5;
+                            v.eid_view_t0=mid-16; v.eid_view_t1=mid+16;
+                        }
+                        sync_eid_to_sa();
                     }
-                    v.eid_view_t0=std::max(0.0,v.eid_view_t0);
-                    v.eid_view_t1=std::min((double)v.eid_total_samples,v.eid_view_t1);
-                    if(v.eid_view_t1-v.eid_view_t0<32.0){
-                        double mid=(v.eid_view_t0+v.eid_view_t1)*0.5;
-                        v.eid_view_t0=mid-16; v.eid_view_t1=mid+16;
-                    }
-                    sync_eid_to_sa();
                 }
 
                 // (태그 토글은 좌클릭 드래그 release에서 처리 — 드래그<5px일 때)
