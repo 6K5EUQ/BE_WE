@@ -309,6 +309,8 @@ public:
     double eid_baud_s1 = -1;     // 끝 샘플 인덱스 (-1=미설정)
     int    eid_baud_click = 0;   // 0=대기, 1=시작설정됨
     int    eid_baud_drag = -1;   // 드래그 중 선 (-1=없음, 0=시작, 1=끝)
+    bool   eid_baud_drag_band = false;    // 밴드 전체 드래그 중
+    double eid_baud_band_drag_offset = 0.0; // 드래그 시작 시 s0 기준 마우스 오프셋
     bool    eid_tag_dragging = false;
     float   eid_tag_drag_x0 = 0.f, eid_tag_drag_x1 = 0.f;
     // 임시 선택 영역 (우클릭 드래그 후 확정 전)

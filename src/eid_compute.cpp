@@ -122,10 +122,10 @@ void FFTViewer::eid_start(const std::string& wav_path){
         float amp_lo = sorted_env[(size_t)(sorted_env.size() * 0.01f)];
         float amp_hi = sorted_env.back();  // 실제 최대값 (클리핑 방지)
         if(amp_hi - amp_lo < 0.001f) amp_hi = amp_lo + 0.001f;
-        // 여유 5%
-        float margin = (amp_hi - amp_lo) * 0.05f;
-        amp_lo -= margin;
-        amp_hi += margin;
+        float margin_lo = (amp_hi - amp_lo) * 0.05f;
+        float margin_hi = amp_hi * 0.20f;
+        amp_lo -= margin_lo;
+        amp_hi += margin_hi;
         if(amp_lo < 0.f) amp_lo = 0.f;
 
         // 노이즈 레벨: 5th percentile
@@ -224,9 +224,10 @@ void FFTViewer::eid_recompute_derived(){
     float lo = sorted_env[(size_t)(sorted_env.size()*0.01f)];
     float hi = sorted_env.back();
     if(hi-lo<0.001f) hi=lo+0.001f;
-    float margin = (hi-lo)*0.05f;
-    eid_amp_min = std::max(0.f, lo-margin);
-    eid_amp_max = hi+margin;
+    float margin_lo = (hi-lo)*0.05f;
+    float margin_hi = hi*0.20f;
+    eid_amp_min = std::max(0.f, lo-margin_lo);
+    eid_amp_max = hi+margin_hi;
     eid_noise_level = sorted_env[(size_t)(sorted_env.size()*0.05f)];
 }
 

@@ -8200,15 +8200,22 @@ void run_streaming_viewer(){
                     int64_t vs0 = std::max((int64_t)0, (int64_t)vt0);
                     int64_t vs1 = std::min((int64_t)v.eid_envelope.size(), (int64_t)ceil(vt1));
                     if(vs1 > vs0 && !v.eid_envelope.empty()){
+                        // vhi: 전체 스캔 (스파이크 누락 방지)
+                        // vlo: step 샘플링으로 바닥 근사
                         int64_t step = std::max((int64_t)1, (vs1-vs0)/2000);
                         float vlo = v.eid_envelope[vs0], vhi = vlo;
                         for(int64_t s = vs0; s < vs1; s += step){
                             float fv = v.eid_envelope[s];
-                            if(fv < vlo) vlo = fv; if(fv > vhi) vhi = fv;
+                            if(fv < vlo) vlo = fv;
                         }
-                        float fm = (vhi - vlo) * 0.05f;
-                        a_min = std::max(0.f, vlo - fm);
-                        a_max = vhi + fm;
+                        for(int64_t s = vs0; s < vs1; s++){
+                            float fv = v.eid_envelope[s];
+                            if(fv > vhi) vhi = fv;
+                        }
+                        float fm_lo = (vhi - vlo) * 0.05f;
+                        float fm_hi = vhi * 0.20f;
+                        a_min = std::max(0.f, vlo - fm_lo);
+                        a_max = vhi + fm_hi;
                     }
                 }
                 else if(imode == 1){ a_min = -1.0f; a_max = 1.0f; }
@@ -8382,14 +8389,17 @@ void run_streaming_viewer(){
 
                 // 비트 구분 격자 (baud mode)
                 if(v.eid_baud_mode && v.eid_baud_s0>=0){
-                    // s0 선 항상 표시
                     float bx0=ea_x0+(float)((v.eid_baud_s0-vt0)/vis_samp)*ea_w;
-                    if(bx0>=ea_x0&&bx0<=ea_x1)
-                        fg->AddLine(ImVec2(bx0,ea_y0),ImVec2(bx0,ea_y1),IM_COL32(255,255,0,255),2.f);
-                    // s1 설정 시 격자 + s1 선
+                    // s1 설정 시 격자 + 밴드 채우기 + s1 선
                     if(v.eid_baud_s1>=0){
                         double interval=v.eid_baud_s1-v.eid_baud_s0;
                         if(interval>0){
+                            float bx1=ea_x0+(float)((v.eid_baud_s1-vt0)/vis_samp)*ea_w;
+                            // 두 메인 선 사이 채우기 (드래그 가능 영역 표시)
+                            float rx0=std::max(bx0,ea_x0), rx1=std::min(bx1,ea_x1);
+                            if(rx1>rx0)
+                                fg->AddRectFilled(ImVec2(rx0,ea_y0),ImVec2(rx1,ea_y1),IM_COL32(255,255,0,28));
+                            // 격자
                             for(double s=v.eid_baud_s0+interval; s<=vt1; s+=interval){
                                 float xx=ea_x0+(float)((s-vt0)/vis_samp)*ea_w;
                                 if(xx>=ea_x0&&xx<=ea_x1)
@@ -8400,11 +8410,13 @@ void run_streaming_viewer(){
                                 if(xx>=ea_x0&&xx<=ea_x1)
                                     fg->AddLine(ImVec2(xx,ea_y0),ImVec2(xx,ea_y1),IM_COL32(255,255,0,80),1.f);
                             }
-                            float bx1=ea_x0+(float)((v.eid_baud_s1-vt0)/vis_samp)*ea_w;
                             if(bx1>=ea_x0&&bx1<=ea_x1)
                                 fg->AddLine(ImVec2(bx1,ea_y0),ImVec2(bx1,ea_y1),IM_COL32(255,255,0,255),2.f);
                         }
                     }
+                    // s0 선 (s1보다 위에 그려 항상 보이게)
+                    if(bx0>=ea_x0&&bx0<=ea_x1)
+                        fg->AddLine(ImVec2(bx0,ea_y0),ImVec2(bx0,ea_y1),IM_COL32(255,255,0,255),2.f);
                 }
 
                 fg->PopClipRect();
@@ -8633,24 +8645,36 @@ void run_streaming_viewer(){
                 // B키: 비트 구분 모드 토글
                 if(mouse_in && ImGui::IsKeyPressed(ImGuiKey_B,false) && !io.WantTextInput){
                     v.eid_baud_mode=!v.eid_baud_mode;
-                    if(!v.eid_baud_mode){ v.eid_baud_s0=-1; v.eid_baud_s1=-1; v.eid_baud_click=0; v.eid_baud_drag=-1; }
-                    else { v.eid_baud_s0=-1; v.eid_baud_s1=-1; v.eid_baud_click=0; v.eid_baud_drag=-1; }
+                    v.eid_baud_s0=-1; v.eid_baud_s1=-1; v.eid_baud_click=0;
+                    v.eid_baud_drag=-1; v.eid_baud_drag_band=false;
                 }
 
                 // 비트 구분 모드: 좌클릭 인터랙션
                 if(v.eid_baud_mode && mouse_in && !io.KeyCtrl){
                     const float SNAP_PX=6.f;
                     double mouse_s=vt0+((mp.x-ea_x0)/ea_w)*vis_samp;
-                    // 드래그 시작: 기존 선 근처 클릭
-                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Left) && v.eid_baud_drag<0){
+                    uint32_t baud_sr=v.eid_sample_rate>0?v.eid_sample_rate:1;
+
+                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+                       && v.eid_baud_drag<0 && !v.eid_baud_drag_band){
+                        // 1순위: 메인 선 근처 → 선 드래그
                         for(int li=0;li<2;li++){
                             double ls=(li==0)?v.eid_baud_s0:v.eid_baud_s1;
                             if(ls<0) continue;
                             float lx=ea_x0+(float)((ls-vt0)/vis_samp)*ea_w;
                             if(fabsf(mp.x-lx)<SNAP_PX){ v.eid_baud_drag=li; break; }
                         }
-                        // 선 근처 아니면 새 점 설정
-                        if(v.eid_baud_drag<0){
+                        // 2순위: 밴드 안쪽 → 밴드 전체 드래그
+                        if(v.eid_baud_drag<0 && v.eid_baud_s0>=0 && v.eid_baud_s1>=0){
+                            float bx0b=ea_x0+(float)((v.eid_baud_s0-vt0)/vis_samp)*ea_w;
+                            float bx1b=ea_x0+(float)((v.eid_baud_s1-vt0)/vis_samp)*ea_w;
+                            if(mp.x>bx0b+SNAP_PX && mp.x<bx1b-SNAP_PX){
+                                v.eid_baud_drag_band=true;
+                                v.eid_baud_band_drag_offset=mouse_s-v.eid_baud_s0;
+                            }
+                        }
+                        // 3순위: 새 점 설정
+                        if(v.eid_baud_drag<0 && !v.eid_baud_drag_band){
                             if(v.eid_baud_click==0){
                                 v.eid_baud_s0=mouse_s; v.eid_baud_s1=-1; v.eid_baud_click=1;
                             } else {
@@ -8659,7 +8683,7 @@ void run_streaming_viewer(){
                             }
                         }
                     }
-                    // 드래그 중
+                    // 선 개별 드래그
                     if(v.eid_baud_drag>=0 && ImGui::IsMouseDown(ImGuiMouseButton_Left)){
                         if(v.eid_baud_drag==0) v.eid_baud_s0=mouse_s;
                         else v.eid_baud_s1=mouse_s;
@@ -8667,6 +8691,23 @@ void run_streaming_viewer(){
                     }
                     if(v.eid_baud_drag>=0 && ImGui::IsMouseReleased(ImGuiMouseButton_Left)){
                         v.eid_baud_drag=-1;
+                    }
+                    // 밴드 전체 드래그 (100-baud 스냅)
+                    if(v.eid_baud_drag_band && ImGui::IsMouseDown(ImGuiMouseButton_Left)){
+                        double interval=v.eid_baud_s1-v.eid_baud_s0;
+                        if(interval>0){
+                            // 현재 baud를 100 단위로 스냅
+                            double baud=(double)baud_sr/interval;
+                            double snapped_baud=round(baud/100.0)*100.0;
+                            if(snapped_baud<100.0) snapped_baud=100.0;
+                            double snapped_interval=(double)baud_sr/snapped_baud;
+                            double new_s0=mouse_s-v.eid_baud_band_drag_offset;
+                            v.eid_baud_s0=new_s0;
+                            v.eid_baud_s1=new_s0+snapped_interval;
+                        }
+                    }
+                    if(v.eid_baud_drag_band && ImGui::IsMouseReleased(ImGuiMouseButton_Left)){
+                        v.eid_baud_drag_band=false;
                     }
                 }
 
