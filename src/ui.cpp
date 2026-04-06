@@ -5632,8 +5632,6 @@ void run_streaming_viewer(){
                             float frac = (float)i / n_divs;
                             float yy = ea_y0 + frac * ea_h;
                             float amp_val = a_max - frac * a_rng; // top=max
-                            dl->AddLine(ImVec2(ea_x0, yy), ImVec2(ea_x1, yy),
-                                        IM_COL32(40,40,55,255));
                             char lbl[32];
                             if(eid_mode == 2) // Phase: show π fractions
                                 snprintf(lbl, sizeof(lbl), "%.2f", amp_val);
@@ -5673,8 +5671,6 @@ void run_streaming_viewer(){
                             double samp = t_sec * sr;
                             float xx = ea_x0 + (float)((samp - vt0) / vis_samp) * ea_w;
                             if(xx < ea_x0 || xx > ea_x1) continue;
-                            dl->AddLine(ImVec2(xx, ea_y0), ImVec2(xx, ea_y1),
-                                        IM_COL32(40,40,55,255));
                             char lbl[32]; snprintf(lbl, sizeof(lbl), "%.4g%s", tu, unit);
                             ImVec2 tsz = ImGui::CalcTextSize(lbl);
                             dl->AddText(ImVec2(xx - tsz.x * 0.5f, ea_y1 + 4),
@@ -5957,6 +5953,23 @@ void run_streaming_viewer(){
                         if(ImGui::IsKeyPressed(ImGuiKey_2, false)) v.eid_view_mode = 1;
                         if(ImGui::IsKeyPressed(ImGuiKey_3, false)) v.eid_view_mode = 2;
                         if(ImGui::IsKeyPressed(ImGuiKey_4, false)) v.eid_view_mode = 3;
+                        // 좌우 방향키: 현재 화면 폭만큼 팬
+                        if(!io.WantTextInput){
+                            double span = vt1 - vt0;
+                            double total = (double)v.eid_total_samples;
+                            if(ImGui::IsKeyPressed(ImGuiKey_LeftArrow, false)){
+                                double t0 = vt0 - span;
+                                if(t0 < 0) t0 = 0;
+                                v.eid_view_t0 = t0;
+                                v.eid_view_t1 = t0 + span;
+                            }
+                            if(ImGui::IsKeyPressed(ImGuiKey_RightArrow, false)){
+                                double t1 = vt1 + span;
+                                if(t1 > total) t1 = total;
+                                v.eid_view_t0 = t1 - span;
+                                v.eid_view_t1 = t1;
+                            }
+                        }
                         // Delete 키: 마우스 위치의 태그 삭제
                         if(ImGui::IsKeyPressed(ImGuiKey_Delete, false)){
                             double mouse_s = vt0 + ((mp.x - ea_x0) / ea_w) * vis_samp;
@@ -8203,7 +8216,6 @@ void run_streaming_viewer(){
                         float frac = (float)i / n_divs;
                         float yy = ea_y0 + frac * ea_h;
                         float amp_val = a_max - frac * a_rng;
-                        fg->AddLine(ImVec2(ea_x0, yy), ImVec2(ea_x1, yy), IM_COL32(40,40,55,255));
                         char lbl[32];
                         if(imode == 0) snprintf(lbl, sizeof(lbl), "%.3f", amp_val);
                         else if(imode == 2) snprintf(lbl, sizeof(lbl), "%.0f\xc2\xb0", amp_val*(180.f/(float)M_PI));
@@ -8235,7 +8247,6 @@ void run_streaming_viewer(){
                         double ts = tu * ud;
                         float xx = ea_x0 + (float)((ts*sr - vt0) / vis_samp) * ea_w;
                         if(xx < ea_x0 || xx > ea_x1) continue;
-                        fg->AddLine(ImVec2(xx, ea_y0), ImVec2(xx, ea_y1), IM_COL32(40,40,55,255));
                         char lbl[32]; snprintf(lbl, sizeof(lbl), "%.4g%s", tu, unit);
                         ImVec2 tsz = ImGui::CalcTextSize(lbl);
                         fg->AddText(ImVec2(xx - tsz.x*0.5f, ea_y1+4), IM_COL32(130,130,160,255), lbl);
@@ -8615,6 +8626,25 @@ void run_streaming_viewer(){
                 if(mouse_in && ImGui::IsKeyPressed(ImGuiKey_Delete,false)){
                     eid_delete_at(vt0+((mp.x-ea_x0)/ea_w)*vis_samp);
                 }
+                // 좌우 방향키: 현재 화면 폭만큼 팬
+                if(mouse_in && !io.WantTextInput){
+                    double span = vt1 - vt0;
+                    double total = (double)v.eid_total_samples;
+                    if(ImGui::IsKeyPressed(ImGuiKey_LeftArrow, false)){
+                        double t0 = vt0 - span;
+                        if(t0 < 0) t0 = 0;
+                        v.eid_view_t0 = t0;
+                        v.eid_view_t1 = t0 + span;
+                        sync_eid_to_sa();
+                    }
+                    if(ImGui::IsKeyPressed(ImGuiKey_RightArrow, false)){
+                        double t1 = vt1 + span;
+                        if(t1 > total) t1 = total;
+                        v.eid_view_t0 = t1 - span;
+                        v.eid_view_t1 = t1;
+                        sync_eid_to_sa();
+                    }
+                }
                 if(mouse_in && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
                     eid_delete_at(vt0+((mp.x-ea_x0)/ea_w)*vis_samp);
                     v.eid_sel_active=false; // 더블클릭 시 줌 드래그 시작 방지
@@ -8700,11 +8730,10 @@ void run_streaming_viewer(){
                     }
                 }
                 if(ImGui::BeginPopup("##baud_ctx")){
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f,1.f,1.f,1.f));
-                    if(ImGui::Selectable("Make Baseline", false, 0, ImVec2(140.f,0.f))){
+                    ImGui::SetNextItemWidth(160.f);
+                    if(ImGui::MenuItem("  Make Baseline  ")){
                         v.eid_baseline_active = true;
                     }
-                    ImGui::PopStyleColor();
                     ImGui::EndPopup();
                 }
 
