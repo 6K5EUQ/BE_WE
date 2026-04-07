@@ -712,6 +712,7 @@ void run_cli_host(){
 
     // TM IQ
     if(!v.sdr_stream_error.load()){
+        bewe_log_push(0,"[CLI] tm_iq_open: sr=%u\n", v.header.sample_rate);
         v.tm_iq_open();
         if(v.tm_iq_file_ready){
             v.tm_iq_on.store(true);

@@ -2021,12 +2021,17 @@ void run_streaming_viewer(){
                     fflush(fp);
                     fclose(fp);
                     bewe_log_push(2,"[JOIN] IQ write done: %s (%.1fMB written)\n", fn.c_str(), written/1048576.0);
-                    // rec_entries 제거
+                    // rec_entries: finished=true + xfer_total 갱신 (삭제 X → Record탭에 [Done] 표시)
                     {
                         std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
-                        for(auto it = v.rec_entries.begin(); it != v.rec_entries.end(); ++it){
-                            if(it->is_region && it->filename == fn){
-                                v.rec_entries.erase(it); break;
+                        for(auto& e : v.rec_entries){
+                            if(e.is_region && e.filename == fn){
+                                e.finished = true;
+                                e.req_state = FFTViewer::RecEntry::REQ_NONE;
+                                if(e.xfer_total == 0) e.xfer_total = written;
+                                e.xfer_done = written;
+                                e.path = save_path;
+                                break;
                             }
                         }
                     }
