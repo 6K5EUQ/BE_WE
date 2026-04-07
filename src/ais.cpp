@@ -5,6 +5,11 @@
 #include <algorithm>
 #include <vector>
 #include <chrono>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <poll.h>
+#include <fcntl.h>
+#include <signal.h>
 
 static constexpr int AIS_BAUD = 9600;
 
@@ -49,10 +54,186 @@ static void print_frame(const uint8_t* bits, int nbits, int ch_idx){
         for(int i=19;i>=0&&nm[i]==' ';i--) nm[i]=0;
         bewe_log_push(0,"  Type5 MMSI=%u NAME='%s'\n",mm,nm);
     } else bewe_log_push(0,"  Type%u MMSI=%u bits=%d\n",mt,mm,nbits);
-    fflush(stdout);
 }
 
+// ── AIS Python 파이프 관리 ─────────────────────────────────────────────────
+
+void FFTViewer::ais_pipe_start(){
+    if(ais_pipe.alive.load()) return;
+
+    int pipe_to[2], pipe_from[2];
+    if(pipe(pipe_to) != 0 || pipe(pipe_from) != 0){
+        bewe_log_push(0,"[AIS pipe] pipe() failed\n");
+        return;
+    }
+
+    pid_t pid = fork();
+    if(pid < 0){
+        bewe_log_push(0,"[AIS pipe] fork() failed\n");
+        close(pipe_to[0]); close(pipe_to[1]);
+        close(pipe_from[0]); close(pipe_from[1]);
+        return;
+    }
+
+    if(pid == 0){
+        // 자식 프로세스
+        close(pipe_to[1]);    // 쓰기 끝 닫기
+        close(pipe_from[0]);  // 읽기 끝 닫기
+        dup2(pipe_to[0], STDIN_FILENO);
+        dup2(pipe_from[1], STDOUT_FILENO);
+        close(pipe_to[0]);
+        close(pipe_from[1]);
+
+        // Python 실행 경로 결정
+        char script_path[512];
+        // 실행 파일 기준 상대 경로 시도
+        ssize_t len = readlink("/proc/self/exe", script_path, sizeof(script_path)-1);
+        if(len > 0){
+            script_path[len] = '\0';
+            // 실행파일 디렉토리에서 ../decoder/AIS/ais_pipe.py
+            char* last_slash = strrchr(script_path, '/');
+            if(last_slash){
+                // build/ 디렉토리 안에 실행파일이 있으므로 한단계 위로
+                *last_slash = '\0';
+                last_slash = strrchr(script_path, '/');
+                if(last_slash){
+                    snprintf(last_slash, sizeof(script_path)-(last_slash-script_path),
+                             "/decoder/AIS/ais_pipe.py");
+                }
+            }
+        }
+        // fallback: 절대 경로
+        if(access(script_path, R_OK) != 0)
+            snprintf(script_path, sizeof(script_path), "%s/BE_WE/decoder/AIS/ais_pipe.py",
+                     getenv("HOME") ? getenv("HOME") : "/home/dsa");
+
+        execl("/usr/bin/python3", "python3", "-u", script_path, (char*)nullptr);
+        _exit(1);
+    }
+
+    // 부모 프로세스
+    close(pipe_to[0]);    // 읽기 끝 닫기
+    close(pipe_from[1]);  // 쓰기 끝 닫기
+
+    ais_pipe.fd_to_py = pipe_to[1];
+    ais_pipe.fd_from_py = pipe_from[0];
+    ais_pipe.pid = pid;
+
+    // fd_from_py를 non-blocking으로
+    int flags = fcntl(ais_pipe.fd_from_py, F_GETFL);
+    fcntl(ais_pipe.fd_from_py, F_SETFL, flags | O_NONBLOCK);
+
+    ais_pipe.alive.store(true);
+    ais_pipe_reader_stop.store(false);
+    ais_pipe_reader_thr = std::thread(&FFTViewer::ais_pipe_reader_loop, this);
+
+    bewe_log_push(0,"[AIS pipe] started pid=%d\n", pid);
+}
+
+void FFTViewer::ais_pipe_stop(){
+    if(!ais_pipe.alive.load()) return;
+    ais_pipe.alive.store(false);
+
+    // 파이프 닫기 → Python이 EOF로 종료
+    if(ais_pipe.fd_to_py >= 0){ close(ais_pipe.fd_to_py); ais_pipe.fd_to_py = -1; }
+
+    // reader 스레드 종료
+    ais_pipe_reader_stop.store(true);
+    if(ais_pipe_reader_thr.joinable()) ais_pipe_reader_thr.join();
+
+    if(ais_pipe.fd_from_py >= 0){ close(ais_pipe.fd_from_py); ais_pipe.fd_from_py = -1; }
+
+    // 자식 프로세스 대기
+    if(ais_pipe.pid > 0){
+        int st;
+        pid_t ret = waitpid(ais_pipe.pid, &st, WNOHANG);
+        if(ret == 0){
+            // 아직 살아있으면 1초 대기 후 강제 종료
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            ret = waitpid(ais_pipe.pid, &st, WNOHANG);
+            if(ret == 0){
+                kill(ais_pipe.pid, SIGKILL);
+                waitpid(ais_pipe.pid, &st, 0);
+            }
+        }
+        ais_pipe.pid = -1;
+    }
+    bewe_log_push(0,"[AIS pipe] stopped\n");
+}
+
+void FFTViewer::ais_pipe_send_frame(const uint8_t* bits, int nbits, int ch_idx){
+    if(!ais_pipe.alive.load(std::memory_order_relaxed)) return;
+    if(ais_pipe.fd_to_py < 0) return;
+
+    // 비트열을 문자열로 변환
+    char buf[600]; // "FRAME X NNN " + 512 bits + "\n"
+    int off = snprintf(buf, sizeof(buf), "FRAME %d %d ", ch_idx, nbits);
+    for(int i = 0; i < nbits && off < (int)sizeof(buf)-2; i++)
+        buf[off++] = (bits[i] & 1) ? '1' : '0';
+    buf[off++] = '\n';
+
+    std::lock_guard<std::mutex> lk(ais_pipe.write_mtx);
+    ssize_t ret = write(ais_pipe.fd_to_py, buf, off);
+    if(ret < 0){
+        // EPIPE: Python 프로세스 종료됨
+        ais_pipe.alive.store(false);
+    }
+}
+
+void FFTViewer::ais_pipe_reader_loop(){
+    char line_buf[4096];
+    int line_pos = 0;
+    std::string accum;
+
+    while(!ais_pipe_reader_stop.load(std::memory_order_relaxed)){
+        struct pollfd pfd;
+        pfd.fd = ais_pipe.fd_from_py;
+        pfd.events = POLLIN;
+        int pr = poll(&pfd, 1, 100); // 100ms 타임아웃
+
+        if(pr <= 0) continue;
+        if(pfd.revents & (POLLHUP|POLLERR)){
+            // Python 프로세스 종료 감지
+            ais_pipe.alive.store(false);
+            break;
+        }
+        if(!(pfd.revents & POLLIN)) continue;
+
+        char rbuf[2048];
+        ssize_t n = read(ais_pipe.fd_from_py, rbuf, sizeof(rbuf));
+        if(n <= 0){
+            if(n == 0){ ais_pipe.alive.store(false); break; } // EOF
+            continue; // EAGAIN
+        }
+
+        for(ssize_t i = 0; i < n; i++){
+            if(rbuf[i] == '\n'){
+                line_buf[line_pos] = '\0';
+                std::string line(line_buf, line_pos);
+                line_pos = 0;
+
+                if(line == "---END---"){
+                    // 누적된 텍스트를 Q 패널에 전달
+                    if(!accum.empty()){
+                        digi_log_push(0, "%s", accum.c_str());
+                    }
+                    accum.clear();
+                } else {
+                    if(!accum.empty()) accum += '\n';
+                    accum += line;
+                }
+            } else {
+                if(line_pos < (int)sizeof(line_buf)-1)
+                    line_buf[line_pos++] = rbuf[i];
+            }
+        }
+    }
+}
+
+// ── HDLC ─────────────────────────────────────────────────────────────────
+
 struct Hdlc {
+    FFTViewer* viewer = nullptr;  // 파이프 전송용
     uint8_t sreg=0; int ones=0; bool inframe=false,skip=false;
     uint8_t raw[512]={}; int nb=0;
     int flag_cnt=0,fcs_ok=0;
@@ -71,28 +252,20 @@ struct Hdlc {
     }
     void try_decode(int ch_idx){
         int plen=nb-16;
-        if(plen<56){
-            bewe_log_push(0,"[AIS ch%d] HDLC too_short nb=%d plen=%d\n",ch_idx,nb,plen);
-            fflush(stdout); return;
-        }
+        if(plen<56) return;
         int nbytes=(plen+7)/8;
-        if(nbytes>64){
-            bewe_log_push(0,"[AIS ch%d] HDLC too_long nbytes=%d\n",ch_idx,nbytes);
-            fflush(stdout); return;
-        }
+        if(nbytes>64) return;
         uint8_t bytes[64]={};
         for(int i=0;i<nbytes*8&&i<nb;i++) bytes[i/8]|=(raw[i]<<(i%8));
         uint16_t rxfcs=0;
         for(int i=0;i<16;i++) rxfcs|=((uint16_t)raw[plen+i]<<i);
         uint16_t calcfcs=crc_ccitt(bytes,(plen+7)/8);
-        if(calcfcs!=rxfcs){
-            bewe_log_push(0,"[AIS ch%d] HDLC crc_fail nb=%d calc=0x%04X rx=0x%04X\n",ch_idx,nb,calcfcs,rxfcs);
-            fflush(stdout); return;
-        }
+        if(calcfcs!=rxfcs) return;
         fcs_ok++;
         uint8_t bits[512]={};
         for(int i=0;i<plen;i++) bits[(i/8)*8+(7-(i%8))]=raw[i];
         print_frame(bits,plen,ch_idx);
+        if(viewer) viewer->ais_pipe_send_frame(bits,plen,ch_idx);
     }
 };
 
@@ -100,11 +273,13 @@ struct Hdlc {
 void FFTViewer::ais_worker(int ch_idx){
     Channel& ch=channels[ch_idx];
     uint32_t msr=header.sample_rate;
-    float off_hz=(((ch.s+ch.e)/2.0f)-(float)(header.center_frequency/1e6f))*1e6f;
+    uint64_t init_cf = live_cf_hz.load(std::memory_order_acquire);
+    float off_hz=(((ch.s+ch.e)/2.0f)-(float)(init_cf/1e6f))*1e6f;
 
-    // work_sr: AIS_BAUD * sps_target (sps=8)
-    // decimation을 한 단계로 단순화: msr → work_sr
-    uint32_t total_decim = msr / (AIS_BAUD * 8);
+    // sps=16: GMSK BT=0.4 전이폭(~9샘플@8sps)이 심볼 경계를 침범하는 ISI 문제 해결
+    // sps=8이면 전이가 인접 심볼까지 걸쳐 stuffed-zero 오판 → 프레임 abort
+    uint32_t target_work = AIS_BAUD * 16;  // 153600
+    uint32_t total_decim = (msr + target_work/2) / target_work;  // 반올림
     if(total_decim < 1) total_decim = 1;
     uint32_t work_sr = msr / total_decim;
     float sps = (float)work_sr / (float)AIS_BAUD;
@@ -114,17 +289,29 @@ void FFTViewer::ais_worker(int ch_idx){
 
     bewe_log_push(0,"[AIS ch%d] start cf=%.4fMHz off=%.0fHz decim=%u work_sr=%u sps=%.2f\n",
            ch_idx,(ch.s+ch.e)/2.f,off_hz,total_decim,work_sr,sps);
-    fflush(stdout);
 
-    // 믹서: off_hz 만큼 주파수 이동
     Oscillator osc; osc.set_freq((double)off_hz,(double)msr);
-    uint64_t prev_cf = header.center_frequency;
+    uint64_t prev_cf = init_cf;
 
-    // decimation: 단순 누적 평균 (sinc 등가, aliasing 억제)
+    // ── 진단용: decimation 전 raw IQ + decimation 후(LPF전) IQ 둘 다 덤프
+    FILE* dump_raw_fp = nullptr;   // mixer 전 raw IQ (처음 0.01초만)
+    FILE* dump_dec_fp = nullptr;   // decimation 후, LPF 전 IQ (5초)
+    int dump_raw_cnt = 0;
+    int dump_dec_cnt = 0;
+    const int DUMP_RAW_MAX = (int)(msr * 0.01); // 0.01초 raw (614k samples)
+    const int DUMP_DEC_MAX = work_sr * 5;        // 5초 decimated
+    {
+        char p1[256], p2[256];
+        snprintf(p1,sizeof(p1),"/tmp/ais_raw_ch%d.raw",ch_idx);
+        snprintf(p2,sizeof(p2),"/tmp/ais_dec_ch%d.raw",ch_idx);
+        dump_raw_fp = fopen(p1,"wb");
+        dump_dec_fp = fopen(p2,"wb");
+        bewe_log_push(0,"[AIS ch%d] dumping raw IQ (%d samples) + decimated IQ (%d samples)\n",
+            ch_idx, DUMP_RAW_MAX, DUMP_DEC_MAX);
+    }
+
     double cap_i=0,cap_q=0; int cap_cnt=0;
 
-    // work_sr 기준 LPF: ±15kHz (오실레이터 오차 여유 포함)
-    // 2단 IIR1
     IIR1 lpi1,lpq1,lpi2,lpq2;
     { float cn = 15000.f/(float)work_sr;
       if(cn>0.45f) cn=0.45f;
@@ -132,30 +319,57 @@ void FFTViewer::ais_worker(int ch_idx){
       lpi2.set(cn); lpq2.set(cn); }
 
     float prev_i=0,prev_q=0;
-    // disc DC 제거: 시상수 약 5ms (gate 열린 직후 빠르게 수렴)
-    // AIS FSK: +2.4kHz/-2.4kHz 대칭이므로 장기 평균은 0에 가까워야 함
     float disc_dc=0.f;
     const float DC_ALPHA = 1.f / (0.005f * (float)work_sr);
 
-    // AGC: disc 진폭 정규화
+    // post-disc smoothing: GMSK BT=0.4 매칭 필터 근사 (cutoff ~6kHz)
+    IIR1 disc_lpf;
+    { float cn = 6000.f / (float)work_sr; disc_lpf.set(cn); }
+
     float agc_peak=0.1f;
-    const float AGC_ATTACK=0.01f, AGC_DECAY=0.0001f;
+    const float AGC_ATTACK=0.01f, AGC_DECAY=0.002f;
 
-    // 스컬치는 UI 스레드에서 FFT 기반으로 중앙 관리 (sq_gate 읽기만)
-    bool gate_open=false;
+    float sym_phase = 0.f;
 
-    // ── AIS FSK 복조 상태 ──────────────────────────────────────────────────
-    float sym_phase=0.f, mu=0.f, p_sym=0.f;
     uint8_t nrzi_prev[2]={0,0};
     Hdlc hdlc[2];
+    hdlc[0].viewer = this;
+    hdlc[1].viewer = this;
 
-    // 진단
+    // 진단 (10초 간격)
     int diag_cnt=0;
-    const int DIAG_INTERVAL=(int)work_sr*5;
+    const int DIAG_INTERVAL=(int)(work_sr*10);
+    int total_demod_samples=0;
+    int lag_reset_cnt=0;
+    bool gate_open=false;
 
     while(!ch.digi_stop_req.load(std::memory_order_relaxed)){
-        // center frequency 변경 감지 → 오실레이터 재설정
-        { uint64_t cur_cf=header.center_frequency;
+        // Squelch gate 상태 확인
+        bool prev_gate = gate_open;
+        gate_open = ch.sq_gate.load(std::memory_order_relaxed);
+
+        // gate CLOSED→OPEN 전환: 전체 DSP 초기화 + 진단
+        if(!prev_gate && gate_open){
+            // 진단: ring buffer 첫 10 샘플 로그
+            size_t twp=ring_wp.load(std::memory_order_acquire);
+            size_t trp=ch.digi_rp.load(std::memory_order_relaxed);
+            size_t tlag=(twp-trp)&IQ_RING_MASK;
+            bewe_log_push(0,"[AIS ch%d] GATE OPEN: rp=%zu wp=%zu lag=%zu\n",ch_idx,trp,twp,tlag);
+            for(int ii=0;ii<std::min((size_t)5,tlag);ii++){
+                size_t tpos=(trp+ii)&IQ_RING_MASK;
+                bewe_log_push(0,"  ring[%zu]: I=%d Q=%d (%.6f, %.6f)\n",
+                    tpos, ring[tpos*2], ring[tpos*2+1],
+                    ring[tpos*2]/hw.iq_scale, ring[tpos*2+1]/hw.iq_scale);
+            }
+            cap_i=cap_q=0; cap_cnt=0;
+            lpi1.s=lpq1.s=lpi2.s=lpq2.s=0; prev_i=prev_q=0;
+            disc_dc=0.f; agc_peak=0.1f; disc_lpf.s=0.f;
+            sym_phase=0.f;
+            nrzi_prev[0]=nrzi_prev[1]=0;
+            hdlc[0].reset(); hdlc[1].reset();
+        }
+
+        { uint64_t cur_cf=live_cf_hz.load(std::memory_order_acquire);
           if(cur_cf!=prev_cf){
               off_hz=(((ch.s+ch.e)/2.0f)-(float)(cur_cf/1e6))*1e6f;
               osc.set_freq((double)off_hz,(double)msr);
@@ -172,9 +386,10 @@ void FFTViewer::ais_worker(int ch_idx){
             ch.digi_rp.store(rp,std::memory_order_release);
             cap_i=cap_q=0; cap_cnt=0;
             lpi1.s=lpq1.s=lpi2.s=lpq2.s=0; prev_i=prev_q=0;
-            disc_dc=0.f; agc_peak=0.1f;
-            sym_phase=mu=p_sym=0.f;
+            disc_dc=0.f; agc_peak=0.1f; disc_lpf.s=0.f;
+            sym_phase=0.f;
             lag=(wp-rp)&IQ_RING_MASK;
+            lag_reset_cnt++;
         }
         if(lag==0){ std::this_thread::sleep_for(std::chrono::microseconds(50)); continue; }
 
@@ -183,6 +398,17 @@ void FFTViewer::ais_worker(int ch_idx){
             size_t pos=(rp+s)&IQ_RING_MASK;
             float si=ring[pos*2]/hw.iq_scale, sq=ring[pos*2+1]/hw.iq_scale;
 
+            // raw IQ 덤프 (mixer 전)
+            if(dump_raw_fp && dump_raw_cnt < DUMP_RAW_MAX){
+                float iq[2]={si,sq};
+                fwrite(iq,sizeof(float),2,dump_raw_fp);
+                dump_raw_cnt++;
+                if(dump_raw_cnt>=DUMP_RAW_MAX){
+                    fclose(dump_raw_fp); dump_raw_fp=nullptr;
+                    bewe_log_push(0,"[AIS ch%d] raw IQ dump complete\n",ch_idx);
+                }
+            }
+
             float mi,mq; osc.mix(si,sq,mi,mq);
             cap_i+=mi; cap_q+=mq; cap_cnt++;
             if(cap_cnt<(int)total_decim) continue;
@@ -190,29 +416,19 @@ void FFTViewer::ais_worker(int ch_idx){
             float fi=(float)(cap_i/cap_cnt), fq=(float)(cap_q/cap_cnt);
             cap_i=cap_q=0; cap_cnt=0;
 
-            // 2단 LPF (work_sr 기준, ±6kHz)
-            fi=lpi1.p(fi); fq=lpq1.p(fq);
-            fi=lpi2.p(fi); fq=lpq2.p(fq);
-
-            // 스컬치: UI 스레드 FFT 기반 sq_gate 읽기
-            {
-                bool prev_gate=gate_open;
-                gate_open=ch.sq_gate.load(std::memory_order_relaxed);
-                if(!gate_open && prev_gate){
-                    // gate 닫힘 → 디코더 상태 리셋
-                    hdlc[0].reset(); hdlc[1].reset();
-                    sym_phase=0.f; mu=0.f; p_sym=0.f;
-                    nrzi_prev[0]=nrzi_prev[1]=0;
-                    prev_i=0.f; prev_q=0.f;
-                    disc_dc=0.f; agc_peak=0.1f;
-                }
-                if(gate_open && !prev_gate){
-                    disc_dc=0.f; agc_peak=0.1f;
+            // decimated IQ 덤프 (LPF 전)
+            if(dump_dec_fp && dump_dec_cnt < DUMP_DEC_MAX){
+                float iq[2]={fi,fq};
+                fwrite(iq,sizeof(float),2,dump_dec_fp);
+                dump_dec_cnt++;
+                if(dump_dec_cnt>=DUMP_DEC_MAX){
+                    fclose(dump_dec_fp); dump_dec_fp=nullptr;
+                    bewe_log_push(0,"[AIS ch%d] decimated IQ dump complete\n",ch_idx);
                 }
             }
 
-            // ── AIS FSK 복조 (squelch 열릴 때만) ─────────────────────────
-            if(!gate_open) continue;
+            fi=lpi1.p(fi); fq=lpq1.p(fq);
+            fi=lpi2.p(fi); fq=lpq2.p(fq);
 
             // FM discriminator
             float cross=fi*prev_q-fq*prev_i;
@@ -220,51 +436,54 @@ void FFTViewer::ais_worker(int ch_idx){
             float disc=(prev_i!=0.f||prev_q!=0.f)?atan2f(cross,dot+1e-30f):0.f;
             prev_i=fi; prev_q=fq;
 
-            // DC 제거: 잔류 주파수 오프셋 제거
+            // DC 제거
             disc_dc = DC_ALPHA*disc + (1.f-DC_ALPHA)*disc_dc;
             disc -= disc_dc;
 
-            // AGC: disc 진폭 정규화 → 비트 결정 임계 0 고정
+            // post-disc smoothing (GMSK ISI 완화)
+            disc = disc_lpf.p(disc);
+
+            // AGC
             float aabs=fabsf(disc);
             if(aabs>agc_peak) agc_peak=aabs*AGC_ATTACK+(1.f-AGC_ATTACK)*agc_peak;
             else              agc_peak=aabs*AGC_DECAY +(1.f-AGC_DECAY )*agc_peak;
             if(agc_peak<1e-6f) agc_peak=1e-6f;
             disc/=agc_peak;
 
-            // 진단: gate 열린 구간에서 200샘플마다 출력
+            total_demod_samples++;
             diag_cnt++;
-            if(diag_cnt>=200){
-                bewe_log_push(0,"[AIS ch%d] D fi=%.5f disc=%.3f dc=%.3f agc=%.4f sps=%.2f f0=%d ok0=%d\n",
-                       ch_idx,fi,disc,disc_dc,agc_peak,sps,
-                       hdlc[0].flag_cnt,hdlc[0].fcs_ok);
-                fflush(stdout);
+            if(diag_cnt>=DIAG_INTERVAL){
+                bewe_log_push(0,"[AIS ch%d] demod=%dk flags=%d+%d decoded=%d+%d lag_rst=%d agc=%.4f\n",
+                       ch_idx,total_demod_samples/1000,
+                       hdlc[0].flag_cnt,hdlc[1].flag_cnt,
+                       hdlc[0].fcs_ok,hdlc[1].fcs_ok,
+                       lag_reset_cnt,agc_peak);
                 diag_cnt=0;
             }
 
-            // M&M 타이밍
-            sym_phase+=1.f;
-            if(sym_phase>=(sps+mu)){
-                sym_phase-=(sps+mu);
-                float cur=disc;
-                float ec=(cur>0.f?1.f:-1.f)*p_sym-(p_sym>0.f?1.f:-1.f)*cur;
-                mu+=0.005f*ec; if(mu>1.f)mu=1.f; if(mu<-1.f)mu=-1.f;
-                p_sym=cur;
+            // ── 심볼 샘플링 (gate_open일 때만, 고정 간격) ─────────────────────
+            if(gate_open){
+                sym_phase+=1.f;
+                if(sym_phase>=sps){
+                    sym_phase-=sps;
 
-                uint8_t rf=(cur>0.f)?1:0;
-                for(int d=0;d<2;d++){
-                    uint8_t rf_d=(d==0)?rf:(rf^1);
-                    // AIS NRZI: 천이=0(space), 유지=1(mark)
-                    uint8_t nrz=(rf_d==nrzi_prev[d])?1:0;
-                    nrzi_prev[d]=rf_d;
-                    hdlc[d].push(nrz,ch_idx);
+                    // 비트 결정 + NRZI + HDLC
+                    uint8_t rf=(disc>0.f)?1:0;
+                    for(int d=0;d<2;d++){
+                        uint8_t rf_d=(d==0)?rf:(rf^1);
+                        uint8_t nrz=(rf_d==nrzi_prev[d])?1:0;
+                        nrzi_prev[d]=rf_d;
+                        hdlc[d].push(nrz,ch_idx);
+                    }
                 }
             }
         }
         ch.digi_rp.store((rp+avail)&IQ_RING_MASK,std::memory_order_release);
     }
-    bewe_log_push(0,"[AIS ch%d] stopped f0=%d ok0=%d f1=%d ok1=%d\n",
-           ch_idx,hdlc[0].flag_cnt,hdlc[0].fcs_ok,hdlc[1].flag_cnt,hdlc[1].fcs_ok);
-    fflush(stdout);
+    if(dump_raw_fp) fclose(dump_raw_fp);
+    if(dump_dec_fp) fclose(dump_dec_fp);
+    bewe_log_push(0,"[AIS ch%d] stopped flags=%d decoded=%d\n",
+           ch_idx,hdlc[0].flag_cnt+hdlc[1].flag_cnt,hdlc[0].fcs_ok+hdlc[1].fcs_ok);
 }
 
 void FFTViewer::start_digi(int ch_idx, Channel::DigitalMode mode){
@@ -274,9 +493,12 @@ void FFTViewer::start_digi(int ch_idx, Channel::DigitalMode mode){
     ch.digi_rp.store(ring_wp.load());
     ch.digi_stop_req.store(false);
     ch.digi_run.store(true);
-    if(mode==Channel::DIGI_AIS)
+    if(mode==Channel::DIGI_AIS){
+        // Python 파이프 시작 (이미 실행 중이면 무시)
+        ais_pipe_start();
         ch.digi_thr=std::thread(&FFTViewer::ais_worker,this,ch_idx);
-    bewe_log_push(0,"[DIGI ch%d] start mode=%d\n",ch_idx,(int)mode); fflush(stdout);
+    }
+    bewe_log_push(0,"[DIGI ch%d] start mode=%d\n",ch_idx,(int)mode);
 }
 
 void FFTViewer::stop_digi(int ch_idx){
@@ -285,6 +507,18 @@ void FFTViewer::stop_digi(int ch_idx){
     ch.digi_stop_req.store(true);
     if(ch.digi_thr.joinable()) ch.digi_thr.join();
     ch.digi_run.store(false);
+
+    // 마지막 AIS 채널이면 파이프 정지
+    if(ch.digital_mode == Channel::DIGI_AIS){
+        bool any_ais = false;
+        for(int i = 0; i < MAX_CHANNELS; i++){
+            if(i != ch_idx && channels[i].digi_run.load() &&
+               channels[i].digital_mode == Channel::DIGI_AIS){
+                any_ais = true; break;
+            }
+        }
+        if(!any_ais) ais_pipe_stop();
+    }
     ch.digital_mode=Channel::DIGI_NONE;
-    bewe_log_push(0,"[DIGI ch%d] stopped\n",ch_idx); fflush(stdout);
+    bewe_log_push(0,"[DIGI ch%d] stopped\n",ch_idx);
 }

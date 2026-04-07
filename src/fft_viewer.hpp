@@ -28,12 +28,17 @@
 #include <atomic>
 #include <chrono>
 #include <algorithm>
+#include <deque>
 #include <condition_variable>
+#include <sys/types.h>
 
 // ── Global log helper (ui.cpp에서 정의, 모든 .cpp에서 사용 가능) ─────────
 extern void bewe_log(const char* fmt, ...);
 // LOG 오버레이용 글로벌 로그 (col: 0=HOST 1=SERVER 2=JOIN)
 extern void bewe_log_push(int col, const char* fmt, ...);
+
+// ── DIGITAL DECODE 오버레이용 글로벌 로그 (tab: 0=AIS, 1=ADS-B, 2=UAV) ──
+extern void bewe_digi_push(int tab, const char* fmt, ...);
 
 // ── FFTViewer ─────────────────────────────────────────────────────────────
 class FFTViewer {
@@ -156,7 +161,7 @@ public:
     } region;
 
     void region_save();
-    void do_region_save_work();
+    std::string do_region_save_work();
 
     // ── SA (Signal Analyzer) 패널 ─────────────────────────────────────────
     bool              sa_panel_open  = false;
@@ -235,6 +240,32 @@ public:
     std::mutex log_mtx;
     bool log_scroll[3] = {true,true,true};
     void log_push(int col, const char* fmt, ...);
+
+    // ── DIGITAL DECODE 오버레이 (Q키 토글) ─────────────────────────────────
+    bool digi_decode_panel_open = false;
+    struct DigiLogEntry { char msg[1024]; };
+    static constexpr int DIGI_LOG_MAX = 200;
+    std::vector<DigiLogEntry> digi_log_buf[3];  // 0=AIS, 1=ADS-B, 2=UAV
+    std::mutex digi_log_mtx;
+    bool digi_log_scroll[3] = {true,true,true};
+    void digi_log_push(int tab, const char* fmt, ...);
+
+    // ── AIS Python 파이프 ─────────────────────────────────────────────────
+    struct AisPipe {
+        pid_t pid = -1;
+        int   fd_to_py   = -1;   // C++ → Python stdin
+        int   fd_from_py = -1;   // Python stdout → C++
+        std::atomic<bool> alive{false};
+        std::mutex write_mtx;    // 다중 채널 직렬화
+    };
+    AisPipe ais_pipe;
+    std::thread ais_pipe_reader_thr;
+    std::atomic<bool> ais_pipe_reader_stop{false};
+
+    void ais_pipe_start();
+    void ais_pipe_stop();
+    void ais_pipe_send_frame(const uint8_t* bits, int nbits, int ch_idx);
+    void ais_pipe_reader_loop();
 
     // ── EID (Emitter ID / RF Fingerprint) 패널 ─────────────────────────────
     bool              eid_panel_open = false;
@@ -327,7 +358,13 @@ public:
     double  eid_pending_s0 = 0.0, eid_pending_s1 = 0.0;
     std::vector<EidTag> eid_tags;
 
-    // 스펙트로그램 통합 뷰 히스토리 (우클릭 1단계 undo)
+    // Bits 탭 상태
+    int    eid_bits_per_row = 128;   // 한 줄당 비트 수 (8~512)
+    int    eid_bits_offset = 0;      // 수동 비트 오프셋
+    int    eid_bits_view = 0;        // 0=텍스트(Binary+Hex), 1=비주얼 비트맵
+    int    eid_bits_scroll = 0;      // 스크롤 위치 (줄 단위)
+
+    // 스펙트로그램 통합 뷰 히스토리
     struct SaViewEntry { float x0,x1,y0,y1; bool had_bpf; };
     std::vector<SaViewEntry> sa_view_history;
 
@@ -335,6 +372,38 @@ public:
     std::vector<float> eid_orig_ch_i;   // 필터 전 원본 I
     std::vector<float> eid_orig_ch_q;   // 필터 전 원본 Q
     bool eid_bpf_active = false;
+
+    // ── Undo/Redo 시스템 ──────────────────────────────────────────────
+    struct EidUndoEntry {
+        std::vector<float> envelope, ch_i, ch_q, phase, inst_freq;
+        std::vector<float> orig_ch_i, orig_ch_q;
+        std::vector<EidTag> tags;
+        std::vector<std::pair<double,double>> view_stack;
+        std::vector<SaViewEntry> sa_history;
+        int64_t total_samples;
+        double view_t0, view_t1;
+        float sa_vx0, sa_vx1, sa_vy0, sa_vy1;
+        bool bpf_active;
+        bool baud_mode;
+        double baud_s0, baud_s1;
+        int baud_click;
+        bool baseline_active;
+        float baseline_val;
+        int baseline_imode;
+        bool pending_active;
+        double pending_s0, pending_s1;
+        float y_min[4], y_max[4];
+        float amp_min, amp_max;
+        float noise_level;
+    };
+    std::deque<EidUndoEntry> eid_undo_stack;
+    std::deque<EidUndoEntry> eid_redo_stack;
+    static constexpr int EID_UNDO_MAX = 10;
+    EidUndoEntry eid_snapshot() const;
+    void eid_restore(const EidUndoEntry& e);
+    void eid_push_undo();
+    void eid_do_undo();
+    void eid_do_redo();
 
     void eid_start(const std::string& wav_path);
     void eid_cleanup();
@@ -433,6 +502,7 @@ public:
     std::mutex  data_mtx;
     float pending_cf=0; bool freq_req=false, freq_prog=false;
     bool  sc8_mode=false; // SC8_Q7 모드 (122.88 MSPS)
+    std::atomic<uint64_t> live_cf_hz{0};  // 스레드 안전 현재 중심주파수 (Hz)
 
     // ── IQ Ring ───────────────────────────────────────────────────────────
     std::vector<int16_t> ring;

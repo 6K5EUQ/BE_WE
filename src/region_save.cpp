@@ -136,7 +136,7 @@ void FFTViewer::region_save(){
     }).detach();
 }
 
-void FFTViewer::do_region_save_work(){
+std::string FFTViewer::do_region_save_work(){
     uint32_t sr=header.sample_rate;          // 61440000
     int64_t  max_total=tm_iq_total_samples;
 
@@ -172,8 +172,8 @@ void FFTViewer::do_region_save_work(){
     // row_write_pos[fi % MAX_FFTS_MEMORY] = 그 행이 끝나는 IQ 샘플 위치
     // time_t 기반 변환(초단위 오차)을 제거하고 row_write_pos 직접 사용
     if(tm_iq_write_sample <= 0){
-        fprintf(stderr,"region_save: no IQ data (tm not started)\n");
-        return;
+        bewe_log_push(0,"[region_save] FAIL: tm_iq not started (write_sample=0)\n");
+        return "";
     }
 
     // fft_top = 영역 위쪽(더 최근), fft_bot = 아래쪽(더 오래됨)
@@ -210,17 +210,17 @@ void FFTViewer::do_region_save_work(){
     samp_start = std::max(samp_start, valid_start);
     samp_end   = std::min(samp_end,   snap_write);
 
+    bewe_log_push(0,"[region_save] samp_start=%lld samp_end=%lld snap_write=%lld valid_start=%lld\n",
+                   (long long)samp_start,(long long)samp_end,
+                   (long long)snap_write,(long long)valid_start);
     if(samp_end <= samp_start){
-        fprintf(stderr,"region_save: no valid IQ data in range"
-                       " (samp_start=%lld samp_end=%lld snap_write=%lld valid_start=%lld)\n",
-                       (long long)samp_start,(long long)samp_end,
-                       (long long)snap_write,(long long)valid_start);
-        return;
+        bewe_log_push(0,"[region_save] FAIL: no valid IQ data in range\n");
+        return "";
     }
 
     int64_t n_in = samp_end - samp_start;
     int64_t n_out = n_in / decim;
-    if(n_out < 1){ return; }
+    if(n_out < 1){ return ""; }
 
     // ── 출력 파일 열기 ─────────────────────────────────────────────────────
     char outpath[512];
@@ -229,8 +229,8 @@ void FFTViewer::do_region_save_work(){
                   region.time_start, region.time_end);
     FILE* wf = fopen(outpath, "wb");
     if(!wf){
-        fprintf(stderr,"region_save: fopen failed: %s\n", outpath);
-        return;
+        bewe_log_push(0,"[region_save] FAIL: fopen failed: %s\n", outpath);
+        return "";
     }
     // WAV 헤더 작성 (bewe 청크 포함: 중심주파수, 시작시각)
     uint64_t cf_hz_meta = (uint64_t)(cf_abs_mhz * 1e6 + 0.5);
@@ -377,4 +377,5 @@ void FFTViewer::do_region_save_work(){
     } else {
         region.active = false;
     }
+    return outpath;
 }

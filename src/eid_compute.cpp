@@ -450,4 +450,103 @@ void FFTViewer::eid_cleanup(){
     eid_view_stack.clear();
     sa_view_history.clear();
     eid_baud_mode=false; eid_baud_s0=-1; eid_baud_s1=-1; eid_baud_click=0; eid_baud_drag=-1;
+    eid_undo_stack.clear();
+    eid_redo_stack.clear();
+}
+
+// ── Undo/Redo 시스템 ──────────────────────────────────────────────────────
+FFTViewer::EidUndoEntry FFTViewer::eid_snapshot() const {
+    EidUndoEntry e;
+    e.envelope   = eid_envelope;
+    e.ch_i       = eid_ch_i;
+    e.ch_q       = eid_ch_q;
+    e.phase      = eid_phase;
+    e.inst_freq  = eid_inst_freq;
+    e.orig_ch_i  = eid_orig_ch_i;
+    e.orig_ch_q  = eid_orig_ch_q;
+    e.tags       = eid_tags;
+    e.view_stack = eid_view_stack;
+    e.sa_history = sa_view_history;
+    e.total_samples = eid_total_samples;
+    e.view_t0 = eid_view_t0;  e.view_t1 = eid_view_t1;
+    e.sa_vx0 = sa_view_x0;  e.sa_vx1 = sa_view_x1;
+    e.sa_vy0 = sa_view_y0;  e.sa_vy1 = sa_view_y1;
+    e.bpf_active = eid_bpf_active;
+    e.baud_mode = eid_baud_mode;
+    e.baud_s0 = eid_baud_s0;  e.baud_s1 = eid_baud_s1;
+    e.baud_click = eid_baud_click;
+    e.baseline_active = eid_baseline_active;
+    e.baseline_val = eid_baseline_val;
+    e.baseline_imode = eid_baseline_imode;
+    e.pending_active = eid_pending_active;
+    e.pending_s0 = eid_pending_s0;  e.pending_s1 = eid_pending_s1;
+    memcpy(e.y_min, eid_y_min, sizeof(e.y_min));
+    memcpy(e.y_max, eid_y_max, sizeof(e.y_max));
+    e.amp_min = eid_amp_min;  e.amp_max = eid_amp_max;
+    e.noise_level = eid_noise_level;
+    return e;
+}
+
+void FFTViewer::eid_restore(const EidUndoEntry& e){
+    bool data_changed = (e.total_samples != eid_total_samples ||
+                         e.ch_i.size() != eid_ch_i.size() ||
+                         e.bpf_active != eid_bpf_active);
+    {
+        std::lock_guard<std::mutex> lk(eid_data_mtx);
+        eid_envelope  = e.envelope;
+        eid_ch_i      = e.ch_i;
+        eid_ch_q      = e.ch_q;
+        eid_phase     = e.phase;
+        eid_inst_freq = e.inst_freq;
+        eid_total_samples = e.total_samples;
+    }
+    eid_orig_ch_i = e.orig_ch_i;
+    eid_orig_ch_q = e.orig_ch_q;
+    eid_tags      = e.tags;
+    eid_view_stack = e.view_stack;
+    sa_view_history = e.sa_history;
+    eid_view_t0 = e.view_t0;  eid_view_t1 = e.view_t1;
+    sa_view_x0 = e.sa_vx0;  sa_view_x1 = e.sa_vx1;
+    sa_view_y0 = e.sa_vy0;  sa_view_y1 = e.sa_vy1;
+    eid_bpf_active = e.bpf_active;
+    eid_baud_mode = e.baud_mode;
+    eid_baud_s0 = e.baud_s0;  eid_baud_s1 = e.baud_s1;
+    eid_baud_click = e.baud_click;
+    eid_baseline_active = e.baseline_active;
+    eid_baseline_val = e.baseline_val;
+    eid_baseline_imode = e.baseline_imode;
+    eid_pending_active = e.pending_active;
+    eid_pending_s0 = e.pending_s0;  eid_pending_s1 = e.pending_s1;
+    memcpy(eid_y_min, e.y_min, sizeof(eid_y_min));
+    memcpy(eid_y_max, e.y_max, sizeof(eid_y_max));
+    eid_amp_min = e.amp_min;  eid_amp_max = e.amp_max;
+    eid_noise_level = e.noise_level;
+    if(data_changed) sa_recompute_from_iq();
+}
+
+void FFTViewer::eid_push_undo(){
+    eid_undo_stack.push_back(eid_snapshot());
+    if((int)eid_undo_stack.size() > EID_UNDO_MAX)
+        eid_undo_stack.pop_front();
+    eid_redo_stack.clear();
+}
+
+void FFTViewer::eid_do_undo(){
+    if(eid_undo_stack.empty()) return;
+    eid_redo_stack.push_back(eid_snapshot());
+    if((int)eid_redo_stack.size() > EID_UNDO_MAX)
+        eid_redo_stack.pop_front();
+    EidUndoEntry e = std::move(eid_undo_stack.back());
+    eid_undo_stack.pop_back();
+    eid_restore(e);
+}
+
+void FFTViewer::eid_do_redo(){
+    if(eid_redo_stack.empty()) return;
+    eid_undo_stack.push_back(eid_snapshot());
+    if((int)eid_undo_stack.size() > EID_UNDO_MAX)
+        eid_undo_stack.pop_front();
+    EidUndoEntry e = std::move(eid_redo_stack.back());
+    eid_redo_stack.pop_back();
+    eid_restore(e);
 }

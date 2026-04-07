@@ -42,6 +42,31 @@ void bewe_log_push(int col, const char* fmt, ...){
     else fputs(buf, stdout);
 }
 
+// FFTViewer::digi_log_push - DIGITAL DECODE overlay buffer
+void FFTViewer::digi_log_push(int tab, const char* fmt, ...){
+    if(tab < 0 || tab > 2) tab = 0;
+    char raw[960];
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(raw, sizeof(raw), fmt, ap);
+    va_end(ap);
+    size_t len = strlen(raw);
+    while(len > 0 && (raw[len-1]=='\n'||raw[len-1]=='\r')) raw[--len]='\0';
+    std::lock_guard<std::mutex> lk(digi_log_mtx);
+    DigiLogEntry e{}; strncpy(e.msg, raw, 1023);
+    if(digi_log_buf[tab].size() >= (size_t)DIGI_LOG_MAX)
+        digi_log_buf[tab].erase(digi_log_buf[tab].begin());
+    digi_log_buf[tab].push_back(e);
+    digi_log_scroll[tab] = true;
+}
+
+void bewe_digi_push(int tab, const char* fmt, ...){
+    char buf[1024];
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if(g_log_viewer) g_log_viewer->digi_log_push(tab, "%s", buf);
+}
+
 // ── Jet colormap LUT (COLORMAP_LUT_SIZE entry, 한 번만 계산) ────────────
 static uint32_t g_jet_lut[COLORMAP_LUT_SIZE];
 static bool g_jet_init=false;

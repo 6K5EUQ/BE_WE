@@ -18,7 +18,8 @@ void FFTViewer::dem_worker(int ch_idx){
     std::vector<float> net_audio_buf;
     net_audio_buf.reserve(NET_AUDIO_BATCH);
     uint32_t msr=header.sample_rate;
-    float off_hz=(((ch.s+ch.e)/2.0f)-(float)(header.center_frequency/1e6f))*1e6f;
+    uint64_t init_cf = live_cf_hz.load(std::memory_order_acquire);
+    float off_hz=(((ch.s+ch.e)/2.0f)-(float)(init_cf/1e6f))*1e6f;
     float bw_hz=fabsf(ch.e-ch.s)*1e6f;
 
     uint32_t inter_sr,audio_decim,cap_decim;
@@ -45,7 +46,7 @@ void FFTViewer::dem_worker(int ch_idx){
 
     // ── DSP state ─────────────────────────────────────────────────────────
     Oscillator osc; osc.set_freq((double)off_hz,(double)msr);
-    uint64_t prev_cf = header.center_frequency;
+    uint64_t prev_cf = init_cf;
     double cap_i=0,cap_q=0; int cap_cnt=0;
     IIR1 lpi,lpq;
     { float cn=(bw_hz*0.5f)/(float)actual_inter; if(cn>0.45f)cn=0.45f; lpi.set(cn); lpq.set(cn); }
@@ -70,7 +71,7 @@ void FFTViewer::dem_worker(int ch_idx){
 
     while(!ch.dem_stop_req.load(std::memory_order_relaxed) && !sdr_stream_error.load()){
         // center frequency 변경 감지 → 오실레이터 재설정
-        { uint64_t cur_cf=header.center_frequency;
+        { uint64_t cur_cf=live_cf_hz.load(std::memory_order_acquire);
           if(cur_cf!=prev_cf){
               off_hz=(((ch.s+ch.e)/2.0f)-(float)(cur_cf/1e6))*1e6f;
               osc.set_freq((double)off_hz,(double)msr);
