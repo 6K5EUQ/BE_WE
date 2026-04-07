@@ -482,8 +482,9 @@ void run_cli_host(){
                     auto bewe = make_packet(PacketType::IQ_CHUNK, &ch, sizeof(ch));
                     srv->cb.on_relay_broadcast(bewe.data(), bewe.size(), true);
                 }
+                auto* central_ptr = &central_cli;
                 std::thread([&v, fname, path, fsz, srv, req_id,
-                             fn2 = std::string(fn_only2)](){
+                             fn2 = std::string(fn_only2), central_ptr](){
                     FILE* fp = fopen(path.c_str(), "rb");
                     if(!fp) return;
                     const size_t CHUNK = 64 * 1024;
@@ -500,6 +501,9 @@ void run_cli_host(){
                         if(srv->cb.on_relay_broadcast)
                             srv->cb.on_relay_broadcast(bewe.data(), bewe.size(), true);
                         sent += n;
+                        // pacing: 큐가 2MB 넘으면 sender가 따라잡을 때까지 대기
+                        while(central_ptr->queue_bytes() > 2*1024*1024)
+                            std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     }
                     fclose(fp);
                     {

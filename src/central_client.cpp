@@ -188,18 +188,26 @@ void CentralClient::enqueue_central(const void* hdr, size_t hdr_len,
     if(!central_sender_running_.load()) return;
     size_t total = hdr_len + data_len;
     std::lock_guard<std::mutex> lk(central_queue_mtx_);
-    // 큐 오버플로: 오래된 항목 드롭 (FFT 프레임은 스트리밍이라 일부 유실 허용)
-    // no_drop=true (IQ_CHUNK 등)는 드롭 없이 항상 추가
+    // 큐 오버플로: 드롭 가능한(no_drop=false) 항목만 제거
     if(!no_drop){
         while(central_queue_bytes_ + total > CENTRAL_QUEUE_MAX_BYTES && !central_send_queue_.empty()){
-            central_queue_bytes_ -= central_send_queue_.front().size();
-            central_send_queue_.pop_front();
+            // no_drop 패킷은 건너뛰고 드롭 가능한 패킷만 제거
+            bool dropped = false;
+            for(auto it = central_send_queue_.begin(); it != central_send_queue_.end(); ++it){
+                if(!it->no_drop){
+                    central_queue_bytes_ -= it->data.size();
+                    central_send_queue_.erase(it);
+                    dropped = true;
+                    break;
+                }
+            }
+            if(!dropped) break; // 드롭 가능한 패킷 없으면 중단
         }
     }
     std::vector<uint8_t> pkt(total);
     if(hdr_len && hdr)   memcpy(pkt.data(),           hdr,  hdr_len);
     if(data_len && data) memcpy(pkt.data() + hdr_len, data, data_len);
-    central_send_queue_.push_back(std::move(pkt));
+    central_send_queue_.push_back({std::move(pkt), no_drop});
     central_queue_bytes_ += total;
     central_queue_cv_.notify_one();
 }
@@ -214,11 +222,11 @@ void CentralClient::central_sender_loop(int central_fd){
             central_queue_cv_.wait_for(lk, std::chrono::milliseconds(200),
                 [this]{ return !central_send_queue_.empty() || !central_sender_running_.load(); });
             if(central_send_queue_.empty()) continue;
-            // 한 번에 최대 8개 꺼내기 (burst 완화)
+            // 한 번에 최대 64개 꺼내기
             int n = 0;
-            while(!central_send_queue_.empty() && n++ < 8){
-                central_queue_bytes_ -= central_send_queue_.front().size();
-                batch.push_back(std::move(central_send_queue_.front()));
+            while(!central_send_queue_.empty() && n++ < 64){
+                central_queue_bytes_ -= central_send_queue_.front().data.size();
+                batch.push_back(std::move(central_send_queue_.front().data));
                 central_send_queue_.pop_front();
             }
         }
@@ -356,10 +364,17 @@ void CentralClient::mux_loop(int central_fd,
                 while(jp->local_fd >= 0 && mux_running_.load()){
                     ssize_t n = recv(jp->remote_fd, tbuf.data(), tbuf.size(), 0);
                     if(n <= 0) break;
+                    // BEWE 제어 패킷은 큐 오버플로 시에도 드롭 불가
+                    bool no_drop = false;
+                    if(n >= 5){
+                        uint8_t btype = tbuf[4];
+                        if(btype == 0x02 || btype == 0x06 || btype == 0x0F)
+                            no_drop = true;  // AUTH_ACK, CMD_ACK, REGION_RESPONSE
+                    }
                     CentralMuxHdr mh{}; mh.conn_id=cid;
                     mh.type = static_cast<uint8_t>(CentralMuxType::DATA);
                     mh.len  = (uint32_t)n;
-                    enqueue_central(&mh, CENTRAL_MUX_HDR_SIZE, tbuf.data(), n);
+                    enqueue_central(&mh, CENTRAL_MUX_HDR_SIZE, tbuf.data(), n, no_drop);
                 }
                 bewe_log_push(1,"[CentralClient] pump exit conn_id=%u\n", cid);
             });

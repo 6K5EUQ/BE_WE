@@ -363,6 +363,7 @@ public:
     int    eid_bits_offset = 0;      // 수동 비트 오프셋
     int    eid_bits_view = 0;        // 0=텍스트(Binary+Hex), 1=비주얼 비트맵
     int    eid_bits_scroll = 0;      // 스크롤 위치 (줄 단위)
+    int    eid_decode_mode = 0;      // 0=none, 1=AIS, 2=ADS-B, 3=UAV
 
     // 스펙트로그램 통합 뷰 히스토리
     struct SaViewEntry { float x0,x1,y0,y1; bool had_bpf; };

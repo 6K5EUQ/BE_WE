@@ -62,6 +62,7 @@ public:
                            std::function<void()> on_disconnect = nullptr);
     void stop_mux_adapter();
     bool is_central_connected() const { return mux_running_.load(); }
+    size_t queue_bytes() const { return central_queue_bytes_; }
 
     // HOST→중앙서버 broadcast (conn_id=0xFFFF, 1회 전송 → 중앙서버가 N명에게 fan-out)
     // N× 대역폭 문제 해결: 기존 per-JOIN socketpair 경유 방식 대체
@@ -119,7 +120,8 @@ private:
     std::atomic<bool>        central_sender_running_{false};
     std::mutex               central_queue_mtx_;
     std::condition_variable  central_queue_cv_;
-    std::deque<std::vector<uint8_t>> central_send_queue_;
+    struct QueueEntry { std::vector<uint8_t> data; bool no_drop; };
+    std::deque<QueueEntry> central_send_queue_;
     size_t                   central_queue_bytes_ = 0;
     static constexpr size_t  CENTRAL_QUEUE_MAX_BYTES = 4 * 1024 * 1024; // 4MB (~1초)
 
