@@ -454,20 +454,14 @@ void run_cli_host(){
                 prog.done=0; prog.total=0; prog.phase=0;
                 srv->broadcast_iq_progress(prog);
             }
-            v.do_region_save_work();
+            bewe_log_push(0,"[CLI] region_save: tm_on=%d tm_write=%lld fft=%d~%d t=%d~%d\n",
+                (int)v.tm_iq_on.load(), (long long)v.tm_iq_write_sample,
+                ft, fb, time_start, time_end);
+            std::string path = v.do_region_save_work();
             v.rec_state = FFTViewer::REC_SUCCESS;
             v.rec_success_timer = 3.0f;
             v.rec_busy_flag.store(false);
-            std::string path;
-            {
-                std::lock_guard<std::mutex> lk2(v.rec_entries_mtx);
-                for(auto it=v.rec_entries.rbegin();it!=v.rec_entries.rend();++it)
-                    if(!it->is_audio&&it->req_state==FFTViewer::RecEntry::REQ_NONE&&it->finished){
-                        path=it->path;
-                        v.rec_entries.erase(std::next(it).base());
-                        break;
-                    }
-            }
+            bewe_log_push(0,"[CLI] region_save done: path='%s'\n", path.c_str());
             if(path.empty()){
                 if(srv) srv->send_region_response((int)oidx, false);
                 return;
@@ -524,6 +518,9 @@ void run_cli_host(){
                         prog.done = sent; prog.total = fsz; prog.phase = 2;
                         srv->broadcast_iq_progress(prog);
                     }
+                    // 전송 완료 후 HOST 파일 삭제
+                    if(remove(path.c_str()) == 0)
+                        bewe_log_push(0,"[CLI] region IQ transferred and deleted: %s\n", path.c_str());
                 }).detach();
             } else {
                 // Direct TCP send
@@ -718,6 +715,7 @@ void run_cli_host(){
 
     // TM IQ
     if(!v.sdr_stream_error.load()){
+        bewe_log_push(0,"[CLI] tm_iq_open: sr=%u\n", v.header.sample_rate);
         v.tm_iq_open();
         if(v.tm_iq_file_ready){
             v.tm_iq_on.store(true);

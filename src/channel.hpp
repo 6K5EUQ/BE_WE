@@ -197,6 +197,10 @@ struct Channel {
     uint32_t iq_sqr_tail_remain = 0;
 
     uint64_t iq_rec_cf_hz = 0;   // center freq for bewe chunk
+
+    // ── HOST→JOIN 동기화 녹음 시간 (CH_SYNC 경유) ────────────────────────
+    uint32_t synced_iq_rec_secs    = 0;
+    uint32_t synced_audio_rec_secs = 0;
     int64_t  iq_rec_start_time = 0;
 
     // WAV 헤더 + bewe 메타데이터 청크 (총 72바이트)

@@ -188,6 +188,12 @@ struct __attribute__((packed)) ChSyncEntry {
     uint8_t  sq_gate;      // squelch gate open (1=open)
     uint8_t  _pad2[3];
     char     owner_name[32]; // channel creator ID
+    // ── 녹음 상태 (HOST → JOIN 동기화) ──
+    uint32_t iq_rec_secs;     // IQ 녹음 경과 시간 (초)
+    uint32_t audio_rec_secs;  // 오디오 녹음 경과 시간 (초)
+    uint8_t  iq_rec_on;       // IQ 녹음 활성 (0/1)
+    uint8_t  audio_rec_on;    // 오디오 녹음 활성 (0/1)
+    uint8_t  _pad3[2];
 };
 
 struct __attribute__((packed)) PktChannelSync {

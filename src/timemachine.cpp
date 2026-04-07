@@ -36,12 +36,7 @@ void FFTViewer::tm_iq_open(){
     const char* TM_IQ_DIR=tm_dir.c_str();
     if(stat(TM_IQ_DIR,&st)!=0) mkdir(TM_IQ_DIR,0755);
     uint32_t sr=header.sample_rate;
-    if(sr==0){ bewe_log_push(0,"TM: sample_rate=0, skipping\n"); return; }
-    if(sr < 10000000 || sr > 120000000){
-        bewe_log_push(0,"TM: sample_rate=%u out of range (need 10~120MHz), skipping\n", sr);
-        return;
-    }
-    bewe_log_push(0,"TM: opening at sr=%u (%.2f MHz)\n", sr, sr/1e6);
+    if(sr==0){ fprintf(stderr,"TM: sample_rate 0\n"); return; }
     tm_iq_total_samples=(int64_t)sr*(int64_t)TM_IQ_SECS;
     snprintf(s_iq_path,sizeof(s_iq_path),"%s/iq_rolling_%uMSPS.wav",TM_IQ_DIR,sr/1000000);
     // 기존 파일 항상 삭제 후 새로 생성
