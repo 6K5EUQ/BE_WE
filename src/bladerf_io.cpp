@@ -97,7 +97,6 @@ bool FFTViewer::initialize_bladerf(float cf_mhz, float sr_msps){
     fft_input_size = fft_size / FFT_PAD_FACTOR;  // fft_size is already padded in member init
     header.version=1; header.fft_size=fft_size; header.sample_rate=actual;
     header.center_frequency=(uint64_t)(cf_mhz*1e6);
-    live_cf_hz.store((uint64_t)(cf_mhz*1e6), std::memory_order_release);
     time_average=hw.compute_time_average(fft_input_size);
     header.time_average=time_average; header.power_min=-100; header.power_max=0; header.num_ffts=0;
     fft_data.resize(MAX_FFTS_MEMORY*fft_size);
@@ -261,7 +260,6 @@ void FFTViewer::capture_and_process(){
             if(!s){
                 {std::lock_guard<std::mutex> lk(data_mtx);
                  header.center_frequency=(uint64_t)(pending_cf*1e6);}
-                live_cf_hz.store((uint64_t)(pending_cf*1e6), std::memory_order_release);
                 bewe_log("Freq > %.2f MHz\n",pending_cf);
                 autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
                 warmup_cnt=0;
