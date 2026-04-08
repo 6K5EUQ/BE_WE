@@ -34,6 +34,7 @@ if(BEWE_HEADLESS)
         src/rtlsdr_io.cpp
         src/hw_detect.cpp
         src/ais.cpp
+        src/digi_demod.cpp
         src/login.cpp
         src/net_server.cpp
         src/net_client.cpp
@@ -101,6 +102,7 @@ else()
         src/rtlsdr_io.cpp
         src/hw_detect.cpp
         src/ais.cpp
+        src/digi_demod.cpp
         src/login.cpp
         src/net_server.cpp
         src/net_client.cpp
