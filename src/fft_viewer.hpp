@@ -361,8 +361,10 @@ public:
     // Bits 탭 상태
     int    eid_bits_per_row = 128;   // 한 줄당 비트 수 (8~512)
     int    eid_bits_offset = 0;      // 수동 비트 오프셋
-    int    eid_bits_view = 0;        // 0=텍스트(Binary+Hex), 1=비주얼 비트맵
+    int    eid_bits_view = 0;        // 0=BIN(이진수), 1=HEX(16진수), 2=BITMAP(픽셀)
     int    eid_bits_scroll = 0;      // 스크롤 위치 (줄 단위)
+    float  eid_bits_zoom = 1.0f;    // 줌 배율 (1.0 = 기본, Ctrl+휠로 조절)
+    float  eid_bits_hscroll = 0.0f; // 수평 스크롤 (픽셀 단위)
     int    eid_decode_mode = 0;      // 0=none, 1=AIS, 2=ADS-B, 3=UAV
 
     // 스펙트로그램 통합 뷰 히스토리

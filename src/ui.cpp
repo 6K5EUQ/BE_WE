@@ -8899,18 +8899,7 @@ void run_streaming_viewer(){
                             float cby = ctrl_bar_y + 3.f;
                             float cbx = ea_x0 + 8.f;
 
-                            // [View: Text / Visual] 토글
-                            {
-                                const char* vlbl = v.eid_bits_view==0 ? "Text" : "Visual";
-                                char vbuf[32]; snprintf(vbuf,sizeof(vbuf),"View: %s", vlbl);
-                                ImVec2 vsz = ImGui::CalcTextSize(vbuf);
-                                bool vhov = io.MousePos.x>=cbx && io.MousePos.x<=cbx+vsz.x &&
-                                            io.MousePos.y>=cby && io.MousePos.y<=cby+font_h;
-                                fg->AddText(ImVec2(cbx,cby), vhov?IM_COL32(255,255,255,255):IM_COL32(140,180,220,255), vbuf);
-                                if(vhov && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-                                    v.eid_bits_view = v.eid_bits_view==0 ? 1 : 0;
-                                cbx += vsz.x + 16.f;
-                            }
+                            // (View 토글 제거 - BIN/HEX/BITMAP 버튼으로 대체)
                             // [Bits/Row: N] - 클릭으로 순환
                             {
                                 char rlbl[32]; snprintf(rlbl,sizeof(rlbl),"Bits/Row: %d", BPR);
@@ -8999,8 +8988,8 @@ void run_streaming_viewer(){
                             if(disp_bits < 0) disp_bits = 0;
                             int total_rows = (disp_bits + BPR - 1) / BPR;
 
-                            if(v.eid_bits_view == 0){
-                                // ══════ 텍스트 뷰 (Binary + Hex) ══════
+                            if(v.eid_bits_view == 0 || v.eid_bits_view == 1){
+                                // ══════ 텍스트 뷰 (BIN 또는 HEX) ══════
                                 ImFont* bfnt = g_bits_font ? g_bits_font : ImGui::GetFont();
                                 float bfh = bfnt->LegacySize;
                                 float line_h = bfh + 4.f;
@@ -9010,14 +8999,23 @@ void run_streaming_viewer(){
                                 int GROUPS = BPR / 8;
                                 if(GROUPS < 1) GROUPS = 1;
                                 float content_w=ea_w-16.f;
-                                float sep2=16.f;
-                                content_w-=sep2;
-                                float binary_w=content_w*0.75f;
-                                float hex_w_total=content_w*0.25f;
-                                float grp_gap=b_ch_w*0.75f;
-                                float bit_cw=(binary_w-(GROUPS-1)*grp_gap)/(float)BPR;
-                                float hex_byte_w=hex_w_total/(float)GROUPS;
-                                float hex_start=cx+binary_w+sep2;
+                                float zoom = v.eid_bits_zoom;
+                                float bit_cw, hex_byte_w, grp_gap;
+                                if(v.eid_bits_view == 0){
+                                    // BIN: 고정 간격 * 줌
+                                    bit_cw = b_ch_w * zoom;
+                                    grp_gap = b_ch_w * 0.5f * zoom;
+                                    hex_byte_w = 0;
+                                } else {
+                                    // HEX: 고정 간격 * 줌
+                                    grp_gap = 0;
+                                    hex_byte_w = b_ch_w * 3.0f * zoom;
+                                    bit_cw = 0;
+                                }
+                                // 전체 행 폭 계산 (스크롤 범위용)
+                                float total_row_w = (v.eid_bits_view == 0)
+                                    ? BPR * bit_cw + (GROUPS-1) * grp_gap
+                                    : GROUPS * hex_byte_w;
 
                                 // 헤더: [AIS] [ADS-B] [UAV] 디코더 버튼
                                 float cy = data_y0 + 2.f;
@@ -9035,6 +9033,26 @@ void run_streaming_viewer(){
                                         if(dhov && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                                             v.eid_decode_mode = dsel ? 0 : (di+1);
                                         bx_btn += dsz.x + 24.f;
+                                    }
+                                    // BIN / HEX / BITMAP (우측 정렬)
+                                    {
+                                        const char* fmt_btns[] = {"BIN","HEX","BITMAP"};
+                                        float rx = ea_x1 - 8.f;
+                                        for(int fi2=2;fi2>=0;fi2--){
+                                            ImVec2 fsz2 = bfnt->CalcTextSizeA(bfh, FLT_MAX, -1.f, fmt_btns[fi2]);
+                                            float bx2 = rx - fsz2.x;
+                                            bool fsel = (v.eid_bits_view == fi2 && v.eid_decode_mode == 0);
+                                            bool fhov = io.MousePos.x>=bx2 && io.MousePos.x<=bx2+fsz2.x &&
+                                                        io.MousePos.y>=cy && io.MousePos.y<=cy+bfh;
+                                            ImU32 fcol = fsel ? IM_COL32(80,255,140,255) :
+                                                         fhov ? IM_COL32(255,255,255,255) : IM_COL32(140,180,220,255);
+                                            fg->AddText(bfnt,bfh,ImVec2(bx2,cy),fcol,fmt_btns[fi2]);
+                                            if(fhov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                                                v.eid_bits_view = fi2;
+                                                v.eid_decode_mode = 0;
+                                            }
+                                            rx = bx2 - 20.f;
+                                        }
                                     }
                                 }
                                 cy+=line_h;
@@ -9066,18 +9084,13 @@ void run_streaming_viewer(){
                                     fg->PopClipRect();
                                 } else {
                                     // ══════ 기본 Binary+Hex 뷰 ══════
-                                    // 스크롤 처리
                                     int vis_rows = (int)((ea_y1 - cy) / line_h);
                                     if(vis_rows < 1) vis_rows = 1;
                                     int max_scroll = std::max(0, total_rows - vis_rows);
-                                    if(mouse_in_bits && io.MouseWheel != 0){
-                                        v.eid_bits_scroll -= (int)(io.MouseWheel * 3);
-                                    }
-                                    v.eid_bits_scroll = std::max(0, std::min(v.eid_bits_scroll, max_scroll));
 
                                     // 스크롤바
                                     if(total_rows > vis_rows){
-                                        float sb_x = ea_x1 - 6.f;
+                                        float sb_x = ea_x1 + 2.f;
                                         float sb_h = ea_y1 - cy;
                                         float thumb_h = std::max(20.f, sb_h * (float)vis_rows / (float)total_rows);
                                         float thumb_y = cy + (sb_h - thumb_h) * (float)v.eid_bits_scroll / (float)max_scroll;
@@ -9086,39 +9099,166 @@ void run_streaming_viewer(){
                                                           IM_COL32(80,80,120,255),2.f);
                                     }
 
+                                    // Ctrl+휠: 줌 / 일반 휠: 수직 스크롤
+                                    if(mouse_in_bits && io.MouseWheel != 0){
+                                        if(io.KeyCtrl){
+                                            float zf = (io.MouseWheel > 0) ? 1.15f : 0.87f;
+                                            v.eid_bits_zoom = std::max(0.2f, std::min(5.0f, v.eid_bits_zoom * zf));
+                                        } else {
+                                            v.eid_bits_scroll -= (int)(io.MouseWheel * 3);
+                                        }
+                                    }
+                                    v.eid_bits_scroll = std::max(0, std::min(v.eid_bits_scroll, max_scroll));
+
+                                    // 수평 스크롤 범위
+                                    float max_hscroll = std::max(0.f, total_row_w - content_w);
+                                    v.eid_bits_hscroll = std::max(0.f, std::min(v.eid_bits_hscroll, max_hscroll));
+                                    float draw_ox = cx - v.eid_bits_hscroll;
+
                                     // 데이터 렌더링
                                     fg->PushClipRect(ImVec2(ea_x0,cy),ImVec2(ea_x1,ea_y1),true);
                                     for(int row=v.eid_bits_scroll; row<total_rows && cy<ea_y1-line_h; row++){
                                         int bi = bit_off + row * BPR;
-                                        float bx2=cx;
-                                        float hex_x=hex_start;
-                                        for(int gi=0;gi<BPR&&bi+gi<n_bits;gi+=8){
-                                            uint8_t byte_val=0;
-                                            int valid=0;
-                                            for(int k=0;k<8&&bi+gi+k<n_bits;k++){
-                                                byte_val=(byte_val<<1)|bits[bi+gi+k];
-                                                valid++;
+                                        if(v.eid_bits_view == 0){
+                                            float bx2=draw_ox;
+                                            for(int gi=0;gi<BPR&&bi+gi<n_bits;gi+=8){
+                                                for(int k=0;k<8&&bi+gi+k<n_bits;k++){
+                                                    char c[2]={bits[bi+gi+k]?'1':'0',0};
+                                                    ImU32 bc=bits[bi+gi+k]?IM_COL32(100,220,255,255):IM_COL32(90,90,110,255);
+                                                    fg->AddText(bfnt,bfh,ImVec2(bx2+k*bit_cw,cy),bc,c);
+                                                }
+                                                bx2+=8*bit_cw+grp_gap;
                                             }
-                                            for(int k=0;k<8&&bi+gi+k<n_bits;k++){
-                                                char c[2]={bits[bi+gi+k]?'1':'0',0};
-                                                ImU32 bc=bits[bi+gi+k]?IM_COL32(80,255,140,255):IM_COL32(80,80,100,255);
-                                                fg->AddText(bfnt,bfh,ImVec2(bx2+k*bit_cw,cy),bc,c);
+                                        } else {
+                                            float hx=draw_ox;
+                                            for(int gi=0;gi<BPR&&bi+gi<n_bits;gi+=8){
+                                                uint8_t byte_val=0;
+                                                int valid=0;
+                                                for(int k=0;k<8&&bi+gi+k<n_bits;k++){
+                                                    byte_val=(byte_val<<1)|bits[bi+gi+k];
+                                                    valid++;
+                                                }
+                                                if(valid==8){
+                                                    char hstr[4]; snprintf(hstr,sizeof(hstr),"%02X",byte_val);
+                                                    fg->AddText(bfnt,bfh,ImVec2(hx,cy),IM_COL32(120,200,255,255),hstr);
+                                                }
+                                                hx+=hex_byte_w;
                                             }
-                                            bx2+=8*bit_cw+grp_gap;
-                                            if(valid==8){
-                                                char hstr[4]; snprintf(hstr,sizeof(hstr),"%02X",byte_val);
-                                                fg->AddText(bfnt,bfh,ImVec2(hex_x,cy),IM_COL32(120,200,255,255),hstr);
-                                            }
-                                            hex_x+=hex_byte_w;
                                         }
                                         cy+=line_h;
                                     }
                                     fg->PopClipRect();
+
+                                    // 수평 스크롤바 (하단)
+                                    if(max_hscroll > 0){
+                                        float hsb_y = ea_y1 + 2.f;
+                                        float hsb_w = ea_x1 - ea_x0;
+                                        float hthumb_w = std::max(20.f, hsb_w * content_w / total_row_w);
+                                        float hthumb_x = ea_x0 + (hsb_w - hthumb_w) * v.eid_bits_hscroll / max_hscroll;
+                                        fg->AddRectFilled(ImVec2(ea_x0,hsb_y),ImVec2(ea_x1,hsb_y+4),IM_COL32(30,30,45,255));
+                                        fg->AddRectFilled(ImVec2(hthumb_x,hsb_y),ImVec2(hthumb_x+hthumb_w,hsb_y+4),
+                                                          IM_COL32(80,80,120,255),2.f);
+                                        // 수평 스크롤바 드래그
+                                        static bool hsb_drag = false;
+                                        static float hsb_drag_start = 0;
+                                        if(io.MousePos.y >= hsb_y-4 && io.MousePos.y <= hsb_y+8 &&
+                                           io.MousePos.x >= ea_x0 && io.MousePos.x <= ea_x1){
+                                            if(ImGui::IsMouseClicked(0)){
+                                                hsb_drag = true;
+                                                hsb_drag_start = io.MousePos.x;
+                                            }
+                                        }
+                                        if(hsb_drag){
+                                            if(ImGui::IsMouseDown(0)){
+                                                float dx = io.MousePos.x - hsb_drag_start;
+                                                hsb_drag_start = io.MousePos.x;
+                                                v.eid_bits_hscroll += dx * (max_hscroll / (hsb_w - hthumb_w + 1.f));
+                                                v.eid_bits_hscroll = std::max(0.f, std::min(v.eid_bits_hscroll, max_hscroll));
+                                            } else hsb_drag = false;
+                                        }
+                                    }
+
+                                    // hover 비트번호 (BIN/HEX 공통)
+                                    if(mouse_in_bits){
+                                        // cy_start는 데이터 시작 Y (헤더+구분선 아래)
+                                        // 헤더줄 = data_y0+2 ~ data_y0+2+line_h, 구분선, 데이터시작
+                                        float data_start_y = data_y0 + 2.f + line_h + 1.f; // 헤더+구분선 다음
+                                        if(io.MousePos.y >= data_start_y){
+                                            int hr = v.eid_bits_scroll + (int)((io.MousePos.y - data_start_y) / line_h);
+                                            float mx_rel = io.MousePos.x - cx + v.eid_bits_hscroll;
+                                            int hc = -1;
+                                            if(v.eid_bits_view == 0){
+                                                // BIN: 비트 단위
+                                                for(int gi=0;gi<GROUPS;gi++){
+                                                    float gx0 = gi*(8*bit_cw+grp_gap);
+                                                    float gx1 = gx0 + 8*bit_cw;
+                                                    if(mx_rel >= gx0 && mx_rel < gx1){
+                                                        hc = gi*8 + (int)((mx_rel-gx0)/bit_cw);
+                                                        break;
+                                                    }
+                                                }
+                                            } else {
+                                                // HEX: 바이트 단위 → 바이트*8
+                                                int byte_idx = (int)(mx_rel / hex_byte_w);
+                                                if(byte_idx >= 0 && byte_idx < GROUPS) hc = byte_idx * 8;
+                                            }
+                                            if(hc >= 0 && hr >= 0 && hr < total_rows){
+                                                int hbi = bit_off + hr * BPR + hc;
+                                                if(hbi >= 0 && hbi < n_bits){
+                                                    char tip[32]; snprintf(tip,sizeof(tip),"%d",hbi+1);
+                                                    ImVec2 tsz=ImGui::CalcTextSize(tip);
+                                                    float tx=io.MousePos.x+12.f, ty=io.MousePos.y-tsz.y-4.f;
+                                                    fg->AddRectFilled(ImVec2(tx-3,ty-2),ImVec2(tx+tsz.x+3,ty+tsz.y+2),
+                                                                      IM_COL32(0,0,0,200),3.f);
+                                                    fg->AddText(ImVec2(tx,ty),IM_COL32(255,255,255,255),tip);
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
 
-                            } else {
-                                // ══════ 비주얼 비트맵 뷰 ══════
-                                // 1=밝은 블록, 0=어두운 블록으로 패턴 시각화
+                            } else if(v.eid_bits_view == 2){
+                                // ══════ BITMAP 뷰 ══════
+                                // 헤더 버튼 (BIN/HEX/BITMAP 전환용)
+                                {
+                                    ImFont* bfnt = g_bits_font ? g_bits_font : ImGui::GetFont();
+                                    float bfh2 = bfnt->LegacySize;
+                                    float cy_hdr = data_y0 + 2.f;
+                                    float cx_hdr = ea_x0 + 8.f;
+                                    // AIS/ADS-B/UAV (좌측)
+                                    const char* dec_btns[] = {"AIS","ADS-B","UAV"};
+                                    for(int di=0;di<3;di++){
+                                        ImVec2 dsz = bfnt->CalcTextSizeA(bfh2, FLT_MAX, -1.f, dec_btns[di]);
+                                        bool dsel = (v.eid_decode_mode == di+1);
+                                        bool dhov = io.MousePos.x>=cx_hdr && io.MousePos.x<=cx_hdr+dsz.x &&
+                                                    io.MousePos.y>=cy_hdr && io.MousePos.y<=cy_hdr+bfh2;
+                                        ImU32 dcol = dsel ? IM_COL32(80,255,140,255) :
+                                                     dhov ? IM_COL32(255,255,255,255) : IM_COL32(140,180,220,255);
+                                        fg->AddText(bfnt,bfh2,ImVec2(cx_hdr,cy_hdr),dcol,dec_btns[di]);
+                                        if(dhov && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                                            v.eid_decode_mode = dsel ? 0 : (di+1);
+                                        cx_hdr += dsz.x + 24.f;
+                                    }
+                                    // BIN/HEX/BITMAP (우측)
+                                    const char* fmt_btns[] = {"BIN","HEX","BITMAP"};
+                                    float rx2 = ea_x1 - 8.f;
+                                    for(int fi2=2;fi2>=0;fi2--){
+                                        ImVec2 fsz2 = bfnt->CalcTextSizeA(bfh2, FLT_MAX, -1.f, fmt_btns[fi2]);
+                                        float bx2 = rx2 - fsz2.x;
+                                        bool fsel = (v.eid_bits_view == fi2 && v.eid_decode_mode == 0);
+                                        bool fhov = io.MousePos.x>=bx2 && io.MousePos.x<=bx2+fsz2.x &&
+                                                    io.MousePos.y>=cy_hdr && io.MousePos.y<=cy_hdr+bfh2;
+                                        ImU32 fcol = fsel ? IM_COL32(80,255,140,255) :
+                                                     fhov ? IM_COL32(255,255,255,255) : IM_COL32(140,180,220,255);
+                                        fg->AddText(bfnt,bfh2,ImVec2(bx2,cy_hdr),fcol,fmt_btns[fi2]);
+                                        if(fhov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                                            v.eid_bits_view = fi2;
+                                            v.eid_decode_mode = 0;
+                                        }
+                                        rx2 = bx2 - 20.f;
+                                    }
+                                }
+
                                 float avail_w = ea_w - 8.f;
                                 float cell_w = avail_w / (float)BPR;
                                 if(cell_w < 1.f) cell_w = 1.f;
@@ -9127,7 +9267,8 @@ void run_streaming_viewer(){
                                 if(cell_h < 2.f) cell_h = 2.f;
                                 float line_h_v = cell_h + 1.f;
 
-                                float cy = data_y0 + 2.f;
+                                ImFont* bfnt_bm = g_bits_font ? g_bits_font : ImGui::GetFont();
+                                float cy = data_y0 + bfnt_bm->LegacySize + 8.f; // 헤더 아래
 
                                 // 스크롤 처리
                                 int vis_rows = (int)((ea_y1 - cy) / line_h_v);
@@ -9140,7 +9281,7 @@ void run_streaming_viewer(){
 
                                 // 스크롤바
                                 if(total_rows > vis_rows){
-                                    float sb_x = ea_x1 - 6.f;
+                                    float sb_x = ea_x1 + 2.f;
                                     float sb_h = ea_y1 - cy;
                                     float thumb_h = std::max(20.f, sb_h * (float)vis_rows / (float)total_rows);
                                     float thumb_y = cy + (sb_h - thumb_h) * (float)v.eid_bits_scroll / (float)max_scroll;
@@ -9166,14 +9307,15 @@ void run_streaming_viewer(){
                                 }
                                 fg->PopClipRect();
 
-                                // 마우스 호버 정보
-                                if(mouse_in_bits && io.MousePos.y >= data_y0+2.f){
-                                    int hover_row = v.eid_bits_scroll + (int)((io.MousePos.y - data_y0 - 2.f) / line_h_v);
+                                // 마우스 호버 비트번호
+                                float bm_start_y = data_y0 + bfnt_bm->LegacySize + 8.f;
+                                if(mouse_in_bits && io.MousePos.y >= bm_start_y){
+                                    int hover_row = v.eid_bits_scroll + (int)((io.MousePos.y - bm_start_y) / line_h_v);
                                     int hover_col = (int)((io.MousePos.x - ea_x0 - 4.f) / cell_w);
                                     if(hover_col>=0 && hover_col<BPR && hover_row>=0 && hover_row<total_rows){
                                         int hover_bi = bit_off + hover_row * BPR + hover_col;
-                                        if(hover_bi < n_bits){
-                                            char tip[64]; snprintf(tip,sizeof(tip),"Bit %d = %d", hover_bi, bits[hover_bi]);
+                                        if(hover_bi >= 0 && hover_bi < n_bits){
+                                            char tip[32]; snprintf(tip,sizeof(tip),"%d",hover_bi+1);
                                             ImVec2 tsz = ImGui::CalcTextSize(tip);
                                             float tx = io.MousePos.x + 12.f;
                                             float ty = io.MousePos.y - tsz.y - 4.f;
@@ -9189,6 +9331,21 @@ void run_streaming_viewer(){
                             if(mouse_in_bits){
                                 if(ImGui::IsKeyPressed(ImGuiKey_Home,false)) v.eid_bits_scroll=0;
                                 if(ImGui::IsKeyPressed(ImGuiKey_End,false)) v.eid_bits_scroll=999999;
+                                // 방향키: Up/Down = Bits/Row +-1, Left/Right = Offset +-1
+                                if(ImGui::IsKeyPressed(ImGuiKey_UpArrow,true)){
+                                    v.eid_bits_per_row = std::min(512, v.eid_bits_per_row + 1);
+                                    v.eid_bits_scroll = 0;
+                                }
+                                if(ImGui::IsKeyPressed(ImGuiKey_DownArrow,true)){
+                                    v.eid_bits_per_row = std::max(1, v.eid_bits_per_row - 1);
+                                    v.eid_bits_scroll = 0;
+                                }
+                                if(ImGui::IsKeyPressed(ImGuiKey_RightArrow,true)){
+                                    v.eid_bits_offset = std::max(0, v.eid_bits_offset - 1);
+                                }
+                                if(ImGui::IsKeyPressed(ImGuiKey_LeftArrow,true)){
+                                    v.eid_bits_offset++;
+                                }
                             }
                         }
                     }
