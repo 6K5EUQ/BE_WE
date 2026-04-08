@@ -245,9 +245,9 @@ public:
     bool digi_decode_panel_open = false;
     struct DigiLogEntry { char msg[1024]; };
     static constexpr int DIGI_LOG_MAX = 200;
-    std::vector<DigiLogEntry> digi_log_buf[3];  // 0=AIS, 1=ADS-B, 2=UAV
+    std::vector<DigiLogEntry> digi_log_buf[4];  // 0=AIS, 1=ADS-B, 2=UAV, 3=DEMOD
     std::mutex digi_log_mtx;
-    bool digi_log_scroll[3] = {true,true,true};
+    bool digi_log_scroll[4] = {true,true,true,true};
     void digi_log_push(int tab, const char* fmt, ...);
 
     // ── AIS Python 파이프 ─────────────────────────────────────────────────
@@ -573,6 +573,7 @@ public:
 
     // ── ais.cpp ───────────────────────────────────────────────────────────
     void ais_worker(int ch_idx);
+    void digi_demod_worker(int ch_idx);
     void start_digi(int ch_idx, Channel::DigitalMode mode);
     void stop_digi(int ch_idx);
     void stop_all_dem();

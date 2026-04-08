@@ -44,7 +44,7 @@ void bewe_log_push(int col, const char* fmt, ...){
 
 // FFTViewer::digi_log_push - DIGITAL DECODE overlay buffer
 void FFTViewer::digi_log_push(int tab, const char* fmt, ...){
-    if(tab < 0 || tab > 2) tab = 0;
+    if(tab < 0 || tab > 3) tab = 0;
     char raw[960];
     va_list ap; va_start(ap, fmt);
     vsnprintf(raw, sizeof(raw), fmt, ap);

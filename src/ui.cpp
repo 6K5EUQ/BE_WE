@@ -4738,8 +4738,9 @@ void run_streaming_viewer(){
                                 static const DigiBtn dbtn[]={
                                     {"ADS-B", Channel::DIGI_ADSB},
                                     {"AIS",   Channel::DIGI_AIS},
+                                    {"DEMOD", Channel::DIGI_DEMOD},
                                 };
-                                for(int di=0;di<2;di++){
+                                for(int di=0;di<3;di++){
                                     Channel::DigitalMode dm = dbtn[di].mode;
                                     bool dactive = (ch.digital_mode==dm && ch.digi_run.load());
                                     if(dactive)
@@ -4751,13 +4752,30 @@ void run_streaming_viewer(){
                                             v.stop_digi(ci);
                                         } else {
                                             v.stop_digi(ci);
-                                            if(dm == Channel::DIGI_AIS)
+                                            if(dm == Channel::DIGI_AIS || dm == Channel::DIGI_DEMOD)
                                                 v.start_digi(ci, dm);
-                                            // ADS-B: 미구현
                                         }
                                     }
                                     ImGui::PopStyleColor();
-                                    if(di<1) ImGui::SameLine(0,2);
+                                    if(di<2) ImGui::SameLine(0,2);
+                                }
+                                // DEMOD config (when DEMOD active or selected)
+                                if(ch.digital_mode==Channel::DIGI_DEMOD || (!ch.digi_run.load() && false)){
+                                    ImGui::SameLine(0,6);
+                                    static const char* mod_names[]={"ASK","FSK","BPSK"};
+                                    ImGui::SetNextItemWidth(50);
+                                    if(ImGui::BeginCombo("##dmod",mod_names[ch.digi_demod_type%3])){
+                                        for(int m=0;m<3;m++){
+                                            if(ImGui::Selectable(mod_names[m],ch.digi_demod_type==m))
+                                                ch.digi_demod_type=m;
+                                        }
+                                        ImGui::EndCombo();
+                                    }
+                                    ImGui::SameLine(0,2);
+                                    ImGui::SetNextItemWidth(60);
+                                    ImGui::InputFloat("##baud",&ch.digi_baud_rate,0,0,"%.0f");
+                                    ImGui::SameLine(0,2);
+                                    ImGui::TextDisabled("bd");
                                 }
                             }
                             ImGui::PopID();
@@ -9320,16 +9338,17 @@ void run_streaming_viewer(){
 
             // 탭 바
             float tab_y = DB_H;
-            static int digi_tab = 0;  // 0=AIS, 1=ADS-B, 2=UAV
-            static const char* tab_names[] = {"AIS", "ADS-B", "UAV"};
+            static int digi_tab = 0;  // 0=AIS, 1=ADS-B, 2=UAV, 3=DEMOD
+            static const char* tab_names[] = {"AIS", "ADS-B", "UAV", "DEMOD"};
             static const ImU32 tab_colors[] = {
                 IM_COL32(80,220,255,255),   // AIS: 시안
                 IM_COL32(255,160,80,255),   // ADS-B: 주황
                 IM_COL32(120,255,120,255),  // UAV: 녹색
+                IM_COL32(255,100,200,255),  // DEMOD: 핑크
             };
 
-            float tab_w = disp_w / 3.0f;
-            for(int t = 0; t < 3; t++){
+            float tab_w = disp_w / 4.0f;
+            for(int t = 0; t < 4; t++){
                 float tx0 = t * tab_w;
                 float tx1 = tx0 + tab_w;
                 bool selected = (t == digi_tab);
@@ -9360,7 +9379,8 @@ void run_streaming_viewer(){
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f,0.4f,0.5f,1.f));
                     if(digi_tab == 0) ImGui::TextWrapped("  AIS: No decoded messages yet. Set channel filter and press D > AIS to start.");
                     else if(digi_tab == 1) ImGui::TextWrapped("  ADS-B decoder: not implemented");
-                    else ImGui::TextWrapped("  UAV decoder: not implemented");
+                    else if(digi_tab == 2) ImGui::TextWrapped("  UAV decoder: not implemented");
+                    else ImGui::TextWrapped("  DEMOD: No data yet. Set channel filter, press D > DEMOD, select modulation and baud rate.");
                     ImGui::PopStyleColor();
                 } else {
                     for(auto& e : v.digi_log_buf[digi_tab]){

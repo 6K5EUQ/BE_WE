@@ -494,9 +494,10 @@ void FFTViewer::start_digi(int ch_idx, Channel::DigitalMode mode){
     ch.digi_stop_req.store(false);
     ch.digi_run.store(true);
     if(mode==Channel::DIGI_AIS){
-        // Python 파이프 시작 (이미 실행 중이면 무시)
         ais_pipe_start();
         ch.digi_thr=std::thread(&FFTViewer::ais_worker,this,ch_idx);
+    } else if(mode==Channel::DIGI_DEMOD){
+        ch.digi_thr=std::thread(&FFTViewer::digi_demod_worker,this,ch_idx);
     }
     bewe_log_push(0,"[DIGI ch%d] start mode=%d\n",ch_idx,(int)mode);
 }
