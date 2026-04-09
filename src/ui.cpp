@@ -166,6 +166,7 @@ void FFTViewer::handle_new_channel_drag(float gx, float gw){
     if(in_graph&&ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
         float af=x_to_abs(m.x,gx,gw);
         new_drag.active=true; new_drag.anch=af; new_drag.s=af; new_drag.e=af;
+        bewe_log_push(2,"[CH_DRAG] start af=%.3f net_cli=%p\n", af, (void*)net_cli);
     }
     if(new_drag.active){
         if(ImGui::IsMouseDown(ImGuiMouseButton_Right)){
@@ -179,9 +180,11 @@ void FFTViewer::handle_new_channel_drag(float gx, float gw){
         if(ImGui::IsMouseReleased(ImGuiMouseButton_Right)){
             new_drag.active=false;
             float bw=fabsf(new_drag.e-new_drag.s);
+            bewe_log_push(2,"[CH_DRAG] release bw=%.4f s=%.3f e=%.3f\n", bw, new_drag.s, new_drag.e);
             if(bw>0.001f){
                 int slot=-1;
                 for(int i=0;i<MAX_CHANNELS;i++) if(!channels[i].filter_active){slot=i;break;}
+                bewe_log_push(2,"[CH_DRAG] slot=%d net_cli=%p net_srv=%p\n", slot, (void*)net_cli, (void*)net_srv);
                 if(slot>=0){
                     if(net_cli){
                         // JOIN: 서버에 CMD_CREATE_CH 전송 (서버가 처리 후 sync)
