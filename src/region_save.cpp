@@ -193,10 +193,15 @@ std::string FFTViewer::do_region_save_work(){
     int64_t samp_end   = row_to_samp(region.fft_top);
     int64_t samp_start = row_to_samp(region.fft_bot);
 
-    // fallback: row_write_pos 없으면 time_t 기반
+    // fallback: row_write_pos 없으면 time 기반
     if(samp_end < 0 || samp_start < 0){
         time_t  snap_now = time(nullptr);
         auto ts2samp = [&](time_t ts) -> int64_t {
+            if(ts <= 0){
+                // 음수 = 상대 오프셋(초): -10 = 10초 전 → snap_write + ts*sr
+                return snap_write + (int64_t)ts * (int64_t)sr;
+            }
+            // 양수 = 절대 time_t
             return snap_write - ((int64_t)snap_now - (int64_t)ts) * (int64_t)sr;
         };
         if(samp_start < 0) samp_start = ts2samp(region.time_start);
@@ -210,9 +215,14 @@ std::string FFTViewer::do_region_save_work(){
     samp_start = std::max(samp_start, valid_start);
     samp_end   = std::min(samp_end,   snap_write);
 
-    bewe_log_push(0,"[region_save] samp_start=%lld samp_end=%lld snap_write=%lld valid_start=%lld\n",
+    bewe_log_push(0,"[region_save] samp_start=%lld samp_end=%lld snap_write=%lld valid_start=%lld max_total=%lld sr=%u decim=%d\n",
                    (long long)samp_start,(long long)samp_end,
-                   (long long)snap_write,(long long)valid_start);
+                   (long long)snap_write,(long long)valid_start,
+                   (long long)max_total, sr, decim);
+    bewe_log_push(0,"[region_save] n_in=%lld n_out=%lld sec=%.1f fft_top=%d fft_bot=%d\n",
+                   (long long)(samp_end-samp_start), (long long)((samp_end-samp_start)/decim),
+                   (double)(samp_end-samp_start)/(double)sr,
+                   region.fft_top, region.fft_bot);
     if(samp_end <= samp_start){
         bewe_log_push(0,"[region_save] FAIL: no valid IQ data in range\n");
         return "";

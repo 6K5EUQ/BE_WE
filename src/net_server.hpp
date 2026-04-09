@@ -175,6 +175,8 @@ struct ServerCallbacks {
     std::function<void(uint8_t op_idx, const char* filename)> on_share_download_req;
     // JOIN이 파일 업로드 완료: op_idx, op_name, 저장된 절대경로
     std::function<void(uint8_t op_idx, const char* op_name, const char* saved_path)> on_share_upload_done;
+    std::function<void(uint8_t op_idx, const char* who, uint8_t ch_idx)> on_start_iq_rec;
+    std::function<void(uint8_t op_idx, const char* who, uint8_t ch_idx)> on_stop_iq_rec;
     std::function<void(const char* who)> on_chassis_reset;
     std::function<void(const char* who)> on_net_reset;
     std::function<void(const char* who)> on_rx_stop;

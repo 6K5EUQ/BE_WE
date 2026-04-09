@@ -1781,8 +1781,11 @@ void run_streaming_viewer(){
                 // HOST 녹음 시간 동기화
                 v.channels[i].synced_iq_rec_secs   = sync.ch[i].iq_rec_secs;
                 v.channels[i].synced_audio_rec_secs= sync.ch[i].audio_rec_secs;
-                v.channels[i].iq_rec_on.store(sync.ch[i].iq_rec_on != 0);
-                v.channels[i].audio_rec_on.store(sync.ch[i].audio_rec_on != 0);
+                // JOIN 로컬 녹음 중이면 HOST 값으로 덮어쓰지 않음
+                if(!v.channels[i].iq_rec_on.load())
+                    v.channels[i].iq_rec_on.store(sync.ch[i].iq_rec_on != 0);
+                if(!v.channels[i].audio_rec_on.load())
+                    v.channels[i].audio_rec_on.store(sync.ch[i].audio_rec_on != 0);
 
                 // JOIN 모드: 복조는 HOST에서 수행, 로컬 dem 불필요
                 // 오디오는 AUDIO_FRAME 수신으로 net_cli->audio 링 통해 출력
@@ -2030,12 +2033,17 @@ void run_streaming_viewer(){
                     fflush(fp);
                     fclose(fp);
                     bewe_log_push(2,"[JOIN] IQ write done: %s (%.1fMB written)\n", fn.c_str(), written/1048576.0);
-                    // rec_entries 제거
+                    // rec_entries: finished 마크 (삭제 X → Record 탭에 [Done] 표시)
                     {
                         std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
-                        for(auto it = v.rec_entries.begin(); it != v.rec_entries.end(); ++it){
-                            if(it->is_region && it->filename == fn){
-                                v.rec_entries.erase(it); break;
+                        for(auto& e : v.rec_entries){
+                            if(e.is_region && e.filename == fn){
+                                e.finished = true;
+                                e.req_state = FFTViewer::RecEntry::REQ_NONE;
+                                if(e.xfer_total == 0) e.xfer_total = written;
+                                e.xfer_done = written;
+                                e.path = save_path;
+                                break;
                             }
                         }
                     }
@@ -3452,23 +3460,18 @@ void run_streaming_viewer(){
             if(ImGui::IsKeyPressed(ImGuiKey_R,false)){
                 if(v.remote_mode && v.net_cli){
                     if(v.region.active){
-                        // R키 누르는 시점에 time_start/end 재계산 (정확도 최대화)
+                        // R키 시점: FFT 인덱스 → "현재로부터 몇 초 전" 상대값으로 변환
+                        // HOST/JOIN 시계 차이에 영향 안 받음
                         {
-                            // wall_time 기반 재계산 (JOIN 포함 정확)
-                            time_t wt_top = v.fft_idx_to_wall_time(v.region.fft_top);
-                            time_t wt_bot = v.fft_idx_to_wall_time(v.region.fft_bot);
-                            if(wt_top > 0 && wt_bot > 0){
-                                v.region.time_end   = wt_top;
-                                v.region.time_start = wt_bot;
-                            } else {
-                                float rps_r=(float)v.header.sample_rate/(float)v.fft_input_size/(float)v.time_average;
-                                if(rps_r<=0) rps_r=37.5f;
-                                time_t now_r=time(nullptr);
-                                v.region.time_end  =now_r-(time_t)((v.current_fft_idx-v.region.fft_top)/rps_r);
-                                v.region.time_start=now_r-(time_t)((v.current_fft_idx-v.region.fft_bot)/rps_r);
-                            }
+                            float rps_r=(float)v.header.sample_rate/(float)v.fft_input_size/(float)v.time_average;
+                            if(rps_r<=0) rps_r=37.5f;
+                            // 음수 오프셋: 현재(0)로부터 몇 초 전 (-값)
+                            int32_t sec_ago_top = -(int32_t)((v.current_fft_idx - v.region.fft_top) / rps_r);
+                            int32_t sec_ago_bot = -(int32_t)((v.current_fft_idx - v.region.fft_bot) / rps_r);
+                            v.region.time_end   = (time_t)sec_ago_top;  // 더 최근 (작은 음수)
+                            v.region.time_start = (time_t)sec_ago_bot;  // 더 과거 (큰 음수)
                         }
-                        // JOIN: 영역 IQ 녹음 요청 > HOST가 즉시 처리+전송
+                        // JOIN: 영역 IQ 녹음 요청 (time에 음수=상대오프셋)
                         v.net_cli->cmd_request_region(
                             v.region.fft_top, v.region.fft_bot,
                             v.region.freq_lo, v.region.freq_hi,
@@ -3524,12 +3527,24 @@ void run_streaming_viewer(){
             // I key: per-channel IQ recording toggle
             if(ImGui::IsKeyPressed(ImGuiKey_I,false) && !io.WantTextInput){
                 int ci = v.selected_ch;
-                if(ci >= 0 && ci < MAX_CHANNELS && v.channels[ci].filter_active &&
-                   v.channels[ci].dem_run.load()){
-                    if(v.channels[ci].iq_rec_on.load())
-                        v.stop_iq_rec(ci);
-                    else
-                        v.start_iq_rec(ci);
+                if(ci >= 0 && ci < MAX_CHANNELS && v.channels[ci].filter_active){
+                    if(v.remote_mode && v.net_cli){
+                        // JOIN: HOST에 IQ 녹음 시작/중지 요청 (100kHz 이하만)
+                        float bw_khz = fabsf(v.channels[ci].e - v.channels[ci].s) * 1000.f;
+                        if(bw_khz > 100.f){
+                            v.rec_na_timer = 3.0f; // "N/A" 표시
+                        } else {
+                            if(v.channels[ci].iq_rec_on.load())
+                                v.net_cli->cmd_stop_iq_rec(ci);
+                            else
+                                v.net_cli->cmd_start_iq_rec(ci);
+                        }
+                    } else if(v.channels[ci].dem_run.load()){
+                        if(v.channels[ci].iq_rec_on.load())
+                            v.stop_iq_rec(ci);
+                        else
+                            v.start_iq_rec(ci);
+                    }
                 }
             }
 
@@ -4957,6 +4972,11 @@ void run_streaming_viewer(){
                                                 col=IM_COL32(120,200,120,255);
                                                 ImGui::PushStyleColor(ImGuiCol_Text,col);
                                                 if(re.xfer_total > 0)
+                                                    ImGui::Selectable(("##rdone"+std::to_string(ri)).c_str(), false, 0, ImVec2(0,0));
+                                                else
+                                                    ImGui::Selectable(("##rdone"+std::to_string(ri)).c_str(), false, 0, ImVec2(0,0));
+                                                ImGui::SameLine(0,0);
+                                                if(re.xfer_total > 0)
                                                     ImGui::Text("[Done]  %s  (%.1f MB)", re.filename.c_str(), re.xfer_total/1048576.0);
                                                 else {
                                                     auto it_rz2=fsz_cache.find(re.filename);
@@ -4965,6 +4985,16 @@ void run_streaming_viewer(){
                                                         ImGui::Text("[Done]  %s  %s", re.filename.c_str(), szstr2.c_str());
                                                     else
                                                         ImGui::Text("[Done]  %s", re.filename.c_str());
+                                                }
+                                                if(ImGui::IsItemHovered()){
+                                                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                                                        file_ctx={true,io.MousePos.x,io.MousePos.y,re.path,re.filename};
+                                                        file_ctx.selected=true;
+                                                    }
+                                                    if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !re.path.empty()){
+                                                        v.sa_temp_path = re.path;
+                                                        v.eid_panel_open = true;
+                                                    }
                                                 }
                                                 ImGui::PopStyleColor();
                                             } else if(re.req_state==RS::REQ_DENIED){
@@ -5032,11 +5062,17 @@ void run_streaming_viewer(){
                                             else
                                                 snprintf(rec_lbl,sizeof(rec_lbl),"[REC] [%2d] %s  [%d/%ds]", dn, re.filename.c_str(), rec_secs, secs);
                                             ImGui::Selectable(rec_lbl, re.ch_idx>=0 && v.selected_ch==re.ch_idx);
-                                            if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
-                                                if(re.ch_idx>=0){
-                                                    if(v.selected_ch>=0) v.channels[v.selected_ch].selected=false;
-                                                    v.selected_ch=re.ch_idx;
-                                                    v.channels[re.ch_idx].selected=true;
+                                            if(ImGui::IsItemHovered()){
+                                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                                                    if(re.ch_idx>=0){
+                                                        if(v.selected_ch>=0) v.channels[v.selected_ch].selected=false;
+                                                        v.selected_ch=re.ch_idx;
+                                                        v.channels[re.ch_idx].selected=true;
+                                                    }
+                                                }
+                                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                                                    file_ctx={true,io.MousePos.x,io.MousePos.y,re.path,re.filename};
+                                                    file_ctx.selected=true;
                                                 }
                                             }
                                             ImGui::PopStyleColor();
@@ -9064,22 +9100,42 @@ void run_streaming_viewer(){
                                 if(v.eid_decode_mode == 1){
                                     // ══════ AIS 디코더 모드 (Python 호출) ══════
                                     auto ais_r = ais_decode::decode(bits, bit_off);
-                                    fg->PushClipRect(ImVec2(ea_x0,cy),ImVec2(ea_x1,ea_y1),true);
-                                    if(ais_r.ok){
-                                        for(auto& ln : ais_r.lines){
-                                            if(cy >= ea_y1 - line_h) break;
-                                            // "===" 구분선은 밝은 색, 나머지는 기본
+                                    if(ais_r.ok && !ais_r.lines.empty()){
+                                        int total_lines = (int)ais_r.lines.size();
+                                        int vis_lines = (int)((ea_y1 - cy) / line_h);
+                                        if(vis_lines < 1) vis_lines = 1;
+                                        int max_scroll = std::max(0, total_lines - vis_lines);
+                                        if(mouse_in_bits && io.MouseWheel != 0)
+                                            v.eid_decode_scroll -= (int)(io.MouseWheel * 3);
+                                        v.eid_decode_scroll = std::max(0, std::min(v.eid_decode_scroll, max_scroll));
+
+                                        // 스크롤바
+                                        if(total_lines > vis_lines){
+                                            float sb_x = ea_x1 - 6.f;
+                                            float sb_h = ea_y1 - cy;
+                                            float thumb_h = std::max(20.f, sb_h * (float)vis_lines / (float)total_lines);
+                                            float thumb_y = cy + (sb_h - thumb_h) * (float)v.eid_decode_scroll / (float)max_scroll;
+                                            fg->AddRectFilled(ImVec2(sb_x,cy),ImVec2(sb_x+4,ea_y1),IM_COL32(30,30,45,255));
+                                            fg->AddRectFilled(ImVec2(sb_x,thumb_y),ImVec2(sb_x+4,thumb_y+thumb_h),
+                                                              IM_COL32(80,80,120,255),2.f);
+                                        }
+
+                                        fg->PushClipRect(ImVec2(ea_x0,cy),ImVec2(ea_x1,ea_y1),true);
+                                        for(int li=v.eid_decode_scroll; li<total_lines && cy<ea_y1-line_h; li++){
+                                            auto& ln = ais_r.lines[li];
                                             ImU32 lc = (ln.find("===")!=std::string::npos || ln.find("---")!=std::string::npos)
                                                        ? IM_COL32(100,100,130,255)
                                                        : IM_COL32(200,220,255,255);
                                             fg->AddText(bfnt,bfh,ImVec2(cx,cy),lc,ln.c_str());
                                             cy+=line_h;
                                         }
+                                        fg->PopClipRect();
                                     } else {
+                                        fg->PushClipRect(ImVec2(ea_x0,cy),ImVec2(ea_x1,ea_y1),true);
                                         const char* msg = ais_r.error.empty() ? "No valid AIS frame found" : ais_r.error.c_str();
                                         fg->AddText(bfnt,bfh,ImVec2(cx,cy),IM_COL32(255,100,100,255),msg);
+                                        fg->PopClipRect();
                                     }
-                                    fg->PopClipRect();
                                 } else if(v.eid_decode_mode >= 2){
                                     // ══════ ADS-B / UAV — 추후 구현 ══════
                                     fg->PushClipRect(ImVec2(ea_x0,cy),ImVec2(ea_x1,ea_y1),true);

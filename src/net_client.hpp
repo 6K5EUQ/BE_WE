@@ -215,6 +215,8 @@ public:
     bool cmd_request_region(int32_t fft_top, int32_t fft_bot,
                              float freq_lo, float freq_hi,
                              int32_t time_start, int32_t time_end);
+    bool cmd_start_iq_rec(int ch_idx);
+    bool cmd_stop_iq_rec(int ch_idx);
     bool cmd_request_share_download(const char* filename);
     bool cmd_share_upload(const char* filepath, uint8_t transfer_id);
     bool cmd_chassis_reset();            // JOIN → HOST: trigger chassis 1 reset

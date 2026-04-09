@@ -284,6 +284,12 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
             case CmdType::RX_START:
                 if(cb.on_rx_start) cb.on_rx_start(c->name);
                 break;
+            case CmdType::START_IQ_REC:
+                if(cb.on_start_iq_rec) cb.on_start_iq_rec(c->op_index, c->name, cmd->start_iq_rec.idx);
+                break;
+            case CmdType::STOP_IQ_REC:
+                if(cb.on_stop_iq_rec) cb.on_stop_iq_rec(c->op_index, c->name, cmd->stop_iq_rec.idx);
+                break;
             case CmdType::SET_FFT_SIZE:
                 if(cb.on_set_fft_size) cb.on_set_fft_size(c->name, cmd->set_fft_size.size);
                 break;

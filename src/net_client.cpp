@@ -501,6 +501,16 @@ bool NetClient::cmd_request_region(int32_t fft_top, int32_t fft_bot,
     c.request_region.time_start=time_start; c.request_region.time_end=time_end;
     return send_cmd(c);
 }
+bool NetClient::cmd_start_iq_rec(int ch_idx){
+    PktCmd c{}; c.cmd=(uint8_t)CmdType::START_IQ_REC;
+    c.start_iq_rec.idx=(uint8_t)ch_idx;
+    return send_cmd(c);
+}
+bool NetClient::cmd_stop_iq_rec(int ch_idx){
+    PktCmd c{}; c.cmd=(uint8_t)CmdType::STOP_IQ_REC;
+    c.stop_iq_rec.idx=(uint8_t)ch_idx;
+    return send_cmd(c);
+}
 bool NetClient::cmd_toggle_recv(int ch_idx, bool enable){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::TOGGLE_RECV;
     c.toggle_recv.idx=(uint8_t)ch_idx;

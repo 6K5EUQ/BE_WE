@@ -366,6 +366,7 @@ public:
     float  eid_bits_zoom = 1.0f;    // 줌 배율 (1.0 = 기본, Ctrl+휠로 조절)
     float  eid_bits_hscroll = 0.0f; // 수평 스크롤 (픽셀 단위)
     int    eid_decode_mode = 0;      // 0=none, 1=AIS, 2=ADS-B, 3=UAV
+    int    eid_decode_scroll = 0;    // 디코더 결과 스크롤 위치
 
     // 스펙트로그램 통합 뷰 히스토리
     struct SaViewEntry { float x0,x1,y0,y1; bool had_bpf; };

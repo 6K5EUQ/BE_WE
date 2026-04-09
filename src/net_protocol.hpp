@@ -109,6 +109,8 @@ enum class CmdType : uint8_t {
     NET_RESET       = 0x16,  // JOIN → server: trigger chassis 2 (net-only) reset
     RX_STOP         = 0x17,  // JOIN → server: /rx stop
     RX_START        = 0x18,  // JOIN → server: /rx start
+    START_IQ_REC    = 0x19,  // JOIN → server: start per-ch IQ recording
+    STOP_IQ_REC     = 0x1A,  // JOIN → server: stop per-ch IQ recording + transfer
 };
 
 struct __attribute__((packed)) PktCmd {
@@ -135,6 +137,8 @@ struct __attribute__((packed)) PktCmd {
                  int32_t time_start; int32_t time_end; }  request_region;
         struct { uint32_t size; }                          set_fft_size;
         struct { float msps; }                             set_sr;
+        struct { uint8_t idx; }                            start_iq_rec;
+        struct { uint8_t idx; }                            stop_iq_rec;
         uint8_t raw[32];
     };
 };

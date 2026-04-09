@@ -398,6 +398,67 @@ void run_cli_host(){
         v.spectrum_pause.store(pause);
     };
 
+    // JOIN per-channel IQ recording (HOST에서 대행)
+    srv->cb.on_start_iq_rec = [&](uint8_t op_idx, const char* who, uint8_t ch_idx){
+        if(ch_idx >= MAX_CHANNELS) return;
+        if(!v.channels[ch_idx].filter_active || !v.channels[ch_idx].dem_run.load()) return;
+        float bw = fabsf(v.channels[ch_idx].e - v.channels[ch_idx].s) * 1e3f; // kHz
+        if(bw > 100.f){ bewe_log_push(0,"[CMD:%s] IQ REC ch%d denied: BW=%.0fkHz>100kHz\n", who, ch_idx, bw); return; }
+        if(v.channels[ch_idx].iq_rec_on.load()){ bewe_log_push(0,"[CMD:%s] IQ REC ch%d already on\n", who, ch_idx); return; }
+        v.start_iq_rec(ch_idx);
+        bewe_log_push(0,"[CMD:%s] IQ REC start ch%d (%.0fkHz)\n", who, ch_idx, bw);
+    };
+    srv->cb.on_stop_iq_rec = [&](uint8_t op_idx, const char* who, uint8_t ch_idx){
+        if(ch_idx >= MAX_CHANNELS) return;
+        if(!v.channels[ch_idx].iq_rec_on.load()) return;
+        v.stop_iq_rec(ch_idx);
+        bewe_log_push(0,"[CMD:%s] IQ REC stop ch%d\n", who, ch_idx);
+        // 녹음 파일을 요청한 JOIN에게 전송
+        std::string path = v.channels[ch_idx].iq_rec_path;
+        if(!path.empty()){
+            static std::atomic<uint32_t> g_iq_req{2000};
+            uint32_t req_id = g_iq_req.fetch_add(1);
+            auto* central_ptr = &central_cli;
+            std::thread([path, srv, req_id, op_idx, central_ptr](){
+                FILE* fp = fopen(path.c_str(), "rb");
+                if(!fp) return;
+                fseek(fp, 0, SEEK_END); uint64_t fsz = (uint64_t)ftell(fp); fseek(fp, 0, SEEK_SET);
+                const char* fn = strrchr(path.c_str(), '/');
+                fn = fn ? fn+1 : path.c_str();
+                // START
+                { PktIqChunkHdr ch{}; ch.req_id=req_id; ch.seq=0;
+                  strncpy(ch.filename, fn, 127); ch.filesize=fsz; ch.data_len=0;
+                  auto bewe=make_packet(PacketType::IQ_CHUNK, &ch, sizeof(ch));
+                  if(srv->cb.on_relay_broadcast) srv->cb.on_relay_broadcast(bewe.data(), bewe.size(), true); }
+                // DATA
+                const size_t CHUNK=64*1024;
+                std::vector<uint8_t> buf(sizeof(PktIqChunkHdr)+CHUNK);
+                uint64_t sent=0; uint32_t seq=1;
+                while(true){
+                    size_t n=fread(buf.data()+sizeof(PktIqChunkHdr),1,CHUNK,fp);
+                    if(n==0) break;
+                    auto* ch=reinterpret_cast<PktIqChunkHdr*>(buf.data());
+                    ch->req_id=req_id; ch->seq=seq++; strncpy(ch->filename,fn,127);
+                    ch->filesize=fsz; ch->data_len=(uint32_t)n;
+                    auto bewe=make_packet(PacketType::IQ_CHUNK,buf.data(),(uint32_t)(sizeof(PktIqChunkHdr)+n));
+                    if(srv->cb.on_relay_broadcast) srv->cb.on_relay_broadcast(bewe.data(),bewe.size(),true);
+                    sent+=n;
+                    while(central_ptr->queue_bytes()>2*1024*1024)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                fclose(fp);
+                // END
+                { PktIqChunkHdr ch{}; ch.req_id=req_id; ch.seq=0xFFFFFFFF;
+                  strncpy(ch.filename,fn,127); ch.filesize=fsz; ch.data_len=0;
+                  auto bewe=make_packet(PacketType::IQ_CHUNK,&ch,sizeof(ch));
+                  if(srv->cb.on_relay_broadcast) srv->cb.on_relay_broadcast(bewe.data(),bewe.size(),true); }
+                // 전송 완료 후 HOST에서 삭제
+                remove(path.c_str());
+                bewe_log_push(0,"[CLI] IQ REC transferred and deleted: %s\n", path.c_str());
+            }).detach();
+        }
+    };
+
     // Region IQ request from JOIN
     srv->cb.on_request_region = [&](uint8_t op_idx, const char* op_name,
                                      int32_t fft_top, int32_t fft_bot,
@@ -427,8 +488,16 @@ void run_cli_host(){
         if(rps<=0.f) rps=37.5f;
         time_t now_h=time(nullptr);
         int cur_fi=v.current_fft_idx;
-        int32_t ft=(int32_t)(cur_fi-(int32_t)((now_h-(time_t)time_end)*rps));
-        int32_t fb=(int32_t)(cur_fi-(int32_t)((now_h-(time_t)time_start)*rps));
+        int32_t ft, fb;
+        if(time_end <= 0 && time_start <= 0){
+            // 음수 = JOIN 상대 오프셋 (초): -5 = 5초 전
+            ft = (int32_t)(cur_fi + (int32_t)(time_end * rps));    // time_end는 음수, +하면 과거
+            fb = (int32_t)(cur_fi + (int32_t)(time_start * rps));
+        } else {
+            // 절대 time_t (HOST 자체 요청 등)
+            ft=(int32_t)(cur_fi-(int32_t)((now_h-(time_t)time_end)*rps));
+            fb=(int32_t)(cur_fi-(int32_t)((now_h-(time_t)time_start)*rps));
+        }
         float fl=freq_lo, fh=freq_hi;
         uint8_t oidx=op_idx;
         std::string sid = v.station_name + "_" + std::string(login_get_id());
