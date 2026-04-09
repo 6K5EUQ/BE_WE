@@ -182,6 +182,7 @@ std::string FFTViewer::do_region_save_work(){
     // row_write_pos[top] = top 행 끝 IQ 샘플 위치 → samp_end 기준
     // row_write_pos[bot] = bot 행 끝 IQ 샘플 위치 → samp_start 기준
     int64_t snap_write = tm_iq_write_sample;
+    time_t  snap_now   = time(nullptr);
     int64_t max_cap    = max_total;
 
     auto row_to_samp = [&](int fft_idx) -> int64_t {
@@ -194,22 +195,23 @@ std::string FFTViewer::do_region_save_work(){
 
     int64_t samp_start = -1, samp_end = -1;
 
-    if(region.time_start > 0 && region.time_end > 0){
-        // 절대 wall_time → 샘플 위치 (JOIN 요청 시 가장 정확)
-        time_t snap_now = time(nullptr);
-        samp_start = snap_write - ((int64_t)snap_now - (int64_t)region.time_start) * (int64_t)sr;
-        samp_end   = snap_write - ((int64_t)snap_now - (int64_t)region.time_end)   * (int64_t)sr;
+    if(region.time_start_ms > 0 && region.time_end_ms > 0){
+        // 절대 wall_time_ms → 샘플 위치 (JOIN 요청 시 가장 정확, ms 정밀도)
+        int64_t snap_now_ms = (int64_t)snap_now * 1000LL;
+        samp_start = snap_write - (snap_now_ms - region.time_start_ms) * (int64_t)sr / 1000LL;
+        samp_end   = snap_write - (snap_now_ms - region.time_end_ms)   * (int64_t)sr / 1000LL;
     } else {
         // row_write_pos 기반 (HOST 자체 요청)
         samp_end   = row_to_samp(region.fft_top);
         samp_start = row_to_samp(region.fft_bot);
         if(samp_end < 0 || samp_start < 0){
-            time_t snap_now = time(nullptr);
-            auto ts2samp = [&](time_t ts) -> int64_t {
-                return snap_write - ((int64_t)snap_now - (int64_t)ts) * (int64_t)sr;
+            // row_wall_ms 사용 (ms 정밀도 fallback)
+            auto ts2samp_ms = [&](int64_t ts_ms) -> int64_t {
+                int64_t snap_now_ms = (int64_t)snap_now * 1000LL;
+                return snap_write - (snap_now_ms - ts_ms) * (int64_t)sr / 1000LL;
             };
-            if(samp_start < 0) samp_start = ts2samp(region.time_start);
-            if(samp_end   < 0) samp_end   = ts2samp(region.time_end);
+            if(samp_start < 0) samp_start = (region.time_start_ms > 0) ? ts2samp_ms(region.time_start_ms) : -1;
+            if(samp_end   < 0) samp_end   = (region.time_end_ms > 0) ? ts2samp_ms(region.time_end_ms) : -1;
         }
     }
 
@@ -241,7 +243,7 @@ std::string FFTViewer::do_region_save_work(){
     char outpath[512];
     make_filename(outpath, sizeof(outpath),
                   cf_abs_mhz, bw_khz,
-                  region.time_start, region.time_end);
+                  region.time_start_ms / 1000, region.time_end_ms / 1000);
     FILE* wf = fopen(outpath, "wb");
     if(!wf){
         bewe_log_push(0,"[region_save] FAIL: fopen failed: %s\n", outpath);
@@ -249,7 +251,7 @@ std::string FFTViewer::do_region_save_work(){
     }
     // WAV 헤더 작성 (bewe 청크 포함: 중심주파수, 시작시각)
     uint64_t cf_hz_meta = (uint64_t)(cf_abs_mhz * 1e6 + 0.5);
-    int64_t  t_start_meta = (int64_t)region.time_start;
+    int64_t  t_start_meta = region.time_start_ms / 1000LL;  // 메타데이터는 초 단위 유지
     write_wav_header(wf, out_sr, (uint32_t)n_out, cf_hz_meta, t_start_meta);
 
     // ── 청크 단위 읽기 + mix-down + decimate + 저장 ───────────────────────
@@ -322,7 +324,7 @@ std::string FFTViewer::do_region_save_work(){
                     float oq = mq * fir_taps[0];
                     int dly_sz = fir_ntaps - 1;
                     for(int t = 1; t < fir_ntaps; t++){
-                        int idx = ((fir_dly_pos - t + dly_sz * 2) % dly_sz) * 2;
+                        int idx = ((fir_dly_pos - 1 - t + dly_sz * 2) % dly_sz) * 2;
                         oi += fir_state[idx    ] * fir_taps[t];
                         oq += fir_state[idx + 1] * fir_taps[t];
                     }

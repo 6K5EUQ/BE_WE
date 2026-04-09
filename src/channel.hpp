@@ -1,5 +1,6 @@
 #pragma once
 #include "config.hpp"
+#include "auto_id.hpp"
 #include <fftw3.h>
 #include <cstdint>
 #include <cstdio>
@@ -83,7 +84,7 @@ struct Channel {
     enum DemodMode{ DM_NONE=0, DM_AM, DM_FM, DM_MAGIC } mode=DM_NONE;
 
     // Digital decode mode (D키로 토글, 음성 복조와 독립)
-    enum DigitalMode{ DIGI_NONE=0, DIGI_AIS, DIGI_ADSB, DIGI_DEMOD } digital_mode=DIGI_NONE;
+    enum DigitalMode{ DIGI_NONE=0, DIGI_AIS, DIGI_ADSB, DIGI_DEMOD, DIGI_AUTO_ID } digital_mode=DIGI_NONE;
     int    digi_demod_type = 0;   // 0=ASK, 1=FSK, 2=BPSK
     float  digi_baud_rate = 1200; // user-specified baud rate
 
@@ -106,6 +107,9 @@ struct Channel {
     std::atomic<bool>   digi_stop_req{false};
     std::thread         digi_thr;
     std::atomic<size_t> digi_rp{0};
+
+    // Auto-ID result (populated by auto_id_worker, read by UI)
+    AutoIdResult auto_id;
 
     // Per-channel audio ring (float mono)
     static constexpr size_t AR_SZ   = 16384;

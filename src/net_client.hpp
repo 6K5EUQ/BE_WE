@@ -214,7 +214,7 @@ public:
     bool cmd_set_spectrum_pause(bool pause);
     bool cmd_request_region(int32_t fft_top, int32_t fft_bot,
                              float freq_lo, float freq_hi,
-                             int32_t time_start, int32_t time_end);
+                             int64_t time_start_ms, int64_t time_end_ms);
     bool cmd_start_iq_rec(int ch_idx);
     bool cmd_stop_iq_rec(int ch_idx);
     bool cmd_request_share_download(const char* filename);

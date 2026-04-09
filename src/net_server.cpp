@@ -270,7 +270,7 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
                     cb.on_request_region(c->op_index, c->name,
                         cmd->request_region.fft_top, cmd->request_region.fft_bot,
                         cmd->request_region.freq_lo, cmd->request_region.freq_hi,
-                        cmd->request_region.time_start, cmd->request_region.time_end);
+                        cmd->request_region.time_start_ms, cmd->request_region.time_end_ms);
                 break;
             case CmdType::CHASSIS_RESET:
                 if(cb.on_chassis_reset) cb.on_chassis_reset(c->name);

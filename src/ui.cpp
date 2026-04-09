@@ -837,20 +837,20 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
                 int disp_idx=tm_active.load()?tm_display_fft_idx:current_fft_idx;
                 region.fft_top=disp_idx-(int)(ry0-gy);
                 region.fft_bot=disp_idx-(int)(ry1-gy);
-                // wall_time 기반 타임스탬프 (JOIN 포함 정확한 시간)
+                // wall_time_ms 기반 타임스탬프 (JOIN 포함 정확한 시간, ms 정밀도)
                 {
-                    time_t wt_top = fft_idx_to_wall_time(region.fft_top);
-                    time_t wt_bot = fft_idx_to_wall_time(region.fft_bot);
-                    if(wt_top > 0 && wt_bot > 0){
-                        region.time_end   = wt_top;
-                        region.time_start = wt_bot;
+                    int64_t wt_top_ms = fft_idx_to_wall_time_ms(region.fft_top);
+                    int64_t wt_bot_ms = fft_idx_to_wall_time_ms(region.fft_bot);
+                    if(wt_top_ms > 0 && wt_bot_ms > 0){
+                        region.time_end_ms   = wt_top_ms;
+                        region.time_start_ms = wt_bot_ms;
                     } else {
-                        // fallback: rps 기반
+                        // fallback: rps 기반 (ms 단위)
                         float rps=(float)header.sample_rate/(float)fft_input_size/(float)time_average;
                         if(rps<=0) rps=37.5f;
-                        time_t now=time(nullptr);
-                        region.time_end  =now-(time_t)((current_fft_idx-region.fft_top)/rps);
-                        region.time_start=now-(time_t)((current_fft_idx-region.fft_bot)/rps);
+                        int64_t now_ms=(int64_t)(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+                        region.time_end_ms  =now_ms-(int64_t)((current_fft_idx-region.fft_top)*1000.0f/rps);
+                        region.time_start_ms=now_ms-(int64_t)((current_fft_idx-region.fft_bot)*1000.0f/rps);
                     }
                 }
                 region.active=true;
@@ -976,9 +976,9 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
                 region.edit_mode=RegionSel::EDIT_NONE;
                 float rps2=(float)header.sample_rate/(float)fft_input_size/(float)time_average;
                 if(rps2<=0) rps2=37.5f;
-                time_t now2=time(nullptr);
-                region.time_end  =now2-(time_t)((current_fft_idx-region.fft_top)/rps2);
-                region.time_start=now2-(time_t)((current_fft_idx-region.fft_bot)/rps2);
+                int64_t now2_ms=(int64_t)(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+                region.time_end_ms  =now2_ms-(int64_t)((current_fft_idx-region.fft_top)*1000.0f/rps2);
+                region.time_start_ms=now2_ms-(int64_t)((current_fft_idx-region.fft_bot)*1000.0f/rps2);
             }
             // 내부 클릭 카운트 (드래그 없이 release된 경우만)
             if(ImGui::IsMouseReleased(ImGuiMouseButton_Left)&&in_wf&&!ctrl&&inside_box){
@@ -2440,8 +2440,8 @@ void run_streaming_viewer(){
                         std::this_thread::sleep_for(std::chrono::milliseconds(50));
                     v.region.fft_top=ft; v.region.fft_bot=fb;
                     v.region.freq_lo=fl; v.region.freq_hi=fh;
-                    v.region.time_start=(time_t)ts;
-                    v.region.time_end=(time_t)te;
+                    v.region.time_start_ms=(int64_t)ts*1000LL;
+                    v.region.time_end_ms=(int64_t)te*1000LL;
                     v.region.active=true;
                     v.rec_busy_flag.store(true);
                     v.rec_state = FFTViewer::REC_BUSY;
@@ -3461,21 +3461,21 @@ void run_streaming_viewer(){
                 if(v.remote_mode && v.net_cli){
                     if(v.region.active){
                         // R키 시점: time_start/time_end는 선택 시점에 이미
-                        // fft_idx_to_wall_time()으로 정확히 계산됨 (절대 wall_time)
+                        // fft_idx_to_wall_time_ms()으로 정확히 계산됨 (절대 wall_time_ms, ms 정밀도)
                         // HOST/JOIN 워터폴 동일 → 같은 시간 = 같은 데이터
                         {
-                            time_t wt_top = v.fft_idx_to_wall_time(v.region.fft_top);
-                            time_t wt_bot = v.fft_idx_to_wall_time(v.region.fft_bot);
-                            if(wt_top > 0 && wt_bot > 0){
-                                v.region.time_end   = wt_top;
-                                v.region.time_start = wt_bot;
+                            int64_t wt_top_ms = v.fft_idx_to_wall_time_ms(v.region.fft_top);
+                            int64_t wt_bot_ms = v.fft_idx_to_wall_time_ms(v.region.fft_bot);
+                            if(wt_top_ms > 0 && wt_bot_ms > 0){
+                                v.region.time_end_ms   = wt_top_ms;
+                                v.region.time_start_ms = wt_bot_ms;
                             }
                             // fallback: 선택 시점 값 유지
                         }
                         v.net_cli->cmd_request_region(
                             v.region.fft_top, v.region.fft_bot,
                             v.region.freq_lo, v.region.freq_hi,
-                            (int32_t)v.region.time_start, (int32_t)v.region.time_end);
+                            v.region.time_start_ms, v.region.time_end_ms);
                         v.region.active = false;
                         {
                             std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
@@ -4757,8 +4757,9 @@ void run_streaming_viewer(){
                                     {"ADS-B", Channel::DIGI_ADSB},
                                     {"AIS",   Channel::DIGI_AIS},
                                     {"DEMOD", Channel::DIGI_DEMOD},
+                                    {"AUTO",  Channel::DIGI_AUTO_ID},
                                 };
-                                for(int di=0;di<3;di++){
+                                for(int di=0;di<4;di++){
                                     Channel::DigitalMode dm = dbtn[di].mode;
                                     bool dactive = (ch.digital_mode==dm && ch.digi_run.load());
                                     if(dactive)
@@ -4770,12 +4771,12 @@ void run_streaming_viewer(){
                                             v.stop_digi(ci);
                                         } else {
                                             v.stop_digi(ci);
-                                            if(dm == Channel::DIGI_AIS || dm == Channel::DIGI_DEMOD)
+                                            if(dm == Channel::DIGI_AIS || dm == Channel::DIGI_DEMOD || dm == Channel::DIGI_AUTO_ID)
                                                 v.start_digi(ci, dm);
                                         }
                                     }
                                     ImGui::PopStyleColor();
-                                    if(di<2) ImGui::SameLine(0,2);
+                                    if(di<3) ImGui::SameLine(0,2);
                                 }
                                 // DEMOD config (when DEMOD active or selected)
                                 if(ch.digital_mode==Channel::DIGI_DEMOD || (!ch.digi_run.load() && false)){
@@ -4794,6 +4795,21 @@ void run_streaming_viewer(){
                                     ImGui::InputFloat("##baud",&ch.digi_baud_rate,0,0,"%.0f");
                                     ImGui::SameLine(0,2);
                                     ImGui::TextDisabled("bd");
+                                }
+                                // AUTO mode status display
+                                if(ch.digital_mode==Channel::DIGI_AUTO_ID && ch.digi_run.load()){
+                                    ImGui::SameLine(0,8);
+                                    int st = ch.auto_id.state.load();
+                                    if(st <= (int)AutoIdState::ANALYZING){
+                                        ImGui::TextColored(ImVec4(1,1,0,1),"Analyzing...");
+                                    } else {
+                                        ModType m = (ModType)ch.auto_id.mod_type.load();
+                                        float baud2 = ch.auto_id.baud_rate.load();
+                                        float conf = ch.auto_id.confidence.load();
+                                        ImGui::TextColored(ImVec4(0,1,0.5f,1),"%s %s %.0fbd (%.0f%%)",
+                                            ch.auto_id.protocol_name,
+                                            mod_type_name(m), baud2, conf*100);
+                                    }
                                 }
                             }
                             ImGui::PopID();

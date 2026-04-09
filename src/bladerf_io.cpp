@@ -393,6 +393,7 @@ void FFTViewer::capture_and_process(){
                  total_ffts++; current_fft_idx=total_ffts-1;
                  header.num_ffts=std::min(total_ffts,MAX_FFTS_MEMORY);
                  row_write_pos[current_fft_idx%MAX_FFTS_MEMORY]=tm_iq_write_sample;
+                 row_wall_ms[current_fft_idx%MAX_FFTS_MEMORY]=(int64_t)(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
                  if(tm_iq_on.load(std::memory_order_relaxed))
                      tm_mark_rows(current_fft_idx%MAX_FFTS_MEMORY);
                  else

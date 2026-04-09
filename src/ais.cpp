@@ -498,6 +498,8 @@ void FFTViewer::start_digi(int ch_idx, Channel::DigitalMode mode){
         ch.digi_thr=std::thread(&FFTViewer::ais_worker,this,ch_idx);
     } else if(mode==Channel::DIGI_DEMOD){
         ch.digi_thr=std::thread(&FFTViewer::digi_demod_worker,this,ch_idx);
+    } else if(mode==Channel::DIGI_AUTO_ID){
+        ch.digi_thr=std::thread(&FFTViewer::auto_id_worker,this,ch_idx);
     }
     bewe_log_push(0,"[DIGI ch%d] start mode=%d\n",ch_idx,(int)mode);
 }

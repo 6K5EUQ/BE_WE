@@ -176,6 +176,12 @@ time_t FFTViewer::fft_idx_to_wall_time(int fft_idx) const {
     return 0;
 }
 
+int64_t FFTViewer::fft_idx_to_wall_time_ms(int fft_idx) const {
+    int slot = fft_idx % MAX_FFTS_MEMORY;
+    int64_t ms = row_wall_ms[slot];
+    return (ms > 0) ? ms : 0;
+}
+
 void FFTViewer::tm_update_display(){
     // wf_events 기반 실제 rps 계산 (JOIN/HOST 모두 정확)
     float rps = 0.0f;

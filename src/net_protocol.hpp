@@ -134,7 +134,7 @@ struct __attribute__((packed)) PktCmd {
         struct { uint8_t pause; }                          set_spectrum_pause;
         struct { int32_t fft_top; int32_t fft_bot;
                  float freq_lo; float freq_hi;
-                 int32_t time_start; int32_t time_end; }  request_region;
+                 int64_t time_start_ms; int64_t time_end_ms; }  request_region;
         struct { uint32_t size; }                          set_fft_size;
         struct { float msps; }                             set_sr;
         struct { uint8_t idx; }                            start_iq_rec;

@@ -170,7 +170,7 @@ struct ServerCallbacks {
     std::function<void(uint8_t op_idx, const char* op_name,
                        int32_t fft_top, int32_t fft_bot,
                        float freq_lo, float freq_hi,
-                       int32_t time_start, int32_t time_end)> on_request_region;
+                       int64_t time_start_ms, int64_t time_end_ms)> on_request_region;
     std::function<void(const char* from, const char* msg)> on_chat;
     std::function<void(uint8_t op_idx, const char* filename)> on_share_download_req;
     // JOIN이 파일 업로드 완료: op_idx, op_name, 저장된 절대경로

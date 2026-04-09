@@ -87,6 +87,8 @@ public:
     // 각 FFT 행 커밋 시점의 tm_iq_write_sample 기록
     // row_write_pos[fi % MAX_FFTS_MEMORY] = 그 행의 IQ 데이터가 끝나는 파일 위치
     int64_t row_write_pos[MAX_FFTS_MEMORY]={};
+    // 각 FFT 행 커밋 시점의 wall_time (밀리초)
+    int64_t row_wall_ms[MAX_FFTS_MEMORY]={};
 
     // ── 워터폴 좌측 이벤트 태그 ───────────────────────────────────────────
     struct WfEvent {
@@ -102,6 +104,9 @@ public:
     // fft_idx → wall_time 변환 (wf_events 보간, 없으면 rps 기반 추정)
     // 반환값: Unix timestamp (time_t), 0이면 변환 불가
     time_t fft_idx_to_wall_time(int fft_idx) const;
+    // fft_idx → wall_time_ms 변환 (row_wall_ms 직접 참조, 밀리초 정밀도)
+    // 반환값: Unix timestamp * 1000 (int64_t), 0이면 변환 불가
+    int64_t fft_idx_to_wall_time_ms(int fft_idx) const;
 
     // IQ 롤링 파일 관리
     // TM_IQ_DIR: BEWEPaths::time_temp_dir() 로 런타임 결정
@@ -147,7 +152,7 @@ public:
         float  drag_x0=0, drag_y0=0, drag_x1=0, drag_y1=0;
         float  freq_lo=0, freq_hi=0;
         int    fft_top=0, fft_bot=0;
-        time_t time_start=0, time_end=0;
+        int64_t time_start_ms=0, time_end_ms=0;
         int    lclick_count=0;
         float  lclick_timer=0;
 
@@ -577,6 +582,7 @@ public:
     // ── ais.cpp ───────────────────────────────────────────────────────────
     void ais_worker(int ch_idx);
     void digi_demod_worker(int ch_idx);
+    void auto_id_worker(int ch_idx);
     void start_digi(int ch_idx, Channel::DigitalMode mode);
     void stop_digi(int ch_idx);
     void stop_all_dem();

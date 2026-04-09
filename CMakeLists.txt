@@ -35,6 +35,8 @@ if(BEWE_HEADLESS)
         src/hw_detect.cpp
         src/ais.cpp
         src/digi_demod.cpp
+        src/auto_id.cpp
+        src/proto_decode.cpp
         src/login.cpp
         src/net_server.cpp
         src/net_client.cpp
@@ -103,6 +105,8 @@ else()
         src/hw_detect.cpp
         src/ais.cpp
         src/digi_demod.cpp
+        src/auto_id.cpp
+        src/proto_decode.cpp
         src/login.cpp
         src/net_server.cpp
         src/net_client.cpp

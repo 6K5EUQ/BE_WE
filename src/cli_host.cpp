@@ -463,7 +463,7 @@ void run_cli_host(){
     srv->cb.on_request_region = [&](uint8_t op_idx, const char* op_name,
                                      int32_t fft_top, int32_t fft_bot,
                                      float freq_lo, float freq_hi,
-                                     int32_t time_start, int32_t time_end){
+                                     int64_t time_start_ms, int64_t time_end_ms){
         std::string fname;
         {
             std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
@@ -497,8 +497,8 @@ void run_cli_host(){
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             v.region.fft_top=0; v.region.fft_bot=0; // 사용 안 함 (time 기반)
             v.region.freq_lo=fl; v.region.freq_hi=fh;
-            v.region.time_start=(time_t)time_start;
-            v.region.time_end=(time_t)time_end;
+            v.region.time_start_ms=time_start_ms;
+            v.region.time_end_ms=time_end_ms;
             v.region.active=true;
             v.rec_busy_flag.store(true);
             v.rec_state = FFTViewer::REC_BUSY;
