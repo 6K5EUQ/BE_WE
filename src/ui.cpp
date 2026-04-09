@@ -3460,18 +3460,18 @@ void run_streaming_viewer(){
             if(ImGui::IsKeyPressed(ImGuiKey_R,false)){
                 if(v.remote_mode && v.net_cli){
                     if(v.region.active){
-                        // R키 시점: FFT 인덱스 → "현재로부터 몇 초 전" 상대값으로 변환
-                        // HOST/JOIN 시계 차이에 영향 안 받음
+                        // R키 시점: time_start/time_end는 선택 시점에 이미
+                        // fft_idx_to_wall_time()으로 정확히 계산됨 (절대 wall_time)
+                        // HOST/JOIN 워터폴 동일 → 같은 시간 = 같은 데이터
                         {
-                            float rps_r=(float)v.header.sample_rate/(float)v.fft_input_size/(float)v.time_average;
-                            if(rps_r<=0) rps_r=37.5f;
-                            // 음수 오프셋: 현재(0)로부터 몇 초 전 (-값)
-                            int32_t sec_ago_top = -(int32_t)((v.current_fft_idx - v.region.fft_top) / rps_r);
-                            int32_t sec_ago_bot = -(int32_t)((v.current_fft_idx - v.region.fft_bot) / rps_r);
-                            v.region.time_end   = (time_t)sec_ago_top;  // 더 최근 (작은 음수)
-                            v.region.time_start = (time_t)sec_ago_bot;  // 더 과거 (큰 음수)
+                            time_t wt_top = v.fft_idx_to_wall_time(v.region.fft_top);
+                            time_t wt_bot = v.fft_idx_to_wall_time(v.region.fft_bot);
+                            if(wt_top > 0 && wt_bot > 0){
+                                v.region.time_end   = wt_top;
+                                v.region.time_start = wt_bot;
+                            }
+                            // fallback: 선택 시점 값 유지
                         }
-                        // JOIN: 영역 IQ 녹음 요청 (time에 음수=상대오프셋)
                         v.net_cli->cmd_request_region(
                             v.region.fft_top, v.region.fft_bot,
                             v.region.freq_lo, v.region.freq_hi,

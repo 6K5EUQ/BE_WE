@@ -90,6 +90,8 @@ static void make_filename(char* out, size_t sz,
                           float cf_mhz, float bw_khz,
                           time_t t_start, time_t t_end)
 {
+    if(t_start <= 0) t_start = time(nullptr);
+    if(t_end   <= 0) t_end   = time(nullptr);
     struct tm *ts=localtime(&t_start);
     char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",ts);
     struct tm *te=localtime(&t_end);
@@ -190,22 +192,25 @@ std::string FFTViewer::do_region_save_work(){
         return pos;
     };
 
-    int64_t samp_end   = row_to_samp(region.fft_top);
-    int64_t samp_start = row_to_samp(region.fft_bot);
+    int64_t samp_start = -1, samp_end = -1;
 
-    // fallback: row_write_pos 없으면 time 기반
-    if(samp_end < 0 || samp_start < 0){
-        time_t  snap_now = time(nullptr);
-        auto ts2samp = [&](time_t ts) -> int64_t {
-            if(ts <= 0){
-                // 음수 = 상대 오프셋(초): -10 = 10초 전 → snap_write + ts*sr
-                return snap_write + (int64_t)ts * (int64_t)sr;
-            }
-            // 양수 = 절대 time_t
-            return snap_write - ((int64_t)snap_now - (int64_t)ts) * (int64_t)sr;
-        };
-        if(samp_start < 0) samp_start = ts2samp(region.time_start);
-        if(samp_end   < 0) samp_end   = ts2samp(region.time_end);
+    if(region.time_start > 0 && region.time_end > 0){
+        // 절대 wall_time → 샘플 위치 (JOIN 요청 시 가장 정확)
+        time_t snap_now = time(nullptr);
+        samp_start = snap_write - ((int64_t)snap_now - (int64_t)region.time_start) * (int64_t)sr;
+        samp_end   = snap_write - ((int64_t)snap_now - (int64_t)region.time_end)   * (int64_t)sr;
+    } else {
+        // row_write_pos 기반 (HOST 자체 요청)
+        samp_end   = row_to_samp(region.fft_top);
+        samp_start = row_to_samp(region.fft_bot);
+        if(samp_end < 0 || samp_start < 0){
+            time_t snap_now = time(nullptr);
+            auto ts2samp = [&](time_t ts) -> int64_t {
+                return snap_write - ((int64_t)snap_now - (int64_t)ts) * (int64_t)sr;
+            };
+            if(samp_start < 0) samp_start = ts2samp(region.time_start);
+            if(samp_end   < 0) samp_end   = ts2samp(region.time_end);
+        }
     }
 
     if(samp_start > samp_end) std::swap(samp_start, samp_end);

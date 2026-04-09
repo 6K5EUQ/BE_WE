@@ -484,30 +484,18 @@ void run_cli_host(){
             v.rec_entries.push_back(e);
             fname = fn;
         }
-        float rps=(float)v.header.sample_rate/(float)v.fft_input_size/(float)v.time_average;
-        if(rps<=0.f) rps=37.5f;
-        time_t now_h=time(nullptr);
-        int cur_fi=v.current_fft_idx;
-        int32_t ft, fb;
-        if(time_end <= 0 && time_start <= 0){
-            // 음수 = JOIN 상대 오프셋 (초): -5 = 5초 전
-            ft = (int32_t)(cur_fi + (int32_t)(time_end * rps));    // time_end는 음수, +하면 과거
-            fb = (int32_t)(cur_fi + (int32_t)(time_start * rps));
-        } else {
-            // 절대 time_t (HOST 자체 요청 등)
-            ft=(int32_t)(cur_fi-(int32_t)((now_h-(time_t)time_end)*rps));
-            fb=(int32_t)(cur_fi-(int32_t)((now_h-(time_t)time_start)*rps));
-        }
+        // JOIN 요청: time_start/time_end는 절대 wall_time
+        // HOST에서 FFT 인덱스 변환 없이 time 기반으로 직접 샘플 위치 계산
         float fl=freq_lo, fh=freq_hi;
         uint8_t oidx=op_idx;
         std::string sid = v.station_name + "_" + std::string(login_get_id());
         static std::atomic<uint32_t> g_req_id{1000};
         uint32_t req_id_val = g_req_id.fetch_add(1);
-        std::thread([&v,srv,ft,fb,fl,fh,time_start,time_end,oidx,fname,sid,&central_cli,req_id_val](){
+        std::thread([&v,srv,fl,fh,time_start,time_end,oidx,fname,sid,&central_cli,req_id_val](){
             uint32_t req_id = req_id_val;
             for(int w=0;w<200&&v.rec_busy_flag.load();w++)
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            v.region.fft_top=ft; v.region.fft_bot=fb;
+            v.region.fft_top=0; v.region.fft_bot=0; // 사용 안 함 (time 기반)
             v.region.freq_lo=fl; v.region.freq_hi=fh;
             v.region.time_start=(time_t)time_start;
             v.region.time_end=(time_t)time_end;
@@ -523,9 +511,9 @@ void run_cli_host(){
                 prog.done=0; prog.total=0; prog.phase=0;
                 srv->broadcast_iq_progress(prog);
             }
-            bewe_log_push(0,"[CLI] region_save: tm_on=%d tm_write=%lld fft=%d~%d t=%d~%d\n",
+            bewe_log_push(0,"[CLI] region_save: tm_on=%d tm_write=%lld t=%d~%d\n",
                 (int)v.tm_iq_on.load(), (long long)v.tm_iq_write_sample,
-                ft, fb, time_start, time_end);
+                time_start, time_end);
             std::string path = v.do_region_save_work();
             v.rec_state = FFTViewer::REC_SUCCESS;
             v.rec_success_timer = 3.0f;
