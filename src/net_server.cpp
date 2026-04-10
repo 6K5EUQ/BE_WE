@@ -549,6 +549,8 @@ void NetServer::broadcast_channel_sync(const Channel* chs, int n){
         strncpy(sync.ch[i].owner_name, chs[i].owner, 31);
         sync.ch[i].iq_rec_secs    = (chs[i].iq_rec_sr > 0) ? (uint32_t)(chs[i].iq_rec_frames / chs[i].iq_rec_sr) : 0;
         sync.ch[i].audio_rec_secs = (chs[i].audio_rec_sr > 0) ? (uint32_t)(chs[i].audio_rec_frames / chs[i].audio_rec_sr) : 0;
+        sync.ch[i].sq_active_secs = (uint32_t)chs[i].sq_active_time;
+        sync.ch[i].sq_total_secs  = (uint32_t)chs[i].sq_total_time;
         sync.ch[i].iq_rec_on      = chs[i].iq_rec_on.load() ? 1 : 0;
         sync.ch[i].audio_rec_on   = chs[i].audio_rec_on.load() ? 1 : 0;
     }

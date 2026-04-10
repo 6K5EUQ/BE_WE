@@ -1781,6 +1781,8 @@ void run_streaming_viewer(){
                 // HOST 녹음 시간 동기화
                 v.channels[i].synced_iq_rec_secs   = sync.ch[i].iq_rec_secs;
                 v.channels[i].synced_audio_rec_secs= sync.ch[i].audio_rec_secs;
+                v.channels[i].sq_active_time       = (float)sync.ch[i].sq_active_secs;
+                v.channels[i].sq_total_time        = (float)sync.ch[i].sq_total_secs;
                 // JOIN 로컬 녹음 중이면 HOST 값으로 덮어쓰지 않음
                 if(!v.channels[i].iq_rec_on.load())
                     v.channels[i].iq_rec_on.store(sync.ch[i].iq_rec_on != 0);
@@ -2972,17 +2974,25 @@ void run_streaming_viewer(){
                 if(q < p-1) mhz = (float)atof(q+1);
             }
             if(mhz > 0) snprintf(fields[2], 256, "%.3f MHz", mhz);
-            // Day/Time: parse _MonDD_YYYY_HHMMSS
-            // look for pattern like Apr08_2026_171015
+            // Day/Time: parse _MonDD_YYYY_HHMMSS from filename
+            bool dt_found = false;
             const char* under = filename.c_str();
             for(int i=0; i<3 && under; i++) under = strchr(under+1, '_');
             if(under && strlen(under) > 16){
-                char mon[4]={}, rest[32]={};
+                char mon[4]={};
                 int day=0,yr=0,hh=0,mm=0,ss=0;
                 if(sscanf(under-3, "%3s%2d_%4d_%2d%2d%2d", mon,&day,&yr,&hh,&mm,&ss) >= 5){
                     snprintf(fields[0], 256, "%s %02d, %04d", mon, day, yr);
                     snprintf(fields[1], 256, "%02d:%02d:%02d", hh, mm, ss);
+                    dt_found = true;
                 }
+            }
+            // fallback: 현재 시각
+            if(!dt_found){
+                time_t now = time(nullptr);
+                struct tm tm2; localtime_r(&now, &tm2);
+                strftime(fields[0], 256, "%b %d, %Y", &tm2);
+                strftime(fields[1], 256, "%H:%M:%S", &tm2);
             }
             // Operator
             strncpy(fields[14], login_get_id(), 255);
@@ -3469,6 +3479,11 @@ void run_streaming_viewer(){
                     memcpy(dst, frm.data.data(), fsz * sizeof(float));
                     v.total_ffts++;
                     v.current_fft_idx = v.total_ffts - 1;
+                    // JOIN: row_wall_ms 설정 (ms 정밀도, HOST wall_time 기준)
+                    v.row_wall_ms[v.current_fft_idx % MAX_FFTS_MEMORY] =
+                        (frm.wall_time > 0) ? (int64_t)frm.wall_time * 1000LL
+                        : (int64_t)(std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch()).count());
                     // wall_time 기반 워터폴 시간태그
                     if(frm.wall_time > 0){
                         time_t wt = (time_t)frm.wall_time;
@@ -4319,32 +4334,32 @@ void run_streaming_viewer(){
                 return hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
             };
 
-            // ── STAT 버튼 ─────────────────────────────────────────────────
+            // ── STATUS 버튼 ───────────────────────────────────────────────
             float btn_x = rpx + 6;
             if(subbar_btn(btn_x, "STATUS", stat_open, IM_COL32(80,255,160,255))){
                 stat_open = !stat_open;
-                if(stat_open){ board_open=false; v.sched_panel_open=false; archive_open=false; }
-            }
-
-            // ── BOARD 버튼 ───────────────────────────────────────────────
-            float board_btn_x = btn_x + 56;
-            if(subbar_btn(board_btn_x, "BOARD", board_open, IM_COL32(255,200,80,255))){
-                board_open = !board_open;
-                if(board_open){ stat_open=false; v.sched_panel_open=false; archive_open=false; }
-            }
-
-            // ── SCHED 버튼 ───────────────────────────────────────────────
-            float sched_btn_x = board_btn_x + 56;
-            if(subbar_btn(sched_btn_x, "SCHED", v.sched_panel_open, IM_COL32(255,100,100,255))){
-                v.sched_panel_open = !v.sched_panel_open;
-                if(v.sched_panel_open){ stat_open=false; board_open=false; archive_open=false; }
+                if(stat_open){ archive_open=false; v.sched_panel_open=false; board_open=false; }
             }
 
             // ── ARCHIVE 버튼 ─────────────────────────────────────────────
-            float arch_btn_x = sched_btn_x + 56;
+            float arch_btn_x = btn_x + 56;
             if(subbar_btn(arch_btn_x, "ARCHIVE", archive_open, IM_COL32(180,140,255,255))){
                 archive_open = !archive_open;
-                if(archive_open){ stat_open=false; board_open=false; v.sched_panel_open=false; }
+                if(archive_open){ stat_open=false; v.sched_panel_open=false; board_open=false; }
+            }
+
+            // ── SCHED 버튼 ───────────────────────────────────────────────
+            float sched_btn_x = arch_btn_x + 64;
+            if(subbar_btn(sched_btn_x, "SCHED", v.sched_panel_open, IM_COL32(255,100,100,255))){
+                v.sched_panel_open = !v.sched_panel_open;
+                if(v.sched_panel_open){ stat_open=false; archive_open=false; board_open=false; }
+            }
+
+            // ── BOARD 버튼 ───────────────────────────────────────────────
+            float board_btn_x = sched_btn_x + 56;
+            if(subbar_btn(board_btn_x, "BOARD", board_open, IM_COL32(255,200,80,255))){
+                board_open = !board_open;
+                if(board_open){ stat_open=false; archive_open=false; v.sched_panel_open=false; }
             }
 
             // ── 패널 콘텐츠 영역 ─────────────────────────────────────────
@@ -4989,13 +5004,16 @@ void run_streaming_viewer(){
                                                 auto& rc=rec_sz_cache[re.filename];
                                                 if(t2-rc.first >= 0.5f){ rc.first=t2; rc.second=fmt_filesize("",re.path); }
                                                 int iq_rec_secs=0;
+                                                int iq_total_secs=0;
                                                 if(re.ch_idx>=0){
-                                                    if(v.remote_mode)
-                                                        iq_rec_secs=(int)v.channels[re.ch_idx].synced_iq_rec_secs;
-                                                    else if(v.channels[re.ch_idx].iq_rec_sr>0)
+                                                    if(v.channels[re.ch_idx].iq_rec_on.load() && v.channels[re.ch_idx].iq_rec_sr>0)
                                                         iq_rec_secs=(int)(v.channels[re.ch_idx].iq_rec_frames/v.channels[re.ch_idx].iq_rec_sr);
                                                 }
-                                                int iq_secs=iq_rec_secs;
+                                                if(!re.finished){
+                                                    float el=std::chrono::duration<float>(std::chrono::steady_clock::now()-re.t_start).count();
+                                                    iq_total_secs=(int)el;
+                                                }
+                                                int iq_secs=iq_total_secs;
                                                 int iq_dn=re.ch_idx>=0?v.freq_sorted_display_num(re.ch_idx):0;
                                                 char iq_lbl[512];
                                                 if(!rc.second.empty())
@@ -5131,14 +5149,17 @@ void run_streaming_viewer(){
                                         auto& re=v.rec_entries[ri];
                                         ImGui::PushID(ri+32000);
                                         {
-                                            int rec_secs=0;
+                                            int rec_secs=0; // 스컬치 넘긴 실 녹음 시간
+                                            int total_secs=0; // 전체 경과 시간
                                             if(re.ch_idx>=0){
-                                                if(v.remote_mode)
-                                                    rec_secs=(int)v.channels[re.ch_idx].synced_audio_rec_secs;
-                                                else if(v.channels[re.ch_idx].audio_rec_sr>0)
+                                                if(v.channels[re.ch_idx].audio_rec_on.load() && v.channels[re.ch_idx].audio_rec_sr>0)
                                                     rec_secs=(int)(v.channels[re.ch_idx].audio_rec_frames/v.channels[re.ch_idx].audio_rec_sr);
                                             }
-                                            int secs=rec_secs;
+                                            if(!re.finished){
+                                                float el=std::chrono::duration<float>(std::chrono::steady_clock::now()-re.t_start).count();
+                                                total_secs=(int)el;
+                                            }
+                                            int secs=total_secs;
                                             float t2=(float)ImGui::GetTime();
                                             bool blink=(fmodf(t2,0.8f)<0.4f);
                                             ImGui::PushStyleColor(ImGuiCol_Text,
@@ -5754,42 +5775,58 @@ void run_streaming_viewer(){
                     ImGuiWindowFlags_HorizontalScrollbar);
 
                 // ── Private ──────────────────────────────────────────────
+                // 파일 목록 렌더링 헬퍼: 파일명 + 크기 + WAV 시간
+                static std::unordered_map<std::string,std::string> arch_info_cache;
+                auto draw_arch_file = [&](const std::string& dir, const std::string& fn){
+                    std::string fp = dir + "/" + fn;
+                    // 캐시된 정보 (크기+시간)
+                    auto& cached = arch_info_cache[fp];
+                    if(cached.empty()){
+                        struct stat st{}; char info[64]="";
+                        if(stat(fp.c_str(),&st)==0){
+                            double mb = st.st_size / 1048576.0;
+                            // WAV 시간 추정: (filesize - 44) / (sr * 2ch * 2bytes)
+                            // sr은 WAV 헤더에서 읽어야 하지만, 빠른 추정용
+                            double sec = 0;
+                            FILE* wf = fopen(fp.c_str(), "rb");
+                            if(wf){
+                                uint8_t hdr[44]; if(fread(hdr,1,44,wf)==44){
+                                    uint32_t wsr = *(uint32_t*)(hdr+24);
+                                    uint16_t wch = *(uint16_t*)(hdr+22);
+                                    uint16_t wbps= *(uint16_t*)(hdr+34);
+                                    if(wsr>0 && wch>0 && wbps>0)
+                                        sec = (double)(st.st_size-44) / (wsr * wch * (wbps/8));
+                                }
+                                fclose(wf);
+                            }
+                            if(sec > 0) snprintf(info,sizeof(info),"  [%.0fs]  [%.1fM]",sec,mb);
+                            else        snprintf(info,sizeof(info),"  [%.1fM]",mb);
+                        }
+                        cached = info;
+                    }
+                    std::string label = fn + cached;
+                    bool sel = file_ctx.selected && file_ctx.filepath==fp;
+                    ImGui::Selectable(label.c_str(), sel);
+                    if(ImGui::IsItemHovered()){
+                        if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                            file_ctx.selected=true; file_ctx.filepath=fp; file_ctx.filename=fn; file_ctx.is_public=false;
+                        }
+                        if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                            file_ctx={true,io.MousePos.x,io.MousePos.y,fp,fn}; file_ctx.selected=true;
+                        }
+                    }
+                };
+
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                 if(ImGui::CollapsingHeader("Private")){
                     ImGui::Indent(8.f);
-                    // IQ 파일
                     if(ImGui::TreeNode("IQ")){
-                        for(auto& fn : priv_iq_files){
-                            std::string fp = BEWEPaths::private_iq_dir()+"/"+fn;
-                            bool sel = file_ctx.selected && file_ctx.filepath==fp;
-                            ImGui::Selectable(fn.c_str(), sel);
-                            if(ImGui::IsItemHovered()){
-                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
-                                    file_ctx.selected=true; file_ctx.filepath=fp; file_ctx.filename=fn; file_ctx.is_public=false;
-                                }
-                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                                    file_ctx={true,io.MousePos.x,io.MousePos.y,fp,fn}; file_ctx.selected=true;
-                                }
-                            }
-                        }
+                        for(auto& fn : priv_iq_files) draw_arch_file(BEWEPaths::private_iq_dir(), fn);
                         if(priv_iq_files.empty()) ImGui::TextDisabled("  (empty)");
                         ImGui::TreePop();
                     }
-                    // Audio 파일
                     if(ImGui::TreeNode("Audio")){
-                        for(auto& fn : priv_audio_files){
-                            std::string fp = BEWEPaths::private_audio_dir()+"/"+fn;
-                            bool sel = file_ctx.selected && file_ctx.filepath==fp;
-                            ImGui::Selectable(fn.c_str(), sel);
-                            if(ImGui::IsItemHovered()){
-                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
-                                    file_ctx.selected=true; file_ctx.filepath=fp; file_ctx.filename=fn; file_ctx.is_public=false;
-                                }
-                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                                    file_ctx={true,io.MousePos.x,io.MousePos.y,fp,fn}; file_ctx.selected=true;
-                                }
-                            }
-                        }
+                        for(auto& fn : priv_audio_files) draw_arch_file(BEWEPaths::private_audio_dir(), fn);
                         if(priv_audio_files.empty()) ImGui::TextDisabled("  (empty)");
                         ImGui::TreePop();
                     }
@@ -5826,8 +5863,12 @@ void run_streaming_viewer(){
                     }
                     int rpt_total = (int)(report_iq_files.size()+report_audio_files.size());
                     if(rpt_total > 0){
-                        for(auto& fn : report_iq_files){
-                            std::string fp = BEWEPaths::report_iq_dir()+"/"+fn;
+                        for(auto& fn : report_iq_files)
+                            draw_arch_file(BEWEPaths::report_iq_dir(), fn);
+                        for(auto& fn : report_audio_files)
+                            draw_arch_file(BEWEPaths::report_audio_dir(), fn);
+                        if(false){ // removed old inline rendering
+                            std::string fp, fn;
                             ImGui::Selectable(fn.c_str(), file_ctx.selected && file_ctx.filepath==fp);
                             if(ImGui::IsItemHovered()){
                                 if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
