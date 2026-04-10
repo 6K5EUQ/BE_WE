@@ -668,6 +668,23 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         return;
     }
 
+    // ── DB_DELETE from HOST ──────────────────────────────────────────────
+    if(bewe_type == BEWE_TYPE_DB_DELETE){
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        if(plen >= 128+32){
+            char fn[129]={}; memcpy(fn, payload, 128);
+            char op[33]={}; memcpy(op, payload+128, 32);
+            const char* home = getenv("HOME");
+            std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
+            remove((db_base+"/"+op+"/"+fn).c_str());
+            remove((db_base+"/"+op+"/"+fn+".info").c_str());
+            printf("[Central] DB_DELETE(HOST): '%s' by '%s'\n", fn, op);
+            broadcast_db_list(room);
+        }
+        return;
+    }
+
     // ── 기타 패킷 (FFT, HEARTBEAT, STATUS 등): 타입에 따라 분류 ─────────
     // FFT: auth 완료된 JOIN에게만, 전용 send_queue (대용량, 드롭 허용)
     // 제어(HEARTBEAT/STATUS/CMD_ACK 등): ctrl_queue (우선 전송, 드롭 없음)
@@ -834,6 +851,25 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
             }
         }
         return true;  // HOST에 포워드 안 함
+    }
+
+    // ── DB_DELETE_REQ: Central에서 파일 삭제 ────────────────────────
+    if(bewe_type == BEWE_TYPE_DB_DELETE){
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        if(plen >= 128+32){
+            char fn[129]={}; memcpy(fn, payload, 128);
+            char op[33]={}; memcpy(op, payload+128, 32);
+            const char* home = getenv("HOME");
+            std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
+            std::string fpath = db_base + "/" + op + "/" + fn;
+            std::string ipath = fpath + ".info";
+            remove(fpath.c_str());
+            remove(ipath.c_str());
+            printf("[Central] DB_DELETE: '%s' by '%s'\n", fn, op);
+            broadcast_db_list(room);
+        }
+        return true;
     }
 
     // ── CHAT: 전역 브로드캐스트 (모든 방 JOIN + 다른 방 HOST) ────────
