@@ -479,7 +479,7 @@ void run_cli_host(){
             strncpy(e.req_op_name, op_name?op_name:"?", 31);
             e.req_fft_top=fft_top; e.req_fft_bot=fft_bot;
             e.req_freq_lo=freq_lo; e.req_freq_hi=freq_hi;
-            e.req_time_start=time_start; e.req_time_end=time_end;
+            e.req_time_start=time_start_ms/1000; e.req_time_end=time_end_ms/1000;
             e.t_start=std::chrono::steady_clock::now();
             v.rec_entries.push_back(e);
             fname = fn;
@@ -491,7 +491,7 @@ void run_cli_host(){
         std::string sid = v.station_name + "_" + std::string(login_get_id());
         static std::atomic<uint32_t> g_req_id{1000};
         uint32_t req_id_val = g_req_id.fetch_add(1);
-        std::thread([&v,srv,fl,fh,time_start,time_end,oidx,fname,sid,&central_cli,req_id_val](){
+        std::thread([&v,srv,fl,fh,time_start_ms,time_end_ms,oidx,fname,sid,&central_cli,req_id_val](){
             uint32_t req_id = req_id_val;
             for(int w=0;w<200&&v.rec_busy_flag.load();w++)
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -511,9 +511,9 @@ void run_cli_host(){
                 prog.done=0; prog.total=0; prog.phase=0;
                 srv->broadcast_iq_progress(prog);
             }
-            bewe_log_push(0,"[CLI] region_save: tm_on=%d tm_write=%lld t=%d~%d\n",
+            bewe_log_push(0,"[CLI] region_save: tm_on=%d tm_write=%lld t_ms=%lld~%lld\n",
                 (int)v.tm_iq_on.load(), (long long)v.tm_iq_write_sample,
-                time_start, time_end);
+                (long long)time_start_ms, (long long)time_end_ms);
             std::string path = v.do_region_save_work();
             v.rec_state = FFTViewer::REC_SUCCESS;
             v.rec_success_timer = 3.0f;
