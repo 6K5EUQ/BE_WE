@@ -2905,6 +2905,7 @@ void run_streaming_viewer(){
     bool  ops_open     = false;
     bool  stat_open    = false;
     bool  board_open   = false;
+    bool  archive_open = false;
     int   last_fft_seq = -1;  // CONNECT 모드 FFT 시퀀스 추적
     bool  chat_scroll_bottom = false;
     // 파일 우클릭 컨텍스트 메뉴
@@ -4249,21 +4250,28 @@ void run_streaming_viewer(){
             float btn_x = rpx + 6;
             if(subbar_btn(btn_x, "STATUS", stat_open, IM_COL32(80,255,160,255))){
                 stat_open = !stat_open;
-                if(stat_open){ board_open=false; v.sched_panel_open=false; }
+                if(stat_open){ board_open=false; v.sched_panel_open=false; archive_open=false; }
             }
 
             // ── BOARD 버튼 ───────────────────────────────────────────────
             float board_btn_x = btn_x + 56;
             if(subbar_btn(board_btn_x, "BOARD", board_open, IM_COL32(255,200,80,255))){
                 board_open = !board_open;
-                if(board_open){ stat_open=false; v.sched_panel_open=false; }
+                if(board_open){ stat_open=false; v.sched_panel_open=false; archive_open=false; }
             }
 
             // ── SCHED 버튼 ───────────────────────────────────────────────
             float sched_btn_x = board_btn_x + 56;
             if(subbar_btn(sched_btn_x, "SCHED", v.sched_panel_open, IM_COL32(255,100,100,255))){
                 v.sched_panel_open = !v.sched_panel_open;
-                if(v.sched_panel_open){ stat_open=false; board_open=false; }
+                if(v.sched_panel_open){ stat_open=false; board_open=false; archive_open=false; }
+            }
+
+            // ── ARCHIVE 버튼 ─────────────────────────────────────────────
+            float arch_btn_x = sched_btn_x + 56;
+            if(subbar_btn(arch_btn_x, "ARCHIVE", archive_open, IM_COL32(180,140,255,255))){
+                archive_open = !archive_open;
+                if(archive_open){ stat_open=false; board_open=false; v.sched_panel_open=false; }
             }
 
             // ── 패널 콘텐츠 영역 ─────────────────────────────────────────
@@ -4371,9 +4379,9 @@ void run_streaming_viewer(){
                     ImGui::BeginChild("##link_scroll", ImVec2(0,0), false,
                         ImGuiWindowFlags_HorizontalScrollbar);
 
-                    // ── Hardware ─────────────────────────────────────────
+                    // ── Receiver ─────────────────────────────────────────
                     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                    if(ImGui::CollapsingHeader("Hardware")){
+                    if(ImGui::CollapsingHeader("Receiver")){
                         ImGui::Indent(8.f);
                         const char* hw_role = v.net_cli ? "[JOIN]" : (v.net_srv ? "[HOST]" : "[LOCAL]");
                         // 하드웨어 이름: JOIN이면 remote_hw로 판단, 아니면 로컬 디바이스
@@ -4399,74 +4407,68 @@ void run_streaming_viewer(){
                                 (double)(v.header.center_frequency/1e6),
                                 (double)(v.header.sample_rate/1e6));
                         }
-                        ImGui::Unindent(8.f);
-                    }
-                    ImGui::Spacing();
-
-                    // ── Network ──────────────────────────────────────────
-                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                    if(ImGui::CollapsingHeader("Network")){
-                        ImGui::Indent(8.f);
-                        auto fmt_bytes = [](uint64_t b) -> std::string {
-                            char buf[32];
-                            if(b < 1024)               snprintf(buf,sizeof(buf),"%llu B", (unsigned long long)b);
-                            else if(b < 1024*1024)     snprintf(buf,sizeof(buf),"%.1f KB",(double)b/1024);
-                            else if(b < 1024ULL*1024*1024) snprintf(buf,sizeof(buf),"%.1f MB",(double)b/(1024*1024));
-                            else                       snprintf(buf,sizeof(buf),"%.2f GB",(double)b/(1024ULL*1024*1024));
-                            return buf;
-                        };
-                        auto fmt_rate = [](double bps) -> std::string {
-                            char buf[32];
-                            if(bps < 1024)             snprintf(buf,sizeof(buf),"%.0f B/s", bps);
-                            else if(bps < 1024*1024)   snprintf(buf,sizeof(buf),"%.1f KB/s", bps/1024);
-                            else                       snprintf(buf,sizeof(buf),"%.2f MB/s", bps/(1024*1024));
-                            return buf;
-                        };
-
-                        // rate 계산 (1초마다 갱신)
-                        static uint64_t prev_tx=0, prev_rx=0;
-                        static double rate_tx=0, rate_rx=0;
-                        static auto rate_time = std::chrono::steady_clock::now();
-                        auto now_rate = std::chrono::steady_clock::now();
-                        float rate_dt = std::chrono::duration<float>(now_rate - rate_time).count();
-
-                        if(v.net_srv){
-                            auto ns = v.net_srv->collect_stats();
-                            if(rate_dt >= 1.0f){
-                                rate_tx = (double)(ns.tx_bytes - prev_tx) / rate_dt;
-                                rate_rx = (double)(ns.rx_bytes - prev_rx) / rate_dt;
-                                prev_tx = ns.tx_bytes; prev_rx = ns.rx_bytes;
-                                rate_time = now_rate;
+                        // ── Network (Receiver 내부) ──────────────────────
+                        ImGui::Spacing();
+                        ImGui::TextDisabled("--- Network ---");
+                        {
+                            auto fmt_bytes = [](uint64_t b) -> std::string {
+                                char buf[32];
+                                if(b < 1024)               snprintf(buf,sizeof(buf),"%llu B", (unsigned long long)b);
+                                else if(b < 1024*1024)     snprintf(buf,sizeof(buf),"%.1f KB",(double)b/1024);
+                                else if(b < 1024ULL*1024*1024) snprintf(buf,sizeof(buf),"%.1f MB",(double)b/(1024*1024));
+                                else                       snprintf(buf,sizeof(buf),"%.2f GB",(double)b/(1024ULL*1024*1024));
+                                return buf;
+                            };
+                            auto fmt_rate = [](double bps) -> std::string {
+                                char buf[32];
+                                if(bps < 1024)             snprintf(buf,sizeof(buf),"%.0f B/s", bps);
+                                else if(bps < 1024*1024)   snprintf(buf,sizeof(buf),"%.1f KB/s", bps/1024);
+                                else                       snprintf(buf,sizeof(buf),"%.2f MB/s", bps/(1024*1024));
+                                return buf;
+                            };
+                            static uint64_t prev_tx=0, prev_rx=0;
+                            static double rate_tx=0, rate_rx=0;
+                            static auto rate_time = std::chrono::steady_clock::now();
+                            auto now_rate = std::chrono::steady_clock::now();
+                            float rate_dt = std::chrono::duration<float>(now_rate - rate_time).count();
+                            if(v.net_srv){
+                                auto ns = v.net_srv->collect_stats();
+                                if(rate_dt >= 1.0f){
+                                    rate_tx = (double)(ns.tx_bytes - prev_tx) / rate_dt;
+                                    rate_rx = (double)(ns.rx_bytes - prev_rx) / rate_dt;
+                                    prev_tx = ns.tx_bytes; prev_rx = ns.rx_bytes;
+                                    rate_time = now_rate;
+                                }
+                                ImGui::TextColored(ImVec4(0.5f,0.9f,1.f,1.f), "TX");
+                                ImGui::SameLine(0,4);
+                                ImGui::Text("%s  (%s)", fmt_bytes(ns.tx_bytes).c_str(), fmt_rate(rate_tx).c_str());
+                                ImGui::TextColored(ImVec4(0.5f,1.f,0.7f,1.f), "RX");
+                                ImGui::SameLine(0,4);
+                                ImGui::Text("%s  (%s)", fmt_bytes(ns.rx_bytes).c_str(), fmt_rate(rate_rx).c_str());
+                                if(ns.drops > 0)
+                                    ImGui::TextColored(ImVec4(1.f,0.4f,0.4f,1.f), "Drops: %llu", (unsigned long long)ns.drops);
+                                ImGui::TextDisabled("Queue: FFT %zu  Audio %zu", ns.q_fft, ns.q_audio);
+                            } else if(v.net_cli){
+                                auto ns = v.net_cli->collect_stats();
+                                if(rate_dt >= 1.0f){
+                                    rate_rx = (double)(ns.rx_bytes - prev_rx) / rate_dt;
+                                    rate_tx = (double)(ns.tx_bytes - prev_tx) / rate_dt;
+                                    prev_rx = ns.rx_bytes; prev_tx = ns.tx_bytes;
+                                    rate_time = now_rate;
+                                }
+                                ImGui::TextColored(ImVec4(0.5f,1.f,0.7f,1.f), "RX");
+                                ImGui::SameLine(0,4);
+                                ImGui::Text("%s  (%s)", fmt_bytes(ns.rx_bytes).c_str(), fmt_rate(rate_rx).c_str());
+                                ImGui::TextColored(ImVec4(0.5f,0.9f,1.f,1.f), "TX");
+                                ImGui::SameLine(0,4);
+                                ImGui::Text("%s  (%s)", fmt_bytes(ns.tx_bytes).c_str(), fmt_rate(rate_tx).c_str());
+                                if(ns.underruns > 0)
+                                    ImGui::TextColored(ImVec4(1.f,0.6f,0.3f,1.f), "Audio underruns: %llu", (unsigned long long)ns.underruns);
+                                ImGui::TextDisabled("Jitter buffer: %zu / %zu samples",
+                                    ns.jitter_fill, NetAudioRing::SZ);
+                            } else {
+                                ImGui::TextDisabled("(not connected)");
                             }
-                            ImGui::TextColored(ImVec4(0.5f,0.9f,1.f,1.f), "TX");
-                            ImGui::SameLine(0,4);
-                            ImGui::Text("%s  (%s)", fmt_bytes(ns.tx_bytes).c_str(), fmt_rate(rate_tx).c_str());
-                            ImGui::TextColored(ImVec4(0.5f,1.f,0.7f,1.f), "RX");
-                            ImGui::SameLine(0,4);
-                            ImGui::Text("%s  (%s)", fmt_bytes(ns.rx_bytes).c_str(), fmt_rate(rate_rx).c_str());
-                            if(ns.drops > 0)
-                                ImGui::TextColored(ImVec4(1.f,0.4f,0.4f,1.f), "Drops: %llu", (unsigned long long)ns.drops);
-                            ImGui::TextDisabled("Queue: FFT %zu  Audio %zu", ns.q_fft, ns.q_audio);
-                        } else if(v.net_cli){
-                            auto ns = v.net_cli->collect_stats();
-                            if(rate_dt >= 1.0f){
-                                rate_rx = (double)(ns.rx_bytes - prev_rx) / rate_dt;
-                                rate_tx = (double)(ns.tx_bytes - prev_tx) / rate_dt;
-                                prev_rx = ns.rx_bytes; prev_tx = ns.tx_bytes;
-                                rate_time = now_rate;
-                            }
-                            ImGui::TextColored(ImVec4(0.5f,1.f,0.7f,1.f), "RX");
-                            ImGui::SameLine(0,4);
-                            ImGui::Text("%s  (%s)", fmt_bytes(ns.rx_bytes).c_str(), fmt_rate(rate_rx).c_str());
-                            ImGui::TextColored(ImVec4(0.5f,0.9f,1.f,1.f), "TX");
-                            ImGui::SameLine(0,4);
-                            ImGui::Text("%s  (%s)", fmt_bytes(ns.tx_bytes).c_str(), fmt_rate(rate_tx).c_str());
-                            if(ns.underruns > 0)
-                                ImGui::TextColored(ImVec4(1.f,0.6f,0.3f,1.f), "Audio underruns: %llu", (unsigned long long)ns.underruns);
-                            ImGui::TextDisabled("Jitter buffer: %zu / %zu samples",
-                                ns.jitter_fill, NetAudioRing::SZ);
-                        } else {
-                            ImGui::TextDisabled("(not connected)");
                         }
                         ImGui::Unindent(8.f);
                     }

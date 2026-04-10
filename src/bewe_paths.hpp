@@ -88,6 +88,11 @@ static inline std::string share_dir()       { return recordings_dir()+"/share"; 
 static inline std::string share_iq_dir()    { return share_dir()+"/iq"; }
 static inline std::string share_audio_dir() { return share_dir()+"/audio"; }
 
+// ── Report 파일 (전 오퍼레이터 공유) ─────────────────────────────────────
+static inline std::string report_dir()       { return recordings_dir()+"/report"; }
+static inline std::string report_iq_dir()    { return report_dir()+"/iq"; }
+static inline std::string report_audio_dir() { return report_dir()+"/audio"; }
+
 // ── 기존 임시 폴더 (로직 유지) ───────────────────────────────────────────
 static inline std::string time_temp_dir(){
     return recordings_dir()+"/Time_temp";
@@ -102,6 +107,7 @@ static inline void ensure_dirs(){
     mk(private_dir());   mk(private_iq_dir());   mk(private_audio_dir());
     mk(public_dir());    mk(public_iq_dir());    mk(public_audio_dir());
     mk(share_dir());     mk(share_iq_dir());     mk(share_audio_dir());
+    mk(report_dir());   mk(report_iq_dir());   mk(report_audio_dir());
     mk(time_temp_dir());
 }
 
