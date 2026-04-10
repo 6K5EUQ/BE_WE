@@ -38,6 +38,10 @@ enum class PacketType : uint8_t {
     PUB_DELETE_REQ     = 0x15,  // client → server: request delete of public file (owner only)
     IQ_PROGRESS        = 0x16,  // server → all: IQ 파일 전송 진행상황 (REC/Transferring/Done)
     IQ_CHUNK           = 0x20,  // HOST → JOIN (MUX): IQ 파일 청크 전송
+    REPORT_LIST        = 0x22,  // server → all: reported files list
+    REPORT_ADD         = 0x23,  // client → server: new report notification
+    DB_SAVE_META       = 0x24,  // client → server: save file+info to DB
+    DB_SAVE_DATA       = 0x25,  // client → server: DB file data chunk
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────
@@ -305,6 +309,38 @@ struct __attribute__((packed)) PktIqProgress {
     uint64_t done;
     uint64_t total;
     uint8_t  phase;  // 0=REC, 1=Transferring, 2=Done
+};
+
+// ── REPORT_LIST / REPORT_ADD ──────────────────────────────────────────────
+struct __attribute__((packed)) ReportFileEntry {
+    char     filename[128];
+    uint64_t size_bytes;
+    char     reporter[32];
+    char     info_summary[256]; // key .info fields (Freq, Protocol, Target...)
+};
+struct __attribute__((packed)) PktReportList {
+    uint16_t count;
+    // ReportFileEntry[count] follows
+};
+struct __attribute__((packed)) PktReportAdd {
+    char     filename[128];
+    char     reporter[32];
+    char     info_summary[256];
+};
+
+// ── DB_SAVE ──────────────────────────────────────────────────────────────
+struct __attribute__((packed)) PktDbSaveMeta {
+    char     filename[128];
+    uint64_t total_bytes;
+    uint8_t  transfer_id;
+    char     operator_name[32];
+    char     info_data[512];    // full .info contents
+};
+struct __attribute__((packed)) PktDbSaveData {
+    uint8_t  transfer_id;
+    uint8_t  is_last;
+    uint32_t chunk_bytes;
+    // uint8_t data[chunk_bytes] follows
 };
 
 // ── Wire helpers ──────────────────────────────────────────────────────────

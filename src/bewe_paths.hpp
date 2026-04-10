@@ -93,6 +93,14 @@ static inline std::string report_dir()       { return recordings_dir()+"/report"
 static inline std::string report_iq_dir()    { return report_dir()+"/iq"; }
 static inline std::string report_audio_dir() { return report_dir()+"/audio"; }
 
+// ── Database (Central Server 로컬 저장) ──────────────────────────────────
+// Central server의 ./BE_WE/DataBase/{operator}/ 에 저장
+// 클라이언트 측에서도 로컬 DB 캐시로 사용
+static inline std::string database_dir(){
+    const char* home = getenv("HOME");
+    return home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
+}
+
 // ── 기존 임시 폴더 (로직 유지) ───────────────────────────────────────────
 static inline std::string time_temp_dir(){
     return recordings_dir()+"/Time_temp";
@@ -108,6 +116,7 @@ static inline void ensure_dirs(){
     mk(public_dir());    mk(public_iq_dir());    mk(public_audio_dir());
     mk(share_dir());     mk(share_iq_dir());     mk(share_audio_dir());
     mk(report_dir());   mk(report_iq_dir());   mk(report_audio_dir());
+    mk(database_dir());
     mk(time_temp_dir());
 }
 

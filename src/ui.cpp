@@ -2105,6 +2105,15 @@ void run_streaming_viewer(){
         };
 
         // JOIN: HOST Public 파일 목록 수신 (filename, size_bytes, uploader)
+        // JOIN: Report 목록 수신
+        cli->on_report_list = [&](const std::vector<ReportFileEntry>& entries){
+            // BOARD Report Feed에 표시할 데이터 갱신
+            std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+            // static 저장소에 캐시 (ARCHIVE Report 탭에서 사용)
+            // 현재는 BOARD에서 로컬 report/ 폴더를 스캔하므로 추가 처리 불필요
+            // TODO: JOIN에서 HOST의 report 목록을 별도 표시
+        };
+
         cli->on_share_list = [&](const std::vector<std::tuple<std::string,uint64_t,std::string>>& files){
             std::lock_guard<std::mutex> lk(join_share_mtx);
             // 목록 갱신
@@ -2915,6 +2924,70 @@ void run_streaming_viewer(){
         bool is_public=false; // Public 탭 파일 (소유자만 삭제)
         bool selected=false;  // 좌클릭 선택 상태
     } file_ctx;
+
+    // ── .info 메타데이터 모달 ────────────────────────────────────────────
+    struct InfoModal {
+        bool open = false;
+        std::string filepath, info_path;
+        bool exists = false;
+        char fields[15][256] = {};
+        enum { N_FIELDS = 15 };
+        const char* names[15] = {
+            "Day","Time","Freq","Target","Location",
+            "Modulation","Bandwidth","Signal Strength","Protocol","Source Type",
+            "Content","Notes","Tags","Priority","Operator"
+        };
+        void load(){
+            FILE* f = fopen(info_path.c_str(), "r");
+            if(!f) return;
+            char line[512];
+            while(fgets(line, sizeof(line), f)){
+                char key[64]={}, val[256]={};
+                if(sscanf(line, "%63[^:]: %255[^\n]", key, val) >= 1){
+                    for(int i=0;i<N_FIELDS;i++){
+                        if(strcmp(key, names[i])==0){
+                            strncpy(fields[i], val, 255);
+                            break;
+                        }
+                    }
+                }
+            }
+            fclose(f);
+        }
+        void save(){
+            FILE* f = fopen(info_path.c_str(), "w");
+            if(!f) return;
+            for(int i=0;i<N_FIELDS;i++)
+                fprintf(f, "%s: %s\n", names[i], fields[i]);
+            fclose(f);
+        }
+        void autofill(const std::string& filename){
+            memset(fields, 0, sizeof(fields));
+            // Freq: parse _XXX.XXXMHz_
+            float mhz=0;
+            const char* p = strstr(filename.c_str(), "MHz");
+            if(p){
+                const char* q = p-1;
+                while(q > filename.c_str() && ((*q>='0'&&*q<='9')||*q=='.')) q--;
+                if(q < p-1) mhz = (float)atof(q+1);
+            }
+            if(mhz > 0) snprintf(fields[2], 256, "%.3f MHz", mhz);
+            // Day/Time: parse _MonDD_YYYY_HHMMSS
+            // look for pattern like Apr08_2026_171015
+            const char* under = filename.c_str();
+            for(int i=0; i<3 && under; i++) under = strchr(under+1, '_');
+            if(under && strlen(under) > 16){
+                char mon[4]={}, rest[32]={};
+                int day=0,yr=0,hh=0,mm=0,ss=0;
+                if(sscanf(under-3, "%3s%2d_%4d_%2d%2d%2d", mon,&day,&yr,&hh,&mm,&ss) >= 5){
+                    snprintf(fields[0], 256, "%s %02d, %04d", mon, day, yr);
+                    snprintf(fields[1], 256, "%02d:%02d:%02d", hh, mm, ss);
+                }
+            }
+            // Operator
+            strncpy(fields[14], login_get_id(), 255);
+        }
+    } info_modal;
 
     // chassis 1 reset 후 HOST 재시작: stable 메시지 (JOIN 재접속 전이므로 로컬만)
     if(mode_sel == 1 && chassis_reset_mode == 1 && v.net_srv){
@@ -5206,8 +5279,9 @@ void run_streaming_viewer(){
                         ImGui::EndChild();
                     };
 
-                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                    if(ImGui::CollapsingHeader("Archive")){
+                    // Archive는 별도 ARCHIVE 탭으로 이동됨
+
+                    if(false){ // ── (Archive removed from STATUS) ──
                         ImGui::Indent(8.f);
 
                         // ── Private ──────────────────────────────────────
@@ -5660,6 +5734,138 @@ void run_streaming_viewer(){
                 }
                 ImGui::EndChild();
 
+                ImGui::End();
+                ImGui::PopStyleColor();
+                ImGui::PopStyleVar();
+            }
+
+            // ── ARCHIVE 패널 ─────────────────────────────────────────────
+            if(archive_open){
+                float px=rpx, py=rp_content_y, pw=disp_w-rpx, ph=rp_content_h;
+                ImGui::SetNextWindowPos(ImVec2(px,py));
+                ImGui::SetNextWindowSize(ImVec2(pw,ph));
+                ImGui::SetNextWindowBgAlpha(0.0f);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6,4));
+                ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.04f,0.04f,0.06f,1.f));
+                ImGui::Begin("##archive_panel", nullptr,
+                    ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
+                    ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar);
+                ImGui::BeginChild("##archive_scroll", ImVec2(0,0), false,
+                    ImGuiWindowFlags_HorizontalScrollbar);
+
+                // ── Private ──────────────────────────────────────────────
+                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                if(ImGui::CollapsingHeader("Private")){
+                    ImGui::Indent(8.f);
+                    // IQ 파일
+                    if(ImGui::TreeNode("IQ")){
+                        for(auto& fn : priv_iq_files){
+                            std::string fp = BEWEPaths::private_iq_dir()+"/"+fn;
+                            bool sel = file_ctx.selected && file_ctx.filepath==fp;
+                            ImGui::Selectable(fn.c_str(), sel);
+                            if(ImGui::IsItemHovered()){
+                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                                    file_ctx.selected=true; file_ctx.filepath=fp; file_ctx.filename=fn; file_ctx.is_public=false;
+                                }
+                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                                    file_ctx={true,io.MousePos.x,io.MousePos.y,fp,fn}; file_ctx.selected=true;
+                                }
+                            }
+                        }
+                        if(priv_iq_files.empty()) ImGui::TextDisabled("  (empty)");
+                        ImGui::TreePop();
+                    }
+                    // Audio 파일
+                    if(ImGui::TreeNode("Audio")){
+                        for(auto& fn : priv_audio_files){
+                            std::string fp = BEWEPaths::private_audio_dir()+"/"+fn;
+                            bool sel = file_ctx.selected && file_ctx.filepath==fp;
+                            ImGui::Selectable(fn.c_str(), sel);
+                            if(ImGui::IsItemHovered()){
+                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                                    file_ctx.selected=true; file_ctx.filepath=fp; file_ctx.filename=fn; file_ctx.is_public=false;
+                                }
+                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                                    file_ctx={true,io.MousePos.x,io.MousePos.y,fp,fn}; file_ctx.selected=true;
+                                }
+                            }
+                        }
+                        if(priv_audio_files.empty()) ImGui::TextDisabled("  (empty)");
+                        ImGui::TreePop();
+                    }
+                    ImGui::Unindent(8.f);
+                }
+                ImGui::Spacing();
+
+                // ── Report ───────────────────────────────────────────────
+                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                if(ImGui::CollapsingHeader("Report")){
+                    ImGui::Indent(8.f);
+                    // report/ 폴더 스캔
+                    static std::vector<std::string> report_iq_files, report_audio_files;
+                    static float report_scan_timer = 0;
+                    report_scan_timer -= io.DeltaTime;
+                    if(report_scan_timer <= 0){
+                        report_scan_timer = 2.0f;
+                        auto scan = [](const std::string& dir, std::vector<std::string>& out){
+                            out.clear();
+                            DIR* d = opendir(dir.c_str());
+                            if(!d) return;
+                            struct dirent* e;
+                            while((e = readdir(d))){
+                                if(e->d_name[0]=='.') continue;
+                                std::string n(e->d_name);
+                                if(n.size()>4 && (n.substr(n.size()-4)==".wav"||n.substr(n.size()-4)==".WAV"))
+                                    out.push_back(n);
+                            }
+                            closedir(d);
+                            std::sort(out.begin(), out.end());
+                        };
+                        scan(BEWEPaths::report_iq_dir(), report_iq_files);
+                        scan(BEWEPaths::report_audio_dir(), report_audio_files);
+                    }
+                    int rpt_total = (int)(report_iq_files.size()+report_audio_files.size());
+                    if(rpt_total > 0){
+                        for(auto& fn : report_iq_files){
+                            std::string fp = BEWEPaths::report_iq_dir()+"/"+fn;
+                            ImGui::Selectable(fn.c_str(), file_ctx.selected && file_ctx.filepath==fp);
+                            if(ImGui::IsItemHovered()){
+                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                                    file_ctx.selected=true; file_ctx.filepath=fp; file_ctx.filename=fn; file_ctx.is_public=false;
+                                }
+                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                                    file_ctx={true,io.MousePos.x,io.MousePos.y,fp,fn}; file_ctx.selected=true;
+                                }
+                            }
+                        }
+                        for(auto& fn : report_audio_files){
+                            std::string fp = BEWEPaths::report_audio_dir()+"/"+fn;
+                            ImGui::Selectable(fn.c_str(), file_ctx.selected && file_ctx.filepath==fp);
+                            if(ImGui::IsItemHovered()){
+                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                                    file_ctx.selected=true; file_ctx.filepath=fp; file_ctx.filename=fn; file_ctx.is_public=false;
+                                }
+                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                                    file_ctx={true,io.MousePos.x,io.MousePos.y,fp,fn}; file_ctx.selected=true;
+                                }
+                            }
+                        }
+                    } else {
+                        ImGui::TextDisabled("  (no reports)");
+                    }
+                    ImGui::Unindent(8.f);
+                }
+                ImGui::Spacing();
+
+                // ── Database ─────────────────────────────────────────────
+                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                if(ImGui::CollapsingHeader("Database")){
+                    ImGui::Indent(8.f);
+                    ImGui::TextDisabled("  (central server DB — coming soon)");
+                    ImGui::Unindent(8.f);
+                }
+
+                ImGui::EndChild();
                 ImGui::End();
                 ImGui::PopStyleColor();
                 ImGui::PopStyleVar();
@@ -6144,6 +6350,38 @@ void run_streaming_viewer(){
                 ImGui::BeginChild("##board_scroll", ImVec2(0,0), false,
                     ImGuiWindowFlags_HorizontalScrollbar);
 
+                // ── 0. System Status ──────────────────────────────────────
+                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                if(ImGui::CollapsingHeader("System Status")){
+                    ImGui::Indent(6.f);
+                    // Role
+                    const char* role = v.net_cli ? "JOIN" : (v.net_srv ? "HOST" : "LOCAL");
+                    ImGui::TextColored(ImVec4(0.4f,0.85f,1.f,1.f), "Role: %s", role);
+                    // Center freq / SR
+                    double cf_mhz = v.net_cli ? (double)v.net_cli->remote_cf_mhz.load()
+                                              : v.header.center_frequency/1e6;
+                    double sr_mhz = v.net_cli ? v.net_cli->remote_sr.load()/1e6
+                                              : v.header.sample_rate/1e6;
+                    ImGui::Text("CF: %.4f MHz  /  SR: %.3f MSPS", cf_mhz, sr_mhz);
+                    // CPU / RAM
+                    ImU32 cpu_col = (v.sysmon_cpu > 80) ? IM_COL32(255,200,0,255)
+                                 : (v.sysmon_cpu > 95) ? IM_COL32(255,60,60,255)
+                                 :                        IM_COL32(80,220,80,255);
+                    ImGui::PushStyleColor(ImGuiCol_Text, cpu_col);
+                    ImGui::Text("CPU: %d%%", (int)v.sysmon_cpu);
+                    ImGui::PopStyleColor();
+                    ImGui::SameLine(0,12);
+                    ImGui::Text("RAM: %d%%", (int)v.sysmon_ram);
+                    // SDR Temp
+                    float sdr_t = v.net_cli ? v.net_cli->remote_sdr_temp_c.load() : 0;
+                    if(sdr_t > 0) ImGui::Text("SDR Temp: %.0f C", sdr_t);
+                    // Clients
+                    if(v.net_srv)
+                        ImGui::Text("Clients: %d", (int)v.net_srv->client_count());
+                    ImGui::Unindent(6.f);
+                }
+                ImGui::Spacing();
+
                 // ── 1. Operators ─────────────────────────────────────────
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                 if(ImGui::CollapsingHeader("Operators")){
@@ -6311,6 +6549,83 @@ void run_streaming_viewer(){
                     ImGui::TextDisabled("  Share    %d",  shr_cnt);
                     if(!any_rec && rec_iq_cnt+rec_aud_cnt==0)
                         ImGui::TextDisabled("  (no active recordings)");
+                    ImGui::Unindent(6.f);
+                }
+                ImGui::Spacing();
+
+                // ── 5. Report Feed ────────────────────────────────────────
+                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                if(ImGui::CollapsingHeader("Report Feed")){
+                    ImGui::Indent(6.f);
+                    // report/ 폴더의 파일 수
+                    static std::vector<std::string> board_report_files;
+                    static float board_rpt_timer = 0;
+                    board_rpt_timer -= io.DeltaTime;
+                    if(board_rpt_timer <= 0){
+                        board_rpt_timer = 3.0f;
+                        board_report_files.clear();
+                        auto scan_rpt = [](const std::string& dir, std::vector<std::string>& out){
+                            DIR* d = opendir(dir.c_str()); if(!d) return;
+                            struct dirent* e;
+                            while((e = readdir(d))){
+                                if(e->d_name[0]=='.') continue;
+                                std::string n(e->d_name);
+                                if(n.size()>4 && n.substr(n.size()-4)==".wav")
+                                    out.push_back(n);
+                            }
+                            closedir(d);
+                        };
+                        scan_rpt(BEWEPaths::report_iq_dir(), board_report_files);
+                        scan_rpt(BEWEPaths::report_audio_dir(), board_report_files);
+                        std::sort(board_report_files.rbegin(), board_report_files.rend());
+                    }
+                    if(board_report_files.empty()){
+                        ImGui::TextDisabled("  (no reports)");
+                    } else {
+                        int show = std::min(10, (int)board_report_files.size());
+                        for(int ri2=0; ri2<show; ri2++){
+                            auto& fn2 = board_report_files[ri2];
+                            // .info 요약 읽기
+                            std::string ip2 = BEWEPaths::report_iq_dir()+"/"+fn2+".info";
+                            if(access(ip2.c_str(), F_OK)!=0)
+                                ip2 = BEWEPaths::report_audio_dir()+"/"+fn2+".info";
+                            char info_line[128] = "";
+                            FILE* fi2 = fopen(ip2.c_str(), "r");
+                            if(fi2){
+                                char line[256];
+                                while(fgets(line, sizeof(line), fi2)){
+                                    char k[64]={}, val[128]={};
+                                    if(sscanf(line, "%63[^:]: %127[^\n]", k, val)>=1){
+                                        if(strcmp(k,"Operator")==0 && val[0])
+                                            snprintf(info_line, sizeof(info_line), "by %s", val);
+                                    }
+                                }
+                                fclose(fi2);
+                            }
+                            ImGui::TextColored(ImVec4(1.f,0.8f,0.4f,1.f), "%s", fn2.c_str());
+                            if(info_line[0]){
+                                ImGui::SameLine(0,6);
+                                ImGui::TextDisabled("%s", info_line);
+                            }
+                        }
+                    }
+                    ImGui::Unindent(6.f);
+                }
+                ImGui::Spacing();
+
+                // ── 6. Event Log ──────────────────────────────────────────
+                ImGui::SetNextItemOpen(false, ImGuiCond_Once);
+                if(ImGui::CollapsingHeader("Event Log")){
+                    ImGui::Indent(6.f);
+                    // 최근 bewe_log 메시지 표시 (v.log_buf[0])
+                    if(!v.log_buf[0].empty()){
+                        int cnt = 0;
+                        for(int li=(int)v.log_buf[0].size()-1; li>=0 && cnt<30; li--,cnt++){
+                            ImGui::TextDisabled("%s", v.log_buf[0][li].msg);
+                        }
+                    } else {
+                        ImGui::TextDisabled("  (no events)");
+                    }
                     ImGui::Unindent(6.f);
                 }
 
@@ -6744,25 +7059,108 @@ void run_streaming_viewer(){
                 file_ctx.filename = "";
             }
 
+            // ── Info / Add Info ────────────────────────────────────────
+            {
+                std::string ip = file_ctx.filepath + ".info";
+                bool has_info = (access(ip.c_str(), F_OK) == 0);
+                if(ImGui::Selectable(has_info ? "  Info" : "  Add Info")){
+                    info_modal.open = true;
+                    info_modal.filepath = file_ctx.filepath;
+                    info_modal.info_path = ip;
+                    info_modal.exists = has_info;
+                    if(has_info) info_modal.load();
+                    else info_modal.autofill(file_ctx.filename);
+                    file_ctx.open = false;
+                }
+            }
+
             ImGui::Separator();
 
-            // Public > HOST: public/iq 또는 public/audio 복사 / JOIN: 서버에 업로드
-            if(ImGui::Selectable("  Public")){
+            // ── Report ────────────────────────────────────────────────
+            if(ImGui::Selectable("  Report")){
+                bool is_iq = (file_ctx.filename.size()>3 && file_ctx.filename.substr(0,3)=="IQ_")
+                          || (file_ctx.filename.size()>3 && file_ctx.filename.substr(0,3)=="sa_");
+                std::string rpt_dir = is_iq ? BEWEPaths::report_iq_dir() : BEWEPaths::report_audio_dir();
+                std::string dst = rpt_dir + "/" + file_ctx.filename;
+                // 파일 복사
+                FILE* fin=fopen(file_ctx.filepath.c_str(),"rb");
+                FILE* fout=fopen(dst.c_str(),"wb");
+                if(fin&&fout){
+                    char buf[65536]; size_t n;
+                    while((n=fread(buf,1,sizeof(buf),fin))>0) fwrite(buf,1,n,fout);
+                }
+                if(fin) fclose(fin);
+                if(fout) fclose(fout);
+                // .info 파일도 복사
+                std::string info_src = file_ctx.filepath + ".info";
+                std::string info_dst = dst + ".info";
+                if(access(info_src.c_str(), F_OK)==0){
+                    FILE* fi2=fopen(info_src.c_str(),"rb");
+                    FILE* fo2=fopen(info_dst.c_str(),"wb");
+                    if(fi2&&fo2){
+                        char buf[4096]; size_t n;
+                        while((n=fread(buf,1,sizeof(buf),fi2))>0) fwrite(buf,1,n,fo2);
+                    }
+                    if(fi2) fclose(fi2);
+                    if(fo2) fclose(fo2);
+                }
+                // 서버에 Report 알림 (HOST: 직접 broadcast, JOIN: CMD 전송)
+                {
+                    char info_sum[256] = {};
+                    std::string ip2 = file_ctx.filepath + ".info";
+                    FILE* fis = fopen(ip2.c_str(), "r");
+                    if(fis){
+                        char line[256]; int pos2=0;
+                        while(fgets(line,sizeof(line),fis) && pos2<250){
+                            int l = (int)strlen(line);
+                            if(pos2+l < 255){ memcpy(info_sum+pos2, line, l); pos2+=l; }
+                        }
+                        fclose(fis);
+                    }
+                    if(v.net_cli){
+                        v.net_cli->cmd_report_add(file_ctx.filename.c_str(), info_sum);
+                    } else if(v.net_srv){
+                        // HOST: 직접 report 목록 브로드캐스트
+                        std::vector<ReportFileEntry> entries;
+                        auto scan_rpt2 = [](const std::string& dir, std::vector<ReportFileEntry>& out){
+                            DIR* d = opendir(dir.c_str()); if(!d) return;
+                            struct dirent* e;
+                            while((e = readdir(d))){
+                                if(e->d_name[0]=='.') continue;
+                                std::string n(e->d_name);
+                                if(n.size()<5 || n.substr(n.size()-4)!=".wav") continue;
+                                ReportFileEntry re{}; strncpy(re.filename,n.c_str(),127);
+                                std::string fp2=dir+"/"+n;
+                                struct stat st2{}; if(stat(fp2.c_str(),&st2)==0) re.size_bytes=(uint64_t)st2.st_size;
+                                out.push_back(re);
+                            }
+                            closedir(d);
+                        };
+                        scan_rpt2(BEWEPaths::report_iq_dir(), entries);
+                        scan_rpt2(BEWEPaths::report_audio_dir(), entries);
+                        v.net_srv->broadcast_report_list(entries);
+                    }
+                }
+                file_ctx.open = false;
+            }
+
+            // ── Save DB (Central Server) ──────────────────────────────
+            if(ImGui::Selectable("  Save DB")){
+                // DB 저장: HOST는 로컬 DataBase/ 폴더에, JOIN은 HOST 경유
+                std::string op_name = login_get_id();
                 if(v.net_cli){
-                    // JOIN: 백그라운드로 서버에 업로드
+                    // JOIN: HOST에 DB_SAVE 전송
                     std::string fp_cap = file_ctx.filepath;
-                    uint8_t tid = v.next_transfer_id.fetch_add(1);
+                    std::string op_cap = op_name;
                     NetClient* cli_cap = v.net_cli;
-                    std::thread([cli_cap, fp_cap, tid](){
-                        cli_cap->cmd_share_upload(fp_cap.c_str(), tid);
+                    std::thread([cli_cap, fp_cap, op_cap](){
+                        cli_cap->cmd_db_save(fp_cap.c_str(), op_cap.c_str());
                     }).detach();
                 } else {
-                    // HOST: public/iq 또는 public/audio 폴더로 복사
-                    bool is_iq = (file_ctx.filename.size()>3 && file_ctx.filename.substr(0,3)=="IQ_")
-                              || (file_ctx.filename.size()>3 && file_ctx.filename.substr(0,3)=="sa_");
-                    std::string pub_dir = is_iq ? BEWEPaths::public_iq_dir() : BEWEPaths::public_audio_dir();
-                    struct stat sd{}; if(stat(pub_dir.c_str(),&sd)!=0) mkdir(pub_dir.c_str(),0755);
-                    std::string dst = pub_dir + "/" + file_ctx.filename;
+                    // HOST/LOCAL: 로컬 DataBase/ 폴더에 직접 저장
+                    std::string db_dir = BEWEPaths::database_dir() + "/" + op_name;
+                    mkdir(db_dir.c_str(), 0755);
+                    std::string dst = db_dir + "/" + file_ctx.filename;
                     FILE* fin=fopen(file_ctx.filepath.c_str(),"rb");
                     FILE* fout=fopen(dst.c_str(),"wb");
                     if(fin&&fout){
@@ -6771,67 +7169,17 @@ void run_streaming_viewer(){
                     }
                     if(fin) fclose(fin);
                     if(fout) fclose(fout);
-                    // pub_owners: HOST 자신이 올린 파일 소유자 등록
-                    pub_owners[file_ctx.filename] = std::string(login_get_id());
-                    // pub_iq_files / pub_audio_files / shared_files에 추가
-                    if(is_iq){
-                        bool dup=false; for(auto& sf:pub_iq_files) if(sf==file_ctx.filename){dup=true;break;}
-                        if(!dup) pub_iq_files.push_back(file_ctx.filename);
-                    } else {
-                        bool dup=false; for(auto& sf:pub_audio_files) if(sf==file_ctx.filename){dup=true;break;}
-                        if(!dup) pub_audio_files.push_back(file_ctx.filename);
-                    }
-                    {
-                        bool dup=false;
-                        for(auto& sf:shared_files) if(sf==file_ctx.filename){dup=true;break;}
-                        if(!dup) shared_files.push_back(file_ctx.filename);
-                    }
-                    // JOIN들에게 public 목록 브로드캐스트
-                    if(v.net_srv){
-                        std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
-                        for(auto& sf : shared_files){
-                            bool siq = (sf.size()>3&&sf.substr(0,3)=="IQ_")||(sf.size()>3&&sf.substr(0,3)=="sa_");
-                            std::string sfp = (siq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+sf;
-                            struct stat sst{}; uint64_t fsz=0;
-                            if(stat(sfp.c_str(),&sst)==0) fsz=(uint64_t)sst.st_size;
-                            std::string upl;
-                            auto it=pub_owners.find(sf); if(it!=pub_owners.end()) upl=it->second;
-                            slist.push_back({sf,fsz,upl});
-                        }
-                        v.net_srv->send_share_list(-1, slist);
+                    // .info도 복사
+                    std::string info_src = file_ctx.filepath + ".info";
+                    if(access(info_src.c_str(), F_OK)==0){
+                        std::string info_dst = dst + ".info";
+                        FILE* fi2=fopen(info_src.c_str(),"rb");
+                        FILE* fo2=fopen(info_dst.c_str(),"wb");
+                        if(fi2&&fo2){ char b[4096]; size_t n; while((n=fread(b,1,sizeof(b),fi2))>0) fwrite(b,1,n,fo2); }
+                        if(fi2) fclose(fi2); if(fo2) fclose(fo2);
                     }
                 }
                 file_ctx.open = false;
-            }
-
-            // Download > share 폴더로 복사 (Public 파일이고 HOST/LOCAL인 경우)
-            if(file_ctx.is_public && !v.net_cli){
-                if(ImGui::Selectable("  Download")){
-                    bool is_iq2 = (file_ctx.filename.size()>3 && file_ctx.filename.substr(0,3)=="IQ_")
-                               || (file_ctx.filename.size()>3 && file_ctx.filename.substr(0,3)=="sa_");
-                    std::string share_dir2 = is_iq2 ? BEWEPaths::share_iq_dir() : BEWEPaths::share_audio_dir();
-                    struct stat sd2{}; if(stat(share_dir2.c_str(),&sd2)!=0) mkdir(share_dir2.c_str(),0755);
-                    std::string dst2 = share_dir2 + "/" + file_ctx.filename;
-                    FILE* fin2=fopen(file_ctx.filepath.c_str(),"rb");
-                    FILE* fout2=fopen(dst2.c_str(),"wb");
-                    if(fin2&&fout2){
-                        char buf2[65536]; size_t n2;
-                        while((n2=fread(buf2,1,sizeof(buf2),fin2))>0) fwrite(buf2,1,n2,fout2);
-                    }
-                    if(fin2) fclose(fin2);
-                    if(fout2) fclose(fout2);
-                    // share 목록에 추가
-                    if(is_iq2){
-                        bool dup=false; for(auto& s:share_iq_files) if(s==file_ctx.filename){dup=true;break;}
-                        if(!dup) share_iq_files.push_back(file_ctx.filename);
-                    } else {
-                        bool dup=false; for(auto& s:share_audio_files) if(s==file_ctx.filename){dup=true;break;}
-                        if(!dup) share_audio_files.push_back(file_ctx.filename);
-                    }
-                    bool dup=false; for(auto& s:downloaded_files) if(s==file_ctx.filename){dup=true;break;}
-                    if(!dup) downloaded_files.push_back(file_ctx.filename);
-                    file_ctx.open = false;
-                }
             }
 
             ImGui::Separator();
@@ -6901,6 +7249,48 @@ void run_streaming_viewer(){
             ImGui::End();
             ImGui::PopStyleColor();
             ImGui::PopStyleVar(2);
+        }
+
+        // ── Info 모달 ─────────────────────────────────────────────────
+        if(info_modal.open){
+            ImVec2 center(disp_w * 0.5f, disp_h * 0.5f);
+            ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+            ImGui::SetNextWindowSize(ImVec2(440, 540), ImGuiCond_Appearing);
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f,0.08f,0.12f,0.98f));
+            ImGui::Begin("File Info##info_modal", &info_modal.open,
+                ImGuiWindowFlags_NoCollapse);
+            // 파일명 표시
+            const char* fn_show = strrchr(info_modal.filepath.c_str(), '/');
+            fn_show = fn_show ? fn_show+1 : info_modal.filepath.c_str();
+            ImGui::TextColored(ImVec4(0.5f,0.8f,1.f,1.f), "%s", fn_show);
+            ImGui::Separator();
+            ImGui::Spacing();
+            for(int i=0; i<info_modal.N_FIELDS; i++){
+                ImGui::Text("%-18s", info_modal.names[i]);
+                ImGui::SameLine(140);
+                char id[32]; snprintf(id, sizeof(id), "##inf_%d", i);
+                ImGui::SetNextItemWidth(-1);
+                // Content/Notes: 멀티라인
+                if(i == 10 || i == 11){
+                    ImGui::InputTextMultiline(id, info_modal.fields[i], 256,
+                        ImVec2(-1, ImGui::GetTextLineHeight()*3));
+                } else {
+                    ImGui::InputText(id, info_modal.fields[i], 256);
+                }
+            }
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+            if(ImGui::Button("Save", ImVec2(80,0))){
+                info_modal.save();
+                info_modal.open = false;
+            }
+            ImGui::SameLine();
+            if(ImGui::Button("Cancel", ImVec2(80,0))){
+                info_modal.open = false;
+            }
+            ImGui::End();
+            ImGui::PopStyleColor();
         }
 
         if(chat_open){

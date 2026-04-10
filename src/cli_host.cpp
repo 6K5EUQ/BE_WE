@@ -700,6 +700,62 @@ void run_cli_host(){
         srv->send_share_list(-1, slist);
     };
 
+    // ── Report: JOIN이 파일을 report에 추가 → 전체 브로드캐스트 ──────
+    srv->cb.on_report_add = [&](uint8_t op_idx, const char* op_name,
+                                 const char* filename, const char* info_summary){
+        bewe_log_push(0,"[Report] %s reported '%s'\n", op_name, filename);
+        // report 목록 갱신 후 브로드캐스트
+        std::vector<ReportFileEntry> entries;
+        auto scan_rpt = [](const std::string& dir, std::vector<ReportFileEntry>& out){
+            DIR* d = opendir(dir.c_str()); if(!d) return;
+            struct dirent* e;
+            while((e = readdir(d))){
+                if(e->d_name[0]=='.') continue;
+                std::string n(e->d_name);
+                if(n.size()<5 || n.substr(n.size()-4)!=".wav") continue;
+                ReportFileEntry re{};
+                strncpy(re.filename, n.c_str(), 127);
+                std::string fp = dir+"/"+n;
+                struct stat st{}; if(stat(fp.c_str(),&st)==0) re.size_bytes=(uint64_t)st.st_size;
+                // .info에서 reporter 읽기
+                std::string ip = fp+".info";
+                FILE* fi = fopen(ip.c_str(), "r");
+                if(fi){
+                    char line[256];
+                    while(fgets(line,sizeof(line),fi)){
+                        char k[64]={},val[128]={};
+                        if(sscanf(line,"%63[^:]: %127[^\n]",k,val)>=1){
+                            if(strcmp(k,"Operator")==0) strncpy(re.reporter,val,31);
+                        }
+                    }
+                    fclose(fi);
+                }
+                out.push_back(re);
+            }
+            closedir(d);
+        };
+        scan_rpt(BEWEPaths::report_iq_dir(), entries);
+        scan_rpt(BEWEPaths::report_audio_dir(), entries);
+        srv->broadcast_report_list(entries);
+    };
+
+    // ── DB Save: JOIN이 파일을 Central DB에 저장 → HOST가 대행 ──────
+    srv->cb.on_db_save = [&](uint8_t op_idx, const char* op_name,
+                              const PktDbSaveMeta* meta, const uint8_t* data, uint32_t len){
+        if(!meta) return; // DATA 패킷은 별도 처리 필요 (현재 META만)
+        // DB 디렉토리: ./BE_WE/DataBase/{operator}/
+        std::string db_dir = BEWEPaths::database_dir() + "/" + std::string(meta->operator_name);
+        mkdir(db_dir.c_str(), 0755);
+        std::string dst = db_dir + "/" + std::string(meta->filename);
+        bewe_log_push(0,"[DB] Save '%s' by %s → %s\n", meta->filename, meta->operator_name, dst.c_str());
+        // .info 저장
+        if(meta->info_data[0]){
+            std::string info_dst = dst + ".info";
+            FILE* fi = fopen(info_dst.c_str(), "w");
+            if(fi){ fwrite(meta->info_data, 1, strnlen(meta->info_data, 511), fi); fclose(fi); }
+        }
+    };
+
     // ── Start server ─────────────────────────────────────────────────────
     if(!srv->start(0)){
         bewe_log_push(0,"[BEWE CLI] Server start failed\n");

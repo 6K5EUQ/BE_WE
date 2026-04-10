@@ -305,6 +305,29 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
         break;
     }
 
+    case PacketType::REPORT_ADD: {
+        if(!c->authed || len < sizeof(PktReportAdd)) break;
+        auto* ra = reinterpret_cast<const PktReportAdd*>(payload);
+        if(cb.on_report_add) cb.on_report_add(c->op_index, c->name, ra->filename, ra->info_summary);
+        break;
+    }
+
+    case PacketType::DB_SAVE_META: {
+        if(!c->authed || len < sizeof(PktDbSaveMeta)) break;
+        auto* meta = reinterpret_cast<const PktDbSaveMeta*>(payload);
+        if(cb.on_db_save) cb.on_db_save(c->op_index, c->name, meta, payload + sizeof(PktDbSaveMeta), len - (uint32_t)sizeof(PktDbSaveMeta));
+        break;
+    }
+
+    case PacketType::DB_SAVE_DATA: {
+        if(!c->authed || len < sizeof(PktDbSaveData)) break;
+        auto* d = reinterpret_cast<const PktDbSaveData*>(payload);
+        uint32_t data_bytes = d->chunk_bytes;
+        if(len < sizeof(PktDbSaveData)+data_bytes) break;
+        if(cb.on_db_save) cb.on_db_save(c->op_index, c->name, nullptr, payload, len);
+        break;
+    }
+
     case PacketType::CHAT: {
         if(!c->authed || len < sizeof(PktChat)) break;
         auto* chat = reinterpret_cast<const PktChat*>(payload);
@@ -804,6 +827,24 @@ void NetServer::send_share_list(int op_index,
         auto pkt = make_packet(PacketType::SHARE_LIST, payload.data(), (uint32_t)payload_size);
         std::lock_guard<std::mutex> slk(c->send_mtx);
         send_all(c->fd, pkt.data(), pkt.size());
+    }
+}
+
+void NetServer::broadcast_report_list(const std::vector<ReportFileEntry>& entries){
+    uint16_t cnt = (uint16_t)std::min(entries.size(), (size_t)UINT16_MAX);
+    size_t payload_size = sizeof(PktReportList) + cnt * sizeof(ReportFileEntry);
+    std::vector<uint8_t> payload(payload_size, 0);
+    auto* hdr = reinterpret_cast<PktReportList*>(payload.data());
+    hdr->count = cnt;
+    if(cnt > 0)
+        memcpy(payload.data() + sizeof(PktReportList), entries.data(), cnt * sizeof(ReportFileEntry));
+    auto pkt = make_packet(PacketType::REPORT_LIST, payload.data(), (uint32_t)payload_size);
+    if(cb.on_relay_broadcast)
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
+    std::lock_guard<std::mutex> lk(clients_mtx_);
+    for(auto& c : clients_){
+        if(!c->authed || !c->alive.load() || c->is_relay) continue;
+        c->enqueue(pkt, false);
     }
 }
 

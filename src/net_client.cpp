@@ -381,6 +381,19 @@ void NetClient::handle_packet(PacketType type,
         break;
     }
 
+    case PacketType::REPORT_LIST: {
+        if(len < sizeof(PktReportList)) break;
+        auto* hdr = reinterpret_cast<const PktReportList*>(payload);
+        uint16_t cnt = hdr->count;
+        size_t expected = sizeof(PktReportList) + cnt * sizeof(ReportFileEntry);
+        if(len < expected) break;
+        const ReportFileEntry* entries = reinterpret_cast<const ReportFileEntry*>(
+            payload + sizeof(PktReportList));
+        std::vector<ReportFileEntry> list(entries, entries + cnt);
+        if(on_report_list) on_report_list(list);
+        break;
+    }
+
     default: break;
     }
 }
@@ -510,6 +523,47 @@ bool NetClient::cmd_stop_iq_rec(int ch_idx){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::STOP_IQ_REC;
     c.stop_iq_rec.idx=(uint8_t)ch_idx;
     return send_cmd(c);
+}
+bool NetClient::cmd_report_add(const char* filename, const char* info_summary){
+    PktReportAdd ra{};
+    strncpy(ra.filename, filename, 127);
+    strncpy(ra.reporter, my_name, 31);
+    strncpy(ra.info_summary, info_summary ? info_summary : "", 255);
+    return raw_send(PacketType::REPORT_ADD, &ra, sizeof(ra));
+}
+bool NetClient::cmd_db_save(const char* filepath, const char* operator_name){
+    FILE* fp = fopen(filepath, "rb");
+    if(!fp) return false;
+    fseek(fp, 0, SEEK_END); uint64_t fsz = (uint64_t)ftell(fp); fseek(fp, 0, SEEK_SET);
+    const char* fn = strrchr(filepath, '/');
+    fn = fn ? fn+1 : filepath;
+    // read .info if exists
+    std::string info_path = std::string(filepath) + ".info";
+    char info_data[512] = {};
+    FILE* fi = fopen(info_path.c_str(), "r");
+    if(fi){ fread(info_data, 1, 511, fi); fclose(fi); }
+    // send meta
+    PktDbSaveMeta meta{};
+    strncpy(meta.filename, fn, 127);
+    meta.total_bytes = fsz;
+    meta.transfer_id = 1;
+    strncpy(meta.operator_name, operator_name, 31);
+    strncpy(meta.info_data, info_data, 511);
+    raw_send(PacketType::DB_SAVE_META, &meta, sizeof(meta));
+    // send data chunks
+    const size_t CHUNK = 64 * 1024;
+    std::vector<uint8_t> buf(sizeof(PktDbSaveData) + CHUNK);
+    while(true){
+        size_t n = fread(buf.data() + sizeof(PktDbSaveData), 1, CHUNK, fp);
+        if(n == 0) break;
+        auto* d = reinterpret_cast<PktDbSaveData*>(buf.data());
+        d->transfer_id = 1;
+        d->is_last = (feof(fp) ? 1 : 0);
+        d->chunk_bytes = (uint32_t)n;
+        raw_send(PacketType::DB_SAVE_DATA, buf.data(), (uint32_t)(sizeof(PktDbSaveData) + n));
+    }
+    fclose(fp);
+    return true;
 }
 bool NetClient::cmd_toggle_recv(int ch_idx, bool enable){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::TOGGLE_RECV;

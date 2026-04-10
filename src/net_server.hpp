@@ -185,6 +185,10 @@ struct ServerCallbacks {
     std::function<void(const char* who, float msps)>    on_set_sr;
     // JOIN이 public 파일 삭제 요청: op_name, filename (소유자 검증은 ui.cpp에서)
     std::function<void(const char* op_name, const char* filename)> on_pub_delete_req;
+    // Report: JOIN/HOST가 파일을 report에 추가
+    std::function<void(uint8_t op_idx, const char* op_name, const char* filename, const char* info_summary)> on_report_add;
+    // DB save: JOIN/HOST가 파일을 Central DB에 저장 요청
+    std::function<void(uint8_t op_idx, const char* op_name, const PktDbSaveMeta* meta, const uint8_t* data, uint32_t len)> on_db_save;
     // 중앙서버 relay 브로드캐스트 콜백: BEWE 패킷 1회 전달 → 중앙서버가 N명에게 fan-out
     // 이 콜백을 통해 FFT/오디오/채팅 등이 relay 클라이언트로 전달됨 (N× 대역폭 문제 해결)
     // no_drop: IQ_CHUNK 등 드롭하면 안 되는 패킷
@@ -265,6 +269,9 @@ public:
     // tuple: (filename, size_bytes, uploader_name)
     void send_share_list(int op_index,
                          const std::vector<std::tuple<std::string,uint64_t,std::string>>& files);
+
+    // Report list → all clients
+    void broadcast_report_list(const std::vector<ReportFileEntry>& entries);
 
     // HW status → all clients
     void broadcast_status(float cf_mhz, float gain_db,
