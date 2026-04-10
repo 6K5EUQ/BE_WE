@@ -4728,12 +4728,8 @@ void run_streaming_viewer(){
                             char label[96];
                             int dn=v.freq_sorted_display_num(ci);
                             int act_s=(int)ch.sq_active_time, tot_s=(int)ch.sq_total_time;
-                            if(tot_s>0)
-                                snprintf(label,sizeof(label),"[%2d] %-3s %10.3f MHz %6.0fkHz [%3d/%4ds]",
-                                    dn,mnames[mi],cf_mhz,bw_khz,act_s,tot_s);
-                            else
-                                snprintf(label,sizeof(label),"[%2d] %-3s %10.3f MHz %6.0fkHz",
-                                    dn,mnames[mi],cf_mhz,bw_khz);
+                            snprintf(label,sizeof(label),"[%2d] %-3s %10.3f MHz %6.0fkHz  [%d/%ds]",
+                                dn,mnames[mi],cf_mhz,bw_khz,act_s,tot_s);
                             ImGui::PushID(ci*1000+700);
                             ImGui::PushStyleColor(ImGuiCol_Text,tc_v);
                             // gate open 또는 최근 활동이면 볼드 효과 (1px offset)
@@ -5848,7 +5844,6 @@ void run_streaming_viewer(){
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                 if(ImGui::CollapsingHeader("Report")){
                     ImGui::Indent(8.f);
-                    // report/ 폴더 스캔
                     static std::vector<std::string> report_iq_files, report_audio_files;
                     static float report_scan_timer = 0;
                     report_scan_timer -= io.DeltaTime;
@@ -5856,77 +5851,116 @@ void run_streaming_viewer(){
                         report_scan_timer = 2.0f;
                         auto scan = [](const std::string& dir, std::vector<std::string>& out){
                             out.clear();
-                            DIR* d = opendir(dir.c_str());
-                            if(!d) return;
+                            DIR* d = opendir(dir.c_str()); if(!d) return;
                             struct dirent* e;
                             while((e = readdir(d))){
                                 if(e->d_name[0]=='.') continue;
                                 std::string n(e->d_name);
-                                if(n.size()>4 && (n.substr(n.size()-4)==".wav"||n.substr(n.size()-4)==".WAV"))
-                                    out.push_back(n);
+                                if(n.size()>4 && n.substr(n.size()-4)==".wav") out.push_back(n);
                             }
-                            closedir(d);
-                            std::sort(out.begin(), out.end());
+                            closedir(d); std::sort(out.begin(), out.end());
                         };
                         scan(BEWEPaths::report_iq_dir(), report_iq_files);
                         scan(BEWEPaths::report_audio_dir(), report_audio_files);
                     }
-                    int rpt_total = (int)(report_iq_files.size()+report_audio_files.size());
-                    if(rpt_total > 0){
-                        for(auto& fn : report_iq_files)
-                            draw_arch_file(BEWEPaths::report_iq_dir(), fn);
-                        for(auto& fn : report_audio_files)
-                            draw_arch_file(BEWEPaths::report_audio_dir(), fn);
-                        if(false){ // removed old inline rendering
-                            std::string fp, fn;
-                            ImGui::Selectable(fn.c_str(), file_ctx.selected && file_ctx.filepath==fp);
-                            if(ImGui::IsItemHovered()){
-                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
-                                    file_ctx.selected=true; file_ctx.filepath=fp; file_ctx.filename=fn; file_ctx.is_public=false;
-                                }
-                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                                    file_ctx={true,io.MousePos.x,io.MousePos.y,fp,fn}; file_ctx.selected=true;
-                                }
-                            }
-                        }
-                        for(auto& fn : report_audio_files){
-                            std::string fp = BEWEPaths::report_audio_dir()+"/"+fn;
-                            ImGui::Selectable(fn.c_str(), file_ctx.selected && file_ctx.filepath==fp);
-                            if(ImGui::IsItemHovered()){
-                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
-                                    file_ctx.selected=true; file_ctx.filepath=fp; file_ctx.filename=fn; file_ctx.is_public=false;
-                                }
-                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                                    file_ctx={true,io.MousePos.x,io.MousePos.y,fp,fn}; file_ctx.selected=true;
-                                }
-                            }
-                        }
-                    } else {
-                        ImGui::TextDisabled("  (no reports)");
+                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                    if(ImGui::TreeNode("IQ")){
+                        for(auto& fn : report_iq_files) draw_arch_file(BEWEPaths::report_iq_dir(), fn);
+                        if(report_iq_files.empty()) ImGui::TextDisabled("  (empty)");
+                        ImGui::TreePop();
+                    }
+                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                    if(ImGui::TreeNode("Audio")){
+                        for(auto& fn : report_audio_files) draw_arch_file(BEWEPaths::report_audio_dir(), fn);
+                        if(report_audio_files.empty()) ImGui::TextDisabled("  (empty)");
+                        ImGui::TreePop();
                     }
                     ImGui::Unindent(8.f);
                 }
                 ImGui::Spacing();
 
                 // ── Database (Central Server) ─────────────────────────────
+                // DB 전용 우클릭 상태
+                static struct { bool open=false; float x=0,y=0; std::string filename, operator_name; bool is_iq=false; } db_ctx;
+
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                 if(ImGui::CollapsingHeader("Database")){
                     ImGui::Indent(8.f);
+                    // IQ / Audio 분류
+                    std::vector<DbFileEntry> db_iq, db_audio;
                     {
                         std::lock_guard<std::mutex> lk(g_db_list_mtx);
-                        if(!g_db_list.empty()){
-                            for(auto& e : g_db_list){
-                                char lbl[256];
-                                double mb = e.size_bytes / 1048576.0;
-                                snprintf(lbl,sizeof(lbl),"%s  [%.1fM]  by %s",
-                                    e.filename, mb, e.operator_name);
-                                ImGui::TextUnformatted(lbl);
-                            }
-                        } else {
-                            ImGui::TextDisabled("  (empty)");
+                        for(auto& e : g_db_list){
+                            bool iq = (strncmp(e.filename,"IQ_",3)==0 || strncmp(e.filename,"sa_",3)==0);
+                            if(iq) db_iq.push_back(e); else db_audio.push_back(e);
                         }
                     }
+                    auto draw_db_entry = [&](const DbFileEntry& e){
+                        char lbl[256];
+                        double mb = e.size_bytes / 1048576.0;
+                        snprintf(lbl,sizeof(lbl),"%s  [%.1fM]  by %s", e.filename, mb, e.operator_name);
+                        ImGui::Selectable(lbl, false);
+                        if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                            db_ctx = {true, io.MousePos.x, io.MousePos.y,
+                                      std::string(e.filename), std::string(e.operator_name),
+                                      (strncmp(e.filename,"IQ_",3)==0||strncmp(e.filename,"sa_",3)==0)};
+                        }
+                    };
+                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                    if(ImGui::TreeNode("IQ##db")){
+                        for(auto& e : db_iq) draw_db_entry(e);
+                        if(db_iq.empty()) ImGui::TextDisabled("  (empty)");
+                        ImGui::TreePop();
+                    }
+                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                    if(ImGui::TreeNode("Audio##db")){
+                        for(auto& e : db_audio) draw_db_entry(e);
+                        if(db_audio.empty()) ImGui::TextDisabled("  (empty)");
+                        ImGui::TreePop();
+                    }
                     ImGui::Unindent(8.f);
+                }
+
+                // ── DB 우클릭 팝업: Download / Delete ──────────────────
+                if(db_ctx.open){
+                    ImGui::SetNextWindowPos(ImVec2(db_ctx.x, db_ctx.y));
+                    ImGui::SetNextWindowSize(ImVec2(180.f, 0.f));
+                    ImGui::SetNextWindowBgAlpha(0.95f);
+                    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
+                    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6,6));
+                    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f,0.12f,0.18f,1.f));
+                    ImGui::Begin("##db_ctx", nullptr,
+                        ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
+                        ImGuiWindowFlags_NoMove|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoDecoration);
+
+                    if(ImGui::Selectable("  Download")){
+                        // TODO: Central에서 실제 파일 다운로드 (현재는 DB_LIST만 수신)
+                        // 로컬 private에 복사하는 로직은 Central에서 파일을 전송받아야 함
+                        // 현재는 placeholder
+                        db_ctx.open = false;
+                    }
+                    ImGui::Separator();
+                    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));
+                    if(ImGui::Selectable("  Delete")){
+                        // Central에 삭제 요청: DB_SAVE_META with total_bytes=0 as delete signal
+                        // 간단히: 같은 파일명으로 0바이트 META 전송 → Central에서 삭제
+                        // 현재는 로컬 g_db_list에서 제거
+                        {
+                            std::lock_guard<std::mutex> lk(g_db_list_mtx);
+                            g_db_list.erase(std::remove_if(g_db_list.begin(), g_db_list.end(),
+                                [&](const DbFileEntry& e){ return std::string(e.filename)==db_ctx.filename; }),
+                                g_db_list.end());
+                        }
+                        db_ctx.open = false;
+                    }
+                    ImGui::PopStyleColor();
+
+                    if(ImGui::IsKeyPressed(ImGuiKey_Escape, false)) db_ctx.open = false;
+                    if(!ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) db_ctx.open = false;
+
+                    ImGui::End();
+                    ImGui::PopStyleColor();
+                    ImGui::PopStyleVar(2);
                 }
 
                 ImGui::EndChild();

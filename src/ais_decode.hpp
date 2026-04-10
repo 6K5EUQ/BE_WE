@@ -57,13 +57,30 @@ static inline Result decode(const std::vector<uint8_t>& bits, int offset = 0){
     binstr.reserve(n);
     for(int i=offset;i<(int)bits.size();i++) binstr += (bits[i]?'1':'0');
 
-    // Find decoder path
-    const char* home = getenv("HOME");
-    std::string decoder_path = home ? std::string(home) + "/AIS_Decorder/ais_decoder.py"
-                                    : "/home/dsa/AIS_Decorder/ais_decoder.py";
+    // Find decoder path: repo 내부 decoder/AIS/ 우선, fallback ~/AIS_Decorder/
+    std::string decoder_path;
+    {
+        // 실행 파일 기준 상대 경로
+        char exe[512]={}; ssize_t rl = readlink("/proc/self/exe", exe, sizeof(exe)-1);
+        if(rl > 0){
+            std::string ep(exe, rl);
+            auto sl = ep.rfind('/');
+            if(sl != std::string::npos){
+                std::string dir = ep.substr(0, sl);
+                // build/ 또는 build_headless/ 에서 실행 → 상위의 decoder/AIS/
+                std::string try1 = dir + "/../decoder/AIS/ais_decoder.py";
+                if(access(try1.c_str(), F_OK)==0) decoder_path = try1;
+            }
+        }
+        if(decoder_path.empty()){
+            const char* home = getenv("HOME");
+            decoder_path = home ? std::string(home) + "/AIS_Decorder/ais_decoder.py"
+                                : "/home/dsa/AIS_Decorder/ais_decoder.py";
+        }
+    }
 
     // Build command — pass bitstring as argument
-    std::string cmd = "python3 \"" + decoder_path + "\" \"" + binstr + "\" 2>/dev/null";
+    std::string cmd = "python3 \"" + decoder_path + "\" --no-crc \"" + binstr + "\" 2>/dev/null";
 
     FILE* fp = popen(cmd.c_str(), "r");
     if(!fp){
