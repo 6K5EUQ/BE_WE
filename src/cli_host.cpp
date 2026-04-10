@@ -812,11 +812,12 @@ void run_cli_host(){
             if(rfd >= 0){
                 // Relay CHANNEL_SYNC callback
                 central_cli.set_on_central_ch_sync([&v](const uint8_t* pkt, size_t len){
-                    if(len < 9 + 60*10) return;
+                    size_t entry_sz = sizeof(ChSyncEntry); // 80 bytes
+                    if(len < 9 + entry_sz*10) return;
                     const uint8_t* payload = pkt + 9;
                     for(int i=0; i<MAX_CHANNELS && i<10; i++){
                         uint32_t mask;
-                        memcpy(&mask, payload + i*60 + 12, sizeof(mask));
+                        memcpy(&mask, payload + i*entry_sz + 12, sizeof(mask));
                         v.channels[i].audio_mask.store(mask);
                     }
                 });

@@ -322,6 +322,11 @@ void CentralServer::host_mux_loop(std::shared_ptr<HostRoom> room){
         // ── HB ─────────────────────────────────────────────────────────────
         if(mux.type == 0x00){
             room->last_hb = std::chrono::steady_clock::now();
+            // 첫 HB 수신 시 DB+Report 목록 재전송 (HOST mux_loop 안정화 후)
+            if(hb_count == 0){
+                broadcast_db_list(room);
+                broadcast_report_list_central(room);
+            }
             hb_count++; win_hb++;
             if(mux.len > 0){
                 if(buf.size() < mux.len) buf.resize(mux.len);

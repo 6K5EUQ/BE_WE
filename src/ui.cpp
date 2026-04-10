@@ -5855,6 +5855,7 @@ void run_streaming_viewer(){
                     } else {
                         // Report 전용 우클릭 상태
                         static struct { bool open=false; float x=0,y=0; std::string filename; } rpt_ctx;
+                        ImGui::Indent(12.f);
                         for(auto& re : rpt_snap){
                             float pw_r = ImGui::GetContentRegionAvail().x;
                             float fn_wr = pw_r * 0.66f;
@@ -5871,6 +5872,7 @@ void run_streaming_viewer(){
                                 }
                             }
                         }
+                        ImGui::Unindent(12.f);
                         // Report 우클릭 팝업
                         if(rpt_ctx.open){
                             ImGui::SetNextWindowPos(ImVec2(rpt_ctx.x, rpt_ctx.y));
