@@ -126,6 +126,9 @@ static constexpr uint8_t BEWE_TYPE_STATUS   = 0x08;
 static constexpr uint8_t BEWE_TYPE_OP_LIST  = 0x09;
 static constexpr uint8_t BEWE_TYPE_CH_SYNC  = 0x0A;
 static constexpr uint8_t BEWE_TYPE_HEARTBEAT = 0x14;
+static constexpr uint8_t BEWE_TYPE_DB_SAVE_META = 0x24;
+static constexpr uint8_t BEWE_TYPE_DB_SAVE_DATA = 0x25;
+static constexpr uint8_t BEWE_TYPE_DB_LIST      = 0x26;
 
 static constexpr uint8_t BEWE_TYPE_CHAT     = 0x07;
 

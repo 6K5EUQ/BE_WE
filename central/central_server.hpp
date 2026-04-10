@@ -26,6 +26,10 @@ struct JoinEntry {
     uint8_t  op_index  = 0;   // 1-based (릴레이가 할당)
     bool     authed    = false;
 
+    // ── DB save 수신 상태 ─────────────────────────────────────────────────
+    FILE*       db_fp   = nullptr;
+    std::string db_path;
+
     // ── 독립 송신 큐 ──────────────────────────────────────────────────────
     // 우선순위: ctrl_queue(제어) > send_queue(FFT) > audio_queue(오디오)
     // 단일 send 스레드가 우선순위 순서로 큐에서 꺼내 전송
@@ -238,6 +242,9 @@ private:
     // send_to_host: true=HOST에도 재작성 CH_SYNC 전송, false=JOIN에게만
     // host_mux_loop 경유 시 false (HOST fd에 blocking write → 데드락 방지)
     void rebuild_and_broadcast_ch_sync(std::shared_ptr<HostRoom> room, bool send_to_host = true);
+
+    // DB 파일 목록 스캔 → 모든 JOIN + HOST에 브로드캐스트
+    void broadcast_db_list(std::shared_ptr<HostRoom> room);
 
     // BEWE 패킷 빌드 헬퍼 (magic + type + len + payload)
     static std::vector<uint8_t> make_bewe_packet(uint8_t type, const void* payload, uint32_t plen);

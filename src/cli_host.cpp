@@ -740,19 +740,39 @@ void run_cli_host(){
     };
 
     // ── DB Save: JOIN이 파일을 Central DB에 저장 → HOST가 대행 ──────
+    static struct { FILE* fp=nullptr; std::string path; uint8_t tid=0; } db_recv;
     srv->cb.on_db_save = [&](uint8_t op_idx, const char* op_name,
                               const PktDbSaveMeta* meta, const uint8_t* data, uint32_t len){
-        if(!meta) return; // DATA 패킷은 별도 처리 필요 (현재 META만)
-        // DB 디렉토리: ./BE_WE/DataBase/{operator}/
-        std::string db_dir = BEWEPaths::database_dir() + "/" + std::string(meta->operator_name);
-        mkdir(db_dir.c_str(), 0755);
-        std::string dst = db_dir + "/" + std::string(meta->filename);
-        bewe_log_push(0,"[DB] Save '%s' by %s → %s\n", meta->filename, meta->operator_name, dst.c_str());
-        // .info 저장
-        if(meta->info_data[0]){
-            std::string info_dst = dst + ".info";
-            FILE* fi = fopen(info_dst.c_str(), "w");
-            if(fi){ fwrite(meta->info_data, 1, strnlen(meta->info_data, 511), fi); fclose(fi); }
+        if(meta){
+            // META: 파일 열기
+            std::string db_dir = BEWEPaths::database_dir() + "/" + std::string(meta->operator_name);
+            mkdir(BEWEPaths::database_dir().c_str(), 0755);
+            mkdir(db_dir.c_str(), 0755);
+            std::string dst = db_dir + "/" + std::string(meta->filename);
+            bewe_log_push(0,"[DB] Save '%s' by %s (%.1fMB)\n",
+                meta->filename, meta->operator_name, meta->total_bytes/1048576.0);
+            if(db_recv.fp) fclose(db_recv.fp);
+            db_recv.fp = fopen(dst.c_str(), "wb");
+            db_recv.path = dst;
+            db_recv.tid = meta->transfer_id;
+            // .info 저장
+            if(meta->info_data[0]){
+                std::string info_dst = dst + ".info";
+                FILE* fi = fopen(info_dst.c_str(), "w");
+                if(fi){ fwrite(meta->info_data, 1, strnlen(meta->info_data, 511), fi); fclose(fi); }
+            }
+        } else if(data && len >= sizeof(PktDbSaveData)){
+            // DATA: 파일에 쓰기
+            auto* d = reinterpret_cast<const PktDbSaveData*>(data);
+            if(db_recv.fp && d->chunk_bytes > 0){
+                fwrite(data + sizeof(PktDbSaveData), 1, d->chunk_bytes, db_recv.fp);
+            }
+            if(d->is_last && db_recv.fp){
+                fclose(db_recv.fp);
+                bewe_log_push(0,"[DB] Save complete: %s\n", db_recv.path.c_str());
+                db_recv.fp = nullptr;
+                db_recv.path.clear();
+            }
         }
     };
 
@@ -785,6 +805,19 @@ void run_cli_host(){
                         v.channels[i].audio_mask.store(mask);
                     }
                 });
+                // Central DB 목록 수신
+                central_cli.set_on_central_db_list([](const uint8_t* pkt, size_t len){
+                    if(len < 9 + sizeof(PktDbList)) return;
+                    const uint8_t* payload = pkt + 9;
+                    auto* hdr2 = reinterpret_cast<const PktDbList*>(payload);
+                    uint16_t cnt2 = hdr2->count;
+                    size_t expected = sizeof(PktDbList) + cnt2 * sizeof(DbFileEntry);
+                    if(len - 9 < expected) return;
+                    const DbFileEntry* ent = reinterpret_cast<const DbFileEntry*>(payload + sizeof(PktDbList));
+                    // g_db_list는 ui.cpp의 전역 — cli_host는 headless이므로 로그만
+                    bewe_log_push(0,"[Central] DB_LIST: %u files\n", cnt2);
+                });
+
                 srv->cb.on_relay_broadcast = [&central_cli](const uint8_t* pkt, size_t len, bool no_drop){
                     central_cli.enqueue_relay_broadcast(pkt, len, no_drop);
                 };

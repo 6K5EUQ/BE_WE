@@ -145,6 +145,7 @@ private:
     std::function<void(const uint8_t*, size_t)> on_central_ch_sync_;  // 릴레이 재작성 CHANNEL_SYNC
     std::function<void(const char*, const char*)> on_central_chat_;   // 중앙서버 전역 채팅 수신
     std::function<void(const uint8_t*, size_t)> on_central_op_list_;  // 릴레이 OP_LIST → HOST UI 갱신
+    std::function<void(const uint8_t*, size_t)> on_central_db_list_; // Central DB 파일 목록
 
     void mux_loop(int central_fd,
                   std::function<void(int)> on_new_join,
@@ -157,5 +158,8 @@ public:
     // 릴레이가 보내는 OP_LIST를 HOST에서 수신하는 콜백 (JOIN 접속/해제 시 갱신)
     void set_on_central_op_list(std::function<void(const uint8_t*, size_t)> cb){
         on_central_op_list_ = std::move(cb);
+    }
+    void set_on_central_db_list(std::function<void(const uint8_t*, size_t)> cb){
+        on_central_db_list_ = std::move(cb);
     }
 };

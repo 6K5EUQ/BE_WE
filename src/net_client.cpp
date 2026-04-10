@@ -381,6 +381,18 @@ void NetClient::handle_packet(PacketType type,
         break;
     }
 
+    case PacketType::DB_LIST: {
+        if(len < sizeof(PktDbList)) break;
+        auto* h2 = reinterpret_cast<const PktDbList*>(payload);
+        uint16_t cnt2 = h2->count;
+        size_t exp2 = sizeof(PktDbList) + cnt2 * sizeof(DbFileEntry);
+        if(len < exp2) break;
+        const DbFileEntry* ent2 = reinterpret_cast<const DbFileEntry*>(payload + sizeof(PktDbList));
+        std::vector<DbFileEntry> list2(ent2, ent2 + cnt2);
+        if(on_db_list) on_db_list(list2);
+        break;
+    }
+
     case PacketType::REPORT_LIST: {
         if(len < sizeof(PktReportList)) break;
         auto* hdr = reinterpret_cast<const PktReportList*>(payload);

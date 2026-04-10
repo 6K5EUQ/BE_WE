@@ -10,10 +10,12 @@
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <dirent.h>
 
 static constexpr int HOST_TIMEOUT_SEC  = 20;  // HB 간격(3s) + 데이터 프레임 SNDTIMEO(3s) + 마진
 static constexpr int HANDSHAKE_TIMEOUT = 10;
-static constexpr size_t PIPE_BUF       = 65536;
+static constexpr size_t PIPE_BUF_SZ    = 65536;
 
 // HOST fd에 보낼 MUX 패킷을 큐에 enqueue (non-blocking, host_mux_loop이 flush)
 static void enqueue_host_send(std::shared_ptr<HostRoom>& room, uint16_t conn_id,
@@ -253,7 +255,7 @@ void CentralServer::handshake(int fd){
 
 // ── HOST mux 수신 루프: HOST→relay→JOIN ───────────────────────────────────
 void CentralServer::host_mux_loop(std::shared_ptr<HostRoom> room){
-    std::vector<uint8_t> buf(PIPE_BUF);
+    std::vector<uint8_t> buf(PIPE_BUF_SZ);
     uint64_t mux_pkts = 0;
     uint64_t hb_count = 0;
     uint64_t fft_count = 0, audio_count = 0, other_count = 0;
@@ -424,7 +426,7 @@ void CentralServer::host_mux_loop(std::shared_ptr<HostRoom> room){
 
 // ── JOIN 수신 루프: JOIN→relay→HOST ───────────────────────────────────────
 void CentralServer::join_loop(std::shared_ptr<JoinEntry> je, std::shared_ptr<HostRoom> room){
-    std::vector<uint8_t> buf(PIPE_BUF);
+    std::vector<uint8_t> buf(PIPE_BUF_SZ);
     uint64_t pkt_count = 0;
     const char* disc_reason = "unknown";
 
@@ -537,6 +539,8 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                 printf("[Central] sent %d cached packets to conn_id=%u\n", cache_count, conn_id);
                 // OPERATOR_LIST 갱신 (새 유저 반영)
                 build_and_broadcast_op_list(room);
+                // DB 목록 전송
+                broadcast_db_list(room);
                 return;
             }
         }
@@ -583,6 +587,39 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
     if(bewe_type == BEWE_TYPE_CHAT){
         broadcast_global_chat(bewe_pkt, bewe_len, room.get());
         return;
+    }
+
+    // ── DB_SAVE: HOST가 보내도 Central에서 인터셉트하여 저장 ───────────
+    if(bewe_type == BEWE_TYPE_DB_SAVE_META || bewe_type == BEWE_TYPE_DB_SAVE_DATA){
+        // HOST 방향에서 온 DB_SAVE — JOIN의 intercept와 동일한 로직 재사용
+        // room에 임시 db_fp 저장 (HOST 전용)
+        static FILE* host_db_fp = nullptr;
+        static std::string host_db_path;
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        if(bewe_type == BEWE_TYPE_DB_SAVE_META && plen >= 128+8+1+32){
+            char filename[129]={}; memcpy(filename, payload, 128);
+            uint64_t total_bytes=0; memcpy(&total_bytes, payload+128, 8);
+            char op_name[33]={}; memcpy(op_name, payload+128+8+1, 32);
+            const char* info = (plen>=128+8+1+32+1)?(const char*)(payload+128+8+1+32):"";
+            const char* home=getenv("HOME");
+            std::string db_base=home?std::string(home)+"/BE_WE/DataBase":"/tmp/BE_WE/DataBase";
+            mkdir(db_base.c_str(),0755);
+            std::string db_dir=db_base+"/"+op_name; mkdir(db_dir.c_str(),0755);
+            std::string dst=db_dir+"/"+filename;
+            printf("[Central] DB_SAVE_META(HOST): '%s' by '%s' → %s\n",filename,op_name,dst.c_str());
+            if(info[0]){ FILE* fi=fopen((dst+".info").c_str(),"w");
+                if(fi){fwrite(info,1,strnlen(info,511),fi);fclose(fi);} }
+            if(host_db_fp) fclose(host_db_fp);
+            host_db_fp=fopen(dst.c_str(),"wb"); host_db_path=dst;
+        } else if(bewe_type == BEWE_TYPE_DB_SAVE_DATA && plen>=6 && host_db_fp){
+            uint8_t is_last=payload[1]; uint32_t cb=0; memcpy(&cb,payload+2,4);
+            if(plen>=6+cb) fwrite(payload+6,1,cb,host_db_fp);
+            if(is_last){fclose(host_db_fp);host_db_fp=nullptr;
+                printf("[Central] DB_SAVE complete(HOST): %s\n",host_db_path.c_str());host_db_path.clear();
+                broadcast_db_list(room); }
+        }
+        return; // JOIN에 포워드 안 함
     }
 
     // ── 기타 패킷 (FFT, HEARTBEAT, STATUS 등): 타입에 따라 분류 ─────────
@@ -649,6 +686,60 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
         return false;  // 다른 CMD는 HOST에 포워드
     }
 
+    // ── DB_SAVE: Central server에 직접 저장 (HOST에 포워드 안 함) ──
+    if(bewe_type == BEWE_TYPE_DB_SAVE_META){
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        // PktDbSaveMeta: filename[128]+total_bytes[8]+transfer_id[1]+operator_name[32]+info_data[512]
+        if(plen >= 128+8+1+32){
+            char filename[129]={}; memcpy(filename, payload, 128);
+            uint64_t total_bytes = 0; memcpy(&total_bytes, payload+128, 8);
+            char operator_name[33]={}; memcpy(operator_name, payload+128+8+1, 32);
+            const char* info_data = (plen >= 128+8+1+32+1) ? (const char*)(payload+128+8+1+32) : "";
+
+            // ~/BE_WE/DataBase/{operator}/
+            const char* home = getenv("HOME");
+            std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
+            std::string db_dir = db_base + "/" + operator_name;
+            mkdir(db_base.c_str(), 0755);
+            mkdir(db_dir.c_str(), 0755);
+            std::string dst = db_dir + "/" + filename;
+
+            printf("[Central] DB_SAVE_META: '%s' by '%s' (%.1fMB) → %s\n",
+                   filename, operator_name, total_bytes/1048576.0, dst.c_str());
+
+            // .info 저장
+            if(info_data[0]){
+                FILE* fi = fopen((dst+".info").c_str(), "w");
+                if(fi){ fwrite(info_data, 1, strnlen(info_data, 511), fi); fclose(fi); }
+            }
+            // 파일 열기 (je에 저장)
+            if(je->db_fp) fclose(je->db_fp);
+            je->db_fp = fopen(dst.c_str(), "wb");
+            je->db_path = dst;
+        }
+        return true;  // HOST에 포워드 안 함
+    }
+    if(bewe_type == BEWE_TYPE_DB_SAVE_DATA){
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        // PktDbSaveData: transfer_id[1]+is_last[1]+chunk_bytes[4]+data[]
+        if(plen >= 6 && je->db_fp){
+            uint8_t is_last = payload[1];
+            uint32_t chunk_bytes = 0; memcpy(&chunk_bytes, payload+2, 4);
+            if(plen >= 6 + chunk_bytes)
+                fwrite(payload+6, 1, chunk_bytes, je->db_fp);
+            if(is_last){
+                fclose(je->db_fp);
+                je->db_fp = nullptr;
+                printf("[Central] DB_SAVE complete: %s\n", je->db_path.c_str());
+                je->db_path.clear();
+                broadcast_db_list(room);
+            }
+        }
+        return true;  // HOST에 포워드 안 함
+    }
+
     // ── CHAT: 전역 브로드캐스트 (모든 방 JOIN + 다른 방 HOST) ────────
     if(bewe_type == BEWE_TYPE_CHAT){
         broadcast_global_chat(bewe_pkt, bewe_len, room.get());
@@ -711,6 +802,68 @@ void CentralServer::build_and_broadcast_op_list(std::shared_ptr<HostRoom> room){
     if(room->alive.load() && room->fd >= 0)
         enqueue_host_send(room, 0xFFFF, CentralMuxType::DATA, pkt.data(), pkt.size());
     printf("[Central] OP_LIST broadcast: %d operators room='%s'\n", count, room->station_id.c_str());
+}
+
+// ── DB_LIST broadcast ─────────────────────────────────────────────────────
+void CentralServer::broadcast_db_list(std::shared_ptr<HostRoom> room){
+    // ~/BE_WE/DataBase/ 스캔
+    const char* home = getenv("HOME");
+    std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
+
+    std::vector<DbFileEntry> entries;
+    DIR* top = opendir(db_base.c_str());
+    if(top){
+        struct dirent* de;
+        while((de = readdir(top))){
+            if(de->d_name[0]=='.') continue;
+            std::string op_dir = db_base + "/" + de->d_name;
+            DIR* sub = opendir(op_dir.c_str());
+            if(!sub) continue;
+            struct dirent* fe;
+            while((fe = readdir(sub))){
+                if(fe->d_name[0]=='.') continue;
+                std::string fn(fe->d_name);
+                if(fn.size()<5 || fn.substr(fn.size()-4)!=".wav") continue;
+                DbFileEntry e{};
+                strncpy(e.filename, fn.c_str(), 127);
+                strncpy(e.operator_name, de->d_name, 31);
+                std::string fp = op_dir + "/" + fn;
+                struct stat st{}; if(stat(fp.c_str(),&st)==0) e.size_bytes=(uint64_t)st.st_size;
+                entries.push_back(e);
+            }
+            closedir(sub);
+        }
+        closedir(top);
+    }
+
+    // BEWE 패킷 빌드
+    uint16_t cnt = (uint16_t)std::min(entries.size(), (size_t)500);
+    size_t payload_sz = sizeof(PktDbList) + cnt * sizeof(DbFileEntry);
+    std::vector<uint8_t> payload(payload_sz, 0);
+    auto* hdr = reinterpret_cast<PktDbList*>(payload.data());
+    hdr->count = cnt;
+    if(cnt > 0)
+        memcpy(payload.data() + sizeof(PktDbList), entries.data(), cnt * sizeof(DbFileEntry));
+
+    // BEWE 패킷으로 감싸기
+    std::vector<uint8_t> bewe(9 + payload_sz);
+    memcpy(bewe.data(), "BEWE", 4);
+    bewe[4] = BEWE_TYPE_DB_LIST;
+    uint32_t plen = (uint32_t)payload_sz;
+    memcpy(bewe.data()+5, &plen, 4);
+    memcpy(bewe.data()+9, payload.data(), payload_sz);
+
+    // HOST에 전송
+    enqueue_host_send(room, 0xFFFF, CentralMuxType::DATA, bewe.data(), (uint32_t)bewe.size());
+
+    // 모든 JOIN에 전송
+    std::lock_guard<std::mutex> jlk(room->joins_mtx);
+    for(auto& je : room->joins){
+        if(!je->alive.load() || je->fd < 0 || !je->authed) continue;
+        je->enqueue_ctrl(bewe.data(), bewe.size());
+    }
+
+    printf("[Central] DB_LIST broadcast: %u files\n", cnt);
 }
 
 // ── CHANNEL_SYNC audio_mask 재작성 + broadcast ───────────────────────────

@@ -1039,6 +1039,10 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
     }
 }
 
+// ── 전역 DB 목록 (Central server에서 수신) ──────────────────────────────
+static std::vector<DbFileEntry> g_db_list;
+static std::mutex g_db_list_mtx;
+
 // ─────────────────────────────────────────────────────────────────────────────
 void run_streaming_viewer(){
     float cf=450.0f;
@@ -2114,6 +2118,12 @@ void run_streaming_viewer(){
             // static 저장소에 캐시 (ARCHIVE Report 탭에서 사용)
             // 현재는 BOARD에서 로컬 report/ 폴더를 스캔하므로 추가 처리 불필요
             // TODO: JOIN에서 HOST의 report 목록을 별도 표시
+        };
+
+        // DB 목록 수신 (Central server)
+        cli->on_db_list = [](const std::vector<DbFileEntry>& entries){
+            std::lock_guard<std::mutex> lk(g_db_list_mtx);
+            g_db_list = entries;
         };
 
         cli->on_share_list = [&](const std::vector<std::tuple<std::string,uint64_t,std::string>>& files){
@@ -5898,11 +5908,24 @@ void run_streaming_viewer(){
                 }
                 ImGui::Spacing();
 
-                // ── Database ─────────────────────────────────────────────
+                // ── Database (Central Server) ─────────────────────────────
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                 if(ImGui::CollapsingHeader("Database")){
                     ImGui::Indent(8.f);
-                    ImGui::TextDisabled("  (central server DB — coming soon)");
+                    {
+                        std::lock_guard<std::mutex> lk(g_db_list_mtx);
+                        if(!g_db_list.empty()){
+                            for(auto& e : g_db_list){
+                                char lbl[256];
+                                double mb = e.size_bytes / 1048576.0;
+                                snprintf(lbl,sizeof(lbl),"%s  [%.1fM]  by %s",
+                                    e.filename, mb, e.operator_name);
+                                ImGui::TextUnformatted(lbl);
+                            }
+                        } else {
+                            ImGui::TextDisabled("  (empty)");
+                        }
+                    }
                     ImGui::Unindent(8.f);
                 }
 
@@ -7187,31 +7210,59 @@ void run_streaming_viewer(){
 
             // ── Save DB (Central Server) ──────────────────────────────
             if(ImGui::Selectable("  Save DB")){
-                // DB 저장: HOST는 로컬 DataBase/ 폴더에, JOIN은 HOST 경유
+                // DB 저장: Central server의 ~/BE_WE/DataBase/ 에 저장
+                // JOIN → HOST(relay) → Central, HOST → Central(relay)
                 std::string op_name = login_get_id();
+                std::string fp_cap = file_ctx.filepath;
+                std::string fn_cap = file_ctx.filename;
+                std::string op_cap = op_name;
                 if(v.net_cli){
-                    // JOIN: HOST에 DB_SAVE 전송
-                    std::string fp_cap = file_ctx.filepath;
-                    std::string op_cap = op_name;
+                    // JOIN: cmd_db_save (HOST→Central relay로 전달됨)
                     NetClient* cli_cap = v.net_cli;
                     std::thread([cli_cap, fp_cap, op_cap](){
                         cli_cap->cmd_db_save(fp_cap.c_str(), op_cap.c_str());
                     }).detach();
+                } else if(v.net_srv && v.net_srv->cb.on_relay_broadcast){
+                    // HOST: DB_SAVE를 Central relay로 직접 전송
+                    NetServer* srv_cap = v.net_srv;
+                    std::thread([srv_cap, fp_cap, fn_cap, op_cap](){
+                        FILE* fp=fopen(fp_cap.c_str(),"rb");
+                        if(!fp) return;
+                        fseek(fp,0,SEEK_END); uint64_t fsz=(uint64_t)ftell(fp); fseek(fp,0,SEEK_SET);
+                        char info_data[512]={};
+                        { std::string ip=fp_cap+".info"; FILE* fi=fopen(ip.c_str(),"r");
+                          if(fi){fread(info_data,1,511,fi);fclose(fi);} }
+                        PktDbSaveMeta meta{};
+                        strncpy(meta.filename,fn_cap.c_str(),127);
+                        meta.total_bytes=fsz; meta.transfer_id=1;
+                        strncpy(meta.operator_name,op_cap.c_str(),31);
+                        strncpy(meta.info_data,info_data,511);
+                        { auto pkt=make_packet(PacketType::DB_SAVE_META,&meta,sizeof(meta));
+                          srv_cap->cb.on_relay_broadcast(pkt.data(),pkt.size(),true); }
+                        const size_t CHUNK=64*1024;
+                        std::vector<uint8_t> buf(sizeof(PktDbSaveData)+CHUNK);
+                        while(true){
+                            size_t n=fread(buf.data()+sizeof(PktDbSaveData),1,CHUNK,fp);
+                            if(n==0) break;
+                            auto* d=reinterpret_cast<PktDbSaveData*>(buf.data());
+                            d->transfer_id=1; d->is_last=feof(fp)?1:0; d->chunk_bytes=(uint32_t)n;
+                            auto pkt=make_packet(PacketType::DB_SAVE_DATA,buf.data(),(uint32_t)(sizeof(PktDbSaveData)+n));
+                            srv_cap->cb.on_relay_broadcast(pkt.data(),pkt.size(),true);
+                        }
+                        fclose(fp);
+                    }).detach();
                 } else {
-                    // HOST/LOCAL: 로컬 DataBase/ 폴더에 직접 저장
+                    // LOCAL: 로컬 저장 fallback
                     std::string db_dir = BEWEPaths::database_dir() + "/" + op_name;
+                    mkdir(BEWEPaths::database_dir().c_str(), 0755);
                     mkdir(db_dir.c_str(), 0755);
-                    std::string dst = db_dir + "/" + file_ctx.filename;
-                    FILE* fin=fopen(file_ctx.filepath.c_str(),"rb");
+                    std::string dst = db_dir + "/" + fn_cap;
+                    FILE* fin=fopen(fp_cap.c_str(),"rb");
                     FILE* fout=fopen(dst.c_str(),"wb");
-                    if(fin&&fout){
-                        char buf[65536]; size_t n;
-                        while((n=fread(buf,1,sizeof(buf),fin))>0) fwrite(buf,1,n,fout);
-                    }
-                    if(fin) fclose(fin);
-                    if(fout) fclose(fout);
-                    // .info도 복사
-                    std::string info_src = file_ctx.filepath + ".info";
+                    if(fin&&fout){ char buf[65536]; size_t n;
+                        while((n=fread(buf,1,sizeof(buf),fin))>0) fwrite(buf,1,n,fout); }
+                    if(fin) fclose(fin); if(fout) fclose(fout);
+                    std::string info_src = fp_cap + ".info";
                     if(access(info_src.c_str(), F_OK)==0){
                         std::string info_dst = dst + ".info";
                         FILE* fi2=fopen(info_src.c_str(),"rb");

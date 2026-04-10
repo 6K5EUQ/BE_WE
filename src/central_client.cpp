@@ -401,6 +401,11 @@ void CentralClient::mux_loop(int central_fd,
                         on_central_op_list_(buf.data(), mux.len);
                     continue;
                 }
+                if(btype == 0x26){  // DB_LIST: Central DB 파일 목록
+                    if(on_central_db_list_)
+                        on_central_db_list_(buf.data(), mux.len);
+                    continue;
+                }
             }
 
             // 중앙서버→HOST CHAT: relay 루프 방지를 위해 socketpair 전달 않음

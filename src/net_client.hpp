@@ -231,6 +231,8 @@ public:
 
     // Report list received from HOST
     std::function<void(const std::vector<ReportFileEntry>&)> on_report_list;
+    // DB list received from Central
+    std::function<void(const std::vector<DbFileEntry>&)> on_db_list;
 
 private:
     int  fd_ = -1;
