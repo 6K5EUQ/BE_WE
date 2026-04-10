@@ -141,12 +141,15 @@ void FFTViewer::update_channel_squelch(){
 
         // 스컬치 누적 시간 추적 (프레임 기반 — SDR 멈추면 시간도 정지)
         if(ch.filter_active){
-            float fps = (float)header.sample_rate / (float)std::max(1,fft_input_size) / (float)std::max(1,time_average);
-            if(fps > 0){
-                float dt = 1.0f / fps;
-                if(!sdr_stream_error.load()){
-                    ch.sq_total_time += dt;
-                    if(gate) ch.sq_active_time += dt;
+            // JOIN: CH_SYNC에서 HOST 값을 직접 사용 (로컬 증가 안 함)
+            if(!remote_mode){
+                float fps = (float)header.sample_rate / (float)std::max(1,fft_input_size) / (float)std::max(1,time_average);
+                if(fps > 0){
+                    float dt = 1.0f / fps;
+                    if(!sdr_stream_error.load()){
+                        ch.sq_total_time += dt;
+                        if(gate) ch.sq_active_time += dt;
+                    }
                 }
             }
         } else {
@@ -1799,10 +1802,10 @@ void run_streaming_viewer(){
 
                 // ── 채널 활성화 전이 처리 ──────────────────────────────
                 if(!was_active && now_active){
-                    // 채널 생성: 스컬치 상태 초기화 (auto-cal 재실행)
-                    v.channels[i].sq_calibrated.store(false);
+                    // 채널 생성: HOST의 sq_threshold를 이미 CH_SYNC로 받으므로
+                    // 캘리브레이션 건너뛰기 (즉시 calibrated)
+                    v.channels[i].sq_calibrated.store(true);
                     v.channels[i].sq_calib_cnt = 0;
-                    memset(v.channels[i].sq_calib_buf, 0, sizeof(v.channels[i].sq_calib_buf));
                     v.channels[i].sq_gate_hold = 0;
                     v.channels[i].digital_mode = Channel::DIGI_NONE;
                     v.channels[i].magic_det.store(0);
@@ -5805,14 +5808,19 @@ void run_streaming_viewer(){
                                 }
                                 fclose(wf);
                             }
-                            if(sec > 0) snprintf(info,sizeof(info),"  [%.0fs]  [%.1fM]",sec,mb);
-                            else        snprintf(info,sizeof(info),"  [%.1fM]",mb);
+                            if(sec > 0) snprintf(info,sizeof(info),"[%.0fs] [%.1fM]",sec,mb);
+                            else        snprintf(info,sizeof(info),"[%.1fM]",mb);
                         }
                         cached = info;
                     }
-                    std::string label = fn + cached;
+                    float pw = ImGui::GetContentRegionAvail().x;
+                    float fn_w = pw * 0.66f;
                     bool sel = file_ctx.selected && file_ctx.filepath==fp;
-                    ImGui::Selectable(label.c_str(), sel);
+                    ImGui::Selectable(fn.c_str(), sel, 0, ImVec2(fn_w, 0));
+                    if(!cached.empty()){
+                        ImGui::SameLine(fn_w + 8.f);
+                        ImGui::TextDisabled("%s", cached.c_str());
+                    }
                     if(ImGui::IsItemHovered()){
                         if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
                             file_ctx.selected=true; file_ctx.filepath=fp; file_ctx.filename=fn; file_ctx.is_public=false;
@@ -5823,23 +5831,65 @@ void run_streaming_viewer(){
                     }
                 };
 
+                // ── Record (STATUS와 동일 데이터) ────────────────────────
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                if(ImGui::CollapsingHeader("Private")){
+                if(ImGui::CollapsingHeader("Record##arch")){
                     ImGui::Indent(8.f);
-                    if(ImGui::TreeNode("IQ")){
-                        for(auto& fn : priv_iq_files) draw_arch_file(BEWEPaths::private_iq_dir(), fn);
-                        if(priv_iq_files.empty()) ImGui::TextDisabled("  (empty)");
-                        ImGui::TreePop();
+                    std::lock_guard<std::mutex> rlk(v.rec_entries_mtx);
+                    bool any_rec = false;
+                    for(auto& re : v.rec_entries){
+                        if(re.finished && re.is_region) continue; // Done region은 Private에서
+                        any_rec = true;
+                        ImGui::PushID(&re);
+                        float t2a=(float)ImGui::GetTime();
+                        if(!re.finished){
+                            bool blink=(fmodf(t2a,0.8f)<0.4f);
+                            ImGui::PushStyleColor(ImGuiCol_Text,
+                                blink?IM_COL32(255,80,80,255):IM_COL32(200,60,60,255));
+                            int secs=0;
+                            if(!re.finished){
+                                float el=std::chrono::duration<float>(std::chrono::steady_clock::now()-re.t_start).count();
+                                secs=(int)el;
+                            }
+                            if(re.is_region){
+                                if(re.req_state==FFTViewer::RecEntry::REQ_CONFIRMED)
+                                    ImGui::Text("[REC]  %s", re.filename.c_str());
+                                else if(re.req_state==FFTViewer::RecEntry::REQ_TRANSFERRING)
+                                    ImGui::Text("[Transferring]  %s  (%.1f/%.1fM)",
+                                        re.filename.c_str(), re.xfer_done/1048576.0, re.xfer_total/1048576.0);
+                                else
+                                    ImGui::Text("[REC]  %s  [%ds]", re.filename.c_str(), secs);
+                            } else {
+                                int dn = re.ch_idx>=0 ? v.freq_sorted_display_num(re.ch_idx) : 0;
+                                int rec_s = 0;
+                                if(re.ch_idx>=0){
+                                    if(re.is_audio && v.channels[re.ch_idx].audio_rec_sr>0)
+                                        rec_s=(int)(v.channels[re.ch_idx].audio_rec_frames/v.channels[re.ch_idx].audio_rec_sr);
+                                    else if(!re.is_audio && v.channels[re.ch_idx].iq_rec_sr>0)
+                                        rec_s=(int)(v.channels[re.ch_idx].iq_rec_frames/v.channels[re.ch_idx].iq_rec_sr);
+                                }
+                                ImGui::Text("[REC] [%2d] %s  [%d/%ds]", dn, re.filename.c_str(), rec_s, secs);
+                            }
+                            ImGui::PopStyleColor();
+                        } else {
+                            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(120,200,120,255));
+                            ImGui::Selectable(("[Done]  "+re.filename).c_str(), false);
+                            if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                                file_ctx={true,io.MousePos.x,io.MousePos.y,re.path,re.filename};
+                                file_ctx.selected=true;
+                            }
+                            ImGui::PopStyleColor();
+                        }
+                        ImGui::PopID();
                     }
-                    if(ImGui::TreeNode("Audio")){
-                        for(auto& fn : priv_audio_files) draw_arch_file(BEWEPaths::private_audio_dir(), fn);
-                        if(priv_audio_files.empty()) ImGui::TextDisabled("  (empty)");
-                        ImGui::TreePop();
-                    }
+                    if(!any_rec) ImGui::TextDisabled("  (none)");
                     ImGui::Unindent(8.f);
                 }
                 ImGui::Spacing();
 
+                // ── Report ─ (이미 있음, 아래로 이동됨) ──────────────────
+
+                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                 // ── Report ───────────────────────────────────────────────
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                 if(ImGui::CollapsingHeader("Report")){
@@ -5864,13 +5914,19 @@ void run_streaming_viewer(){
                         scan(BEWEPaths::report_audio_dir(), report_audio_files);
                     }
                     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                    if(ImGui::TreeNode("IQ")){
+                    if(ImGui::TreeNode("IQ##rpt")){
+                        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
+                        ImGui::Separator(); ImGui::PopStyleColor();
                         for(auto& fn : report_iq_files) draw_arch_file(BEWEPaths::report_iq_dir(), fn);
                         if(report_iq_files.empty()) ImGui::TextDisabled("  (empty)");
                         ImGui::TreePop();
                     }
+                    ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.4f,0.3f));
+                    ImGui::Separator(); ImGui::PopStyleColor();
                     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                    if(ImGui::TreeNode("Audio")){
+                    if(ImGui::TreeNode("Audio##rpt")){
+                        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
+                        ImGui::Separator(); ImGui::PopStyleColor();
                         for(auto& fn : report_audio_files) draw_arch_file(BEWEPaths::report_audio_dir(), fn);
                         if(report_audio_files.empty()) ImGui::TextDisabled("  (empty)");
                         ImGui::TreePop();
@@ -5896,26 +5952,65 @@ void run_streaming_viewer(){
                         }
                     }
                     auto draw_db_entry = [&](const DbFileEntry& e){
-                        char lbl[256];
+                        float pw2 = ImGui::GetContentRegionAvail().x;
+                        float fn_w2 = pw2 * 0.66f;
                         double mb = e.size_bytes / 1048576.0;
-                        snprintf(lbl,sizeof(lbl),"%s  [%.1fM]  by %s", e.filename, mb, e.operator_name);
-                        ImGui::Selectable(lbl, false);
-                        if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                            db_ctx = {true, io.MousePos.x, io.MousePos.y,
-                                      std::string(e.filename), std::string(e.operator_name),
-                                      (strncmp(e.filename,"IQ_",3)==0||strncmp(e.filename,"sa_",3)==0)};
+                        char info2[32]; snprintf(info2,sizeof(info2),"[%.1fM]",mb);
+                        ImGui::Selectable(e.filename, false, 0, ImVec2(fn_w2, 0));
+                        if(ImGui::IsItemHovered()){
+                            ImGui::SetTooltip("by %s", e.operator_name);
+                            if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                                db_ctx = {true, io.MousePos.x, io.MousePos.y,
+                                          std::string(e.filename), std::string(e.operator_name),
+                                          (strncmp(e.filename,"IQ_",3)==0||strncmp(e.filename,"sa_",3)==0)};
+                            }
                         }
+                        ImGui::SameLine(fn_w2 + 8.f);
+                        ImGui::TextDisabled("%s", info2);
                     };
                     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                     if(ImGui::TreeNode("IQ##db")){
+                        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
+                        ImGui::Separator(); ImGui::PopStyleColor();
                         for(auto& e : db_iq) draw_db_entry(e);
                         if(db_iq.empty()) ImGui::TextDisabled("  (empty)");
                         ImGui::TreePop();
                     }
+                    ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.4f,0.3f));
+                    ImGui::Separator(); ImGui::PopStyleColor();
                     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                     if(ImGui::TreeNode("Audio##db")){
+                        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
+                        ImGui::Separator(); ImGui::PopStyleColor();
                         for(auto& e : db_audio) draw_db_entry(e);
                         if(db_audio.empty()) ImGui::TextDisabled("  (empty)");
+                        ImGui::TreePop();
+                    }
+                    ImGui::Unindent(8.f);
+                }
+
+                ImGui::Spacing();
+
+                // ── Private ──────────────────────────────────────────────
+                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                if(ImGui::CollapsingHeader("Private##arch")){
+                    ImGui::Indent(8.f);
+                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                    if(ImGui::TreeNode("IQ##priv")){
+                        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
+                        ImGui::Separator(); ImGui::PopStyleColor();
+                        for(auto& fn : priv_iq_files) draw_arch_file(BEWEPaths::private_iq_dir(), fn);
+                        if(priv_iq_files.empty()) ImGui::TextDisabled("  (empty)");
+                        ImGui::TreePop();
+                    }
+                    ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.4f,0.3f));
+                    ImGui::Separator(); ImGui::PopStyleColor();
+                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                    if(ImGui::TreeNode("Audio##priv")){
+                        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
+                        ImGui::Separator(); ImGui::PopStyleColor();
+                        for(auto& fn : priv_audio_files) draw_arch_file(BEWEPaths::private_audio_dir(), fn);
+                        if(priv_audio_files.empty()) ImGui::TextDisabled("  (empty)");
                         ImGui::TreePop();
                     }
                     ImGui::Unindent(8.f);
