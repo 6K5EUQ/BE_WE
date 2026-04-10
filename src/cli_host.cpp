@@ -806,7 +806,11 @@ void run_cli_host(){
                     }
                 });
                 // Central DB 목록 수신
+                extern std::vector<DbFileEntry> g_db_list;
+                extern std::mutex g_db_list_mtx;
                 central_cli.set_on_central_db_list([](const uint8_t* pkt, size_t len){
+                    extern std::vector<DbFileEntry> g_db_list;
+                    extern std::mutex g_db_list_mtx;
                     if(len < 9 + sizeof(PktDbList)) return;
                     const uint8_t* payload = pkt + 9;
                     auto* hdr2 = reinterpret_cast<const PktDbList*>(payload);
@@ -814,7 +818,8 @@ void run_cli_host(){
                     size_t expected = sizeof(PktDbList) + cnt2 * sizeof(DbFileEntry);
                     if(len - 9 < expected) return;
                     const DbFileEntry* ent = reinterpret_cast<const DbFileEntry*>(payload + sizeof(PktDbList));
-                    // g_db_list는 ui.cpp의 전역 — cli_host는 headless이므로 로그만
+                    { std::lock_guard<std::mutex> lk(g_db_list_mtx);
+                      g_db_list.assign(ent, ent + cnt2); }
                     bewe_log_push(0,"[Central] DB_LIST: %u files\n", cnt2);
                 });
 

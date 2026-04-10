@@ -1042,9 +1042,9 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
     }
 }
 
-// ── 전역 DB 목록 (Central server에서 수신) ──────────────────────────────
-static std::vector<DbFileEntry> g_db_list;
-static std::mutex g_db_list_mtx;
+// g_db_list / g_db_list_mtx: fft_viewer.cpp에서 정의 (headless에서도 접근 가능)
+extern std::vector<DbFileEntry> g_db_list;
+extern std::mutex g_db_list_mtx;
 
 // ─────────────────────────────────────────────────────────────────────────────
 void run_streaming_viewer(){
@@ -4323,9 +4323,10 @@ void run_streaming_viewer(){
             // right_panel_x 갱신
             v.right_panel_x = rpx;
 
-            // 패널이 처음 열릴 때 STAT 자동 활성화
+            // 패널이 열릴 때: 마지막 활성 탭 복원 (없으면 STATUS)
             if(!prev_right_visible_outer){
-                if(!board_open) stat_open = true;
+                if(!stat_open && !board_open && !v.sched_panel_open && !archive_open)
+                    stat_open = true;
             }
             prev_right_visible_outer = true;
 
@@ -4484,8 +4485,11 @@ void run_streaming_viewer(){
                     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                     if(ImGui::CollapsingHeader("Receiver")){
                         ImGui::Indent(8.f);
+                        // 역할 + 사용자 ID
                         const char* hw_role = v.net_cli ? "[JOIN]" : (v.net_srv ? "[HOST]" : "[LOCAL]");
-                        // 하드웨어 이름: JOIN이면 remote_hw로 판단, 아니면 로컬 디바이스
+                        const char* my_id = login_get_id();
+                        ImGui::TextColored(ImVec4(0.4f,0.85f,1.f,1.f), "%s %s", hw_role, my_id);
+                        // SDR 이름
                         const char* hw_name = "Unknown";
                         if(v.net_cli){
                             uint8_t rh = v.net_cli->remote_hw.load();
@@ -4494,83 +4498,7 @@ void run_streaming_viewer(){
                             if(v.dev_blade)    hw_name = "BladeRF 2.0 micro xA9";
                             else if(v.dev_rtl) hw_name = "RTL-SDR";
                         }
-                        ImGui::TextColored(ImVec4(0.4f,0.85f,1.f,1.f), "%s", hw_role);
-                        ImGui::SameLine(0,6);
-                        ImGui::TextUnformatted(hw_name);
-
-                        // 주파수 / SR 표시
-                        if(v.net_cli){
-                            ImGui::TextDisabled("  %.4f MHz  /  %.3f MSPS",
-                                (double)(v.net_cli->remote_cf_mhz.load()),
-                                (double)(v.net_cli->remote_sr.load()/1e6));
-                        } else if(v.dev_blade||v.dev_rtl){
-                            ImGui::TextDisabled("  %.4f MHz  /  %.3f MSPS",
-                                (double)(v.header.center_frequency/1e6),
-                                (double)(v.header.sample_rate/1e6));
-                        }
-                        // ── Network (Receiver 내부) ──────────────────────
-                        ImGui::Spacing();
-                        ImGui::TextDisabled("--- Network ---");
-                        {
-                            auto fmt_bytes = [](uint64_t b) -> std::string {
-                                char buf[32];
-                                if(b < 1024)               snprintf(buf,sizeof(buf),"%llu B", (unsigned long long)b);
-                                else if(b < 1024*1024)     snprintf(buf,sizeof(buf),"%.1f KB",(double)b/1024);
-                                else if(b < 1024ULL*1024*1024) snprintf(buf,sizeof(buf),"%.1f MB",(double)b/(1024*1024));
-                                else                       snprintf(buf,sizeof(buf),"%.2f GB",(double)b/(1024ULL*1024*1024));
-                                return buf;
-                            };
-                            auto fmt_rate = [](double bps) -> std::string {
-                                char buf[32];
-                                if(bps < 1024)             snprintf(buf,sizeof(buf),"%.0f B/s", bps);
-                                else if(bps < 1024*1024)   snprintf(buf,sizeof(buf),"%.1f KB/s", bps/1024);
-                                else                       snprintf(buf,sizeof(buf),"%.2f MB/s", bps/(1024*1024));
-                                return buf;
-                            };
-                            static uint64_t prev_tx=0, prev_rx=0;
-                            static double rate_tx=0, rate_rx=0;
-                            static auto rate_time = std::chrono::steady_clock::now();
-                            auto now_rate = std::chrono::steady_clock::now();
-                            float rate_dt = std::chrono::duration<float>(now_rate - rate_time).count();
-                            if(v.net_srv){
-                                auto ns = v.net_srv->collect_stats();
-                                if(rate_dt >= 1.0f){
-                                    rate_tx = (double)(ns.tx_bytes - prev_tx) / rate_dt;
-                                    rate_rx = (double)(ns.rx_bytes - prev_rx) / rate_dt;
-                                    prev_tx = ns.tx_bytes; prev_rx = ns.rx_bytes;
-                                    rate_time = now_rate;
-                                }
-                                ImGui::TextColored(ImVec4(0.5f,0.9f,1.f,1.f), "TX");
-                                ImGui::SameLine(0,4);
-                                ImGui::Text("%s  (%s)", fmt_bytes(ns.tx_bytes).c_str(), fmt_rate(rate_tx).c_str());
-                                ImGui::TextColored(ImVec4(0.5f,1.f,0.7f,1.f), "RX");
-                                ImGui::SameLine(0,4);
-                                ImGui::Text("%s  (%s)", fmt_bytes(ns.rx_bytes).c_str(), fmt_rate(rate_rx).c_str());
-                                if(ns.drops > 0)
-                                    ImGui::TextColored(ImVec4(1.f,0.4f,0.4f,1.f), "Drops: %llu", (unsigned long long)ns.drops);
-                                ImGui::TextDisabled("Queue: FFT %zu  Audio %zu", ns.q_fft, ns.q_audio);
-                            } else if(v.net_cli){
-                                auto ns = v.net_cli->collect_stats();
-                                if(rate_dt >= 1.0f){
-                                    rate_rx = (double)(ns.rx_bytes - prev_rx) / rate_dt;
-                                    rate_tx = (double)(ns.tx_bytes - prev_tx) / rate_dt;
-                                    prev_rx = ns.rx_bytes; prev_tx = ns.tx_bytes;
-                                    rate_time = now_rate;
-                                }
-                                ImGui::TextColored(ImVec4(0.5f,1.f,0.7f,1.f), "RX");
-                                ImGui::SameLine(0,4);
-                                ImGui::Text("%s  (%s)", fmt_bytes(ns.rx_bytes).c_str(), fmt_rate(rate_rx).c_str());
-                                ImGui::TextColored(ImVec4(0.5f,0.9f,1.f,1.f), "TX");
-                                ImGui::SameLine(0,4);
-                                ImGui::Text("%s  (%s)", fmt_bytes(ns.tx_bytes).c_str(), fmt_rate(rate_tx).c_str());
-                                if(ns.underruns > 0)
-                                    ImGui::TextColored(ImVec4(1.f,0.6f,0.3f,1.f), "Audio underruns: %llu", (unsigned long long)ns.underruns);
-                                ImGui::TextDisabled("Jitter buffer: %zu / %zu samples",
-                                    ns.jitter_fill, NetAudioRing::SZ);
-                            } else {
-                                ImGui::TextDisabled("(not connected)");
-                            }
-                        }
+                        ImGui::TextDisabled("[SDR] %s", hw_name);
                         ImGui::Unindent(8.f);
                     }
                     ImGui::Spacing();
@@ -4731,7 +4659,7 @@ void run_streaming_viewer(){
                             char label[96];
                             int dn=v.freq_sorted_display_num(ci);
                             int act_s=(int)ch.sq_active_time, tot_s=(int)ch.sq_total_time;
-                            snprintf(label,sizeof(label),"[%2d] %-3s %10.3f MHz %6.0fkHz  [%d/%ds]",
+                            snprintf(label,sizeof(label),"[%2d] %-3s %10.3f MHz %6.0fkHz  [%4d/%5ds]",
                                 dn,mnames[mi],cf_mhz,bw_khz,act_s,tot_s);
                             ImGui::PushID(ci*1000+700);
                             ImGui::PushStyleColor(ImGuiCol_Text,tc_v);
@@ -5808,8 +5736,8 @@ void run_streaming_viewer(){
                                 }
                                 fclose(wf);
                             }
-                            if(sec > 0) snprintf(info,sizeof(info),"[%.0fs] [%.1fM]",sec,mb);
-                            else        snprintf(info,sizeof(info),"[%.1fM]",mb);
+                            if(sec > 0) snprintf(info,sizeof(info),"%4.0fs %6.1fM",sec,mb);
+                            else        snprintf(info,sizeof(info),"     %6.1fM",mb);
                         }
                         cached = info;
                     }
@@ -5817,11 +5745,12 @@ void run_streaming_viewer(){
                     float fn_w = pw * 0.66f;
                     bool sel = file_ctx.selected && file_ctx.filepath==fp;
                     ImGui::Selectable(fn.c_str(), sel, 0, ImVec2(fn_w, 0));
+                    bool item_hov = ImGui::IsItemHovered();
                     if(!cached.empty()){
                         ImGui::SameLine(fn_w + 8.f);
                         ImGui::TextDisabled("%s", cached.c_str());
                     }
-                    if(ImGui::IsItemHovered()){
+                    if(item_hov){
                         if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
                             file_ctx.selected=true; file_ctx.filepath=fp; file_ctx.filename=fn; file_ctx.is_public=false;
                         }
@@ -5872,11 +5801,46 @@ void run_streaming_viewer(){
                             }
                             ImGui::PopStyleColor();
                         } else {
+                            // Done: 다른 파일 목록과 동일 양식 (초록색)
                             ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(120,200,120,255));
-                            ImGui::Selectable(("[Done]  "+re.filename).c_str(), false);
-                            if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                                file_ctx={true,io.MousePos.x,io.MousePos.y,re.path,re.filename};
-                                file_ctx.selected=true;
+                            float pw_d = ImGui::GetContentRegionAvail().x;
+                            float fn_wd = pw_d * 0.66f;
+                            ImGui::Selectable(re.filename.c_str(), false, 0, ImVec2(fn_wd, 0));
+                            bool done_hov = ImGui::IsItemHovered();
+                            // 시간/용량 표시
+                            {
+                                auto& dc = arch_info_cache[re.path];
+                                if(dc.empty() && !re.path.empty()){
+                                    struct stat dst2{}; char di2[64]="";
+                                    if(stat(re.path.c_str(),&dst2)==0){
+                                        double dmb=dst2.st_size/1048576.0;
+                                        double dsec=0;
+                                        FILE* dwf=fopen(re.path.c_str(),"rb");
+                                        if(dwf){
+                                            uint8_t dh[44]; if(fread(dh,1,44,dwf)==44){
+                                                uint32_t dsr=*(uint32_t*)(dh+24); uint16_t dch=*(uint16_t*)(dh+22); uint16_t dbps=*(uint16_t*)(dh+34);
+                                                if(dsr>0&&dch>0&&dbps>0) dsec=(double)(dst2.st_size-44)/(dsr*dch*(dbps/8));
+                                            } fclose(dwf);
+                                        }
+                                        if(dsec>0) snprintf(di2,sizeof(di2),"%4.0fs %6.1fM",dsec,dmb);
+                                        else snprintf(di2,sizeof(di2),"     %6.1fM",dmb);
+                                    }
+                                    dc = di2;
+                                }
+                                if(!dc.empty()){
+                                    ImGui::SameLine(fn_wd + 8.f);
+                                    ImGui::TextDisabled("%s", dc.c_str());
+                                }
+                            }
+                            if(done_hov){
+                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                                    file_ctx={true,io.MousePos.x,io.MousePos.y,re.path,re.filename};
+                                    file_ctx.selected=true;
+                                }
+                                if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !re.path.empty()){
+                                    v.sa_temp_path = re.path;
+                                    v.eid_panel_open = true;
+                                }
                             }
                             ImGui::PopStyleColor();
                         }
@@ -5887,9 +5851,6 @@ void run_streaming_viewer(){
                 }
                 ImGui::Spacing();
 
-                // ── Report ─ (이미 있음, 아래로 이동됨) ──────────────────
-
-                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                 // ── Report ───────────────────────────────────────────────
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                 if(ImGui::CollapsingHeader("Report")){
@@ -6029,9 +5990,41 @@ void run_streaming_viewer(){
                         ImGuiWindowFlags_NoMove|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoDecoration);
 
                     if(ImGui::Selectable("  Download")){
-                        // TODO: Central에서 실제 파일 다운로드 (현재는 DB_LIST만 수신)
-                        // 로컬 private에 복사하는 로직은 Central에서 파일을 전송받아야 함
-                        // 현재는 placeholder
+                        // Central DB에서 파일 다운로드 → record/ 폴더에 저장
+                        // Central과 HOST/JOIN은 별도 PC이므로 네트워크 전송 필요
+                        // 로컬 DataBase/ 폴더에 있으면 직접 복사, 없으면 로그
+                        std::string src = BEWEPaths::database_dir()+"/"+db_ctx.operator_name+"/"+db_ctx.filename;
+                        std::string dst_dir = db_ctx.is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
+                        std::string dst = dst_dir + "/" + db_ctx.filename;
+                        FILE* fin=fopen(src.c_str(),"rb");
+                        if(fin){
+                            FILE* fout=fopen(dst.c_str(),"wb");
+                            if(fout){
+                                char cbuf[65536]; size_t n;
+                                while((n=fread(cbuf,1,sizeof(cbuf),fin))>0) fwrite(cbuf,1,n,fout);
+                                fclose(fout);
+                            }
+                            fclose(fin);
+                            // .info도 복사
+                            std::string isrc=src+".info", idst=dst+".info";
+                            if(access(isrc.c_str(),F_OK)==0){
+                                FILE* fi=fopen(isrc.c_str(),"rb"); FILE* fo=fopen(idst.c_str(),"wb");
+                                if(fi&&fo){ char b[4096]; size_t n2; while((n2=fread(b,1,sizeof(b),fi))>0) fwrite(b,1,n2,fo); }
+                                if(fi) fclose(fi); if(fo) fclose(fo);
+                            }
+                            // record 목록에 추가
+                            if(db_ctx.is_iq){
+                                bool dup=false; for(auto& s:rec_iq_files) if(s==db_ctx.filename){dup=true;break;}
+                                if(!dup) rec_iq_files.push_back(db_ctx.filename);
+                            } else {
+                                bool dup=false; for(auto& s:rec_audio_files) if(s==db_ctx.filename){dup=true;break;}
+                                if(!dup) rec_audio_files.push_back(db_ctx.filename);
+                            }
+                            arch_info_cache.erase(dst);
+                            bewe_log_push(0,"[DB] Downloaded: %s → %s\n", src.c_str(), dst.c_str());
+                        } else {
+                            bewe_log_push(0,"[DB] Download: file not on local disk (Central server remote)\n");
+                        }
                         db_ctx.open = false;
                     }
                     ImGui::Separator();

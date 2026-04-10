@@ -1,5 +1,11 @@
 #include "fft_viewer.hpp"
+#include "net_protocol.hpp"
 #include <algorithm>
+#include <mutex>
+
+// 전역 DB 목록 (Central server에서 수신, ui.cpp + cli_host.cpp에서 접근)
+std::vector<DbFileEntry> g_db_list;
+std::mutex g_db_list_mtx;
 #include <cfloat>
 #include <cstdarg>
 #include <ctime>
