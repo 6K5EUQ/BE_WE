@@ -823,6 +823,32 @@ void run_cli_host(){
                     bewe_log_push(0,"[Central] DB_LIST: %u files\n", cnt2);
                 });
 
+                // DB 다운로드 데이터 수신 (Central → HOST)
+                static FILE* host_db_dl_fp = nullptr;
+                static std::string host_db_dl_path;
+                central_cli.set_on_central_db_dl_data([&v](const uint8_t* pkt, size_t len){
+                    if(len < 9 + sizeof(PktDbDownloadData)) return;
+                    const auto* d = reinterpret_cast<const PktDbDownloadData*>(pkt + 9);
+                    const uint8_t* data = pkt + 9 + sizeof(PktDbDownloadData);
+                    uint32_t data_len = d->chunk_bytes;
+                    if(d->is_first){
+                        bool is_iq = (strncmp(d->filename,"IQ_",3)==0||strncmp(d->filename,"sa_",3)==0);
+                        std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
+                        host_db_dl_path = dir + "/" + d->filename;
+                        if(host_db_dl_fp) fclose(host_db_dl_fp);
+                        host_db_dl_fp = fopen(host_db_dl_path.c_str(), "wb");
+                        bewe_log_push(0,"[DB] Download start: %s (%.1fMB)\n", d->filename, d->total_bytes/1048576.0);
+                    }
+                    if(host_db_dl_fp && data_len > 0)
+                        fwrite(data, 1, data_len, host_db_dl_fp);
+                    if(d->is_last && host_db_dl_fp){
+                        fclose(host_db_dl_fp);
+                        host_db_dl_fp = nullptr;
+                        bewe_log_push(0,"[DB] Download done: %s\n", host_db_dl_path.c_str());
+                        host_db_dl_path.clear();
+                    }
+                });
+
                 srv->cb.on_relay_broadcast = [&central_cli](const uint8_t* pkt, size_t len, bool no_drop){
                     central_cli.enqueue_relay_broadcast(pkt, len, no_drop);
                 };

@@ -43,6 +43,8 @@ enum class PacketType : uint8_t {
     DB_SAVE_META       = 0x24,  // client → server: save file+info to DB
     DB_SAVE_DATA       = 0x25,  // client → server: DB file data chunk
     DB_LIST            = 0x26,  // central → all: database file list
+    DB_DOWNLOAD_REQ    = 0x27,  // client → central: request DB file download
+    DB_DOWNLOAD_DATA   = 0x28,  // central → client: DB file data chunk
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────
@@ -355,6 +357,20 @@ struct __attribute__((packed)) DbFileEntry {
 struct __attribute__((packed)) PktDbList {
     uint16_t count;
     // DbFileEntry[count] follows
+};
+
+// ── DB_DOWNLOAD ──────────────────────────────────────────────────────────
+struct __attribute__((packed)) PktDbDownloadReq {
+    char     filename[128];
+    char     operator_name[32];
+};
+struct __attribute__((packed)) PktDbDownloadData {
+    char     filename[128];
+    uint64_t total_bytes;   // valid in first chunk
+    uint32_t chunk_bytes;
+    uint8_t  is_first;
+    uint8_t  is_last;
+    // uint8_t data[chunk_bytes] follows
 };
 
 // ── Wire helpers ──────────────────────────────────────────────────────────

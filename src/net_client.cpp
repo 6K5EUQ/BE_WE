@@ -381,6 +381,15 @@ void NetClient::handle_packet(PacketType type,
         break;
     }
 
+    case PacketType::DB_DOWNLOAD_DATA: {
+        if(len < sizeof(PktDbDownloadData)) break;
+        auto* d = reinterpret_cast<const PktDbDownloadData*>(payload);
+        const uint8_t* data = payload + sizeof(PktDbDownloadData);
+        uint32_t data_len = (len > sizeof(PktDbDownloadData)) ? d->chunk_bytes : 0;
+        if(on_db_download_data) on_db_download_data(d, data, data_len);
+        break;
+    }
+
     case PacketType::DB_LIST: {
         if(len < sizeof(PktDbList)) break;
         auto* h2 = reinterpret_cast<const PktDbList*>(payload);
@@ -535,6 +544,12 @@ bool NetClient::cmd_stop_iq_rec(int ch_idx){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::STOP_IQ_REC;
     c.stop_iq_rec.idx=(uint8_t)ch_idx;
     return send_cmd(c);
+}
+bool NetClient::cmd_db_download(const char* filename, const char* operator_name){
+    PktDbDownloadReq req{};
+    strncpy(req.filename, filename, 127);
+    strncpy(req.operator_name, operator_name, 31);
+    return raw_send(PacketType::DB_DOWNLOAD_REQ, &req, sizeof(req));
 }
 bool NetClient::cmd_report_add(const char* filename, const char* info_summary){
     PktReportAdd ra{};

@@ -406,6 +406,11 @@ void CentralClient::mux_loop(int central_fd,
                         on_central_db_list_(buf.data(), mux.len);
                     continue;
                 }
+                if(btype == 0x28){  // DB_DOWNLOAD_DATA: Central → HOST
+                    if(on_central_db_dl_data_)
+                        on_central_db_dl_data_(buf.data(), mux.len);
+                    continue;
+                }
             }
 
             // 중앙서버→HOST CHAT: relay 루프 방지를 위해 socketpair 전달 않음

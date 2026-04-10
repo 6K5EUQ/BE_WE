@@ -622,6 +622,52 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         return; // JOIN에 포워드 안 함
     }
 
+    // ── DB_DOWNLOAD_REQ from HOST: Central에서 파일 읽어 HOST에 전송 ──
+    if(bewe_type == BEWE_TYPE_DB_DL_REQ){
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        if(plen >= 128+32){
+            char fn[129]={}; memcpy(fn, payload, 128);
+            char op[33]={}; memcpy(op, payload+128, 32);
+            const char* home = getenv("HOME");
+            std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
+            std::string fpath = db_base + "/" + op + "/" + fn;
+            printf("[Central] DB_DOWNLOAD_REQ(HOST): '%s' by '%s'\n", fn, op);
+            FILE* fp = fopen(fpath.c_str(), "rb");
+            if(fp){
+                fseek(fp, 0, SEEK_END); uint64_t fsz = (uint64_t)ftell(fp); fseek(fp, 0, SEEK_SET);
+                const size_t CHUNK = 64*1024;
+                std::vector<uint8_t> buf(sizeof(PktDbDownloadData) + CHUNK);
+                bool first = true;
+                while(true){
+                    size_t n = fread(buf.data() + sizeof(PktDbDownloadData), 1, CHUNK, fp);
+                    bool last = (n == 0 || feof(fp));
+                    if(n == 0 && !first) break;
+                    auto* d = reinterpret_cast<PktDbDownloadData*>(buf.data());
+                    memset(d, 0, sizeof(PktDbDownloadData));
+                    strncpy(d->filename, fn, 127);
+                    d->total_bytes = fsz;
+                    d->chunk_bytes = (uint32_t)n;
+                    d->is_first = first ? 1 : 0;
+                    d->is_last = (last || n == 0) ? 1 : 0;
+                    first = false;
+                    size_t pkt_len = sizeof(PktDbDownloadData) + n;
+                    std::vector<uint8_t> bewe(9 + pkt_len);
+                    memcpy(bewe.data(), "BEWE", 4);
+                    bewe[4] = BEWE_TYPE_DB_DL_DATA;
+                    uint32_t blen = (uint32_t)pkt_len;
+                    memcpy(bewe.data()+5, &blen, 4);
+                    memcpy(bewe.data()+9, buf.data(), pkt_len);
+                    enqueue_host_send(room, 0xFFFF, CentralMuxType::DATA, bewe.data(), (uint32_t)bewe.size());
+                    if(n == 0 || last) break;
+                }
+                fclose(fp);
+                printf("[Central] DB_DOWNLOAD sent(HOST): '%s' (%.1fMB)\n", fn, fsz/1048576.0);
+            }
+        }
+        return;
+    }
+
     // ── 기타 패킷 (FFT, HEARTBEAT, STATUS 등): 타입에 따라 분류 ─────────
     // FFT: auth 완료된 JOIN에게만, 전용 send_queue (대용량, 드롭 허용)
     // 제어(HEARTBEAT/STATUS/CMD_ACK 등): ctrl_queue (우선 전송, 드롭 없음)
@@ -735,6 +781,56 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
                 printf("[Central] DB_SAVE complete: %s\n", je->db_path.c_str());
                 je->db_path.clear();
                 broadcast_db_list(room);
+            }
+        }
+        return true;  // HOST에 포워드 안 함
+    }
+
+    // ── DB_DOWNLOAD_REQ: Central에서 파일 읽어 요청자에게 전송 ────────
+    if(bewe_type == BEWE_TYPE_DB_DL_REQ){
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        if(plen >= 128+32){
+            char fn[129]={}; memcpy(fn, payload, 128);
+            char op[33]={}; memcpy(op, payload+128, 32);
+            const char* home = getenv("HOME");
+            std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
+            std::string fpath = db_base + "/" + op + "/" + fn;
+            printf("[Central] DB_DOWNLOAD_REQ: '%s' by '%s' → conn_id=%u\n", fn, op, je->conn_id);
+
+            FILE* fp = fopen(fpath.c_str(), "rb");
+            if(fp){
+                fseek(fp, 0, SEEK_END); uint64_t fsz = (uint64_t)ftell(fp); fseek(fp, 0, SEEK_SET);
+                const size_t CHUNK = 64*1024;
+                std::vector<uint8_t> buf(sizeof(PktDbDownloadData) + CHUNK);
+                bool first = true;
+                while(true){
+                    size_t n = fread(buf.data() + sizeof(PktDbDownloadData), 1, CHUNK, fp);
+                    bool last = (n == 0 || feof(fp));
+                    if(n == 0 && !first) break;
+                    auto* d = reinterpret_cast<PktDbDownloadData*>(buf.data());
+                    memset(d, 0, sizeof(PktDbDownloadData));
+                    strncpy(d->filename, fn, 127);
+                    d->total_bytes = fsz;
+                    d->chunk_bytes = (uint32_t)n;
+                    d->is_first = first ? 1 : 0;
+                    d->is_last = (last || n == 0) ? 1 : 0;
+                    first = false;
+                    size_t pkt_len = sizeof(PktDbDownloadData) + n;
+                    // BEWE 패킷으로 감싸기
+                    std::vector<uint8_t> bewe(9 + pkt_len);
+                    memcpy(bewe.data(), "BEWE", 4);
+                    bewe[4] = BEWE_TYPE_DB_DL_DATA;
+                    uint32_t blen = (uint32_t)pkt_len;
+                    memcpy(bewe.data()+5, &blen, 4);
+                    memcpy(bewe.data()+9, buf.data(), pkt_len);
+                    je->enqueue_ctrl(bewe.data(), bewe.size());
+                    if(n == 0 || last) break;
+                }
+                fclose(fp);
+                printf("[Central] DB_DOWNLOAD sent: '%s' (%.1fMB)\n", fn, fsz/1048576.0);
+            } else {
+                printf("[Central] DB_DOWNLOAD_REQ: file not found '%s'\n", fpath.c_str());
             }
         }
         return true;  // HOST에 포워드 안 함

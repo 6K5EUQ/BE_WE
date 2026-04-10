@@ -2129,6 +2129,39 @@ void run_streaming_viewer(){
             g_db_list = entries;
         };
 
+        // DB 다운로드 데이터 수신 → record/ 폴더에 저장
+        static FILE* db_dl_fp = nullptr;
+        static std::string db_dl_path;
+        cli->on_db_download_data = [&](const PktDbDownloadData* d, const uint8_t* data, uint32_t data_len){
+            if(d->is_first){
+                bool is_iq = (strncmp(d->filename,"IQ_",3)==0||strncmp(d->filename,"sa_",3)==0);
+                std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
+                db_dl_path = dir + "/" + d->filename;
+                if(db_dl_fp) fclose(db_dl_fp);
+                db_dl_fp = fopen(db_dl_path.c_str(), "wb");
+                bewe_log_push(2,"[DB] Download start: %s (%.1fMB)\n", d->filename, d->total_bytes/1048576.0);
+            }
+            if(db_dl_fp && data_len > 0){
+                fwrite(data, 1, data_len, db_dl_fp);
+            }
+            if(d->is_last && db_dl_fp){
+                fclose(db_dl_fp);
+                db_dl_fp = nullptr;
+                bewe_log_push(2,"[DB] Download done: %s\n", db_dl_path.c_str());
+                // record 목록에 추가
+                bool is_iq = (strncmp(d->filename,"IQ_",3)==0||strncmp(d->filename,"sa_",3)==0);
+                std::string fn2(d->filename);
+                if(is_iq){
+                    bool dup=false; for(auto& s:rec_iq_files) if(s==fn2){dup=true;break;}
+                    if(!dup) rec_iq_files.push_back(fn2);
+                } else {
+                    bool dup=false; for(auto& s:rec_audio_files) if(s==fn2){dup=true;break;}
+                    if(!dup) rec_audio_files.push_back(fn2);
+                }
+                db_dl_path.clear();
+            }
+        };
+
         cli->on_share_list = [&](const std::vector<std::tuple<std::string,uint64_t,std::string>>& files){
             std::lock_guard<std::mutex> lk(join_share_mtx);
             // 목록 갱신
@@ -5990,40 +6023,18 @@ void run_streaming_viewer(){
                         ImGuiWindowFlags_NoMove|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoDecoration);
 
                     if(ImGui::Selectable("  Download")){
-                        // Central DB에서 파일 다운로드 → record/ 폴더에 저장
-                        // Central과 HOST/JOIN은 별도 PC이므로 네트워크 전송 필요
-                        // 로컬 DataBase/ 폴더에 있으면 직접 복사, 없으면 로그
-                        std::string src = BEWEPaths::database_dir()+"/"+db_ctx.operator_name+"/"+db_ctx.filename;
-                        std::string dst_dir = db_ctx.is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
-                        std::string dst = dst_dir + "/" + db_ctx.filename;
-                        FILE* fin=fopen(src.c_str(),"rb");
-                        if(fin){
-                            FILE* fout=fopen(dst.c_str(),"wb");
-                            if(fout){
-                                char cbuf[65536]; size_t n;
-                                while((n=fread(cbuf,1,sizeof(cbuf),fin))>0) fwrite(cbuf,1,n,fout);
-                                fclose(fout);
-                            }
-                            fclose(fin);
-                            // .info도 복사
-                            std::string isrc=src+".info", idst=dst+".info";
-                            if(access(isrc.c_str(),F_OK)==0){
-                                FILE* fi=fopen(isrc.c_str(),"rb"); FILE* fo=fopen(idst.c_str(),"wb");
-                                if(fi&&fo){ char b[4096]; size_t n2; while((n2=fread(b,1,sizeof(b),fi))>0) fwrite(b,1,n2,fo); }
-                                if(fi) fclose(fi); if(fo) fclose(fo);
-                            }
-                            // record 목록에 추가
-                            if(db_ctx.is_iq){
-                                bool dup=false; for(auto& s:rec_iq_files) if(s==db_ctx.filename){dup=true;break;}
-                                if(!dup) rec_iq_files.push_back(db_ctx.filename);
-                            } else {
-                                bool dup=false; for(auto& s:rec_audio_files) if(s==db_ctx.filename){dup=true;break;}
-                                if(!dup) rec_audio_files.push_back(db_ctx.filename);
-                            }
-                            arch_info_cache.erase(dst);
-                            bewe_log_push(0,"[DB] Downloaded: %s → %s\n", src.c_str(), dst.c_str());
-                        } else {
-                            bewe_log_push(0,"[DB] Download: file not on local disk (Central server remote)\n");
+                        // Central DB에서 네트워크로 파일 다운로드 → record/ 폴더에 저장
+                        if(v.net_cli){
+                            // JOIN: Central에 DB_DOWNLOAD_REQ 전송
+                            v.net_cli->cmd_db_download(db_ctx.filename.c_str(), db_ctx.operator_name.c_str());
+                        } else if(v.net_srv){
+                            // HOST: Central relay를 통해 DB_DOWNLOAD_REQ 전송
+                            PktDbDownloadReq req{};
+                            strncpy(req.filename, db_ctx.filename.c_str(), 127);
+                            strncpy(req.operator_name, db_ctx.operator_name.c_str(), 31);
+                            auto pkt = make_packet(PacketType::DB_DOWNLOAD_REQ, &req, sizeof(req));
+                            if(v.net_srv->cb.on_relay_broadcast)
+                                v.net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
                         }
                         db_ctx.open = false;
                     }
