@@ -15,7 +15,7 @@
 #define RTLSDR_RX_GAIN_TENTHS  396   // 39.6 dB
 
 // ── FFT / Display ─────────────────────────────────────────────────────────
-#define DEFAULT_FFT_SIZE       8192
+#define DEFAULT_FFT_SIZE       4096
 #define FFT_PAD_FACTOR         4      // zero-padding 배수 (시각적 해상도 향상)
 #define TIME_AVERAGE           200
 #define MAX_FFTS_MEMORY        2500   // ~1분

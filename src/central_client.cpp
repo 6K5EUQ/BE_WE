@@ -406,6 +406,11 @@ void CentralClient::mux_loop(int central_fd,
                         on_central_db_list_(buf.data(), mux.len);
                     continue;
                 }
+                if(btype == 0x22){  // REPORT_LIST: Central → HOST
+                    if(on_central_report_list_)
+                        on_central_report_list_(buf.data(), mux.len);
+                    continue;
+                }
                 if(btype == 0x28){  // DB_DOWNLOAD_DATA: Central → HOST
                     if(on_central_db_dl_data_)
                         on_central_db_dl_data_(buf.data(), mux.len);

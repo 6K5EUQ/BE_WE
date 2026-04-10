@@ -1236,6 +1236,7 @@ void run_streaming_viewer(){
 
     // ── 모드 선택 화면 ───────────────────────────────────────────────────
     // ── 모드선택 outer 루프 (do_main_menu 시 재진입) ─────────────────────
+    static std::atomic<bool> reconn_busy{false};
     bool do_main_menu = false;
     bool do_logout = false;
     bool do_chassis_reset = false;
@@ -2115,12 +2116,11 @@ void run_streaming_viewer(){
 
         // JOIN: HOST Public 파일 목록 수신 (filename, size_bytes, uploader)
         // JOIN: Report 목록 수신
-        cli->on_report_list = [&](const std::vector<ReportFileEntry>& entries){
-            // BOARD Report Feed에 표시할 데이터 갱신
-            std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
-            // static 저장소에 캐시 (ARCHIVE Report 탭에서 사용)
-            // 현재는 BOARD에서 로컬 report/ 폴더를 스캔하므로 추가 처리 불필요
-            // TODO: JOIN에서 HOST의 report 목록을 별도 표시
+        cli->on_report_list = [](const std::vector<ReportFileEntry>& entries){
+            extern std::vector<ReportFileEntry> g_report_list;
+            extern std::mutex g_report_list_mtx;
+            std::lock_guard<std::mutex> lk(g_report_list_mtx);
+            g_report_list = entries;
         };
 
         // DB 목록 수신 (Central server)
@@ -3436,7 +3436,7 @@ void run_streaming_viewer(){
         // ── CONNECT 모드: 연결 끊김 감지 > 자동 재연결 (백그라운드) ────────
         if(v.remote_mode && v.net_cli && !v.net_cli->is_connected()){
             static float reconn_timer = 0.f;
-            static std::atomic<bool> reconn_busy{false};
+            // reconn_busy는 함수 상단에서 선언됨
             reconn_timer -= ImGui::GetIO().DeltaTime;
             if(reconn_timer <= 0.f && !reconn_busy.load()){
                 reconn_timer = 3.f;
@@ -5845,42 +5845,61 @@ void run_streaming_viewer(){
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                 if(ImGui::CollapsingHeader("Report")){
                     ImGui::Indent(8.f);
-                    static std::vector<std::string> report_iq_files, report_audio_files;
-                    static float report_scan_timer = 0;
-                    report_scan_timer -= io.DeltaTime;
-                    if(report_scan_timer <= 0){
-                        report_scan_timer = 2.0f;
-                        auto scan = [](const std::string& dir, std::vector<std::string>& out){
-                            out.clear();
-                            DIR* d = opendir(dir.c_str()); if(!d) return;
-                            struct dirent* e;
-                            while((e = readdir(d))){
-                                if(e->d_name[0]=='.') continue;
-                                std::string n(e->d_name);
-                                if(n.size()>4 && n.substr(n.size()-4)==".wav") out.push_back(n);
+                    // Central에서 수신한 Report 목록 표시
+                    extern std::vector<ReportFileEntry> g_report_list;
+                    extern std::mutex g_report_list_mtx;
+                    std::vector<ReportFileEntry> rpt_snap;
+                    { std::lock_guard<std::mutex> lk(g_report_list_mtx); rpt_snap = g_report_list; }
+                    if(rpt_snap.empty()){
+                        ImGui::TextDisabled("  (no reports)");
+                    } else {
+                        // Report 전용 우클릭 상태
+                        static struct { bool open=false; float x=0,y=0; std::string filename; } rpt_ctx;
+                        for(auto& re : rpt_snap){
+                            float pw_r = ImGui::GetContentRegionAvail().x;
+                            float fn_wr = pw_r * 0.66f;
+                            ImGui::Selectable(re.filename, false, 0, ImVec2(fn_wr, 0));
+                            bool rh = ImGui::IsItemHovered();
+                            if(re.reporter[0]){
+                                ImGui::SameLine(fn_wr + 8.f);
+                                ImGui::TextDisabled("by %s", re.reporter);
                             }
-                            closedir(d); std::sort(out.begin(), out.end());
-                        };
-                        scan(BEWEPaths::report_iq_dir(), report_iq_files);
-                        scan(BEWEPaths::report_audio_dir(), report_audio_files);
-                    }
-                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                    if(ImGui::TreeNode("IQ##rpt")){
-                        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
-                        ImGui::Separator(); ImGui::PopStyleColor();
-                        for(auto& fn : report_iq_files) draw_arch_file(BEWEPaths::report_iq_dir(), fn);
-                        if(report_iq_files.empty()) ImGui::TextDisabled("  (empty)");
-                        ImGui::TreePop();
-                    }
-                    ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.4f,0.3f));
-                    ImGui::Separator(); ImGui::PopStyleColor();
-                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                    if(ImGui::TreeNode("Audio##rpt")){
-                        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
-                        ImGui::Separator(); ImGui::PopStyleColor();
-                        for(auto& fn : report_audio_files) draw_arch_file(BEWEPaths::report_audio_dir(), fn);
-                        if(report_audio_files.empty()) ImGui::TextDisabled("  (empty)");
-                        ImGui::TreePop();
+                            if(rh){
+                                if(re.info_summary[0]) ImGui::SetTooltip("%s", re.info_summary);
+                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                                    rpt_ctx = {true, io.MousePos.x, io.MousePos.y, std::string(re.filename)};
+                                }
+                            }
+                        }
+                        // Report 우클릭 팝업
+                        if(rpt_ctx.open){
+                            ImGui::SetNextWindowPos(ImVec2(rpt_ctx.x, rpt_ctx.y));
+                            ImGui::SetNextWindowSize(ImVec2(160.f, 0.f));
+                            ImGui::SetNextWindowBgAlpha(0.95f);
+                            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
+                            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6,6));
+                            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f,0.12f,0.18f,1.f));
+                            ImGui::Begin("##rpt_ctx", nullptr,
+                                ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
+                                ImGuiWindowFlags_NoMove|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoDecoration);
+                            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));
+                            if(ImGui::Selectable("  Delete")){
+                                if(v.net_cli)
+                                    v.net_cli->cmd_report_delete(rpt_ctx.filename.c_str());
+                                else if(v.net_srv && v.net_srv->cb.on_relay_broadcast){
+                                    PktReportDelete rd{}; strncpy(rd.filename,rpt_ctx.filename.c_str(),127);
+                                    auto pkt=make_packet(PacketType::REPORT_DELETE,&rd,sizeof(rd));
+                                    v.net_srv->cb.on_relay_broadcast(pkt.data(),pkt.size(),true);
+                                }
+                                rpt_ctx.open = false;
+                            }
+                            ImGui::PopStyleColor();
+                            if(ImGui::IsKeyPressed(ImGuiKey_Escape,false)) rpt_ctx.open=false;
+                            if(!ImGui::IsWindowHovered()&&ImGui::IsMouseClicked(ImGuiMouseButton_Left)) rpt_ctx.open=false;
+                            ImGui::End();
+                            ImGui::PopStyleColor();
+                            ImGui::PopStyleVar(2);
+                        }
                     }
                     ImGui::Unindent(8.f);
                 }
@@ -7233,33 +7252,7 @@ void run_streaming_viewer(){
 
             // ── Report ────────────────────────────────────────────────
             if(ImGui::Selectable("  Report")){
-                bool is_iq = (file_ctx.filename.size()>3 && file_ctx.filename.substr(0,3)=="IQ_")
-                          || (file_ctx.filename.size()>3 && file_ctx.filename.substr(0,3)=="sa_");
-                std::string rpt_dir = is_iq ? BEWEPaths::report_iq_dir() : BEWEPaths::report_audio_dir();
-                std::string dst = rpt_dir + "/" + file_ctx.filename;
-                // 파일 복사
-                FILE* fin=fopen(file_ctx.filepath.c_str(),"rb");
-                FILE* fout=fopen(dst.c_str(),"wb");
-                if(fin&&fout){
-                    char buf[65536]; size_t n;
-                    while((n=fread(buf,1,sizeof(buf),fin))>0) fwrite(buf,1,n,fout);
-                }
-                if(fin) fclose(fin);
-                if(fout) fclose(fout);
-                // .info 파일도 복사
-                std::string info_src = file_ctx.filepath + ".info";
-                std::string info_dst = dst + ".info";
-                if(access(info_src.c_str(), F_OK)==0){
-                    FILE* fi2=fopen(info_src.c_str(),"rb");
-                    FILE* fo2=fopen(info_dst.c_str(),"wb");
-                    if(fi2&&fo2){
-                        char buf[4096]; size_t n;
-                        while((n=fread(buf,1,sizeof(buf),fi2))>0) fwrite(buf,1,n,fo2);
-                    }
-                    if(fi2) fclose(fi2);
-                    if(fo2) fclose(fo2);
-                }
-                // 서버에 Report 알림 (HOST: 직접 broadcast, JOIN: CMD 전송)
+                // 파일 복사 없음 — 제목 + .info만 Central에 전송
                 {
                     char info_sum[256] = {};
                     std::string ip2 = file_ctx.filepath + ".info";
@@ -7274,26 +7267,14 @@ void run_streaming_viewer(){
                     }
                     if(v.net_cli){
                         v.net_cli->cmd_report_add(file_ctx.filename.c_str(), info_sum);
-                    } else if(v.net_srv){
-                        // HOST: 직접 report 목록 브로드캐스트
-                        std::vector<ReportFileEntry> entries;
-                        auto scan_rpt2 = [](const std::string& dir, std::vector<ReportFileEntry>& out){
-                            DIR* d = opendir(dir.c_str()); if(!d) return;
-                            struct dirent* e;
-                            while((e = readdir(d))){
-                                if(e->d_name[0]=='.') continue;
-                                std::string n(e->d_name);
-                                if(n.size()<5 || n.substr(n.size()-4)!=".wav") continue;
-                                ReportFileEntry re{}; strncpy(re.filename,n.c_str(),127);
-                                std::string fp2=dir+"/"+n;
-                                struct stat st2{}; if(stat(fp2.c_str(),&st2)==0) re.size_bytes=(uint64_t)st2.st_size;
-                                out.push_back(re);
-                            }
-                            closedir(d);
-                        };
-                        scan_rpt2(BEWEPaths::report_iq_dir(), entries);
-                        scan_rpt2(BEWEPaths::report_audio_dir(), entries);
-                        v.net_srv->broadcast_report_list(entries);
+                    } else if(v.net_srv && v.net_srv->cb.on_relay_broadcast){
+                        // HOST: relay를 통해 Central에 전송
+                        PktReportAdd ra{};
+                        strncpy(ra.filename, file_ctx.filename.c_str(), 127);
+                        strncpy(ra.reporter, login_get_id(), 31);
+                        strncpy(ra.info_summary, info_sum, 255);
+                        auto pkt = make_packet(PacketType::REPORT_ADD, &ra, sizeof(ra));
+                        v.net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
                     }
                 }
                 file_ctx.open = false;
@@ -10346,6 +10327,10 @@ void run_streaming_viewer(){
     }
 
     } // end if(!do_logout) - skip SDR init+main loop when logout from globe
+
+    // 재연결 스레드 완료 대기 (central_cli 참조하는 detached 스레드 보호)
+    for(int w=0; w<100 && reconn_busy.load(); w++)
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
     v.is_running = false;
     // RTL-SDR: async read 즉시 취소 > cap thread 블로킹 해제

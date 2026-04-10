@@ -228,6 +228,8 @@ public:
     bool cmd_set_sr(float msps);          // JOIN → HOST: SR 변경
     bool cmd_db_delete(const char* filename, const char* operator_name);
     bool cmd_db_download(const char* filename, const char* operator_name);
+    bool cmd_report_delete(const char* filename);
+    bool cmd_report_update(const char* filename, const char* info_data);
     bool cmd_report_add(const char* filename, const char* info_summary);
     bool cmd_db_save(const char* filepath, const char* operator_name);
 

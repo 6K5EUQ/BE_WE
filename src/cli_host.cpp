@@ -105,6 +105,21 @@ void FFTViewer::update_channel_squelch(){
             }
         }
         ch.sq_gate.store(gate, std::memory_order_relaxed);
+
+        // 스컬치 누적 시간 추적
+        if(ch.filter_active){
+            float fps = (float)header.sample_rate / (float)std::max(1,fft_input_size) / (float)std::max(1,time_average);
+            if(fps > 0){
+                float dt = 1.0f / fps;
+                if(!sdr_stream_error.load()){
+                    ch.sq_total_time += dt;
+                    if(gate) ch.sq_active_time += dt;
+                }
+            }
+        } else {
+            ch.sq_active_time = 0;
+            ch.sq_total_time = 0;
+        }
     }
 }
 
@@ -849,6 +864,24 @@ void run_cli_host(){
                     }
                 });
 
+                // Central Report 목록 수신
+                extern std::vector<ReportFileEntry> g_report_list;
+                extern std::mutex g_report_list_mtx;
+                central_cli.set_on_central_report_list([](const uint8_t* pkt, size_t len){
+                    extern std::vector<ReportFileEntry> g_report_list;
+                    extern std::mutex g_report_list_mtx;
+                    if(len < 9 + sizeof(PktReportList)) return;
+                    const uint8_t* payload = pkt + 9;
+                    auto* hdr = reinterpret_cast<const PktReportList*>(payload);
+                    uint16_t cnt = hdr->count;
+                    size_t expected = sizeof(PktReportList) + cnt * sizeof(ReportFileEntry);
+                    if(len - 9 < expected) return;
+                    const ReportFileEntry* ent = reinterpret_cast<const ReportFileEntry*>(payload + sizeof(PktReportList));
+                    { std::lock_guard<std::mutex> lk(g_report_list_mtx);
+                      g_report_list.assign(ent, ent + cnt); }
+                    bewe_log_push(0,"[Central] REPORT_LIST: %u reports\n", cnt);
+                });
+
                 srv->cb.on_relay_broadcast = [&central_cli](const uint8_t* pkt, size_t len, bool no_drop){
                     central_cli.enqueue_relay_broadcast(pkt, len, no_drop);
                 };
@@ -990,6 +1023,22 @@ void run_cli_host(){
                 sq_sync_last = clk::now();
                 v.update_channel_squelch();
                 v.net_srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+            }
+        }
+
+        // ── Time tag + wf_event broadcast (5초마다) ─────────────────────
+        {
+            static int cli_last_tagged_sec = -1;
+            time_t now_tt = time(nullptr);
+            struct tm* tt = localtime(&now_tt);
+            int cur5 = tt->tm_hour*720 + tt->tm_min*12 + tt->tm_sec/5;
+            if(cur5 != cli_last_tagged_sec){
+                cli_last_tagged_sec = cur5;
+                v.tm_add_time_tag(v.current_fft_idx);
+                if(v.net_srv){
+                    char lbl[32]; strftime(lbl, sizeof(lbl), "%H:%M:%S", tt);
+                    v.net_srv->broadcast_wf_event(0, (int64_t)now_tt, 0, lbl);
+                }
             }
         }
 

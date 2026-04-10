@@ -245,6 +245,7 @@ private:
 
     // DB 파일 목록 스캔 → 모든 JOIN + HOST에 브로드캐스트
     void broadcast_db_list(std::shared_ptr<HostRoom> room);
+    void broadcast_report_list_central(std::shared_ptr<HostRoom> room);
 
     // BEWE 패킷 빌드 헬퍼 (magic + type + len + payload)
     static std::vector<uint8_t> make_bewe_packet(uint8_t type, const void* payload, uint32_t plen);

@@ -557,6 +557,17 @@ bool NetClient::cmd_db_download(const char* filename, const char* operator_name)
     strncpy(req.operator_name, operator_name, 31);
     return raw_send(PacketType::DB_DOWNLOAD_REQ, &req, sizeof(req));
 }
+bool NetClient::cmd_report_delete(const char* filename){
+    PktReportDelete rd{};
+    strncpy(rd.filename, filename, 127);
+    return raw_send(PacketType::REPORT_DELETE, &rd, sizeof(rd));
+}
+bool NetClient::cmd_report_update(const char* filename, const char* info_data){
+    PktReportUpdate ru{};
+    strncpy(ru.filename, filename, 127);
+    strncpy(ru.info_data, info_data ? info_data : "", 511);
+    return raw_send(PacketType::REPORT_UPDATE, &ru, sizeof(ru));
+}
 bool NetClient::cmd_report_add(const char* filename, const char* info_summary){
     PktReportAdd ra{};
     strncpy(ra.filename, filename, 127);

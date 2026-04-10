@@ -269,6 +269,10 @@ void CentralServer::host_mux_loop(std::shared_ptr<HostRoom> room){
     printf("[Central] host_mux_loop started room='%s' fd=%d\n",
            room->station_id.c_str(), room->fd);
 
+    // HOST 접속 시 DB + Report 목록 초기 전송
+    broadcast_db_list(room);
+    broadcast_report_list_central(room);
+
     // flush 전용 스레드: recv 블로킹과 분리하여 JOIN→HOST 패킷 지연 제거
     std::thread flush_thr([room](){
         std::shared_ptr<HostRoom> r = room;
@@ -539,8 +543,9 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                 printf("[Central] sent %d cached packets to conn_id=%u\n", cache_count, conn_id);
                 // OPERATOR_LIST 갱신 (새 유저 반영)
                 build_and_broadcast_op_list(room);
-                // DB 목록 전송
+                // DB + Report 목록 전송
                 broadcast_db_list(room);
+                broadcast_report_list_central(room);
                 return;
             }
         }
@@ -682,6 +687,32 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
             printf("[Central] DB_DELETE(HOST): '%s' by '%s'\n", fn, op);
             broadcast_db_list(room);
         }
+        return;
+    }
+
+    // ── Report from HOST (REPORT_ADD/DELETE/UPDATE) ────────────────────
+    if(bewe_type == 0x23 || bewe_type == BEWE_TYPE_RPT_DELETE || bewe_type == BEWE_TYPE_RPT_UPDATE){
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        const char* home = getenv("HOME");
+        std::string rpt_dir = home ? std::string(home)+"/BE_WE/DataBase/_reports" : "/tmp/BE_WE/DataBase/_reports";
+        mkdir(rpt_dir.c_str(), 0755);
+        if(bewe_type == 0x23 && plen >= sizeof(PktReportAdd)){
+            auto* ra = reinterpret_cast<const PktReportAdd*>(payload);
+            FILE* fi = fopen((rpt_dir+"/"+ra->filename+".info").c_str(), "w");
+            if(fi){ if(ra->info_summary[0]) fprintf(fi,"%s",ra->info_summary); else fprintf(fi,"Operator: %s\n",ra->reporter); fclose(fi); }
+            printf("[Central] REPORT_ADD(HOST): '%s'\n", ra->filename);
+        } else if(bewe_type == BEWE_TYPE_RPT_DELETE && plen >= 128){
+            char fn[129]={}; memcpy(fn,payload,128);
+            remove((rpt_dir+"/"+fn+".info").c_str());
+            printf("[Central] REPORT_DELETE(HOST): '%s'\n", fn);
+        } else if(bewe_type == BEWE_TYPE_RPT_UPDATE && plen >= 128+512){
+            char fn[129]={}; memcpy(fn,payload,128);
+            FILE* fi = fopen((rpt_dir+"/"+fn+".info").c_str(), "w");
+            if(fi){ fwrite(payload+128,1,strnlen((const char*)(payload+128),511),fi); fclose(fi); }
+            printf("[Central] REPORT_UPDATE(HOST): '%s'\n", fn);
+        }
+        broadcast_report_list_central(room);
         return;
     }
 
@@ -872,6 +903,63 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
         return true;
     }
 
+    // ── REPORT_ADD: Central _reports/ 에 .info 저장 ────────────────
+    if(bewe_type == 0x23){ // REPORT_ADD
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        if(plen >= sizeof(PktReportAdd)){
+            auto* ra = reinterpret_cast<const PktReportAdd*>(payload);
+            const char* home = getenv("HOME");
+            std::string rpt_dir = home ? std::string(home)+"/BE_WE/DataBase/_reports" : "/tmp/BE_WE/DataBase/_reports";
+            mkdir(rpt_dir.c_str(), 0755);
+            std::string ip = rpt_dir + "/" + std::string(ra->filename) + ".info";
+            FILE* fi = fopen(ip.c_str(), "w");
+            if(fi){
+                // info_summary에 기본 정보 저장
+                if(ra->info_summary[0]) fprintf(fi, "%s", ra->info_summary);
+                else fprintf(fi, "Operator: %s\n", ra->reporter);
+                fclose(fi);
+            }
+            printf("[Central] REPORT_ADD: '%s' by '%s'\n", ra->filename, ra->reporter);
+            broadcast_report_list_central(room);
+        }
+        return true; // HOST에 포워드 안 함
+    }
+
+    // ── REPORT_DELETE: Central _reports/ 에서 삭제 ───────────────
+    if(bewe_type == BEWE_TYPE_RPT_DELETE){
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        if(plen >= 128){
+            char fn[129]={}; memcpy(fn, payload, 128);
+            const char* home = getenv("HOME");
+            std::string rpt_dir = home ? std::string(home)+"/BE_WE/DataBase/_reports" : "/tmp/BE_WE/DataBase/_reports";
+            std::string ip = rpt_dir + "/" + fn + ".info";
+            remove(ip.c_str());
+            printf("[Central] REPORT_DELETE: '%s'\n", fn);
+            broadcast_report_list_central(room);
+        }
+        return true;
+    }
+
+    // ── REPORT_UPDATE: Central _reports/ .info 갱신 ──────────────
+    if(bewe_type == BEWE_TYPE_RPT_UPDATE){
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        if(plen >= 128+512){
+            char fn[129]={}; memcpy(fn, payload, 128);
+            const char* info = (const char*)(payload+128);
+            const char* home = getenv("HOME");
+            std::string rpt_dir = home ? std::string(home)+"/BE_WE/DataBase/_reports" : "/tmp/BE_WE/DataBase/_reports";
+            std::string ip = rpt_dir + "/" + fn + ".info";
+            FILE* fi = fopen(ip.c_str(), "w");
+            if(fi){ fwrite(info, 1, strnlen(info,511), fi); fclose(fi); }
+            printf("[Central] REPORT_UPDATE: '%s'\n", fn);
+            broadcast_report_list_central(room);
+        }
+        return true;
+    }
+
     // ── CHAT: 전역 브로드캐스트 (모든 방 JOIN + 다른 방 HOST) ────────
     if(bewe_type == BEWE_TYPE_CHAT){
         broadcast_global_chat(bewe_pkt, bewe_len, room.get());
@@ -934,6 +1022,67 @@ void CentralServer::build_and_broadcast_op_list(std::shared_ptr<HostRoom> room){
     if(room->alive.load() && room->fd >= 0)
         enqueue_host_send(room, 0xFFFF, CentralMuxType::DATA, pkt.data(), pkt.size());
     printf("[Central] OP_LIST broadcast: %d operators room='%s'\n", count, room->station_id.c_str());
+}
+
+// ── REPORT_LIST broadcast (Central _reports/ 기반) ────────────────────────
+void CentralServer::broadcast_report_list_central(std::shared_ptr<HostRoom> room){
+    const char* home = getenv("HOME");
+    std::string rpt_dir = home ? std::string(home)+"/BE_WE/DataBase/_reports" : "/tmp/BE_WE/DataBase/_reports";
+    mkdir(rpt_dir.c_str(), 0755);
+
+    std::vector<ReportFileEntry> entries;
+    DIR* d = opendir(rpt_dir.c_str());
+    if(d){
+        struct dirent* de;
+        while((de = readdir(d))){
+            if(de->d_name[0]=='.') continue;
+            std::string n(de->d_name);
+            if(n.size()<6 || n.substr(n.size()-5)!=".info") continue;
+            // filename = .info 제거
+            std::string fn = n.substr(0, n.size()-5);
+            ReportFileEntry re{};
+            strncpy(re.filename, fn.c_str(), 127);
+            // .info에서 reporter, info_summary 읽기
+            std::string ip = rpt_dir + "/" + n;
+            FILE* fi = fopen(ip.c_str(), "r");
+            if(fi){
+                char line[256]; int pos=0;
+                while(fgets(line,sizeof(line),fi)){
+                    char k[64]={},val[128]={};
+                    if(sscanf(line,"%63[^:]: %127[^\n]",k,val)>=1){
+                        if(strcmp(k,"Operator")==0) strncpy(re.reporter,val,31);
+                    }
+                    int l=(int)strlen(line);
+                    if(pos+l<255){ memcpy(re.info_summary+pos,line,l); pos+=l; }
+                }
+                fclose(fi);
+            }
+            entries.push_back(re);
+        }
+        closedir(d);
+    }
+
+    uint16_t cnt = (uint16_t)std::min(entries.size(), (size_t)200);
+    size_t payload_sz = sizeof(PktReportList) + cnt * sizeof(ReportFileEntry);
+    std::vector<uint8_t> payload(payload_sz, 0);
+    auto* hdr = reinterpret_cast<PktReportList*>(payload.data());
+    hdr->count = cnt;
+    if(cnt > 0) memcpy(payload.data()+sizeof(PktReportList), entries.data(), cnt*sizeof(ReportFileEntry));
+
+    std::vector<uint8_t> bewe(9 + payload_sz);
+    memcpy(bewe.data(), "BEWE", 4);
+    bewe[4] = 0x22; // REPORT_LIST
+    uint32_t plen = (uint32_t)payload_sz;
+    memcpy(bewe.data()+5, &plen, 4);
+    memcpy(bewe.data()+9, payload.data(), payload_sz);
+
+    enqueue_host_send(room, 0xFFFF, CentralMuxType::DATA, bewe.data(), (uint32_t)bewe.size());
+    std::lock_guard<std::mutex> jlk(room->joins_mtx);
+    for(auto& je : room->joins){
+        if(!je->alive.load() || je->fd < 0 || !je->authed) continue;
+        je->enqueue_ctrl(bewe.data(), bewe.size());
+    }
+    printf("[Central] REPORT_LIST broadcast: %u reports\n", cnt);
 }
 
 // ── DB_LIST broadcast ─────────────────────────────────────────────────────
