@@ -5793,93 +5793,50 @@ void run_streaming_viewer(){
                     }
                 };
 
-                // ── Record (STATUS와 동일 데이터) ────────────────────────
+                // ── Record (Private와 동일 형식) ─────────────────────────
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                 if(ImGui::CollapsingHeader("Record##arch")){
                     ImGui::Indent(8.f);
-                    std::lock_guard<std::mutex> rlk(v.rec_entries_mtx);
-                    bool any_rec = false;
-                    for(auto& re : v.rec_entries){
-                        if(re.finished && re.is_region) continue; // Done region은 Private에서
-                        any_rec = true;
-                        ImGui::PushID(&re);
-                        float t2a=(float)ImGui::GetTime();
-                        if(!re.finished){
+                    // 진행중 항목 (rec_entries에서 !finished)
+                    {
+                        std::lock_guard<std::mutex> rlk(v.rec_entries_mtx);
+                        for(auto& re : v.rec_entries){
+                            if(re.finished) continue;
+                            ImGui::PushID(&re);
+                            float t2a=(float)ImGui::GetTime();
                             bool blink=(fmodf(t2a,0.8f)<0.4f);
                             ImGui::PushStyleColor(ImGuiCol_Text,
                                 blink?IM_COL32(255,80,80,255):IM_COL32(200,60,60,255));
-                            int secs=0;
-                            if(!re.finished){
-                                float el=std::chrono::duration<float>(std::chrono::steady_clock::now()-re.t_start).count();
-                                secs=(int)el;
-                            }
-                            if(re.is_region){
-                                if(re.req_state==FFTViewer::RecEntry::REQ_CONFIRMED)
-                                    ImGui::Text("[REC]  %s", re.filename.c_str());
-                                else if(re.req_state==FFTViewer::RecEntry::REQ_TRANSFERRING)
-                                    ImGui::Text("[Transferring]  %s  (%.1f/%.1fM)",
-                                        re.filename.c_str(), re.xfer_done/1048576.0, re.xfer_total/1048576.0);
-                                else
-                                    ImGui::Text("[REC]  %s  [%ds]", re.filename.c_str(), secs);
-                            } else {
-                                int dn = re.ch_idx>=0 ? v.freq_sorted_display_num(re.ch_idx) : 0;
-                                int rec_s = 0;
-                                if(re.ch_idx>=0){
-                                    if(re.is_audio && v.channels[re.ch_idx].audio_rec_sr>0)
-                                        rec_s=(int)(v.channels[re.ch_idx].audio_rec_frames/v.channels[re.ch_idx].audio_rec_sr);
-                                    else if(!re.is_audio && v.channels[re.ch_idx].iq_rec_sr>0)
-                                        rec_s=(int)(v.channels[re.ch_idx].iq_rec_frames/v.channels[re.ch_idx].iq_rec_sr);
-                                }
-                                ImGui::Text("[REC] [%2d] %s  [%d/%ds]", dn, re.filename.c_str(), rec_s, secs);
-                            }
+                            float el=std::chrono::duration<float>(std::chrono::steady_clock::now()-re.t_start).count();
+                            int secs=(int)el;
+                            if(re.is_region && re.req_state==FFTViewer::RecEntry::REQ_TRANSFERRING)
+                                ImGui::Text("[Transferring]  %s  (%.1f/%.1fM)",
+                                    re.filename.c_str(), re.xfer_done/1048576.0, re.xfer_total/1048576.0);
+                            else
+                                ImGui::Text("[REC]  %s  [%ds]", re.filename.c_str(), secs);
                             ImGui::PopStyleColor();
-                        } else {
-                            // Done: 다른 파일 목록과 동일 양식 (초록색)
-                            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(120,200,120,255));
-                            float pw_d = ImGui::GetContentRegionAvail().x;
-                            float fn_wd = pw_d * 0.66f;
-                            ImGui::Selectable(re.filename.c_str(), false, 0, ImVec2(fn_wd, 0));
-                            bool done_hov = ImGui::IsItemHovered();
-                            // 시간/용량 표시
-                            {
-                                auto& dc = arch_info_cache[re.path];
-                                if(dc.empty() && !re.path.empty()){
-                                    struct stat dst2{}; char di2[64]="";
-                                    if(stat(re.path.c_str(),&dst2)==0){
-                                        double dmb=dst2.st_size/1048576.0;
-                                        double dsec=0;
-                                        FILE* dwf=fopen(re.path.c_str(),"rb");
-                                        if(dwf){
-                                            uint8_t dh[44]; if(fread(dh,1,44,dwf)==44){
-                                                uint32_t dsr=*(uint32_t*)(dh+24); uint16_t dch=*(uint16_t*)(dh+22); uint16_t dbps=*(uint16_t*)(dh+34);
-                                                if(dsr>0&&dch>0&&dbps>0) dsec=(double)(dst2.st_size-44)/(dsr*dch*(dbps/8));
-                                            } fclose(dwf);
-                                        }
-                                        if(dsec>0) snprintf(di2,sizeof(di2),"%4.0fs %6.1fM",dsec,dmb);
-                                        else snprintf(di2,sizeof(di2),"     %6.1fM",dmb);
-                                    }
-                                    dc = di2;
-                                }
-                                if(!dc.empty()){
-                                    ImGui::SameLine(fn_wd + 8.f);
-                                    ImGui::TextDisabled("%s", dc.c_str());
-                                }
-                            }
-                            if(done_hov){
-                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                                    file_ctx={true,io.MousePos.x,io.MousePos.y,re.path,re.filename};
-                                    file_ctx.selected=true;
-                                }
-                                if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !re.path.empty()){
-                                    v.sa_temp_path = re.path;
-                                    v.eid_panel_open = true;
-                                }
-                            }
-                            ImGui::PopStyleColor();
+                            ImGui::PopID();
                         }
-                        ImGui::PopID();
                     }
-                    if(!any_rec) ImGui::TextDisabled("  (none)");
+                    // 완료된 파일 (IQ/Audio) — Private와 동일 형식
+                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                    if(ImGui::TreeNode("IQ##rec")){
+                        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
+                        ImGui::Separator(); ImGui::PopStyleColor();
+                        for(auto& fn : rec_iq_files) draw_arch_file(BEWEPaths::record_iq_dir(), fn);
+                        if(rec_iq_files.empty()) ImGui::TextDisabled("  (empty)");
+                        ImGui::TreePop();
+                    }
+                    ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.4f,0.3f));
+                    ImGui::Separator(); ImGui::PopStyleColor();
+                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                    if(ImGui::TreeNode("Audio##rec")){
+                        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
+                        ImGui::Separator(); ImGui::PopStyleColor();
+                        for(auto& fn : rec_audio_files) draw_arch_file(BEWEPaths::record_audio_dir(), fn);
+                        if(rec_audio_files.empty()) ImGui::TextDisabled("  (empty)");
+                        ImGui::TreePop();
+                    }
                     ImGui::Unindent(8.f);
                 }
                 ImGui::Spacing();
@@ -6041,14 +5998,15 @@ void run_streaming_viewer(){
                     ImGui::Separator();
                     ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));
                     if(ImGui::Selectable("  Delete")){
-                        // Central에 삭제 요청: DB_SAVE_META with total_bytes=0 as delete signal
-                        // 간단히: 같은 파일명으로 0바이트 META 전송 → Central에서 삭제
-                        // 현재는 로컬 g_db_list에서 제거
-                        {
-                            std::lock_guard<std::mutex> lk(g_db_list_mtx);
-                            g_db_list.erase(std::remove_if(g_db_list.begin(), g_db_list.end(),
-                                [&](const DbFileEntry& e){ return std::string(e.filename)==db_ctx.filename; }),
-                                g_db_list.end());
+                        // Central 서버에 삭제 요청
+                        if(v.net_cli){
+                            v.net_cli->cmd_db_delete(db_ctx.filename.c_str(), db_ctx.operator_name.c_str());
+                        } else if(v.net_srv && v.net_srv->cb.on_relay_broadcast){
+                            PktDbDeleteReq req{};
+                            strncpy(req.filename, db_ctx.filename.c_str(), 127);
+                            strncpy(req.operator_name, db_ctx.operator_name.c_str(), 31);
+                            auto pkt = make_packet(PacketType::DB_DELETE_REQ, &req, sizeof(req));
+                            v.net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
                         }
                         db_ctx.open = false;
                     }

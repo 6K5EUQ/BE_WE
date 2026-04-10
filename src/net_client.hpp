@@ -226,6 +226,7 @@ public:
     bool cmd_rx_start();                  // JOIN → HOST: /rx start
     bool cmd_set_fft_size(uint32_t size); // JOIN → HOST: FFT 크기 변경
     bool cmd_set_sr(float msps);          // JOIN → HOST: SR 변경
+    bool cmd_db_delete(const char* filename, const char* operator_name);
     bool cmd_db_download(const char* filename, const char* operator_name);
     bool cmd_report_add(const char* filename, const char* info_summary);
     bool cmd_db_save(const char* filepath, const char* operator_name);

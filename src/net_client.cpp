@@ -545,6 +545,12 @@ bool NetClient::cmd_stop_iq_rec(int ch_idx){
     c.stop_iq_rec.idx=(uint8_t)ch_idx;
     return send_cmd(c);
 }
+bool NetClient::cmd_db_delete(const char* filename, const char* operator_name){
+    PktDbDeleteReq req{};
+    strncpy(req.filename, filename, 127);
+    strncpy(req.operator_name, operator_name, 31);
+    return raw_send(PacketType::DB_DELETE_REQ, &req, sizeof(req));
+}
 bool NetClient::cmd_db_download(const char* filename, const char* operator_name){
     PktDbDownloadReq req{};
     strncpy(req.filename, filename, 127);

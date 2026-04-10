@@ -45,6 +45,7 @@ enum class PacketType : uint8_t {
     DB_LIST            = 0x26,  // central → all: database file list
     DB_DOWNLOAD_REQ    = 0x27,  // client → central: request DB file download
     DB_DOWNLOAD_DATA   = 0x28,  // central → client: DB file data chunk
+    DB_DELETE_REQ      = 0x29,  // client → central: delete DB file
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────
@@ -371,6 +372,12 @@ struct __attribute__((packed)) PktDbDownloadData {
     uint8_t  is_first;
     uint8_t  is_last;
     // uint8_t data[chunk_bytes] follows
+};
+
+// ── DB_DELETE ─────────────────────────────────────────────────────────────
+struct __attribute__((packed)) PktDbDeleteReq {
+    char     filename[128];
+    char     operator_name[32];
 };
 
 // ── Wire helpers ──────────────────────────────────────────────────────────
