@@ -28,6 +28,11 @@
 
 class CentralClient {
 public:
+    ~CentralClient(){
+        stop_polling();
+        stop_mux_adapter();
+    }
+
     struct Station {
         std::string station_id;
         std::string name;
