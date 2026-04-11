@@ -6054,12 +6054,20 @@ void run_streaming_viewer(){
                         // Central 서버에 삭제 요청
                         if(v.net_cli){
                             v.net_cli->cmd_db_delete(db_ctx.filename.c_str(), db_ctx.operator_name.c_str());
-                        } else if(v.net_srv && v.net_srv->cb.on_relay_broadcast){
-                            PktDbDeleteReq req{};
-                            strncpy(req.filename, db_ctx.filename.c_str(), 127);
-                            strncpy(req.operator_name, db_ctx.operator_name.c_str(), 31);
-                            auto pkt = make_packet(PacketType::DB_DELETE_REQ, &req, sizeof(req));
-                            v.net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
+                        } else if(v.net_srv){
+                            if(v.net_srv->cb.on_relay_broadcast){
+                                // Central 경유
+                                PktDbDeleteReq req{};
+                                strncpy(req.filename, db_ctx.filename.c_str(), 127);
+                                strncpy(req.operator_name, db_ctx.operator_name.c_str(), 31);
+                                auto pkt = make_packet(PacketType::DB_DELETE_REQ, &req, sizeof(req));
+                                v.net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
+                            } else {
+                                // 로컬 삭제 (Central 없는 환경)
+                                std::string fpath = BEWEPaths::database_dir() + "/" + db_ctx.operator_name + "/" + db_ctx.filename;
+                                remove(fpath.c_str());
+                                remove((fpath + ".info").c_str());
+                            }
                         }
                         db_ctx.open = false;
                     }

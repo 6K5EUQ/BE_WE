@@ -687,9 +687,16 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
             char op[33]={}; memcpy(op, payload+128, 32);
             const char* home = getenv("HOME");
             std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
-            remove((db_base+"/"+op+"/"+fn).c_str());
-            remove((db_base+"/"+op+"/"+fn+".info").c_str());
-            printf("[Central] DB_DELETE(HOST): '%s' by '%s'\n", fn, op);
+            std::string fpath = db_base+"/"+op+"/"+fn;
+            std::string ipath = fpath + ".info";
+            int r1 = remove(fpath.c_str());
+            int r2 = remove(ipath.c_str());
+            if(r1 != 0)
+                printf("[Central] DB_DELETE(HOST) FAILED: '%s' errno=%d (%s)\n", fpath.c_str(), errno, strerror(errno));
+            else
+                printf("[Central] DB_DELETE(HOST) OK: '%s'\n", fpath.c_str());
+            if(r2 != 0 && errno != ENOENT)
+                printf("[Central] DB_DELETE(HOST) .info FAILED: '%s' errno=%d (%s)\n", ipath.c_str(), errno, strerror(errno));
             broadcast_db_list(room);
         }
         return;
@@ -900,9 +907,14 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
             std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
             std::string fpath = db_base + "/" + op + "/" + fn;
             std::string ipath = fpath + ".info";
-            remove(fpath.c_str());
-            remove(ipath.c_str());
-            printf("[Central] DB_DELETE: '%s' by '%s'\n", fn, op);
+            int r1 = remove(fpath.c_str());
+            int r2 = remove(ipath.c_str());
+            if(r1 != 0)
+                printf("[Central] DB_DELETE FAILED: '%s' errno=%d (%s)\n", fpath.c_str(), errno, strerror(errno));
+            else
+                printf("[Central] DB_DELETE OK: '%s'\n", fpath.c_str());
+            if(r2 != 0 && errno != ENOENT)
+                printf("[Central] DB_DELETE .info FAILED: '%s' errno=%d (%s)\n", ipath.c_str(), errno, strerror(errno));
             broadcast_db_list(room);
         }
         return true;

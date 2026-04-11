@@ -814,6 +814,25 @@ void run_cli_host(){
         }
     };
 
+    srv->cb.on_db_delete = [&](const char* who, const char* filename, const char* operator_name){
+        // Central 연결 시 → Central로 포워드
+        if(srv->cb.on_relay_broadcast){
+            PktDbDeleteReq req{};
+            strncpy(req.filename, filename, 127);
+            strncpy(req.operator_name, operator_name, 31);
+            auto pkt = make_packet(PacketType::DB_DELETE_REQ, &req, sizeof(req));
+            srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
+            bewe_log_push(0,"[CMD:%s] DB_DELETE '%s' by '%s' → Central\n", who, filename, operator_name);
+        } else {
+            // Central 없음 → 로컬 삭제
+            std::string fpath = BEWEPaths::database_dir() + "/" + operator_name + "/" + filename;
+            int r = remove(fpath.c_str());
+            remove((fpath + ".info").c_str());
+            bewe_log_push(0,"[CMD:%s] DB_DELETE '%s': %s\n", who, filename,
+                          r==0 ? "OK" : strerror(errno));
+        }
+    };
+
     // ── Start server ─────────────────────────────────────────────────────
     if(!srv->start(0)){
         bewe_log_push(0,"[BEWE CLI] Server start failed\n");

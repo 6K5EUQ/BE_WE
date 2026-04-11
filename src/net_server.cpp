@@ -407,6 +407,13 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
         break;
     }
 
+    case PacketType::DB_DELETE_REQ: {
+        if(!c->authed || len < sizeof(PktDbDeleteReq)) break;
+        auto* req = reinterpret_cast<const PktDbDeleteReq*>(payload);
+        if(cb.on_db_delete) cb.on_db_delete(c->name, req->filename, req->operator_name);
+        break;
+    }
+
     default: break;
     }
 }
