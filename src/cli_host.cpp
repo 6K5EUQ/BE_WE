@@ -227,7 +227,7 @@ void run_cli_host(){
     if(station_str.empty()){ bewe_log_push(0,"Aborted.\n"); return; }
 
     float lat = atof(prompt_input("Latitude",  "0.0").c_str());
-    float lon = atof(prompt_input("Longitude", "0.0").c_str());
+    float lon = -atof(prompt_input("Longitude", "0.0").c_str()); // 양수 입력 = 동경(E), 내부 규약은 서경=양수이므로 부호 반전
     float cf  = atof(prompt_input("Center freq MHz", "450.0").c_str());
 
     bewe_log_push(0,"\n");
