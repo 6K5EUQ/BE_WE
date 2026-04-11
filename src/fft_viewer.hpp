@@ -39,6 +39,7 @@ extern void bewe_log_push(int col, const char* fmt, ...);
 
 // ── DIGITAL DECODE 오버레이용 글로벌 로그 (tab: 0=AIS, 1=ADS-B, 2=UAV) ──
 extern void bewe_digi_push(int tab, const char* fmt, ...);
+extern void bewe_digi_push_ch(int tab, int ch_idx, const char* fmt, ...);
 
 // ── FFTViewer ─────────────────────────────────────────────────────────────
 class FFTViewer {
@@ -255,6 +256,7 @@ public:
     std::mutex digi_log_mtx;
     bool digi_log_scroll[4] = {true,true,true,true};
     void digi_log_push(int tab, const char* fmt, ...);
+    void digi_log_push_ch(int tab, int ch_idx, const char* msg); // with network broadcast
 
     // ── AIS Python 파이프 ─────────────────────────────────────────────────
     struct AisPipe {

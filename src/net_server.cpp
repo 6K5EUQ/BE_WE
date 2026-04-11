@@ -290,6 +290,13 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
             case CmdType::STOP_IQ_REC:
                 if(cb.on_stop_iq_rec) cb.on_stop_iq_rec(c->op_index, c->name, cmd->stop_iq_rec.idx);
                 break;
+            case CmdType::START_DIGI:
+                if(cb.on_start_digi) cb.on_start_digi(c->name, cmd->start_digi.idx,
+                    cmd->start_digi.mode, cmd->start_digi.demod_type, cmd->start_digi.baud_rate);
+                break;
+            case CmdType::STOP_DIGI:
+                if(cb.on_stop_digi) cb.on_stop_digi(c->name, cmd->stop_digi.idx);
+                break;
             case CmdType::SET_FFT_SIZE:
                 if(cb.on_set_fft_size) cb.on_set_fft_size(c->name, cmd->set_fft_size.size);
                 break;
@@ -553,6 +560,17 @@ void NetServer::broadcast_channel_sync(const Channel* chs, int n){
         sync.ch[i].sq_total_secs  = (uint32_t)chs[i].sq_total_time;
         sync.ch[i].iq_rec_on      = chs[i].iq_rec_on.load() ? 1 : 0;
         sync.ch[i].audio_rec_on   = chs[i].audio_rec_on.load() ? 1 : 0;
+        // 디지털 복조 상태
+        sync.ch[i].digital_mode    = (uint8_t)chs[i].digital_mode;
+        sync.ch[i].digi_run        = chs[i].digi_run.load() ? 1 : 0;
+        sync.ch[i].digi_demod_type = (uint8_t)chs[i].digi_demod_type;
+        sync.ch[i].digi_baud_rate  = chs[i].digi_baud_rate;
+        sync.ch[i].auto_id_state   = (uint8_t)chs[i].auto_id.state.load();
+        sync.ch[i].auto_id_mod     = (uint8_t)chs[i].auto_id.mod_type.load();
+        sync.ch[i].auto_id_baud    = chs[i].auto_id.baud_rate.load();
+        sync.ch[i].auto_id_conf    = chs[i].auto_id.confidence.load();
+        sync.ch[i].auto_id_snr     = chs[i].auto_id.snr_est.load();
+        strncpy(sync.ch[i].auto_id_proto, chs[i].auto_id.protocol_name, 31);
     }
     auto pkt = make_packet(PacketType::CHANNEL_SYNC, &sync, sizeof(sync));
     if(cb.on_relay_broadcast)
@@ -560,6 +578,24 @@ void NetServer::broadcast_channel_sync(const Channel* chs, int n){
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
         if(c->is_relay || !c->authed || !c->alive.load()) continue;
+        c->enqueue(pkt, false);
+    }
+}
+
+// ── Broadcast digi log (to non-muted JOINs only) ─────────────────────────
+void NetServer::broadcast_digi_log(uint8_t tab, uint8_t ch_idx, const char* msg,
+                                    uint32_t audio_mask){
+    uint16_t mlen = (uint16_t)std::min((size_t)1020, strlen(msg));
+    std::vector<uint8_t> buf(sizeof(PktDigiLog) + mlen);
+    auto* dl = reinterpret_cast<PktDigiLog*>(buf.data());
+    dl->tab = tab; dl->ch_idx = ch_idx; dl->msg_len = mlen;
+    memcpy(buf.data() + sizeof(PktDigiLog), msg, mlen);
+    auto pkt = make_packet(PacketType::DIGI_LOG, buf.data(), (uint32_t)buf.size());
+    std::lock_guard<std::mutex> lk(clients_mtx_);
+    for(auto& c : clients_){
+        if(!c->authed || !c->alive.load() || c->is_relay) continue;
+        uint32_t op_bit = 1u << c->op_index;
+        if(!(audio_mask & op_bit)) continue;
         c->enqueue(pkt, false);
     }
 }

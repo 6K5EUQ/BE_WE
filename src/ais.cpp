@@ -215,7 +215,15 @@ void FFTViewer::ais_pipe_reader_loop(){
                 if(line == "---END---"){
                     // 누적된 텍스트를 Q 패널에 전달
                     if(!accum.empty()){
-                        digi_log_push(0, "%s", accum.c_str());
+                        // find active AIS channel for broadcast
+                        int ais_ch = -1;
+                        for(int ci=0;ci<MAX_CHANNELS;ci++){
+                            if(channels[ci].filter_active && channels[ci].digi_run.load() &&
+                               channels[ci].digital_mode == Channel::DIGI_AIS){
+                                ais_ch = ci; break;
+                            }
+                        }
+                        digi_log_push_ch(0, ais_ch, accum.c_str());
                     }
                     accum.clear();
                 } else {

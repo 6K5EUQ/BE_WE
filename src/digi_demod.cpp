@@ -67,8 +67,12 @@ void FFTViewer::digi_demod_worker(int ch_idx){
             time_t now = time(nullptr);
             struct tm tm2; localtime_r(&now, &tm2);
             char ts[12]; strftime(ts, sizeof(ts), "%H:%M:%S", &tm2);
-            digi_log_push(3, "[%s] CH%d %s %0.fbd | %s",
-                         ts, ch_idx, tname, baud, hex_line);
+            {
+                char fmsg[1024];
+                snprintf(fmsg, sizeof(fmsg), "[%s] CH%d %s %.0fbd | %s", ts, ch_idx, tname, baud, hex_line);
+                digi_log_push_ch(3, ch_idx, fmsg);
+            }
+
             hex_pos = 0;
         }
     };

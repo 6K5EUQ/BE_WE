@@ -1755,6 +1755,11 @@ void run_streaming_viewer(){
         { std::lock_guard<std::mutex> wlk(v.wf_events_mtx); v.wf_events.clear(); }
         v.last_tagged_sec = -1;
 
+        // 디지털 복조 로그 콜백
+        cli->on_digi_log = [&](uint8_t tab, uint8_t ch_idx, const char* msg){
+            v.digi_log_push(tab, "%s", msg);
+        };
+
         // 채널 sync 콜백 등록
         cli->on_channel_sync = [&](const PktChannelSync& sync){
             for(int i=0;i<MAX_CHANNELS;i++){
@@ -1801,6 +1806,18 @@ void run_streaming_viewer(){
                 // 오디오는 AUDIO_FRAME 수신으로 net_cli->audio 링 통해 출력
                 // (dem_run은 실행하지 않음)
 
+                // 디지털 복조 상태 동기화
+                v.channels[i].digital_mode    = (Channel::DigitalMode)sync.ch[i].digital_mode;
+                v.channels[i].digi_run.store(sync.ch[i].digi_run != 0);
+                v.channels[i].digi_demod_type = sync.ch[i].digi_demod_type;
+                v.channels[i].digi_baud_rate  = sync.ch[i].digi_baud_rate;
+                v.channels[i].auto_id.state.store(sync.ch[i].auto_id_state);
+                v.channels[i].auto_id.mod_type.store(sync.ch[i].auto_id_mod);
+                v.channels[i].auto_id.baud_rate.store(sync.ch[i].auto_id_baud);
+                v.channels[i].auto_id.confidence.store(sync.ch[i].auto_id_conf);
+                v.channels[i].auto_id.snr_est.store(sync.ch[i].auto_id_snr);
+                strncpy(v.channels[i].auto_id.protocol_name, sync.ch[i].auto_id_proto, 31);
+
                 // ── 채널 활성화 전이 처리 ──────────────────────────────
                 if(!was_active && now_active){
                     // 채널 생성: HOST의 sq_threshold를 이미 CH_SYNC로 받으므로
@@ -1808,7 +1825,6 @@ void run_streaming_viewer(){
                     v.channels[i].sq_calibrated.store(true);
                     v.channels[i].sq_calib_cnt = 0;
                     v.channels[i].sq_gate_hold = 0;
-                    v.channels[i].digital_mode = Channel::DIGI_NONE;
                     v.channels[i].magic_det.store(0);
                     cli->audio[i].clear();
                     if(!v.ch_created_by_me[i]){
@@ -3752,8 +3768,12 @@ void run_streaming_viewer(){
                     // D키: 선택된 채널의 디지털 버튼 패널 show/hide 토글
                     v.digi_panel_on[sci] = !v.digi_panel_on[sci];
                     // 패널 닫으면 실행 중인 디지털 복조도 정지
-                    if(!v.digi_panel_on[sci] && v.channels[sci].digi_run.load())
-                        v.stop_digi(sci);
+                    if(!v.digi_panel_on[sci] && v.channels[sci].digi_run.load()){
+                        if(v.remote_mode && v.net_cli)
+                            v.net_cli->cmd_stop_digi(sci);
+                        else
+                            v.stop_digi(sci);
+                    }
                 }
                 if(ImGui::IsKeyPressed(ImGuiKey_M,false)){
                     if(v.remote_mode && v.net_cli){
@@ -4830,12 +4850,21 @@ void run_streaming_viewer(){
                                     else
                                         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f,0.15f,0.2f,1.f));
                                     if(ImGui::SmallButton(dbtn[di].lbl)){
-                                        if(dactive){
-                                            v.stop_digi(ci);
+                                        if(v.remote_mode && v.net_cli){
+                                            if(dactive){
+                                                v.net_cli->cmd_stop_digi(ci);
+                                            } else {
+                                                if(dm == Channel::DIGI_AIS || dm == Channel::DIGI_DEMOD || dm == Channel::DIGI_AUTO_ID)
+                                                    v.net_cli->cmd_start_digi(ci, (int)dm, ch.digi_demod_type, ch.digi_baud_rate);
+                                            }
                                         } else {
-                                            v.stop_digi(ci);
-                                            if(dm == Channel::DIGI_AIS || dm == Channel::DIGI_DEMOD || dm == Channel::DIGI_AUTO_ID)
-                                                v.start_digi(ci, dm);
+                                            if(dactive){
+                                                v.stop_digi(ci);
+                                            } else {
+                                                v.stop_digi(ci);
+                                                if(dm == Channel::DIGI_AIS || dm == Channel::DIGI_DEMOD || dm == Channel::DIGI_AUTO_ID)
+                                                    v.start_digi(ci, dm);
+                                            }
                                         }
                                     }
                                     ImGui::PopStyleColor();

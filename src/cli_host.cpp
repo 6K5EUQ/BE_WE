@@ -474,6 +474,29 @@ void run_cli_host(){
         }
     };
 
+    // Digital demod start/stop from JOIN
+    srv->cb.on_start_digi = [&](const char* who, uint8_t ch_idx, uint8_t mode, uint8_t demod_type, float baud_rate){
+        if(ch_idx >= MAX_CHANNELS) return;
+        Channel& ch = v.channels[ch_idx];
+        if(!ch.filter_active){ bewe_log_push(0,"[CMD:%s] DIGI ch%d not active\n",who,ch_idx); return; }
+        if(ch.digi_run.load()){ v.stop_digi(ch_idx); }
+        auto dm = (Channel::DigitalMode)mode;
+        if(dm == Channel::DIGI_DEMOD){
+            ch.digi_demod_type = demod_type;
+            ch.digi_baud_rate  = baud_rate;
+        }
+        v.start_digi(ch_idx, dm);
+        bewe_log_push(0,"[CMD:%s] DIGI start ch%d mode=%d\n",who,ch_idx,mode);
+        srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+    };
+    srv->cb.on_stop_digi = [&](const char* who, uint8_t ch_idx){
+        if(ch_idx >= MAX_CHANNELS) return;
+        if(!v.channels[ch_idx].digi_run.load()) return;
+        v.stop_digi(ch_idx);
+        bewe_log_push(0,"[CMD:%s] DIGI stop ch%d\n",who,ch_idx);
+        srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+    };
+
     // Region IQ request from JOIN
     srv->cb.on_request_region = [&](uint8_t op_idx, const char* op_name,
                                      int32_t fft_top, int32_t fft_bot,

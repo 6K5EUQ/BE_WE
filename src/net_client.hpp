@@ -133,6 +133,7 @@ public:
     // Applied directly to a FFTViewer's channels array via callback
     std::function<void(const PktChannelSync&)> on_channel_sync;
     std::function<void(const PktWfEvent&)>     on_wf_event;
+    std::function<void(uint8_t tab, uint8_t ch_idx, const char* msg)> on_digi_log;
     std::function<void(const std::string& name, uint64_t total)> on_file_meta;
     std::function<void(const std::string& name, uint64_t done, uint64_t total)> on_file_progress;
     std::function<void(const std::string& path,
@@ -220,6 +221,8 @@ public:
                              int64_t time_start_ms, int64_t time_end_ms);
     bool cmd_start_iq_rec(int ch_idx);
     bool cmd_stop_iq_rec(int ch_idx);
+    bool cmd_start_digi(int ch_idx, int mode, int demod_type, float baud_rate);
+    bool cmd_stop_digi(int ch_idx);
     bool cmd_request_share_download(const char* filename);
     bool cmd_share_upload(const char* filepath, uint8_t transfer_id);
     bool cmd_chassis_reset();            // JOIN → HOST: trigger chassis 1 reset

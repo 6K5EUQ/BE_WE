@@ -244,6 +244,16 @@ void NetClient::handle_packet(PacketType type,
         break;
     }
 
+    case PacketType::DIGI_LOG: {
+        if(len < sizeof(PktDigiLog)) break;
+        auto* dl = reinterpret_cast<const PktDigiLog*>(payload);
+        if(len < sizeof(PktDigiLog) + dl->msg_len) break;
+        char msg[1024]={};
+        memcpy(msg, payload+sizeof(PktDigiLog), std::min<uint16_t>(dl->msg_len, 1023));
+        if(on_digi_log) on_digi_log(dl->tab, dl->ch_idx, msg);
+        break;
+    }
+
     case PacketType::FILE_META: {
         if(len < sizeof(PktFileMeta)) break;
         auto* meta = reinterpret_cast<const PktFileMeta*>(payload);
@@ -556,6 +566,19 @@ bool NetClient::cmd_start_iq_rec(int ch_idx){
 bool NetClient::cmd_stop_iq_rec(int ch_idx){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::STOP_IQ_REC;
     c.stop_iq_rec.idx=(uint8_t)ch_idx;
+    return send_cmd(c);
+}
+bool NetClient::cmd_start_digi(int ch_idx, int mode, int demod_type, float baud_rate){
+    PktCmd c{}; c.cmd=(uint8_t)CmdType::START_DIGI;
+    c.start_digi.idx=(uint8_t)ch_idx;
+    c.start_digi.mode=(uint8_t)mode;
+    c.start_digi.demod_type=(uint8_t)demod_type;
+    c.start_digi.baud_rate=baud_rate;
+    return send_cmd(c);
+}
+bool NetClient::cmd_stop_digi(int ch_idx){
+    PktCmd c{}; c.cmd=(uint8_t)CmdType::STOP_DIGI;
+    c.stop_digi.idx=(uint8_t)ch_idx;
     return send_cmd(c);
 }
 bool NetClient::cmd_db_delete(const char* filename, const char* operator_name){

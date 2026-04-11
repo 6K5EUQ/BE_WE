@@ -48,6 +48,7 @@ enum class PacketType : uint8_t {
     DB_DELETE_REQ      = 0x29,  // client → central: delete DB file
     REPORT_DELETE      = 0x2A,  // client → central: delete report
     REPORT_UPDATE      = 0x2B,  // client → central: update report .info
+    DIGI_LOG           = 0x2C,  // server → clients: digital decode text result
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────
@@ -121,6 +122,8 @@ enum class CmdType : uint8_t {
     RX_START        = 0x18,  // JOIN → server: /rx start
     START_IQ_REC    = 0x19,  // JOIN → server: start per-ch IQ recording
     STOP_IQ_REC     = 0x1A,  // JOIN → server: stop per-ch IQ recording + transfer
+    START_DIGI      = 0x1B,  // JOIN → server: start digital demod
+    STOP_DIGI       = 0x1C,  // JOIN → server: stop digital demod
 };
 
 struct __attribute__((packed)) PktCmd {
@@ -149,6 +152,8 @@ struct __attribute__((packed)) PktCmd {
         struct { float msps; }                             set_sr;
         struct { uint8_t idx; }                            start_iq_rec;
         struct { uint8_t idx; }                            stop_iq_rec;
+        struct { uint8_t idx; uint8_t mode; uint8_t demod_type; uint8_t pad; float baud_rate; } start_digi;
+        struct { uint8_t idx; }                            stop_digi;
         uint8_t raw[32];
     };
 };
@@ -210,10 +215,32 @@ struct __attribute__((packed)) ChSyncEntry {
     uint8_t  iq_rec_on;       // IQ 녹음 활성 (0/1)
     uint8_t  audio_rec_on;    // 오디오 녹음 활성 (0/1)
     uint8_t  _pad3[2];
+    // ── 디지털 복조 상태 ──
+    uint8_t  digital_mode;     // Channel::DigitalMode (0-4)
+    uint8_t  digi_run;         // 1=running
+    uint8_t  digi_demod_type;  // 0=ASK, 1=FSK, 2=BPSK
+    uint8_t  _pad_digi;
+    float    digi_baud_rate;
+    // Auto-ID 결과
+    uint8_t  auto_id_state;    // 0=IDLE ~ 4=DECODING
+    uint8_t  auto_id_mod;      // ModType
+    uint8_t  _pad_auto[2];
+    float    auto_id_baud;
+    float    auto_id_conf;
+    float    auto_id_snr;
+    char     auto_id_proto[32];
 };
 
 struct __attribute__((packed)) PktChannelSync {
     ChSyncEntry ch[10]; // MAX_CHANNELS
+};
+
+// ── DIGI_LOG ─────────────────────────────────────────────────────────────
+struct __attribute__((packed)) PktDigiLog {
+    uint8_t  tab;       // 0=AIS, 1=ADS-B, 2=UAV, 3=DEMOD
+    uint8_t  ch_idx;
+    uint16_t msg_len;   // strlen of message
+    // char msg[msg_len] follows (variable length)
 };
 
 // ── WF_EVENT ──────────────────────────────────────────────────────────────

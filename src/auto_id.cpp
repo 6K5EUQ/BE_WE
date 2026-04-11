@@ -630,9 +630,13 @@ void FFTViewer::auto_id_worker(int ch_idx)
                     time_t now = time(nullptr);
                     struct tm tm2; localtime_r(&now, &tm2);
                     char ts[12]; strftime(ts, sizeof(ts), "%H:%M:%S", &tm2);
-                    digi_log_push(3, "[%s] CH%d AUTO: %s %s %.0fbd (%.0f%%)",
+                    {
+                        char fmsg[1024];
+                        snprintf(fmsg, sizeof(fmsg), "[%s] CH%d AUTO: %s %s %.0fbd (%.0f%%)",
                                  ts, ch_idx, ch.auto_id.protocol_name,
                                  mod_type_name(amc.mod), baud, ch.auto_id.confidence.load()*100);
+                        digi_log_push_ch(3, ch_idx, fmsg);
+                    }
                 }
                 break;
             }
@@ -706,10 +710,12 @@ void FFTViewer::auto_id_worker(int ch_idx)
                             time_t now = time(nullptr);
                             struct tm tm2; localtime_r(&now, &tm2);
                             char ts[12]; strftime(ts, sizeof(ts), "%H:%M:%S", &tm2);
-                            digi_log_push(3, "[%s] CH%d %s | %s",
-                                         ts, ch_idx,
-                                         ch.auto_id.protocol_name,
-                                         out.summary.c_str());
+                            {
+                                char fmsg[1024];
+                                snprintf(fmsg, sizeof(fmsg), "[%s] CH%d %s | %s",
+                                         ts, ch_idx, ch.auto_id.protocol_name, out.summary.c_str());
+                                digi_log_push_ch(3, ch_idx, fmsg);
+                            }
                         }
                     }
                 }

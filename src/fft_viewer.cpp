@@ -69,12 +69,29 @@ void FFTViewer::digi_log_push(int tab, const char* fmt, ...){
     digi_log_scroll[tab] = true;
 }
 
+void FFTViewer::digi_log_push_ch(int tab, int ch_idx, const char* msg){
+    digi_log_push(tab, "%s", msg);
+    // HOST → non-muted JOINs broadcast
+    if(net_srv && ch_idx >= 0 && ch_idx < MAX_CHANNELS){
+        uint32_t mask = channels[ch_idx].audio_mask.load();
+        net_srv->broadcast_digi_log((uint8_t)tab, (uint8_t)ch_idx, msg, mask);
+    }
+}
+
 void bewe_digi_push(int tab, const char* fmt, ...){
     char buf[1024];
     va_list ap; va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     if(g_log_viewer) g_log_viewer->digi_log_push(tab, "%s", buf);
+}
+
+void bewe_digi_push_ch(int tab, int ch_idx, const char* fmt, ...){
+    char buf[1024];
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if(g_log_viewer) g_log_viewer->digi_log_push_ch(tab, ch_idx, buf);
 }
 
 // ── Jet colormap LUT (COLORMAP_LUT_SIZE entry, 한 번만 계산) ────────────

@@ -177,6 +177,8 @@ struct ServerCallbacks {
     std::function<void(uint8_t op_idx, const char* op_name, const char* saved_path)> on_share_upload_done;
     std::function<void(uint8_t op_idx, const char* who, uint8_t ch_idx)> on_start_iq_rec;
     std::function<void(uint8_t op_idx, const char* who, uint8_t ch_idx)> on_stop_iq_rec;
+    std::function<void(const char* who, uint8_t ch_idx, uint8_t mode, uint8_t demod_type, float baud_rate)> on_start_digi;
+    std::function<void(const char* who, uint8_t ch_idx)> on_stop_digi;
     std::function<void(const char* who)> on_chassis_reset;
     std::function<void(const char* who)> on_net_reset;
     std::function<void(const char* who)> on_rx_stop;
@@ -243,6 +245,9 @@ public:
 
     // Channel state → all clients
     void broadcast_channel_sync(const Channel* chs, int n);
+
+    // Digital decode log → clients with audio_mask bit set
+    void broadcast_digi_log(uint8_t tab, uint8_t ch_idx, const char* msg, uint32_t audio_mask);
 
     // Heartbeat → all clients
     // host_state: 0=OK, 1=CHASSIS_RESETTING, 2=SPECTRUM_PAUSED
