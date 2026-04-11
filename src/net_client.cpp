@@ -303,9 +303,18 @@ void NetClient::handle_packet(PacketType type,
     }
 
     case PacketType::OPERATOR_LIST: {
-        if(len < sizeof(PktOperatorList)) break;
+        if(len < 1) break;
         std::lock_guard<std::mutex> lk(op_mtx);
-        op_list = *reinterpret_cast<const PktOperatorList*>(payload);
+        op_list = {};
+        uint8_t cnt = payload[0];
+        if(cnt > MAX_OPERATORS) cnt = MAX_OPERATORS;
+        op_list.count = cnt;
+        constexpr size_t esz = sizeof(OpEntry);
+        for(int i = 0; i < cnt; i++){
+            size_t off = 1 + i * esz;
+            if(off + esz > len) break;
+            memcpy(&op_list.ops[i], payload + off, esz);
+        }
         op_list_updated.store(true);
         break;
     }
@@ -326,13 +335,17 @@ void NetClient::handle_packet(PacketType type,
         break;
 
     case PacketType::HEARTBEAT: {
-        if(len < sizeof(PktHeartbeat)) break;
+        if(len < 4) break; // 최소 기존 4바이트 호환
         auto* hb = reinterpret_cast<const PktHeartbeat*>(payload);
         host_state.store((int)hb->host_state);
         remote_sdr_temp_c.store(hb->sdr_temp_c);
         remote_sdr_state.store(hb->sdr_state);
         remote_iq_on.store(hb->iq_on);
-        // Use wall-clock seconds (monotonic substitute via steady_clock)
+        if(len >= sizeof(PktHeartbeat)){
+            remote_host_cpu.store(hb->host_cpu_pct);
+            remote_host_ram.store(hb->host_ram_pct);
+            remote_host_cpu_temp.store(hb->host_cpu_temp_c);
+        }
         auto now = std::chrono::steady_clock::now().time_since_epoch();
         last_heartbeat_time.store(
             std::chrono::duration<double>(now).count());

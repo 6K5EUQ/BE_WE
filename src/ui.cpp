@@ -3154,7 +3154,10 @@ void run_streaming_viewer(){
                 uint8_t sdr_st = (cur_sdr_err || v.rx_stopped.load()) ? 1 : 0;
                 // iq_on: HOST IQ 롤링 상태
                 uint8_t iq_st = v.tm_iq_on.load() ? 1 : 0;
-                v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st, iq_st);
+                uint8_t h_cpu = (uint8_t)std::min(100.f, std::max(0.f, v.sysmon_cpu));
+                uint8_t h_ram = (uint8_t)std::min(100.f, std::max(0.f, v.sysmon_ram));
+                uint8_t h_ct  = (uint8_t)std::min(255, std::max(0, v.sysmon_cpu_temp_c.load()));
+                v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st, iq_st, h_cpu, h_ram, h_ct);
             }
         }
 
@@ -6530,30 +6533,74 @@ void run_streaming_viewer(){
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                 if(ImGui::CollapsingHeader("System Status")){
                     ImGui::Indent(6.f);
-                    // Role
-                    const char* role = v.net_cli ? "JOIN" : (v.net_srv ? "HOST" : "LOCAL");
-                    ImGui::TextColored(ImVec4(0.4f,0.85f,1.f,1.f), "Role: %s", role);
-                    // Center freq / SR
-                    double cf_mhz = v.net_cli ? (double)v.net_cli->remote_cf_mhz.load()
-                                              : v.header.center_frequency/1e6;
-                    double sr_mhz = v.net_cli ? v.net_cli->remote_sr.load()/1e6
-                                              : v.header.sample_rate/1e6;
-                    ImGui::Text("CF: %.4f MHz  /  SR: %.3f MSPS", cf_mhz, sr_mhz);
-                    // CPU / RAM
-                    ImU32 cpu_col = (v.sysmon_cpu > 80) ? IM_COL32(255,200,0,255)
-                                 : (v.sysmon_cpu > 95) ? IM_COL32(255,60,60,255)
-                                 :                        IM_COL32(80,220,80,255);
-                    ImGui::PushStyleColor(ImGuiCol_Text, cpu_col);
-                    ImGui::Text("CPU: %d%%", (int)v.sysmon_cpu);
-                    ImGui::PopStyleColor();
-                    ImGui::SameLine(0,12);
-                    ImGui::Text("RAM: %d%%", (int)v.sysmon_ram);
-                    // SDR Temp
-                    float sdr_t = v.net_cli ? v.net_cli->remote_sdr_temp_c.load() : 0;
-                    if(sdr_t > 0) ImGui::Text("SDR Temp: %.0f C", sdr_t);
-                    // Clients
-                    if(v.net_srv)
-                        ImGui::Text("Clients: %d", (int)v.net_srv->client_count());
+
+                    // Receiver : SDR 이름 [온도°C]
+                    {
+                        const char* sdr_name = "Unknown";
+                        uint8_t sdr_t = 0;
+                        if(v.net_cli){
+                            uint8_t rh = v.net_cli->remote_hw.load();
+                            sdr_name = (rh == 0) ? "BladeRF 2.0 micro xA9" : "RTL-SDR v4";
+                            sdr_t = v.net_cli->remote_sdr_temp_c.load();
+                        } else {
+                            if(v.dev_blade) sdr_name = "BladeRF 2.0 micro xA9";
+                            else if(v.dev_rtl) sdr_name = "RTL-SDR v4";
+                            // LOCAL/HOST: SDR 온도 직접 조회 (sdr_temp_str에서)
+                            if(v.dev_blade){
+                                float _t = 0.f;
+                                if(bladerf_get_rfic_temperature(v.dev_blade, &_t) == 0)
+                                    sdr_t = (uint8_t)std::min(255.f, std::max(0.f, _t));
+                            }
+                        }
+                        if(sdr_t > 0)
+                            ImGui::TextColored(ImVec4(0.4f,0.85f,1.f,1.f),
+                                "Receiver : %s [%d\xC2\xB0""C]", sdr_name, (int)sdr_t);
+                        else
+                            ImGui::TextColored(ImVec4(0.4f,0.85f,1.f,1.f),
+                                "Receiver : %s", sdr_name);
+                    }
+
+                    // Freq / Sample Rate
+                    {
+                        double cf_mhz = v.net_cli ? (double)v.net_cli->remote_cf_mhz.load()
+                                                  : v.header.center_frequency/1e6;
+                        double sr_mhz = v.net_cli ? v.net_cli->remote_sr.load()/1e6
+                                                  : v.header.sample_rate/1e6;
+                        ImGui::Text("Freq : %.4fMHz  /  Sample Rate : %.3fMSPS", cf_mhz, sr_mhz);
+                    }
+
+                    // HOST | CPU / RAM
+                    if(v.net_cli){
+                        // JOIN mode: HOST 정보는 heartbeat에서 수신
+                        int h_cpu = v.net_cli->remote_host_cpu.load();
+                        int h_ram = v.net_cli->remote_host_ram.load();
+                        int h_ct  = v.net_cli->remote_host_cpu_temp.load();
+                        if(h_ct > 0)
+                            ImGui::Text("HOST | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%", h_cpu, h_ct, h_ram);
+                        else
+                            ImGui::Text("HOST | CPU : %d%%  /  RAM : %d%%", h_cpu, h_ram);
+                    } else {
+                        // HOST/LOCAL mode: 로컬 값
+                        int ct = v.sysmon_cpu_temp_c.load();
+                        if(ct > 0)
+                            ImGui::Text("HOST | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%",
+                                (int)v.sysmon_cpu, ct, (int)v.sysmon_ram);
+                        else
+                            ImGui::Text("HOST | CPU : %d%%  /  RAM : %d%%",
+                                (int)v.sysmon_cpu, (int)v.sysmon_ram);
+                    }
+
+                    // JOIN | CPU / RAM (항상 로컬)
+                    if(v.net_cli){
+                        int jct = v.sysmon_cpu_temp_c.load();
+                        if(jct > 0)
+                            ImGui::Text("JOIN | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%",
+                                (int)v.sysmon_cpu, jct, (int)v.sysmon_ram);
+                        else
+                            ImGui::Text("JOIN | CPU : %d%%  /  RAM : %d%%",
+                                (int)v.sysmon_cpu, (int)v.sysmon_ram);
+                    }
+
                     ImGui::Unindent(6.f);
                 }
                 ImGui::Spacing();
@@ -6831,8 +6878,9 @@ void run_streaming_viewer(){
                 if(cpu_temp_timer >= 1.0f && !cpu_fetching.load()){
                     cpu_temp_timer = 0.f;
                     cpu_fetching.store(true);
-                    std::thread([](){
+                    std::thread([&v](){
                         char tmp[16] = "";
+                        int  tmp_deg = 0;
                         // 1) hwmon에서 coretemp 드라이버의 temp1_input (Package id 0) 탐색
                         bool found = false;
                         for(int i = 0; i < 32 && !found; i++){
@@ -6852,9 +6900,11 @@ void run_streaming_viewer(){
                                 FILE* ft = fopen(tp, "r");
                                 if(ft){
                                     int milli = 0;
-                                    if(fscanf(ft, "%d", &milli) == 1)
+                                    if(fscanf(ft, "%d", &milli) == 1){
                                         snprintf(tmp, sizeof(tmp), "%.0f\xC2\xB0""C",
                                                  milli / 1000.f);
+                                        tmp_deg = milli / 1000;
+                                    }
                                     fclose(ft);
                                     found = true;
                                 }
@@ -6878,9 +6928,11 @@ void run_streaming_viewer(){
                                     FILE* fv = fopen(tp, "r");
                                     if(fv){
                                         int milli = 0;
-                                        if(fscanf(fv, "%d", &milli) == 1)
+                                        if(fscanf(fv, "%d", &milli) == 1){
                                             snprintf(tmp, sizeof(tmp), "%.0f\xC2\xB0""C",
                                                      milli / 1000.f);
+                                            tmp_deg = milli / 1000;
+                                        }
                                         fclose(fv);
                                         found = true;
                                     }
@@ -6892,14 +6944,17 @@ void run_streaming_viewer(){
                             FILE* fv = fopen("/sys/class/thermal/thermal_zone0/temp", "r");
                             if(fv){
                                 int milli = 0;
-                                if(fscanf(fv, "%d", &milli) == 1 && milli > 0)
+                                if(fscanf(fv, "%d", &milli) == 1 && milli > 0){
                                     snprintf(tmp, sizeof(tmp), "%.0f\xC2\xB0""C",
                                              milli / 1000.f);
+                                    tmp_deg = milli / 1000;
+                                }
                                 fclose(fv);
                             }
                         }
                         { std::lock_guard<std::mutex> lk(cpu_temp_mtx);
                           strncpy(cpu_temp_str, tmp, sizeof(cpu_temp_str)-1); }
+                        v.sysmon_cpu_temp_c.store(tmp_deg);
                         cpu_fetching.store(false);
                     }).detach();
                 }

@@ -124,6 +124,9 @@ public:
     std::atomic<uint8_t>  remote_sdr_temp_c{0};      // HOST SDR 온도 (°C, 0=미측정)
     std::atomic<uint8_t>  remote_sdr_state{0};        // 0=OK, 1=stream error
     std::atomic<uint8_t>  remote_iq_on{0};            // HOST IQ 롤링 상태 (0=off, 1=on)
+    std::atomic<uint8_t>  remote_host_cpu{0};         // HOST CPU %
+    std::atomic<uint8_t>  remote_host_ram{0};         // HOST RAM %
+    std::atomic<uint8_t>  remote_host_cpu_temp{0};    // HOST CPU 온도 °C
     std::atomic<double>   last_heartbeat_time{0.0};  // glfwGetTime() at last HB
 
     // ── Channel sync (from CHANNEL_SYNC packets) ──────────────────────────

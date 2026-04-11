@@ -290,10 +290,14 @@ struct __attribute__((packed)) PktPubDeleteReq {
 // host_state: 0=OK, 1=CHASSIS_RESETTING, 2=SPECTRUM_PAUSED
 // sdr_state:  0=OK, 1=ERROR (stall/buffer problem)
 struct __attribute__((packed)) PktHeartbeat {
-    uint8_t host_state;  // 0=OK, 1=CHASSIS_RESETTING, 2=SPECTRUM_PAUSED
-    uint8_t sdr_temp_c;  // SDR 온도 (°C 정수, 0=미지원/미측정)
-    uint8_t sdr_state;   // 0=streaming OK, 1=stream error
-    uint8_t iq_on;       // 0=IQ 롤링 off, 1=on
+    uint8_t host_state;      // 0=OK, 1=CHASSIS_RESETTING, 2=SPECTRUM_PAUSED
+    uint8_t sdr_temp_c;      // SDR 온도 (°C 정수, 0=미지원/미측정)
+    uint8_t sdr_state;       // 0=streaming OK, 1=stream error
+    uint8_t iq_on;           // 0=IQ 롤링 off, 1=on
+    uint8_t host_cpu_pct;    // HOST CPU % (0-100)
+    uint8_t host_ram_pct;    // HOST RAM % (0-100)
+    uint8_t host_cpu_temp_c; // HOST CPU 온도 °C
+    uint8_t pad;
 };
 
 // ── IQ_CHUNK ──────────────────────────────────────────────────────────────
