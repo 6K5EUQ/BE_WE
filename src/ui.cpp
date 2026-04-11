@@ -6552,12 +6552,8 @@ void run_streaming_viewer(){
                                     sdr_t = (uint8_t)std::min(255.f, std::max(0.f, _t));
                             }
                         }
-                        if(sdr_t > 0)
-                            ImGui::TextColored(ImVec4(0.4f,0.85f,1.f,1.f),
-                                "Receiver : %s [%d\xC2\xB0""C]", sdr_name, (int)sdr_t);
-                        else
-                            ImGui::TextColored(ImVec4(0.4f,0.85f,1.f,1.f),
-                                "Receiver : %s", sdr_name);
+                        ImGui::TextColored(ImVec4(0.4f,0.85f,1.f,1.f),
+                            "Receiver : %s [%d\xC2\xB0""C]", sdr_name, (int)sdr_t);
                     }
 
                     // Freq / Sample Rate
@@ -6575,30 +6571,19 @@ void run_streaming_viewer(){
                         int h_cpu = v.net_cli->remote_host_cpu.load();
                         int h_ram = v.net_cli->remote_host_ram.load();
                         int h_ct  = v.net_cli->remote_host_cpu_temp.load();
-                        if(h_ct > 0)
-                            ImGui::Text("HOST | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%", h_cpu, h_ct, h_ram);
-                        else
-                            ImGui::Text("HOST | CPU : %d%%  /  RAM : %d%%", h_cpu, h_ram);
+                        ImGui::Text("HOST | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%", h_cpu, h_ct, h_ram);
                     } else {
                         // HOST/LOCAL mode: 로컬 값
                         int ct = v.sysmon_cpu_temp_c.load();
-                        if(ct > 0)
-                            ImGui::Text("HOST | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%",
-                                (int)v.sysmon_cpu, ct, (int)v.sysmon_ram);
-                        else
-                            ImGui::Text("HOST | CPU : %d%%  /  RAM : %d%%",
-                                (int)v.sysmon_cpu, (int)v.sysmon_ram);
+                        ImGui::Text("HOST | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%",
+                            (int)v.sysmon_cpu, ct, (int)v.sysmon_ram);
                     }
 
                     // JOIN | CPU / RAM (항상 로컬)
                     if(v.net_cli){
                         int jct = v.sysmon_cpu_temp_c.load();
-                        if(jct > 0)
-                            ImGui::Text("JOIN | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%",
-                                (int)v.sysmon_cpu, jct, (int)v.sysmon_ram);
-                        else
-                            ImGui::Text("JOIN | CPU : %d%%  /  RAM : %d%%",
-                                (int)v.sysmon_cpu, (int)v.sysmon_ram);
+                        ImGui::Text("JOIN | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%",
+                            (int)v.sysmon_cpu, jct, (int)v.sysmon_ram);
                     }
 
                     ImGui::Unindent(6.f);
@@ -6609,29 +6594,20 @@ void run_streaming_viewer(){
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                 if(ImGui::CollapsingHeader("Operators")){
                     ImGui::Indent(6.f);
-                    // HOST 자신
-                    {
-                        const char* my_id = v.net_srv ? login_get_id()
-                                          : (v.net_cli ? v.net_cli->my_name : login_get_id());
-                        const char* badge = v.net_cli ? "[JOIN]" : (v.net_srv ? "[HOST]" : "[LOCAL]");
-                        ImVec4 bcol = v.net_cli ? ImVec4(0.7f,0.92f,0.7f,1.f)
-                                                : ImVec4(0.4f,0.85f,1.f,1.f);
-                        ImGui::TextColored(bcol, "%s %s", badge, my_id);
-                    }
-                    // HOST 모드: 중앙서버 OP_LIST 우선, 없으면 로컬 목록
                     if(v.net_srv){
+                        // HOST 모드: 자기 자신 먼저, 그 뒤 JOINs
+                        ImGui::TextColored(ImVec4(0.4f,0.85f,1.f,1.f),
+                            "[HOST] %s  [T%d]", login_get_id(), login_get_tier());
                         std::lock_guard<std::mutex> lk(s_relay_op_mtx);
-                        // s_relay_op_list.count>0: 중앙서버 경유 (index=0은 HOST 본인)
                         int join_count = 0;
                         for(int i = 0; i < (int)s_relay_op_list.count; i++){
                             auto& op = s_relay_op_list.ops[i];
-                            if(op.index == 0) continue;  // HOST 본인 스킵
+                            if(op.index == 0) continue;
                             ImGui::TextColored(ImVec4(0.7f,0.92f,0.7f,1.f),
                                 "[JOIN] %s  [T%d]", op.name, op.tier);
                             join_count++;
                         }
                         if(s_relay_op_list.count == 0){
-                            // 중앙서버 미연결 또는 OP_LIST 미수신: 로컬 클라이언트 목록 사용
                             auto ops = v.net_srv->get_operators();
                             for(auto& op : ops){
                                 ImGui::TextColored(ImVec4(0.7f,0.92f,0.7f,1.f),
@@ -6641,6 +6617,7 @@ void run_streaming_viewer(){
                         }
                         if(join_count == 0) ImGui::TextDisabled("  (no operators)");
                     } else if(v.net_cli){
+                        // JOIN 모드: 서버 op_list 그대로 (HOST 먼저, JOINs 이후)
                         std::lock_guard<std::mutex> lk(v.net_cli->op_mtx);
                         for(int i=0;i<(int)v.net_cli->op_list.count;i++){
                             auto& op = v.net_cli->op_list.ops[i];
@@ -6650,6 +6627,10 @@ void run_streaming_viewer(){
                             ImGui::TextColored(oc, "%s %s  [T%d]",
                                 is_host?"[HOST]":"[JOIN]", op.name, op.tier);
                         }
+                    } else {
+                        // LOCAL 모드
+                        ImGui::TextColored(ImVec4(0.4f,0.85f,1.f,1.f),
+                            "[LOCAL] %s", login_get_id());
                     }
                     ImGui::Unindent(6.f);
                 }
@@ -8161,7 +8142,7 @@ void run_streaming_viewer(){
                             float frac = (float)i / n_divs;
                             float yy = ea_y0 + frac * ea_h;
                             double freq_val = vis_fhi - frac * (vis_fhi - vis_flo);
-                            fg->AddLine(ImVec2(ea_x0, yy), ImVec2(ea_x1, yy), IM_COL32(60,60,80,180));
+                            // 그리드 라인 제거 — 라벨만 유지
                             char lbl[32];
                             if(v.sa_center_freq_hz > 0)
                                 snprintf(lbl, sizeof(lbl), "%.3f", freq_val / 1e6);
@@ -8198,7 +8179,7 @@ void run_streaming_viewer(){
                             float frac_t = (float)((ts - t0_sec) / dt);
                             float xx = ea_x0 + frac_t * ea_w;
                             if(xx < ea_x0 || xx > ea_x1) continue;
-                            fg->AddLine(ImVec2(xx, ea_y0), ImVec2(xx, ea_y1), IM_COL32(40,40,55,255));
+                            // 그리드 라인 제거 — 라벨만 유지
                             char lbl[32]; snprintf(lbl, sizeof(lbl), "%.4g%s", ts / ud, unit);
                             ImVec2 tsz = ImGui::CalcTextSize(lbl);
                             fg->AddText(ImVec2(xx - tsz.x*0.5f, ea_y1+4), IM_COL32(130,130,160,255), lbl);
