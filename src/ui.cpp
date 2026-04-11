@@ -2989,6 +2989,18 @@ void run_streaming_viewer(){
         bool selected=false;  // 좌클릭 선택 상태
     } file_ctx;
 
+    // ── Rename 모달 ──────────────────────────────────────────────────────
+    struct RenameModal {
+        bool open = false;
+        std::string dir;       // 디렉토리 경로
+        std::string old_name;  // 원래 파일명
+        char new_name[256]={};
+        bool focus_set = false;
+    } rename_modal;
+
+    bool g_arch_cache_dirty = false;  // arch_info_cache / arch_info_tip_cache 무효화 플래그
+    bool g_arch_rescan = false;       // 파일 목록 강제 재스캔 플래그
+
     // ── .info 메타데이터 모달 ────────────────────────────────────────────
     struct InfoModal {
         bool open = false;
@@ -4435,33 +4447,18 @@ void run_streaming_viewer(){
             // ── 패널 콘텐츠 영역 ─────────────────────────────────────────
             dl->AddRectFilled(ImVec2(rpx,rp_content_y),ImVec2(disp_w,content_y+content_h),IM_COL32(12,12,15,255));
 
-            // ── STAT 패널 ─────────────────────────────────────────────────
-            if(stat_open){
-                float px=rpx, py=rp_content_y, pw=disp_w-rpx, ph=rp_content_h;
-                ImGui::SetNextWindowPos(ImVec2(px,py));
-                ImGui::SetNextWindowSize(ImVec2(pw,ph));
-                ImGui::SetNextWindowBgAlpha(0.0f);
-                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8,8));
-                ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0,0,0,0));
-                ImGui::Begin("##stat_panel", nullptr,
-                    ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
-                    ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar|
-                    ImGuiWindowFlags_NoDecoration);
-
-                // ── Archive 파일 목록 ──────────────────────────────────
-                static bool arch_priv_open = true;
-                static bool arch_share_open = true;
-                static bool arch_pub_open = true;
-                static float arch_scan_timer = 0.0f;
-                // 파일 크기 문자열 캐시 (scan 시점에 한 번만 stat > 매 프레임 stat 제거)
-                static std::unordered_map<std::string,std::string> fsz_cache;
+            // ── 파일 스캔 (STAT/ARCHIVE 공통) ─────────────────────────────
+            static bool arch_priv_open = true;
+            static bool arch_share_open = true;
+            static bool arch_pub_open = true;
+            static float arch_scan_timer = 99.0f;
+            static std::unordered_map<std::string,std::string> fsz_cache;
+            {
                 arch_scan_timer += io.DeltaTime;
+                if(g_arch_rescan){ arch_scan_timer = 99.f; g_arch_rescan = false; fsz_cache.clear(); }
                 if(arch_scan_timer >= 1.0f){
                     arch_scan_timer = 0.0f;
 
-                    // 폴더별 .wav 스캔 헬퍼 (mtime 내림차순 정렬)
-                    // stat()을 sort 비교자 밖에서 1회만 수집 > sort 중 syscall 제거
-                    // 파일 크기도 여기서 캐싱 > 렌더 중 stat() 불필요
                     auto scan_dir = [](const std::string& dir, std::vector<std::string>& out,
                                        std::unordered_map<std::string,std::string>& szc){
                         out.clear();
@@ -4486,7 +4483,6 @@ void run_streaming_viewer(){
                         });
                         out.reserve(tmp.size());
                         for(auto& p : tmp){
-                            // 파일 크기 문자열 캐시 갱신
                             char buf[32];
                             double sz=(double)p.sz;
                             if(sz>=1e9)      snprintf(buf,sizeof(buf),"[%.1fG]",sz/1e9);
@@ -4498,31 +4494,109 @@ void run_streaming_viewer(){
                         }
                     };
 
-                    // Record 스캔 (record/iq, record/audio)
                     scan_dir(BEWEPaths::record_iq_dir(),    rec_iq_files,    fsz_cache);
                     scan_dir(BEWEPaths::record_audio_dir(), rec_audio_files, fsz_cache);
 
-                    // Private 스캔 (private/iq, private/audio)
                     scan_dir(BEWEPaths::private_iq_dir(),    priv_iq_files,    fsz_cache);
                     scan_dir(BEWEPaths::private_audio_dir(), priv_audio_files, fsz_cache);
                     priv_files.clear();
                     priv_files.insert(priv_files.end(), priv_iq_files.begin(),    priv_iq_files.end());
                     priv_files.insert(priv_files.end(), priv_audio_files.begin(), priv_audio_files.end());
 
-                    // Public 스캔 (public/iq, public/audio) - HOST only
                     scan_dir(BEWEPaths::public_iq_dir(),    pub_iq_files,    fsz_cache);
                     scan_dir(BEWEPaths::public_audio_dir(), pub_audio_files, fsz_cache);
                     shared_files.clear();
                     shared_files.insert(shared_files.end(), pub_iq_files.begin(),    pub_iq_files.end());
                     shared_files.insert(shared_files.end(), pub_audio_files.begin(), pub_audio_files.end());
 
-                    // Share 스캔 (share/iq, share/audio) - 다운로드된 파일
                     scan_dir(BEWEPaths::share_iq_dir(),    share_iq_files,    fsz_cache);
                     scan_dir(BEWEPaths::share_audio_dir(), share_audio_files, fsz_cache);
                     downloaded_files.clear();
                     downloaded_files.insert(downloaded_files.end(), share_iq_files.begin(),    share_iq_files.end());
                     downloaded_files.insert(downloaded_files.end(), share_audio_files.begin(), share_audio_files.end());
+
+                    // Database/Report 로컬 스캔 (네트워크 소스 없을 때)
+                    extern std::vector<ReportFileEntry> g_report_list;
+                    extern std::mutex g_report_list_mtx;
+                    bool has_net_db = (v.net_cli != nullptr) ||
+                                      (v.net_srv && v.net_srv->cb.on_relay_broadcast);
+                    if(!has_net_db){
+                        std::string db_base = BEWEPaths::database_dir();
+                        std::vector<DbFileEntry> db_entries;
+                        DIR* top = opendir(db_base.c_str());
+                        if(top){
+                            struct dirent* de;
+                            while((de = readdir(top))){
+                                if(de->d_name[0]=='.' || strcmp(de->d_name,"_reports")==0) continue;
+                                std::string op_dir = db_base + "/" + de->d_name;
+                                DIR* sub = opendir(op_dir.c_str());
+                                if(!sub) continue;
+                                struct dirent* fe;
+                                while((fe = readdir(sub))){
+                                    if(fe->d_name[0]=='.') continue;
+                                    std::string fn(fe->d_name);
+                                    if(fn.size()<5 || fn.substr(fn.size()-4)!=".wav") continue;
+                                    DbFileEntry e{};
+                                    strncpy(e.filename, fn.c_str(), 127);
+                                    strncpy(e.operator_name, de->d_name, 31);
+                                    struct stat st{};
+                                    if(stat((op_dir+"/"+fn).c_str(),&st)==0)
+                                        e.size_bytes=(uint64_t)st.st_size;
+                                    db_entries.push_back(e);
+                                }
+                                closedir(sub);
+                            }
+                            closedir(top);
+                        }
+                        { std::lock_guard<std::mutex> lk(g_db_list_mtx);
+                          g_db_list = std::move(db_entries); }
+
+                        std::string rpt_dir = db_base + "/_reports";
+                        std::vector<ReportFileEntry> rpt_entries;
+                        DIR* rd = opendir(rpt_dir.c_str());
+                        if(rd){
+                            struct dirent* re2;
+                            while((re2 = readdir(rd))){
+                                if(re2->d_name[0]=='.') continue;
+                                std::string n(re2->d_name);
+                                if(n.size()<6 || n.substr(n.size()-5)!=".info") continue;
+                                ReportFileEntry re{};
+                                strncpy(re.filename, n.substr(0,n.size()-5).c_str(), 127);
+                                FILE* fi = fopen((rpt_dir+"/"+n).c_str(), "r");
+                                if(fi){
+                                    char line[256]; int pos=0;
+                                    while(fgets(line,sizeof(line),fi)){
+                                        char k[64]={},val[128]={};
+                                        if(sscanf(line,"%63[^:]: %127[^\n]",k,val)>=1){
+                                            if(strcmp(k,"Operator")==0) strncpy(re.reporter,val,31);
+                                        }
+                                        int l=(int)strlen(line);
+                                        if(pos+l<255){ memcpy(re.info_summary+pos,line,l); pos+=l; }
+                                    }
+                                    fclose(fi);
+                                }
+                                rpt_entries.push_back(re);
+                            }
+                            closedir(rd);
+                        }
+                        { std::lock_guard<std::mutex> lk(g_report_list_mtx);
+                          g_report_list = std::move(rpt_entries); }
+                    }
                 }
+            }
+
+            // ── STAT 패널 ─────────────────────────────────────────────────
+            if(stat_open){
+                float px=rpx, py=rp_content_y, pw=disp_w-rpx, ph=rp_content_h;
+                ImGui::SetNextWindowPos(ImVec2(px,py));
+                ImGui::SetNextWindowSize(ImVec2(pw,ph));
+                ImGui::SetNextWindowBgAlpha(0.0f);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8,8));
+                ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0,0,0,0));
+                ImGui::Begin("##stat_panel", nullptr,
+                    ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
+                    ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar|
+                    ImGuiWindowFlags_NoDecoration);
 
                 // ── 탭 바 ─────────────────────────────────────────────────
                 ImGui::PushStyleColor(ImGuiCol_Tab,            ImVec4(0.12f,0.12f,0.16f,1.f));
@@ -5779,6 +5853,8 @@ void run_streaming_viewer(){
                 // ── Private ──────────────────────────────────────────────
                 // 파일 목록 렌더링 헬퍼: 파일명 + 크기 + WAV 시간
                 static std::unordered_map<std::string,std::string> arch_info_cache;
+                static std::unordered_map<std::string,std::string> arch_info_tip_cache;
+                if(g_arch_cache_dirty){ arch_info_cache.clear(); arch_info_tip_cache.clear(); g_arch_cache_dirty=false; }
                 auto draw_arch_file = [&](const std::string& dir, const std::string& fn){
                     std::string fp = dir + "/" + fn;
                     // 캐시된 정보 (크기+시간)
@@ -5809,13 +5885,34 @@ void run_streaming_viewer(){
                     float pw = ImGui::GetContentRegionAvail().x;
                     float fn_w = pw * 0.66f;
                     bool sel = file_ctx.selected && file_ctx.filepath==fp;
-                    ImGui::Selectable(fn.c_str(), sel, 0, ImVec2(fn_w, 0));
+                    ImGui::Selectable(fn.c_str(), sel, ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw, 0));
                     bool item_hov = ImGui::IsItemHovered();
                     if(!cached.empty()){
                         ImGui::SameLine(fn_w + 8.f);
                         ImGui::TextDisabled("%s", cached.c_str());
                     }
                     if(item_hov){
+                        // .info 파일이 있으면 툴팁 표시
+                        std::string ipath = fp + ".info";
+                        auto& tip = arch_info_tip_cache[fp];
+                        if(tip.empty()){
+                            FILE* fi = fopen(ipath.c_str(), "r");
+                            if(fi){
+                                char line[256]; std::string acc;
+                                while(fgets(line,sizeof(line),fi)){
+                                    // 빈 값 스킵 ("Key: \n")
+                                    char k[64]={},val[256]={};
+                                    if(sscanf(line,"%63[^:]: %255[^\n]",k,val)==2 && val[0])
+                                        { acc += k; acc += ": "; acc += val; acc += "\n"; }
+                                }
+                                fclose(fi);
+                                tip = acc.empty() ? " " : acc; // space = no info
+                            } else {
+                                tip = " ";
+                            }
+                        }
+                        if(tip.size() > 1) ImGui::SetTooltip("%s", tip.c_str());
+
                         if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
                             file_ctx.selected=true; file_ctx.filepath=fp; file_ctx.filename=fn; file_ctx.is_public=false;
                         }
@@ -5959,8 +6056,8 @@ void run_streaming_viewer(){
                         float pw2 = ImGui::GetContentRegionAvail().x;
                         float fn_w2 = pw2 * 0.66f;
                         double mb = e.size_bytes / 1048576.0;
-                        char info2[32]; snprintf(info2,sizeof(info2),"[%.1fM]",mb);
-                        ImGui::Selectable(e.filename, false, 0, ImVec2(fn_w2, 0));
+                        char info2[32]; snprintf(info2,sizeof(info2),"%.1fM",mb);
+                        ImGui::Selectable(e.filename, false, ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw2, 0));
                         if(ImGui::IsItemHovered()){
                             ImGui::SetTooltip("by %s", e.operator_name);
                             if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
@@ -7308,6 +7405,18 @@ void run_streaming_viewer(){
                 file_ctx.filename = "";
             }
 
+            // ── Rename ─────────────────────────────────────────────────
+            if(ImGui::Selectable("  Rename")){
+                // 디렉토리와 파일명 분리
+                size_t slash = file_ctx.filepath.rfind('/');
+                rename_modal.dir = (slash != std::string::npos) ? file_ctx.filepath.substr(0,slash) : ".";
+                rename_modal.old_name = file_ctx.filename;
+                strncpy(rename_modal.new_name, file_ctx.filename.c_str(), 255);
+                rename_modal.open = true;
+                rename_modal.focus_set = false;
+                file_ctx.open = false;
+            }
+
             // ── Info / Add Info ────────────────────────────────────────
             {
                 std::string ip = file_ctx.filepath + ".info";
@@ -7523,6 +7632,8 @@ void run_streaming_viewer(){
             if(ImGui::Button("Save", ImVec2(80,0))){
                 info_modal.save();
                 info_modal.open = false;
+                // 툴팁 캐시 무효화 (draw_arch_file에서 재로드됨)
+                g_arch_cache_dirty = true;
             }
             ImGui::SameLine();
             if(ImGui::Button("Cancel", ImVec2(80,0))){
@@ -7530,6 +7641,51 @@ void run_streaming_viewer(){
             }
             ImGui::End();
             ImGui::PopStyleColor();
+        }
+
+        // ── Rename 모달 ──────────────────────────────────────────────────
+        if(rename_modal.open){
+            ImGui::SetNextWindowSize(ImVec2(420.f, 0.f));
+            ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x*0.5f-210.f, io.DisplaySize.y*0.35f), ImGuiCond_Appearing);
+            ImGui::SetNextWindowBgAlpha(0.97f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.f);
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f,0.10f,0.16f,1.f));
+            ImGui::Begin("Rename##rename_modal", &rename_modal.open,
+                ImGuiWindowFlags_NoResize|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoCollapse);
+            if(!rename_modal.focus_set){ ImGui::SetKeyboardFocusHere(); rename_modal.focus_set=true; }
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            bool enter = ImGui::InputText("##rename_input", rename_modal.new_name, 256,
+                                          ImGuiInputTextFlags_EnterReturnsTrue);
+            ImGui::Spacing();
+            std::string nn(rename_modal.new_name);
+            bool valid = !nn.empty() && nn != rename_modal.old_name && nn.find('/')==std::string::npos;
+            float bw = 80.f*2 + ImGui::GetStyle().ItemSpacing.x;
+            ImGui::SetCursorPosX((ImGui::GetWindowWidth() - bw) * 0.5f);
+            if(!valid) ImGui::BeginDisabled();
+            if(ImGui::Button("OK", ImVec2(80,0)) || (enter && valid)){
+                std::string src = rename_modal.dir + "/" + rename_modal.old_name;
+                std::string dst = rename_modal.dir + "/" + nn;
+                if(::rename(src.c_str(), dst.c_str()) == 0){
+                    std::string src_info = src + ".info";
+                    std::string dst_info = dst + ".info";
+                    ::rename(src_info.c_str(), dst_info.c_str());
+                    g_arch_cache_dirty = true;
+                    g_arch_rescan = true;
+                    if(file_ctx.filepath == src){
+                        file_ctx.filepath = dst;
+                        file_ctx.filename = nn;
+                    }
+                }
+                rename_modal.open = false;
+            }
+            if(!valid) ImGui::EndDisabled();
+            ImGui::SameLine();
+            if(ImGui::Button("Cancel", ImVec2(80,0)) || ImGui::IsKeyPressed(ImGuiKey_Escape,false)){
+                rename_modal.open = false;
+            }
+            ImGui::End();
+            ImGui::PopStyleColor();
+            ImGui::PopStyleVar();
         }
 
         if(chat_open){

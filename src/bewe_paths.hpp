@@ -113,8 +113,7 @@ static inline void ensure_dirs(){
     mk(recordings_dir());
     mk(record_dir());    mk(record_iq_dir());    mk(record_audio_dir());
     mk(private_dir());   mk(private_iq_dir());   mk(private_audio_dir());
-    mk(public_dir());    mk(public_iq_dir());    mk(public_audio_dir());
-    mk(share_dir());     mk(share_iq_dir());     mk(share_audio_dir());
+    // public/share 폴더는 더 이상 사용하지 않으므로 자동 생성하지 않음
     mk(report_dir());   mk(report_iq_dir());   mk(report_audio_dir());
     mk(database_dir());
     mk(time_temp_dir());
