@@ -49,6 +49,7 @@ enum class PacketType : uint8_t {
     REPORT_DELETE      = 0x2A,  // client → central: delete report
     REPORT_UPDATE      = 0x2B,  // client → central: update report .info
     DIGI_LOG           = 0x2C,  // server → clients: digital decode text result
+    DB_DOWNLOAD_INFO   = 0x2D,  // central → client: DB file .info contents (sent before DATA)
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────
@@ -405,6 +406,11 @@ struct __attribute__((packed)) PktDbDownloadData {
     uint8_t  is_first;
     uint8_t  is_last;
     // uint8_t data[chunk_bytes] follows
+};
+// .info contents delivered alongside DB download (sent before any DATA chunks)
+struct __attribute__((packed)) PktDbDownloadInfo {
+    char     filename[128];
+    char     info_data[512];
 };
 
 // ── REPORT_DELETE / REPORT_UPDATE ─────────────────────────────────────────

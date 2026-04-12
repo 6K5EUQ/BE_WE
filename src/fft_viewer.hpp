@@ -44,6 +44,11 @@ extern void bewe_digi_push_ch(int tab, int ch_idx, const char* fmt, ...);
 // ── FFTViewer ─────────────────────────────────────────────────────────────
 class FFTViewer {
 public:
+    // ── RAII: 모든 스레드 멤버가 joinable인 채로 파괴되지 않도록 방어 ────────
+    // 정상 경로(ui.cpp / cli_host.cpp cleanup)에서는 스레드가 이미 join된 상태
+    // 예외/이탈/정리 누락 시에도 std::terminate 방지
+    ~FFTViewer();
+
     // ── FFT / waterfall data ──────────────────────────────────────────────
     FFTHeader            header;
     std::vector<float>   fft_data;

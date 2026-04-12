@@ -782,11 +782,9 @@ void run_cli_host(){
     srv->cb.on_db_save = [&](uint8_t op_idx, const char* op_name,
                               const PktDbSaveMeta* meta, const uint8_t* data, uint32_t len){
         if(meta){
-            // META: 파일 열기
-            std::string db_dir = BEWEPaths::database_dir() + "/" + std::string(meta->operator_name);
+            // META: 파일 열기 (flat — operator는 .info 의 Operator: 필드로 보존)
             mkdir(BEWEPaths::database_dir().c_str(), 0755);
-            mkdir(db_dir.c_str(), 0755);
-            std::string dst = db_dir + "/" + std::string(meta->filename);
+            std::string dst = BEWEPaths::database_dir() + "/" + std::string(meta->filename);
             bewe_log_push(0,"[DB] Save '%s' by %s (%.1fMB)\n",
                 meta->filename, meta->operator_name, meta->total_bytes/1048576.0);
             if(db_recv.fp) fclose(db_recv.fp);
@@ -824,8 +822,8 @@ void run_cli_host(){
             srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
             bewe_log_push(0,"[CMD:%s] DB_DELETE '%s' by '%s' → Central\n", who, filename, operator_name);
         } else {
-            // Central 없음 → 로컬 삭제
-            std::string fpath = BEWEPaths::database_dir() + "/" + operator_name + "/" + filename;
+            // Central 없음 → 로컬 삭제 (flat — operator_name 무시)
+            std::string fpath = BEWEPaths::database_dir() + "/" + filename;
             int r = remove(fpath.c_str());
             remove((fpath + ".info").c_str());
             bewe_log_push(0,"[CMD:%s] DB_DELETE '%s': %s\n", who, filename,
@@ -881,6 +879,24 @@ void run_cli_host(){
                     bewe_log_push(0,"[Central] DB_LIST: %u files\n", cnt2);
                 });
 
+                // DB 다운로드 .info 수신 (Central → HOST) — .wav 보다 먼저 도착
+                central_cli.set_on_central_db_dl_info([](const uint8_t* pkt, size_t len){
+                    if(len < 9 + sizeof(PktDbDownloadInfo)) return;
+                    const auto* di = reinterpret_cast<const PktDbDownloadInfo*>(pkt + 9);
+                    char fn[129]={}; strncpy(fn, di->filename, 128);
+                    bool is_iq = (strncmp(fn,"IQ_",3)==0||strncmp(fn,"sa_",3)==0);
+                    std::string dir = is_iq ? BEWEPaths::private_iq_dir() : BEWEPaths::private_audio_dir();
+                    mkdir(dir.c_str(), 0755);
+                    std::string ipath = dir + "/" + fn + ".info";
+                    FILE* fi = fopen(ipath.c_str(), "w");
+                    if(fi){
+                        size_t n = strnlen(di->info_data, sizeof(di->info_data));
+                        if(n > 0) fwrite(di->info_data, 1, n, fi);
+                        fclose(fi);
+                        bewe_log_push(0,"[DB] Download .info saved: %s\n", ipath.c_str());
+                    }
+                });
+
                 // DB 다운로드 데이터 수신 (Central → HOST)
                 static FILE* host_db_dl_fp = nullptr;
                 static std::string host_db_dl_path;
@@ -891,7 +907,8 @@ void run_cli_host(){
                     uint32_t data_len = d->chunk_bytes;
                     if(d->is_first){
                         bool is_iq = (strncmp(d->filename,"IQ_",3)==0||strncmp(d->filename,"sa_",3)==0);
-                        std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
+                        std::string dir = is_iq ? BEWEPaths::private_iq_dir() : BEWEPaths::private_audio_dir();
+                        mkdir(dir.c_str(), 0755);
                         host_db_dl_path = dir + "/" + d->filename;
                         if(host_db_dl_fp) fclose(host_db_dl_fp);
                         host_db_dl_fp = fopen(host_db_dl_path.c_str(), "wb");
@@ -1467,6 +1484,8 @@ void run_cli_host(){
     }
     if(v.dev_rtl){ rtlsdr_close(v.dev_rtl); v.dev_rtl=nullptr; }
     v.sa_cleanup();
+    v.eid_cleanup();
+    v.ais_pipe_stop();
 
     // record/ > private/ 이동
     auto move_dir = [](const std::string& src_dir, const std::string& dst_dir){

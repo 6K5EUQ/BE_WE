@@ -152,6 +152,7 @@ private:
     std::function<void(const uint8_t*, size_t)> on_central_op_list_;  // 릴레이 OP_LIST → HOST UI 갱신
     std::function<void(const uint8_t*, size_t)> on_central_db_list_; // Central DB 파일 목록
     std::function<void(const uint8_t*, size_t)> on_central_db_dl_data_; // Central DB 다운로드 데이터
+    std::function<void(const uint8_t*, size_t)> on_central_db_dl_info_; // Central DB 다운로드 .info
     std::function<void(const uint8_t*, size_t)> on_central_report_list_; // Central Report 목록
 
     void mux_loop(int central_fd,
@@ -171,6 +172,9 @@ public:
     }
     void set_on_central_db_dl_data(std::function<void(const uint8_t*, size_t)> cb){
         on_central_db_dl_data_ = std::move(cb);
+    }
+    void set_on_central_db_dl_info(std::function<void(const uint8_t*, size_t)> cb){
+        on_central_db_dl_info_ = std::move(cb);
     }
     void set_on_central_report_list(std::function<void(const uint8_t*, size_t)> cb){
         on_central_report_list_ = std::move(cb);

@@ -2145,13 +2145,31 @@ void run_streaming_viewer(){
             g_db_list = entries;
         };
 
-        // DB 다운로드 데이터 수신 → record/ 폴더에 저장
+        // DB 다운로드 .info 수신 (Central → JOIN) — .wav 보다 먼저 도착
+        cli->on_db_download_info = [](const PktDbDownloadInfo* di){
+            if(!di) return;
+            char fn[129]={}; strncpy(fn, di->filename, 128);
+            bool is_iq = (strncmp(fn,"IQ_",3)==0||strncmp(fn,"sa_",3)==0);
+            std::string dir = is_iq ? BEWEPaths::private_iq_dir() : BEWEPaths::private_audio_dir();
+            mkdir(dir.c_str(), 0755);
+            std::string ipath = dir + "/" + fn + ".info";
+            FILE* fi = fopen(ipath.c_str(), "w");
+            if(fi){
+                size_t n = strnlen(di->info_data, sizeof(di->info_data));
+                if(n > 0) fwrite(di->info_data, 1, n, fi);
+                fclose(fi);
+                bewe_log_push(2,"[DB] Download .info saved: %s\n", ipath.c_str());
+            }
+        };
+
+        // DB 다운로드 데이터 수신 → private/ 폴더에 저장
         static FILE* db_dl_fp = nullptr;
         static std::string db_dl_path;
         cli->on_db_download_data = [&](const PktDbDownloadData* d, const uint8_t* data, uint32_t data_len){
             if(d->is_first){
                 bool is_iq = (strncmp(d->filename,"IQ_",3)==0||strncmp(d->filename,"sa_",3)==0);
-                std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
+                std::string dir = is_iq ? BEWEPaths::private_iq_dir() : BEWEPaths::private_audio_dir();
+                mkdir(dir.c_str(), 0755);
                 db_dl_path = dir + "/" + d->filename;
                 if(db_dl_fp) fclose(db_dl_fp);
                 db_dl_fp = fopen(db_dl_path.c_str(), "wb");
@@ -2164,15 +2182,15 @@ void run_streaming_viewer(){
                 fclose(db_dl_fp);
                 db_dl_fp = nullptr;
                 bewe_log_push(2,"[DB] Download done: %s\n", db_dl_path.c_str());
-                // record 목록에 추가
+                // private 목록에 추가
                 bool is_iq = (strncmp(d->filename,"IQ_",3)==0||strncmp(d->filename,"sa_",3)==0);
                 std::string fn2(d->filename);
                 if(is_iq){
-                    bool dup=false; for(auto& s:rec_iq_files) if(s==fn2){dup=true;break;}
-                    if(!dup) rec_iq_files.push_back(fn2);
+                    bool dup=false; for(auto& s:priv_iq_files) if(s==fn2){dup=true;break;}
+                    if(!dup) priv_iq_files.push_back(fn2);
                 } else {
-                    bool dup=false; for(auto& s:rec_audio_files) if(s==fn2){dup=true;break;}
-                    if(!dup) rec_audio_files.push_back(fn2);
+                    bool dup=false; for(auto& s:priv_audio_files) if(s==fn2){dup=true;break;}
+                    if(!dup) priv_audio_files.push_back(fn2);
                 }
                 db_dl_path.clear();
             }
@@ -4527,24 +4545,29 @@ void run_streaming_viewer(){
                         if(top){
                             struct dirent* de;
                             while((de = readdir(top))){
-                                if(de->d_name[0]=='.' || strcmp(de->d_name,"_reports")==0) continue;
-                                std::string op_dir = db_base + "/" + de->d_name;
-                                DIR* sub = opendir(op_dir.c_str());
-                                if(!sub) continue;
-                                struct dirent* fe;
-                                while((fe = readdir(sub))){
-                                    if(fe->d_name[0]=='.') continue;
-                                    std::string fn(fe->d_name);
-                                    if(fn.size()<5 || fn.substr(fn.size()-4)!=".wav") continue;
-                                    DbFileEntry e{};
-                                    strncpy(e.filename, fn.c_str(), 127);
-                                    strncpy(e.operator_name, de->d_name, 31);
-                                    struct stat st{};
-                                    if(stat((op_dir+"/"+fn).c_str(),&st)==0)
-                                        e.size_bytes=(uint64_t)st.st_size;
-                                    db_entries.push_back(e);
+                                if(de->d_name[0]=='.') continue;
+                                // flat 구조: .wav 정규 파일만 수집 (_reports/ 등 디렉토리는 자동 제외)
+                                std::string fn(de->d_name);
+                                if(fn.size()<5 || fn.substr(fn.size()-4)!=".wav") continue;
+                                std::string fp = db_base + "/" + fn;
+                                struct stat st{};
+                                if(stat(fp.c_str(),&st)!=0 || !S_ISREG(st.st_mode)) continue;
+                                DbFileEntry e{};
+                                strncpy(e.filename, fn.c_str(), 127);
+                                e.size_bytes = (uint64_t)st.st_size;
+                                // .info 의 Operator: 필드를 e.operator_name 에 채움
+                                FILE* fi = fopen((fp+".info").c_str(), "r");
+                                if(fi){
+                                    char line[256];
+                                    while(fgets(line,sizeof(line),fi)){
+                                        char k[64]={},val[128]={};
+                                        if(sscanf(line,"%63[^:]: %127[^\n]",k,val)>=2){
+                                            if(strcmp(k,"Operator")==0){ strncpy(e.operator_name,val,31); break; }
+                                        }
+                                    }
+                                    fclose(fi);
                                 }
-                                closedir(sub);
+                                db_entries.push_back(e);
                             }
                             closedir(top);
                         }
@@ -6160,8 +6183,8 @@ void run_streaming_viewer(){
                                 auto pkt = make_packet(PacketType::DB_DELETE_REQ, &req, sizeof(req));
                                 v.net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
                             } else {
-                                // 로컬 삭제 (Central 없는 환경)
-                                std::string fpath = BEWEPaths::database_dir() + "/" + db_ctx.operator_name + "/" + db_ctx.filename;
+                                // 로컬 삭제 (Central 없는 환경, flat 구조)
+                                std::string fpath = BEWEPaths::database_dir() + "/" + db_ctx.filename;
                                 remove(fpath.c_str());
                                 remove((fpath + ".info").c_str());
                             }
@@ -7508,11 +7531,9 @@ void run_streaming_viewer(){
                         fclose(fp);
                     }).detach();
                 } else {
-                    // LOCAL: 로컬 저장 fallback
-                    std::string db_dir = BEWEPaths::database_dir() + "/" + op_name;
+                    // LOCAL: 로컬 저장 fallback (flat — operator는 .info 의 Operator: 필드로 보존)
                     mkdir(BEWEPaths::database_dir().c_str(), 0755);
-                    mkdir(db_dir.c_str(), 0755);
-                    std::string dst = db_dir + "/" + fn_cap;
+                    std::string dst = BEWEPaths::database_dir() + "/" + fn_cap;
                     FILE* fin=fopen(fp_cap.c_str(),"rb");
                     FILE* fout=fopen(dst.c_str(),"wb");
                     if(fin&&fout){ char buf[65536]; size_t n;
@@ -10588,6 +10609,8 @@ void run_streaming_viewer(){
     if(v.dev_rtl){ rtlsdr_close(v.dev_rtl); v.dev_rtl=nullptr; }
     if(v.waterfall_texture) glDeleteTextures(1,&v.waterfall_texture);
     v.sa_cleanup();
+    v.eid_cleanup();      // eid_thread join 보장
+    v.ais_pipe_stop();    // ais_pipe_reader_thr + python 자식 정리 (no-op if not alive)
 
     // ── record/ > private/ 이동 (세션 종료 시) ─────────────────────────
     {

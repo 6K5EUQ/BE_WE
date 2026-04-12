@@ -112,6 +112,17 @@ void NetClient::disconnect(){
     if(recv_thr_.joinable()) recv_thr_.join();
 }
 
+// ── destructor (RAII safety net) ──────────────────────────────────────────
+// disconnect()를 명시 호출하는 것이 정상 경로이지만, 누락/예외 대비 방어
+NetClient::~NetClient(){
+    connected_.store(false);
+    if(fd_ >= 0){
+        shutdown(fd_, SHUT_RDWR);
+        close(fd_); fd_ = -1;
+    }
+    if(recv_thr_.joinable()) recv_thr_.join();
+}
+
 // ── recv loop ─────────────────────────────────────────────────────────────
 void NetClient::recv_loop(){
     uint64_t pkt_count = 0;
@@ -410,6 +421,13 @@ void NetClient::handle_packet(PacketType type,
         const uint8_t* data = payload + sizeof(PktDbDownloadData);
         uint32_t data_len = (len > sizeof(PktDbDownloadData)) ? d->chunk_bytes : 0;
         if(on_db_download_data) on_db_download_data(d, data, data_len);
+        break;
+    }
+
+    case PacketType::DB_DOWNLOAD_INFO: {
+        if(len < sizeof(PktDbDownloadInfo)) break;
+        auto* di = reinterpret_cast<const PktDbDownloadInfo*>(payload);
+        if(on_db_download_info) on_db_download_info(di);
         break;
     }
 

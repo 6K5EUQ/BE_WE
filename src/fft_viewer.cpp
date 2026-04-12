@@ -213,3 +213,31 @@ int FFTViewer::channel_at_x(float mx, float gx, float gw) const {
     }
     return -1;
 }
+
+// ── FFTViewer destructor: joinable 스레드로 인한 std::terminate 방지 ───────
+// 정상 경로에서는 cleanup이 모든 스레드를 이미 join했지만,
+// 누락/예외/재진입 시에도 안전하도록 RAII로 보장.
+FFTViewer::~FFTViewer(){
+    // 실행 중일 수 있는 루프들에 종료 신호 전달
+    is_running = false;
+    mix_stop.store(true);
+    net_bcast_stop.store(true);
+    net_bcast_cv.notify_all();
+    sa_playing.store(false);
+    sa_computing.store(false);
+    eid_computing.store(false);
+    ais_pipe_reader_stop.store(true);
+
+    auto join_if = [](std::thread& t){ if(t.joinable()) t.join(); };
+    join_if(mix_thr);
+    join_if(net_bcast_thr);
+    join_if(rec_thr);
+    join_if(sa_thread);
+    join_if(sa_play_thread);
+    join_if(eid_thread);
+    join_if(ais_pipe_reader_thr);
+    for(int i = 0; i < MAX_CHANNELS; ++i){
+        join_if(channels[i].dem_thr);
+        join_if(channels[i].digi_thr);
+    }
+}

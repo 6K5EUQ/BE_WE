@@ -66,6 +66,7 @@ struct NetAudioRing {
 // ── NetClient ─────────────────────────────────────────────────────────────
 class NetClient {
 public:
+    ~NetClient();
     // ── Connection (relay only) ─────────────────────────────────────────
     bool connect_fd(int fd, const char* id, const char* pw, uint8_t tier);
     void disconnect();
@@ -245,6 +246,8 @@ public:
     std::function<void(const std::vector<DbFileEntry>&)> on_db_list;
     // DB download data from Central
     std::function<void(const PktDbDownloadData*, const uint8_t*, uint32_t)> on_db_download_data;
+    // DB download .info from Central (도착 순서: .info → .wav 청크들)
+    std::function<void(const PktDbDownloadInfo*)> on_db_download_info;
 
 private:
     int  fd_ = -1;

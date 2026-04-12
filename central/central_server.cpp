@@ -615,8 +615,7 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
             const char* home=getenv("HOME");
             std::string db_base=home?std::string(home)+"/BE_WE/DataBase":"/tmp/BE_WE/DataBase";
             mkdir(db_base.c_str(),0755);
-            std::string db_dir=db_base+"/"+op_name; mkdir(db_dir.c_str(),0755);
-            std::string dst=db_dir+"/"+filename;
+            std::string dst=db_base+"/"+filename;
             printf("[Central] DB_SAVE_META(HOST): '%s' by '%s' → %s\n",filename,op_name,dst.c_str());
             if(info[0]){ FILE* fi=fopen((dst+".info").c_str(),"w");
                 if(fi){fwrite(info,1,strnlen(info,511),fi);fclose(fi);} }
@@ -641,11 +640,26 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
             char op[33]={}; memcpy(op, payload+128, 32);
             const char* home = getenv("HOME");
             std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
-            std::string fpath = db_base + "/" + op + "/" + fn;
+            std::string fpath = db_base + "/" + fn;
             printf("[Central] DB_DOWNLOAD_REQ(HOST): '%s' by '%s'\n", fn, op);
             FILE* fp = fopen(fpath.c_str(), "rb");
             if(fp){
                 fseek(fp, 0, SEEK_END); uint64_t fsz = (uint64_t)ftell(fp); fseek(fp, 0, SEEK_SET);
+                // 1) .info 먼저 전송 (DB_DL_INFO)
+                {
+                    PktDbDownloadInfo dinfo{};
+                    strncpy(dinfo.filename, fn, 127);
+                    FILE* fi = fopen((fpath + ".info").c_str(), "r");
+                    if(fi){ fread(dinfo.info_data, 1, sizeof(dinfo.info_data)-1, fi); fclose(fi); }
+                    std::vector<uint8_t> ibewe(9 + sizeof(PktDbDownloadInfo));
+                    memcpy(ibewe.data(), "BEWE", 4);
+                    ibewe[4] = BEWE_TYPE_DB_DL_INFO;
+                    uint32_t ilen = (uint32_t)sizeof(PktDbDownloadInfo);
+                    memcpy(ibewe.data()+5, &ilen, 4);
+                    memcpy(ibewe.data()+9, &dinfo, sizeof(PktDbDownloadInfo));
+                    enqueue_host_send(room, 0xFFFF, CentralMuxType::DATA, ibewe.data(), (uint32_t)ibewe.size());
+                }
+                // 2) .wav 데이터 청크 전송 (DB_DL_DATA)
                 const size_t CHUNK = 64*1024;
                 std::vector<uint8_t> buf(sizeof(PktDbDownloadData) + CHUNK);
                 bool first = true;
@@ -685,9 +699,10 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         if(plen >= 128+32){
             char fn[129]={}; memcpy(fn, payload, 128);
             char op[33]={}; memcpy(op, payload+128, 32);
+            (void)op; // operator는 로그용으로만 사용 (flat 저장이라 경로엔 불필요)
             const char* home = getenv("HOME");
             std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
-            std::string fpath = db_base+"/"+op+"/"+fn;
+            std::string fpath = db_base+"/"+fn;
             std::string ipath = fpath + ".info";
             int r1 = remove(fpath.c_str());
             int r2 = remove(ipath.c_str());
@@ -803,13 +818,11 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
             char operator_name[33]={}; memcpy(operator_name, payload+128+8+1, 32);
             const char* info_data = (plen >= 128+8+1+32+1) ? (const char*)(payload+128+8+1+32) : "";
 
-            // ~/BE_WE/DataBase/{operator}/
+            // ~/BE_WE/DataBase/  (flat — operator는 .info 의 Operator: 필드로 보존)
             const char* home = getenv("HOME");
             std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
-            std::string db_dir = db_base + "/" + operator_name;
             mkdir(db_base.c_str(), 0755);
-            mkdir(db_dir.c_str(), 0755);
-            std::string dst = db_dir + "/" + filename;
+            std::string dst = db_base + "/" + filename;
 
             printf("[Central] DB_SAVE_META: '%s' by '%s' (%.1fMB) → %s\n",
                    filename, operator_name, total_bytes/1048576.0, dst.c_str());
@@ -855,12 +868,27 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
             char op[33]={}; memcpy(op, payload+128, 32);
             const char* home = getenv("HOME");
             std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
-            std::string fpath = db_base + "/" + op + "/" + fn;
+            std::string fpath = db_base + "/" + fn;
             printf("[Central] DB_DOWNLOAD_REQ: '%s' by '%s' → conn_id=%u\n", fn, op, je->conn_id);
 
             FILE* fp = fopen(fpath.c_str(), "rb");
             if(fp){
                 fseek(fp, 0, SEEK_END); uint64_t fsz = (uint64_t)ftell(fp); fseek(fp, 0, SEEK_SET);
+                // 1) .info 먼저 전송 (DB_DL_INFO)
+                {
+                    PktDbDownloadInfo dinfo{};
+                    strncpy(dinfo.filename, fn, 127);
+                    FILE* fi = fopen((fpath + ".info").c_str(), "r");
+                    if(fi){ fread(dinfo.info_data, 1, sizeof(dinfo.info_data)-1, fi); fclose(fi); }
+                    std::vector<uint8_t> ibewe(9 + sizeof(PktDbDownloadInfo));
+                    memcpy(ibewe.data(), "BEWE", 4);
+                    ibewe[4] = BEWE_TYPE_DB_DL_INFO;
+                    uint32_t ilen = (uint32_t)sizeof(PktDbDownloadInfo);
+                    memcpy(ibewe.data()+5, &ilen, 4);
+                    memcpy(ibewe.data()+9, &dinfo, sizeof(PktDbDownloadInfo));
+                    je->enqueue_ctrl(ibewe.data(), ibewe.size());
+                }
+                // 2) .wav 데이터 청크 전송 (DB_DL_DATA)
                 const size_t CHUNK = 64*1024;
                 std::vector<uint8_t> buf(sizeof(PktDbDownloadData) + CHUNK);
                 bool first = true;
@@ -903,9 +931,10 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
         if(plen >= 128+32){
             char fn[129]={}; memcpy(fn, payload, 128);
             char op[33]={}; memcpy(op, payload+128, 32);
+            (void)op; // operator는 로그용으로만 사용 (flat 저장이라 경로엔 불필요)
             const char* home = getenv("HOME");
             std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
-            std::string fpath = db_base + "/" + op + "/" + fn;
+            std::string fpath = db_base + "/" + fn;
             std::string ipath = fpath + ".info";
             int r1 = remove(fpath.c_str());
             int r2 = remove(ipath.c_str());
@@ -1114,22 +1143,28 @@ void CentralServer::broadcast_db_list(std::shared_ptr<HostRoom> room){
         struct dirent* de;
         while((de = readdir(top))){
             if(de->d_name[0]=='.') continue;
-            std::string op_dir = db_base + "/" + de->d_name;
-            DIR* sub = opendir(op_dir.c_str());
-            if(!sub) continue;
-            struct dirent* fe;
-            while((fe = readdir(sub))){
-                if(fe->d_name[0]=='.') continue;
-                std::string fn(fe->d_name);
-                if(fn.size()<5 || fn.substr(fn.size()-4)!=".wav") continue;
-                DbFileEntry e{};
-                strncpy(e.filename, fn.c_str(), 127);
-                strncpy(e.operator_name, de->d_name, 31);
-                std::string fp = op_dir + "/" + fn;
-                struct stat st{}; if(stat(fp.c_str(),&st)==0) e.size_bytes=(uint64_t)st.st_size;
-                entries.push_back(e);
+            // flat 구조: .wav 정규 파일만 수집 (_reports/ 등 디렉토리는 자동 제외)
+            std::string fn(de->d_name);
+            if(fn.size()<5 || fn.substr(fn.size()-4)!=".wav") continue;
+            std::string fp = db_base + "/" + fn;
+            struct stat st{};
+            if(stat(fp.c_str(),&st)!=0 || !S_ISREG(st.st_mode)) continue;
+            DbFileEntry e{};
+            strncpy(e.filename, fn.c_str(), 127);
+            e.size_bytes = (uint64_t)st.st_size;
+            // .info 에서 Operator: 값을 읽어 e.operator_name 채움
+            FILE* fi = fopen((fp+".info").c_str(), "r");
+            if(fi){
+                char line[256];
+                while(fgets(line,sizeof(line),fi)){
+                    char k[64]={},val[128]={};
+                    if(sscanf(line,"%63[^:]: %127[^\n]",k,val)>=2){
+                        if(strcmp(k,"Operator")==0){ strncpy(e.operator_name,val,31); break; }
+                    }
+                }
+                fclose(fi);
             }
-            closedir(sub);
+            entries.push_back(e);
         }
         closedir(top);
     }
