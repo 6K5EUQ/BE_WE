@@ -263,6 +263,7 @@ void CentralServer::host_mux_loop(std::shared_ptr<HostRoom> room){
     // 3초 윈도우 카운터 (구간 값)
     uint64_t win_hb = 0, win_fft = 0, win_audio = 0;
     uint64_t win_bytes = 0;
+    uint64_t win_hb_bytes = 0, win_fft_bytes = 0, win_audio_bytes = 0;
     auto last_stat = std::chrono::steady_clock::now();
     auto start_time = last_stat;
 
@@ -305,18 +306,18 @@ void CentralServer::host_mux_loop(std::shared_ptr<HostRoom> room){
                 join_count = room->joins.size();
             }
             double win_sec = stat_elapsed / 1000.0;
-            printf("[Central] [STATS] room='%s' uptime=%llds | recv: pkts=%llu (%.1f KB/s) | "
-                   "hb=%llu fft=%llu audio=%llu | joins=%zu\n",
+            printf("[Central] [STATS] room='%s' uptime=%llds | recv: %.1f KB/s | "
+                   "hb=%.1f KB/s fft=%.1f KB/s audio=%.1f KB/s | joins=%zu\n",
                    room->station_id.c_str(),
                    (long long)total_sec,
-                   (unsigned long long)mux_pkts,
                    (double)win_bytes / win_sec / 1024.0,
-                   (unsigned long long)win_hb,
-                   (unsigned long long)win_fft,
-                   (unsigned long long)win_audio,
+                   (double)win_hb_bytes / win_sec / 1024.0,
+                   (double)win_fft_bytes / win_sec / 1024.0,
+                   (double)win_audio_bytes / win_sec / 1024.0,
                    join_count);
             last_stat = now_s;
             win_hb = win_fft = win_audio = win_bytes = 0;
+            win_hb_bytes = win_fft_bytes = win_audio_bytes = 0;
         }
 
         // ── HB ─────────────────────────────────────────────────────────────
@@ -328,6 +329,7 @@ void CentralServer::host_mux_loop(std::shared_ptr<HostRoom> room){
                 broadcast_report_list_central(room);
             }
             hb_count++; win_hb++;
+            win_hb_bytes += CENTRAL_MUX_HDR_SIZE + mux.len;
             if(mux.len > 0){
                 if(buf.size() < mux.len) buf.resize(mux.len);
                 if(!central_recv_all(room->fd, buf.data(), mux.len)){
@@ -394,8 +396,8 @@ void CentralServer::host_mux_loop(std::shared_ptr<HostRoom> room){
         // BEWE 타입별 카운트
         if(mux.len >= BEWE_HDR_SIZE){
             uint8_t bt = buf[4];
-            if(bt == BEWE_TYPE_FFT)        { fft_count++;   win_fft++; }
-            else if(bt == BEWE_TYPE_AUDIO) { audio_count++; win_audio++; }
+            if(bt == BEWE_TYPE_FFT)        { fft_count++;   win_fft++;   win_fft_bytes   += mux.len; }
+            else if(bt == BEWE_TYPE_AUDIO) { audio_count++; win_audio++; win_audio_bytes += mux.len; }
             else                           other_count++;
         }
 
