@@ -902,7 +902,7 @@ void run_cli_host(){
                     const auto* di = reinterpret_cast<const PktDbDownloadInfo*>(pkt + 9);
                     char fn[129]={}; strncpy(fn, di->filename, 128);
                     bool is_iq = (strncmp(fn,"IQ_",3)==0||strncmp(fn,"sa_",3)==0);
-                    std::string dir = is_iq ? BEWEPaths::private_iq_dir() : BEWEPaths::private_audio_dir();
+                    std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
                     mkdir(dir.c_str(), 0755);
                     std::string ipath = dir + "/" + fn + ".info";
                     FILE* fi = fopen(ipath.c_str(), "w");
@@ -924,7 +924,7 @@ void run_cli_host(){
                     uint32_t data_len = d->chunk_bytes;
                     if(d->is_first){
                         bool is_iq = (strncmp(d->filename,"IQ_",3)==0||strncmp(d->filename,"sa_",3)==0);
-                        std::string dir = is_iq ? BEWEPaths::private_iq_dir() : BEWEPaths::private_audio_dir();
+                        std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
                         mkdir(dir.c_str(), 0755);
                         host_db_dl_path = dir + "/" + d->filename;
                         if(host_db_dl_fp) fclose(host_db_dl_fp);

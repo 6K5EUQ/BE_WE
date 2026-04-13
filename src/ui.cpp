@@ -2150,7 +2150,7 @@ void run_streaming_viewer(){
             if(!di) return;
             char fn[129]={}; strncpy(fn, di->filename, 128);
             bool is_iq = (strncmp(fn,"IQ_",3)==0||strncmp(fn,"sa_",3)==0);
-            std::string dir = is_iq ? BEWEPaths::private_iq_dir() : BEWEPaths::private_audio_dir();
+            std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
             mkdir(dir.c_str(), 0755);
             std::string ipath = dir + "/" + fn + ".info";
             FILE* fi = fopen(ipath.c_str(), "w");
@@ -2168,7 +2168,7 @@ void run_streaming_viewer(){
         cli->on_db_download_data = [&](const PktDbDownloadData* d, const uint8_t* data, uint32_t data_len){
             if(d->is_first){
                 bool is_iq = (strncmp(d->filename,"IQ_",3)==0||strncmp(d->filename,"sa_",3)==0);
-                std::string dir = is_iq ? BEWEPaths::private_iq_dir() : BEWEPaths::private_audio_dir();
+                std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
                 mkdir(dir.c_str(), 0755);
                 db_dl_path = dir + "/" + d->filename;
                 if(db_dl_fp) fclose(db_dl_fp);
@@ -2182,15 +2182,15 @@ void run_streaming_viewer(){
                 fclose(db_dl_fp);
                 db_dl_fp = nullptr;
                 bewe_log_push(2,"[DB] Download done: %s\n", db_dl_path.c_str());
-                // private 목록에 추가
+                // record 목록에 추가
                 bool is_iq = (strncmp(d->filename,"IQ_",3)==0||strncmp(d->filename,"sa_",3)==0);
                 std::string fn2(d->filename);
                 if(is_iq){
-                    bool dup=false; for(auto& s:priv_iq_files) if(s==fn2){dup=true;break;}
-                    if(!dup) priv_iq_files.push_back(fn2);
+                    bool dup=false; for(auto& s:rec_iq_files) if(s==fn2){dup=true;break;}
+                    if(!dup) rec_iq_files.push_back(fn2);
                 } else {
-                    bool dup=false; for(auto& s:priv_audio_files) if(s==fn2){dup=true;break;}
-                    if(!dup) priv_audio_files.push_back(fn2);
+                    bool dup=false; for(auto& s:rec_audio_files) if(s==fn2){dup=true;break;}
+                    if(!dup) rec_audio_files.push_back(fn2);
                 }
                 db_dl_path.clear();
             }
@@ -2914,7 +2914,7 @@ void run_streaming_viewer(){
                                 const auto* di = reinterpret_cast<const PktDbDownloadInfo*>(pkt + 9);
                                 char fn[129]={}; strncpy(fn, di->filename, 128);
                                 bool is_iq = (strncmp(fn,"IQ_",3)==0||strncmp(fn,"sa_",3)==0);
-                                std::string dir = is_iq ? BEWEPaths::private_iq_dir() : BEWEPaths::private_audio_dir();
+                                std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
                                 mkdir(dir.c_str(), 0755);
                                 std::string ipath = dir + "/" + fn + ".info";
                                 FILE* fi = fopen(ipath.c_str(), "w");
@@ -2935,7 +2935,7 @@ void run_streaming_viewer(){
                                 uint32_t data_len = d->chunk_bytes;
                                 if(d->is_first){
                                     bool is_iq = (strncmp(d->filename,"IQ_",3)==0||strncmp(d->filename,"sa_",3)==0);
-                                    std::string dir = is_iq ? BEWEPaths::private_iq_dir() : BEWEPaths::private_audio_dir();
+                                    std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
                                     mkdir(dir.c_str(), 0755);
                                     host_db_dl_path = dir + "/" + d->filename;
                                     if(host_db_dl_fp) fclose(host_db_dl_fp);
@@ -3064,6 +3064,9 @@ void run_streaming_viewer(){
         bool is_public=false; // Public 탭 파일 (소유자만 삭제)
         bool selected=false;  // 좌클릭 선택 상태
     } file_ctx;
+
+    // DB 전용 우클릭 상태
+    static struct { bool open=false; float x=0,y=0; std::string filename, operator_name; bool is_iq=false; } db_ctx;
 
     // ── Rename 모달 ──────────────────────────────────────────────────────
     struct RenameModal {
@@ -6085,15 +6088,13 @@ void run_streaming_viewer(){
                         ImGui::Unindent(12.f);
                         // Report 우클릭 팝업
                         if(rpt_ctx.open){
-                            ImGui::SetNextWindowPos(ImVec2(rpt_ctx.x, rpt_ctx.y));
-                            ImGui::SetNextWindowSize(ImVec2(160.f, 0.f));
-                            ImGui::SetNextWindowBgAlpha(0.95f);
-                            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
-                            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6,6));
-                            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f,0.12f,0.18f,1.f));
-                            ImGui::Begin("##rpt_ctx", nullptr,
-                                ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
-                                ImGuiWindowFlags_NoMove|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoDecoration);
+                            ImGui::OpenPopup("##rpt_ctx_popup");
+                            rpt_ctx.open = false;
+                        }
+                        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
+                        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.f,6.f));
+                        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f,0.12f,0.18f,1.f));
+                        if(ImGui::BeginPopup("##rpt_ctx_popup")){
                             ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));
                             if(ImGui::Selectable("  Delete")){
                                 if(v.net_cli)
@@ -6103,23 +6104,18 @@ void run_streaming_viewer(){
                                     auto pkt=make_packet(PacketType::REPORT_DELETE,&rd,sizeof(rd));
                                     v.net_srv->cb.on_relay_broadcast(pkt.data(),pkt.size(),true);
                                 }
-                                rpt_ctx.open = false;
                             }
                             ImGui::PopStyleColor();
-                            if(ImGui::IsKeyPressed(ImGuiKey_Escape,false)) rpt_ctx.open=false;
-                            if(!ImGui::IsWindowHovered()&&ImGui::IsMouseClicked(ImGuiMouseButton_Left)) rpt_ctx.open=false;
-                            ImGui::End();
-                            ImGui::PopStyleColor();
-                            ImGui::PopStyleVar(2);
+                            ImGui::EndPopup();
                         }
+                        ImGui::PopStyleColor();
+                        ImGui::PopStyleVar(2);
                     }
                     ImGui::Unindent(8.f);
                 }
                 ImGui::Spacing();
 
                 // ── Database (Central Server) ─────────────────────────────
-                // DB 전용 우클릭 상태
-                static struct { bool open=false; float x=0,y=0; std::string filename, operator_name; bool is_iq=false; } db_ctx;
 
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                 if(ImGui::CollapsingHeader("Database")){
@@ -6137,7 +6133,21 @@ void run_streaming_viewer(){
                         float pw2 = ImGui::GetContentRegionAvail().x;
                         float fn_w2 = pw2 * 0.66f;
                         double mb = e.size_bytes / 1048576.0;
-                        char info2[32]; snprintf(info2,sizeof(info2),"%.1fM",mb);
+                        // 파일명에서 시간 길이 추정: _HHMMSS-HHMMSS.wav
+                        int dur_sec = 0;
+                        const char* dot = strrchr(e.filename, '.');
+                        if(dot && (dot - e.filename) >= 14){
+                            const char* p = dot - 13; // "HHMMSS-HHMMSS"
+                            if(p[6] == '-'){
+                                int h1=(p[0]-'0')*10+(p[1]-'0'), m1=(p[2]-'0')*10+(p[3]-'0'), s1=(p[4]-'0')*10+(p[5]-'0');
+                                int h2=(p[7]-'0')*10+(p[8]-'0'), m2=(p[9]-'0')*10+(p[10]-'0'), s2=(p[11]-'0')*10+(p[12]-'0');
+                                dur_sec = (h2*3600+m2*60+s2) - (h1*3600+m1*60+s1);
+                                if(dur_sec < 0) dur_sec += 86400;
+                            }
+                        }
+                        char info2[32];
+                        if(dur_sec > 0) snprintf(info2,sizeof(info2),"%ds %.1fM",dur_sec,mb);
+                        else            snprintf(info2,sizeof(info2),"%.1fM",mb);
                         ImGui::Selectable(e.filename, false, ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw2, 0));
                         if(ImGui::IsItemHovered()){
                             ImGui::SetTooltip("by %s", e.operator_name);
@@ -6145,6 +6155,7 @@ void run_streaming_viewer(){
                                 db_ctx = {true, io.MousePos.x, io.MousePos.y,
                                           std::string(e.filename), std::string(e.operator_name),
                                           (strncmp(e.filename,"IQ_",3)==0||strncmp(e.filename,"sa_",3)==0)};
+                                bewe_log_push(0,"[UI] DB right-click: '%s'\n", e.filename);
                             }
                         }
                         ImGui::SameLine(fn_w2 + 8.f);
@@ -6198,74 +6209,59 @@ void run_streaming_viewer(){
                     ImGui::Unindent(8.f);
                 }
 
-                // ── DB 우클릭 팝업: Download / Delete ──────────────────
-                if(db_ctx.open){
-                    ImGui::SetNextWindowPos(ImVec2(db_ctx.x, db_ctx.y));
-                    ImGui::SetNextWindowSize(ImVec2(180.f, 0.f));
-                    ImGui::SetNextWindowBgAlpha(0.95f);
-                    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
-                    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6,6));
-                    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f,0.12f,0.18f,1.f));
-                    ImGui::Begin("##db_ctx", nullptr,
-                        ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
-                        ImGuiWindowFlags_NoMove|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoDecoration);
-
-                    if(ImGui::Selectable("  Download")){
-                        // Central DB에서 네트워크로 파일 다운로드 → record/ 폴더에 저장
-                        if(v.net_cli){
-                            // JOIN: Central에 DB_DOWNLOAD_REQ 전송
-                            bewe_log_push(0,"[UI] DB_DOWNLOAD_REQ: '%s' by '%s'\n", db_ctx.filename.c_str(), db_ctx.operator_name.c_str());
-                            v.net_cli->cmd_db_download(db_ctx.filename.c_str(), db_ctx.operator_name.c_str());
-                        } else if(v.net_srv){
-                            // HOST: Central relay를 통해 DB_DOWNLOAD_REQ 전송
-                            PktDbDownloadReq req{};
-                            strncpy(req.filename, db_ctx.filename.c_str(), 127);
-                            strncpy(req.operator_name, db_ctx.operator_name.c_str(), 31);
-                            auto pkt = make_packet(PacketType::DB_DOWNLOAD_REQ, &req, sizeof(req));
-                            if(v.net_srv->cb.on_relay_broadcast)
-                                v.net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
-                        }
-                        db_ctx.open = false;
-                    }
-                    ImGui::Separator();
-                    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));
-                    if(ImGui::Selectable("  Delete")){
-                        // Central 서버에 삭제 요청
-                        if(v.net_cli){
-                            bewe_log_push(0,"[UI] DB_DELETE_REQ: '%s' by '%s'\n", db_ctx.filename.c_str(), db_ctx.operator_name.c_str());
-                            v.net_cli->cmd_db_delete(db_ctx.filename.c_str(), db_ctx.operator_name.c_str());
-                        } else if(v.net_srv){
-                            if(v.net_srv->cb.on_relay_broadcast){
-                                // Central 경유
-                                PktDbDeleteReq req{};
-                                strncpy(req.filename, db_ctx.filename.c_str(), 127);
-                                strncpy(req.operator_name, db_ctx.operator_name.c_str(), 31);
-                                auto pkt = make_packet(PacketType::DB_DELETE_REQ, &req, sizeof(req));
-                                v.net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
-                            } else {
-                                // 로컬 삭제 (Central 없는 환경, flat 구조)
-                                std::string fpath = BEWEPaths::database_dir() + "/" + db_ctx.filename;
-                                remove(fpath.c_str());
-                                remove((fpath + ".info").c_str());
-                            }
-                        }
-                        db_ctx.open = false;
-                    }
-                    ImGui::PopStyleColor();
-
-                    if(ImGui::IsKeyPressed(ImGuiKey_Escape, false)) db_ctx.open = false;
-                    if(!ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) db_ctx.open = false;
-
-                    ImGui::End();
-                    ImGui::PopStyleColor();
-                    ImGui::PopStyleVar(2);
-                }
-
                 ImGui::EndChild();
                 ImGui::End();
                 ImGui::PopStyleColor();
                 ImGui::PopStyleVar();
             }
+
+            // ── DB 우클릭 팝업: Download / Delete ─────────────────────
+            if(db_ctx.open){
+                ImGui::OpenPopup("##db_ctx_popup");
+                db_ctx.open = false;
+            }
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.f,6.f));
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f,0.12f,0.18f,1.f));
+            if(ImGui::BeginPopup("##db_ctx_popup")){
+                if(ImGui::Selectable("  Download")){
+                    if(v.net_cli){
+                        bewe_log_push(0,"[UI] DB_DOWNLOAD_REQ: '%s' by '%s'\n", db_ctx.filename.c_str(), db_ctx.operator_name.c_str());
+                        v.net_cli->cmd_db_download(db_ctx.filename.c_str(), db_ctx.operator_name.c_str());
+                    } else if(v.net_srv){
+                        PktDbDownloadReq req{};
+                        strncpy(req.filename, db_ctx.filename.c_str(), 127);
+                        strncpy(req.operator_name, db_ctx.operator_name.c_str(), 31);
+                        auto pkt = make_packet(PacketType::DB_DOWNLOAD_REQ, &req, sizeof(req));
+                        if(v.net_srv->cb.on_relay_broadcast)
+                            v.net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
+                    }
+                }
+                ImGui::Separator();
+                ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));
+                if(ImGui::Selectable("  Delete")){
+                    if(v.net_cli){
+                        bewe_log_push(0,"[UI] DB_DELETE_REQ: '%s' by '%s'\n", db_ctx.filename.c_str(), db_ctx.operator_name.c_str());
+                        v.net_cli->cmd_db_delete(db_ctx.filename.c_str(), db_ctx.operator_name.c_str());
+                    } else if(v.net_srv){
+                        if(v.net_srv->cb.on_relay_broadcast){
+                            PktDbDeleteReq req{};
+                            strncpy(req.filename, db_ctx.filename.c_str(), 127);
+                            strncpy(req.operator_name, db_ctx.operator_name.c_str(), 31);
+                            auto pkt = make_packet(PacketType::DB_DELETE_REQ, &req, sizeof(req));
+                            v.net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
+                        } else {
+                            std::string fpath = BEWEPaths::database_dir() + "/" + db_ctx.filename;
+                            remove(fpath.c_str());
+                            remove((fpath + ".info").c_str());
+                        }
+                    }
+                }
+                ImGui::PopStyleColor();
+                ImGui::EndPopup();
+            }
+            ImGui::PopStyleColor();
+            ImGui::PopStyleVar(2);
 
             // (Signal Analysis는 별도 독립 오버레이로 이동 - 아래 참고)
             if(false){ // disabled – old EID block
