@@ -6214,6 +6214,7 @@ void run_streaming_viewer(){
                         // Central DB에서 네트워크로 파일 다운로드 → record/ 폴더에 저장
                         if(v.net_cli){
                             // JOIN: Central에 DB_DOWNLOAD_REQ 전송
+                            bewe_log_push(0,"[UI] DB_DOWNLOAD_REQ: '%s' by '%s'\n", db_ctx.filename.c_str(), db_ctx.operator_name.c_str());
                             v.net_cli->cmd_db_download(db_ctx.filename.c_str(), db_ctx.operator_name.c_str());
                         } else if(v.net_srv){
                             // HOST: Central relay를 통해 DB_DOWNLOAD_REQ 전송
@@ -6231,6 +6232,7 @@ void run_streaming_viewer(){
                     if(ImGui::Selectable("  Delete")){
                         // Central 서버에 삭제 요청
                         if(v.net_cli){
+                            bewe_log_push(0,"[UI] DB_DELETE_REQ: '%s' by '%s'\n", db_ctx.filename.c_str(), db_ctx.operator_name.c_str());
                             v.net_cli->cmd_db_delete(db_ctx.filename.c_str(), db_ctx.operator_name.c_str());
                         } else if(v.net_srv){
                             if(v.net_srv->cb.on_relay_broadcast){

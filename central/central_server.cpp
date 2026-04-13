@@ -772,6 +772,11 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
     if(bewe_len < BEWE_HDR_SIZE) return false;
     uint8_t bewe_type = bewe_pkt[4];
 
+    // DB 관련 패킷 진단 로그
+    if(bewe_type >= 0x24 && bewe_type <= 0x2D)
+        printf("[Central] intercept_join_cmd: bewe_type=0x%02x len=%zu conn_id=%u '%s'\n",
+               bewe_type, bewe_len, je->conn_id, je->name);
+
     // ── AUTH_REQ: HOST에 포워드 (HOST가 처리), 릴레이는 이름만 캐시 ──
     if(bewe_type == BEWE_TYPE_AUTH_REQ){
         const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
