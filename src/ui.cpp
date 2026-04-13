@@ -2893,6 +2893,64 @@ void run_streaming_viewer(){
                                     strncpy(s_relay_op_list.ops[i].name, (const char*)(payload+off+2), 31);
                                 }
                             });
+                            // Central DB 목록 수신
+                            central_cli.set_on_central_db_list([](const uint8_t* pkt, size_t len){
+                                extern std::vector<DbFileEntry> g_db_list;
+                                extern std::mutex g_db_list_mtx;
+                                if(len < 9 + sizeof(PktDbList)) return;
+                                const uint8_t* payload = pkt + 9;
+                                auto* hdr2 = reinterpret_cast<const PktDbList*>(payload);
+                                uint16_t cnt2 = hdr2->count;
+                                size_t expected = sizeof(PktDbList) + cnt2 * sizeof(DbFileEntry);
+                                if(len - 9 < expected) return;
+                                const DbFileEntry* ent = reinterpret_cast<const DbFileEntry*>(payload + sizeof(PktDbList));
+                                { std::lock_guard<std::mutex> lk(g_db_list_mtx);
+                                  g_db_list.assign(ent, ent + cnt2); }
+                                bewe_log_push(0,"[Central] DB_LIST: %u files\n", cnt2);
+                            });
+                            // Central DB 다운로드 .info 수신
+                            central_cli.set_on_central_db_dl_info([](const uint8_t* pkt, size_t len){
+                                if(len < 9 + sizeof(PktDbDownloadInfo)) return;
+                                const auto* di = reinterpret_cast<const PktDbDownloadInfo*>(pkt + 9);
+                                char fn[129]={}; strncpy(fn, di->filename, 128);
+                                bool is_iq = (strncmp(fn,"IQ_",3)==0||strncmp(fn,"sa_",3)==0);
+                                std::string dir = is_iq ? BEWEPaths::private_iq_dir() : BEWEPaths::private_audio_dir();
+                                mkdir(dir.c_str(), 0755);
+                                std::string ipath = dir + "/" + fn + ".info";
+                                FILE* fi = fopen(ipath.c_str(), "w");
+                                if(fi){
+                                    size_t n = strnlen(di->info_data, sizeof(di->info_data));
+                                    if(n > 0) fwrite(di->info_data, 1, n, fi);
+                                    fclose(fi);
+                                    bewe_log_push(0,"[DB] Download .info saved: %s\n", ipath.c_str());
+                                }
+                            });
+                            // Central DB 다운로드 데이터 수신
+                            static FILE* host_db_dl_fp = nullptr;
+                            static std::string host_db_dl_path;
+                            central_cli.set_on_central_db_dl_data([&v](const uint8_t* pkt, size_t len){
+                                if(len < 9 + sizeof(PktDbDownloadData)) return;
+                                const auto* d = reinterpret_cast<const PktDbDownloadData*>(pkt + 9);
+                                const uint8_t* data = pkt + 9 + sizeof(PktDbDownloadData);
+                                uint32_t data_len = d->chunk_bytes;
+                                if(d->is_first){
+                                    bool is_iq = (strncmp(d->filename,"IQ_",3)==0||strncmp(d->filename,"sa_",3)==0);
+                                    std::string dir = is_iq ? BEWEPaths::private_iq_dir() : BEWEPaths::private_audio_dir();
+                                    mkdir(dir.c_str(), 0755);
+                                    host_db_dl_path = dir + "/" + d->filename;
+                                    if(host_db_dl_fp) fclose(host_db_dl_fp);
+                                    host_db_dl_fp = fopen(host_db_dl_path.c_str(), "wb");
+                                    bewe_log_push(0,"[DB] Download start: %s (%.1fMB)\n", d->filename, d->total_bytes/1048576.0);
+                                }
+                                if(host_db_dl_fp && data_len > 0)
+                                    fwrite(data, 1, data_len, host_db_dl_fp);
+                                if(d->is_last && host_db_dl_fp){
+                                    fclose(host_db_dl_fp);
+                                    host_db_dl_fp = nullptr;
+                                    bewe_log_push(0,"[DB] Download done: %s\n", host_db_dl_path.c_str());
+                                    host_db_dl_path.clear();
+                                }
+                            });
                             // 재귀적 자동 재연결 함수 (shared_ptr로 캡처)
                             auto reconnect_fn = std::make_shared<std::function<void()>>();
                             *reconnect_fn = [&v, &central_cli, rh, rp, reconnect_fn](){

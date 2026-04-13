@@ -193,6 +193,8 @@ struct ServerCallbacks {
     std::function<void(uint8_t op_idx, const char* op_name, const PktDbSaveMeta* meta, const uint8_t* data, uint32_t len)> on_db_save;
     // DB delete: JOIN이 Central DB에서 파일 삭제 요청
     std::function<void(const char* who, const char* filename, const char* operator_name)> on_db_delete;
+    // DB download: JOIN이 Central DB에서 파일 다운로드 요청
+    std::function<void(uint8_t op_idx, const char* who, const char* filename, const char* operator_name)> on_db_download_req;
     // 중앙서버 relay 브로드캐스트 콜백: BEWE 패킷 1회 전달 → 중앙서버가 N명에게 fan-out
     // 이 콜백을 통해 FFT/오디오/채팅 등이 relay 클라이언트로 전달됨 (N× 대역폭 문제 해결)
     // no_drop: IQ_CHUNK 등 드롭하면 안 되는 패킷
@@ -280,6 +282,9 @@ public:
 
     // Report list → all clients
     void broadcast_report_list(const std::vector<ReportFileEntry>& entries);
+
+    // DB list → all clients
+    void broadcast_db_list(const std::vector<DbFileEntry>& entries);
 
     // HW status → all clients
     void broadcast_status(float cf_mhz, float gain_db,

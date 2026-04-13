@@ -831,6 +831,20 @@ void run_cli_host(){
         }
     };
 
+    srv->cb.on_db_download_req = [&](uint8_t op_idx, const char* who, const char* filename, const char* operator_name){
+        // Central 연결 시 → Central로 포워드
+        if(srv->cb.on_relay_broadcast){
+            PktDbDownloadReq req{};
+            strncpy(req.filename, filename, 127);
+            strncpy(req.operator_name, operator_name, 31);
+            auto pkt = make_packet(PacketType::DB_DOWNLOAD_REQ, &req, sizeof(req));
+            srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
+            bewe_log_push(0,"[CMD:%s] DB_DOWNLOAD '%s' by '%s' → Central\n", who, filename, operator_name);
+        } else {
+            bewe_log_push(0,"[CMD:%s] DB_DOWNLOAD '%s': no Central, not supported\n", who, filename);
+        }
+    };
+
     // ── Start server ─────────────────────────────────────────────────────
     if(!srv->start(0)){
         bewe_log_push(0,"[BEWE CLI] Server start failed\n");
@@ -864,7 +878,7 @@ void run_cli_host(){
                 // Central DB 목록 수신
                 extern std::vector<DbFileEntry> g_db_list;
                 extern std::mutex g_db_list_mtx;
-                central_cli.set_on_central_db_list([](const uint8_t* pkt, size_t len){
+                central_cli.set_on_central_db_list([&](const uint8_t* pkt, size_t len){
                     extern std::vector<DbFileEntry> g_db_list;
                     extern std::mutex g_db_list_mtx;
                     if(len < 9 + sizeof(PktDbList)) return;
@@ -874,8 +888,11 @@ void run_cli_host(){
                     size_t expected = sizeof(PktDbList) + cnt2 * sizeof(DbFileEntry);
                     if(len - 9 < expected) return;
                     const DbFileEntry* ent = reinterpret_cast<const DbFileEntry*>(payload + sizeof(PktDbList));
+                    std::vector<DbFileEntry> entries(ent, ent + cnt2);
                     { std::lock_guard<std::mutex> lk(g_db_list_mtx);
-                      g_db_list.assign(ent, ent + cnt2); }
+                      g_db_list = entries; }
+                    // 직접 접속 JOIN에도 DB_LIST 전달
+                    if(srv) srv->broadcast_db_list(entries);
                     bewe_log_push(0,"[Central] DB_LIST: %u files\n", cnt2);
                 });
 

@@ -414,6 +414,13 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
         break;
     }
 
+    case PacketType::DB_DOWNLOAD_REQ: {
+        if(!c->authed || len < sizeof(PktDbDownloadReq)) break;
+        auto* req = reinterpret_cast<const PktDbDownloadReq*>(payload);
+        if(cb.on_db_download_req) cb.on_db_download_req(c->op_index, c->name, req->filename, req->operator_name);
+        break;
+    }
+
     default: break;
     }
 }
@@ -888,6 +895,24 @@ void NetServer::broadcast_report_list(const std::vector<ReportFileEntry>& entrie
     auto pkt = make_packet(PacketType::REPORT_LIST, payload.data(), (uint32_t)payload_size);
     if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
+    std::lock_guard<std::mutex> lk(clients_mtx_);
+    for(auto& c : clients_){
+        if(!c->authed || !c->alive.load() || c->is_relay) continue;
+        c->enqueue(pkt, false);
+    }
+}
+
+void NetServer::broadcast_db_list(const std::vector<DbFileEntry>& entries){
+    uint16_t cnt = (uint16_t)std::min(entries.size(), (size_t)UINT16_MAX);
+    size_t payload_size = sizeof(PktDbList) + cnt * sizeof(DbFileEntry);
+    std::vector<uint8_t> payload(payload_size, 0);
+    auto* hdr = reinterpret_cast<PktDbList*>(payload.data());
+    hdr->count = cnt;
+    if(cnt > 0)
+        memcpy(payload.data() + sizeof(PktDbList), entries.data(), cnt * sizeof(DbFileEntry));
+    auto pkt = make_packet(PacketType::DB_LIST, payload.data(), (uint32_t)payload_size);
+    // Central relay JOINs에는 Central이 직접 전송하므로, on_relay_broadcast 호출 안 함
+    // 직접 접속 JOIN에만 전달
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
         if(!c->authed || !c->alive.load() || c->is_relay) continue;
