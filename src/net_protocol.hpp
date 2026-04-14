@@ -50,6 +50,8 @@ enum class PacketType : uint8_t {
     REPORT_UPDATE      = 0x2B,  // client → central: update report .info
     DIGI_LOG           = 0x2C,  // server → clients: digital decode text result
     DB_DOWNLOAD_INFO   = 0x2D,  // central → client: DB file .info contents (sent before DATA)
+    DB_LIST_REQ        = 0x2E,  // client → central: request DB list refresh
+    REPORT_LIST_REQ    = 0x2F,  // client → central: request Report list refresh
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────
@@ -388,6 +390,7 @@ struct __attribute__((packed)) DbFileEntry {
     char     filename[128];
     uint64_t size_bytes;
     char     operator_name[32];
+    char     info_data[512];
 };
 struct __attribute__((packed)) PktDbList {
     uint16_t count;

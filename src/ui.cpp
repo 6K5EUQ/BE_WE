@@ -6056,7 +6056,16 @@ void run_streaming_viewer(){
 
                 // ── Report ───────────────────────────────────────────────
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                if(ImGui::CollapsingHeader("Report")){
+                bool rpt_open = ImGui::CollapsingHeader("Report");
+                ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - 60.f);
+                if(ImGui::SmallButton("Reload##rpt")){
+                    if(v.net_cli) v.net_cli->cmd_request_report_list();
+                    else if(v.net_srv && v.net_srv->cb.on_relay_broadcast){
+                        auto pkt = make_packet(PacketType::REPORT_LIST_REQ, nullptr, 0);
+                        v.net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
+                    }
+                }
+                if(rpt_open){
                     ImGui::Indent(8.f);
                     // Central에서 수신한 Report 목록 표시
                     extern std::vector<ReportFileEntry> g_report_list;
@@ -6091,12 +6100,13 @@ void run_streaming_viewer(){
                             ImGui::OpenPopup("##rpt_ctx_popup");
                             rpt_ctx.open = false;
                         }
+                        ImGui::SetNextWindowSize(ImVec2(120.f, 0.f));
                         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
                         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.f,6.f));
                         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f,0.12f,0.18f,1.f));
                         if(ImGui::BeginPopup("##rpt_ctx_popup")){
                             ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));
-                            if(ImGui::Selectable("  Delete")){
+                            if(ImGui::Selectable("Delete")){
                                 if(v.net_cli)
                                     v.net_cli->cmd_report_delete(rpt_ctx.filename.c_str());
                                 else if(v.net_srv && v.net_srv->cb.on_relay_broadcast){
@@ -6118,7 +6128,16 @@ void run_streaming_viewer(){
                 // ── Database (Central Server) ─────────────────────────────
 
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                if(ImGui::CollapsingHeader("Database")){
+                bool db_open = ImGui::CollapsingHeader("Database");
+                ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - 60.f);
+                if(ImGui::SmallButton("Reload##db")){
+                    if(v.net_cli) v.net_cli->cmd_request_db_list();
+                    else if(v.net_srv && v.net_srv->cb.on_relay_broadcast){
+                        auto pkt = make_packet(PacketType::DB_LIST_REQ, nullptr, 0);
+                        v.net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
+                    }
+                }
+                if(db_open){
                     ImGui::Indent(8.f);
                     // IQ / Audio 분류
                     std::vector<DbFileEntry> db_iq, db_audio;
@@ -6146,11 +6165,24 @@ void run_streaming_viewer(){
                             }
                         }
                         char info2[32];
-                        if(dur_sec > 0) snprintf(info2,sizeof(info2),"%ds %.1fM",dur_sec,mb);
-                        else            snprintf(info2,sizeof(info2),"%.1fM",mb);
+                        if(dur_sec > 0) snprintf(info2,sizeof(info2),"%4ds %6.1fM",dur_sec,mb);
+                        else            snprintf(info2,sizeof(info2),"     %6.1fM",mb);
                         ImGui::Selectable(e.filename, false, ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw2, 0));
                         if(ImGui::IsItemHovered()){
-                            ImGui::SetTooltip("by %s", e.operator_name);
+                            // info_data 파싱하여 Key: Value 줄 단위로 툴팁 표시 (Archive와 동일)
+                            std::string tip;
+                            const char* p = e.info_data;
+                            while(p && *p){
+                                char k[64]={},val[256]={};
+                                if(sscanf(p,"%63[^:]: %255[^\n]",k,val)==2 && val[0]){
+                                    tip += k; tip += ": "; tip += val; tip += "\n";
+                                }
+                                const char* nl = strchr(p,'\n');
+                                if(!nl) break;
+                                p = nl + 1;
+                            }
+                            if(!tip.empty()) ImGui::SetTooltip("%s", tip.c_str());
+                            else ImGui::SetTooltip("by %s", e.operator_name);
                             if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
                                 db_ctx = {true, io.MousePos.x, io.MousePos.y,
                                           std::string(e.filename), std::string(e.operator_name),
@@ -6220,11 +6252,12 @@ void run_streaming_viewer(){
                 ImGui::OpenPopup("##db_ctx_popup");
                 db_ctx.open = false;
             }
+            ImGui::SetNextWindowSize(ImVec2(120.f, 0.f));
             ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.f,6.f));
             ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f,0.12f,0.18f,1.f));
             if(ImGui::BeginPopup("##db_ctx_popup")){
-                if(ImGui::Selectable("  Download")){
+                if(ImGui::Selectable("Download")){
                     if(v.net_cli){
                         bewe_log_push(0,"[UI] DB_DOWNLOAD_REQ: '%s' by '%s'\n", db_ctx.filename.c_str(), db_ctx.operator_name.c_str());
                         v.net_cli->cmd_db_download(db_ctx.filename.c_str(), db_ctx.operator_name.c_str());
@@ -6239,7 +6272,7 @@ void run_streaming_viewer(){
                 }
                 ImGui::Separator();
                 ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));
-                if(ImGui::Selectable("  Delete")){
+                if(ImGui::Selectable("Delete")){
                     if(v.net_cli){
                         bewe_log_push(0,"[UI] DB_DELETE_REQ: '%s' by '%s'\n", db_ctx.filename.c_str(), db_ctx.operator_name.c_str());
                         v.net_cli->cmd_db_delete(db_ctx.filename.c_str(), db_ctx.operator_name.c_str());

@@ -135,6 +135,8 @@ static constexpr uint8_t BEWE_TYPE_DB_DELETE    = 0x29;
 static constexpr uint8_t BEWE_TYPE_RPT_DELETE   = 0x2A;
 static constexpr uint8_t BEWE_TYPE_RPT_UPDATE   = 0x2B;
 static constexpr uint8_t BEWE_TYPE_DB_DL_INFO   = 0x2D;
+static constexpr uint8_t BEWE_TYPE_DB_LIST_REQ  = 0x2E;
+static constexpr uint8_t BEWE_TYPE_REPORT_LIST_REQ = 0x2F;
 
 static constexpr uint8_t BEWE_TYPE_CHAT     = 0x07;
 

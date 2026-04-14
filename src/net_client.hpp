@@ -239,6 +239,8 @@ public:
     bool cmd_report_update(const char* filename, const char* info_data);
     bool cmd_report_add(const char* filename, const char* info_summary);
     bool cmd_db_save(const char* filepath, const char* operator_name);
+    bool cmd_request_db_list();           // JOIN → Central: refresh DB list
+    bool cmd_request_report_list();       // JOIN → Central: refresh Report list
 
     // Report list received from HOST
     std::function<void(const std::vector<ReportFileEntry>&)> on_report_list;

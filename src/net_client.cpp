@@ -611,6 +611,12 @@ bool NetClient::cmd_db_download(const char* filename, const char* operator_name)
     strncpy(req.operator_name, operator_name, 31);
     return raw_send(PacketType::DB_DOWNLOAD_REQ, &req, sizeof(req));
 }
+bool NetClient::cmd_request_db_list(){
+    return raw_send(PacketType::DB_LIST_REQ, nullptr, 0);
+}
+bool NetClient::cmd_request_report_list(){
+    return raw_send(PacketType::REPORT_LIST_REQ, nullptr, 0);
+}
 bool NetClient::cmd_report_delete(const char* filename){
     PktReportDelete rd{};
     strncpy(rd.filename, filename, 127);

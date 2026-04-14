@@ -773,9 +773,19 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
     uint8_t bewe_type = bewe_pkt[4];
 
     // DB 관련 패킷 진단 로그
-    if(bewe_type >= 0x24 && bewe_type <= 0x2D)
+    if(bewe_type >= 0x24 && bewe_type <= 0x2F)
         printf("[Central] intercept_join_cmd: bewe_type=0x%02x len=%zu conn_id=%u '%s'\n",
                bewe_type, bewe_len, je->conn_id, je->name);
+
+    // ── DB_LIST_REQ / REPORT_LIST_REQ: 즉시 재전송 ─────────────────
+    if(bewe_type == BEWE_TYPE_DB_LIST_REQ){
+        broadcast_db_list(room);
+        return true;
+    }
+    if(bewe_type == BEWE_TYPE_REPORT_LIST_REQ){
+        broadcast_report_list_central(room);
+        return true;
+    }
 
     // ── AUTH_REQ: HOST에 포워드 (HOST가 처리), 릴레이는 이름만 캐시 ──
     if(bewe_type == BEWE_TYPE_AUTH_REQ){
@@ -1144,7 +1154,7 @@ void CentralServer::broadcast_db_list(std::shared_ptr<HostRoom> room){
     const char* home = getenv("HOME");
     std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
 
-    std::vector<DbFileEntry> entries;
+    std::vector<std::pair<time_t, DbFileEntry>> with_mtime;
     DIR* top = opendir(db_base.c_str());
     if(top){
         struct dirent* de;
@@ -1159,22 +1169,34 @@ void CentralServer::broadcast_db_list(std::shared_ptr<HostRoom> room){
             DbFileEntry e{};
             strncpy(e.filename, fn.c_str(), 127);
             e.size_bytes = (uint64_t)st.st_size;
-            // .info 에서 Operator: 값을 읽어 e.operator_name 채움
+            // .info 전체 내용을 e.info_data에 저장 + Operator 추출
             FILE* fi = fopen((fp+".info").c_str(), "r");
             if(fi){
-                char line[256];
-                while(fgets(line,sizeof(line),fi)){
+                size_t n = fread(e.info_data, 1, sizeof(e.info_data)-1, fi);
+                e.info_data[n] = '\0';
+                fclose(fi);
+                // info_data 파싱하여 Operator 추출
+                const char* p = e.info_data;
+                while(p && *p){
                     char k[64]={},val[128]={};
-                    if(sscanf(line,"%63[^:]: %127[^\n]",k,val)>=2){
+                    if(sscanf(p,"%63[^:]: %127[^\n]",k,val)>=2){
                         if(strcmp(k,"Operator")==0){ strncpy(e.operator_name,val,31); break; }
                     }
+                    const char* nl = strchr(p,'\n');
+                    if(!nl) break;
+                    p = nl + 1;
                 }
-                fclose(fi);
             }
-            entries.push_back(e);
+            with_mtime.emplace_back(st.st_mtime, e);
         }
         closedir(top);
     }
+    // mtime 내림차순 정렬 (최신이 위)
+    std::sort(with_mtime.begin(), with_mtime.end(),
+              [](const auto& a, const auto& b){ return a.first > b.first; });
+    std::vector<DbFileEntry> entries;
+    entries.reserve(with_mtime.size());
+    for(auto& p : with_mtime) entries.push_back(p.second);
 
     // BEWE 패킷 빌드
     uint16_t cnt = (uint16_t)std::min(entries.size(), (size_t)500);
