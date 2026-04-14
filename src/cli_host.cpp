@@ -204,11 +204,11 @@ void run_cli_host(){
     // ── Interactive prompts ──────────────────────────────────────────────
     bewe_log_push(0,"\n=== BE_WE Headless HOST ===\n\n");
 
-    std::string id_str = prompt_input("ID");
+    std::string id_str = prompt_input("ID ");
     if(id_str.empty()){ bewe_log_push(0,"Aborted.\n"); return; }
 
     // 패스워드 에코 숨기기
-    bewe_log_push(0,"Password: "); fflush(stdout);
+    bewe_log_push(0,"PW : "); fflush(stdout);
     struct termios old_t, new_t;
     tcgetattr(STDIN_FILENO,&old_t); new_t=old_t;
     new_t.c_lflag &= ~(ECHO);
@@ -223,12 +223,13 @@ void run_cli_host(){
     if(tier<1||tier>2){ bewe_log_push(0,"CLI HOST requires tier 1 or 2.\n"); return; }
 
     std::string server_str = "144.24.86.137";
-    std::string station_str = prompt_input("Station name");
-    if(station_str.empty()){ bewe_log_push(0,"Aborted.\n"); return; }
 
     float lat = atof(prompt_input("Latitude ").c_str());
     float lon = -atof(prompt_input("Longitude").c_str()); // 양수 입력 = 동경(E), 내부 규약은 서경=양수이므로 부호 반전
     float cf  = 100.0f;
+
+    std::string station_str = prompt_input("Station name");
+    if(station_str.empty()){ bewe_log_push(0,"Aborted.\n"); return; }
 
     bewe_log_push(0,"\n");
 
