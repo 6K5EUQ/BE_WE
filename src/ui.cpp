@@ -4695,28 +4695,6 @@ void run_streaming_viewer(){
                     ImGui::BeginChild("##link_scroll", ImVec2(0,0), false,
                         ImGuiWindowFlags_HorizontalScrollbar);
 
-                    // ── Receiver ─────────────────────────────────────────
-                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                    if(ImGui::CollapsingHeader("Receiver")){
-                        ImGui::Indent(8.f);
-                        // 역할 + 사용자 ID
-                        const char* hw_role = v.net_cli ? "[JOIN]" : (v.net_srv ? "[HOST]" : "[LOCAL]");
-                        const char* my_id = login_get_id();
-                        ImGui::TextColored(ImVec4(0.4f,0.85f,1.f,1.f), "%s %s", hw_role, my_id);
-                        // SDR 이름
-                        const char* hw_name = "Unknown";
-                        if(v.net_cli){
-                            uint8_t rh = v.net_cli->remote_hw.load();
-                            hw_name = (rh == 0) ? "BladeRF 2.0 micro xA9" : "RTL-SDR";
-                        } else {
-                            if(v.dev_blade)    hw_name = "BladeRF 2.0 micro xA9";
-                            else if(v.dev_rtl) hw_name = "RTL-SDR";
-                        }
-                        ImGui::TextDisabled("[SDR] %s", hw_name);
-                        ImGui::Unindent(8.f);
-                    }
-                    ImGui::Spacing();
-
                     // ── Operators ────────────────────────────────────────
                     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                     if(ImGui::CollapsingHeader("Operators")){
@@ -6054,8 +6032,35 @@ void run_streaming_viewer(){
                 }
                 ImGui::Spacing();
 
+                // ── Private ──────────────────────────────────────────────
+                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                if(ImGui::CollapsingHeader("Private##arch")){
+                    ImGui::Indent(8.f);
+                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                    if(ImGui::TreeNode("IQ##priv")){
+                        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
+                        ImGui::Separator(); ImGui::PopStyleColor();
+                        for(auto& fn : priv_iq_files) draw_arch_file(BEWEPaths::private_iq_dir(), fn);
+                        if(priv_iq_files.empty()) ImGui::TextDisabled("  (empty)");
+                        ImGui::TreePop();
+                    }
+                    ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.4f,0.3f));
+                    ImGui::Separator(); ImGui::PopStyleColor();
+                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                    if(ImGui::TreeNode("Audio##priv")){
+                        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
+                        ImGui::Separator(); ImGui::PopStyleColor();
+                        for(auto& fn : priv_audio_files) draw_arch_file(BEWEPaths::private_audio_dir(), fn);
+                        if(priv_audio_files.empty()) ImGui::TextDisabled("  (empty)");
+                        ImGui::TreePop();
+                    }
+                    ImGui::Unindent(8.f);
+                }
+                ImGui::Spacing();
+
                 // ── Report ───────────────────────────────────────────────
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                ImGui::SetNextItemAllowOverlap();
                 bool rpt_open = ImGui::CollapsingHeader("Report");
                 ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - 60.f);
                 if(ImGui::SmallButton("Reload##rpt")){
@@ -6128,6 +6133,7 @@ void run_streaming_viewer(){
                 // ── Database (Central Server) ─────────────────────────────
 
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                ImGui::SetNextItemAllowOverlap();
                 bool db_open = ImGui::CollapsingHeader("Database");
                 ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - 60.f);
                 if(ImGui::SmallButton("Reload##db")){
@@ -6209,33 +6215,6 @@ void run_streaming_viewer(){
                         ImGui::Separator(); ImGui::PopStyleColor();
                         for(auto& e : db_audio) draw_db_entry(e);
                         if(db_audio.empty()) ImGui::TextDisabled("  (empty)");
-                        ImGui::TreePop();
-                    }
-                    ImGui::Unindent(8.f);
-                }
-
-                ImGui::Spacing();
-
-                // ── Private ──────────────────────────────────────────────
-                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                if(ImGui::CollapsingHeader("Private##arch")){
-                    ImGui::Indent(8.f);
-                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                    if(ImGui::TreeNode("IQ##priv")){
-                        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
-                        ImGui::Separator(); ImGui::PopStyleColor();
-                        for(auto& fn : priv_iq_files) draw_arch_file(BEWEPaths::private_iq_dir(), fn);
-                        if(priv_iq_files.empty()) ImGui::TextDisabled("  (empty)");
-                        ImGui::TreePop();
-                    }
-                    ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.4f,0.3f));
-                    ImGui::Separator(); ImGui::PopStyleColor();
-                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                    if(ImGui::TreeNode("Audio##priv")){
-                        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
-                        ImGui::Separator(); ImGui::PopStyleColor();
-                        for(auto& fn : priv_audio_files) draw_arch_file(BEWEPaths::private_audio_dir(), fn);
-                        if(priv_audio_files.empty()) ImGui::TextDisabled("  (empty)");
                         ImGui::TreePop();
                     }
                     ImGui::Unindent(8.f);
