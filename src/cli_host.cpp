@@ -219,16 +219,16 @@ void run_cli_host(){
     pw_buf[strcspn(pw_buf,"\r\n")]=0;
     bewe_log_push(0,"\n");
 
-    int tier = atoi(prompt_input("Tier (1/2)", "1").c_str());
+    int tier = atoi(prompt_input("Tier ").c_str());
     if(tier<1||tier>2){ bewe_log_push(0,"CLI HOST requires tier 1 or 2.\n"); return; }
 
-    std::string server_str = prompt_input("Central server", "144.24.86.137");
+    std::string server_str = "144.24.86.137";
     std::string station_str = prompt_input("Station name");
     if(station_str.empty()){ bewe_log_push(0,"Aborted.\n"); return; }
 
-    float lat = atof(prompt_input("Latitude",  "0.0").c_str());
-    float lon = -atof(prompt_input("Longitude", "0.0").c_str()); // 양수 입력 = 동경(E), 내부 규약은 서경=양수이므로 부호 반전
-    float cf  = atof(prompt_input("Center freq MHz", "450.0").c_str());
+    float lat = atof(prompt_input("Latitude ").c_str());
+    float lon = -atof(prompt_input("Longitude").c_str()); // 양수 입력 = 동경(E), 내부 규약은 서경=양수이므로 부호 반전
+    float cf  = 100.0f;
 
     bewe_log_push(0,"\n");
 
