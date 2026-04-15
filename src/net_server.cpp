@@ -484,20 +484,8 @@ void NetServer::broadcast_fft(const float* data, int fft_size,
     memcpy(payload.data() + sizeof(PktFftFrame), data, data_bytes);
 
     auto pkt = make_packet(PacketType::FFT_FRAME, payload.data(), total);
-    {
-        static uint64_t fft_relay_count = 0;
-        if(cb.on_relay_broadcast){
-            cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
-            fft_relay_count++;
-            if(fft_relay_count % 600 == 1)
-                bewe_log_push(0, "[NetServer] broadcast_fft>relay: #%llu size=%zu\n",
-                       (unsigned long long)fft_relay_count, pkt.size());
-        } else {
-            if(fft_relay_count % 600 == 0)
-                bewe_log_push(0, "[NetServer] broadcast_fft: on_relay_broadcast is NULL (#%llu)\n",
-                       (unsigned long long)fft_relay_count);
-            fft_relay_count++;
-        }
+    if(cb.on_relay_broadcast){
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
     }
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){

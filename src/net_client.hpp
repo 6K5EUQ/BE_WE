@@ -175,6 +175,11 @@ public:
     // ── Traffic stats ────────────────────────────────────────────────────
     std::atomic<uint64_t> stat_rx_bytes{0};   // 총 수신 바이트
     std::atomic<uint64_t> stat_tx_bytes{0};   // 총 송신 바이트
+    // JOIN 주기 STATS 출력용 누적(타입별 RX 바이트)
+    std::atomic<uint64_t> stat_rx_fft_bytes{0};
+    std::atomic<uint64_t> stat_rx_audio_bytes{0};
+    std::atomic<uint64_t> stat_rx_hb_bytes{0};
+    std::string           stat_room_id;        // JOIN 접속 station_id
 
     struct NetStats {
         uint64_t rx_bytes    = 0;

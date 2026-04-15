@@ -152,6 +152,7 @@ void CentralClient::poll_loop(std::string host, int port,
 int CentralClient::open_room(const std::string& central_host, int central_port,
                             const std::string& station_id, const std::string& station_name,
                             float lat, float lon, uint8_t host_tier){
+    stat_room_id = station_id;
     auto cands = make_candidates(central_host);
     int fd = tcp_connect_any(cands, central_port);
     if(fd < 0){ bewe_log_push(1,"[CentralClient] open_room: connect failed\n"); return -1; }
@@ -297,6 +298,25 @@ void CentralClient::mux_loop(int central_fd,
 
     // keepalive heartbeat 타이머
     auto last_hb = std::chrono::steady_clock::now();
+    auto stats_start = last_hb;
+    auto stats_last  = last_hb;
+    uint64_t sp_tot=stat_tx_total_bytes.load(), sp_fft=stat_tx_fft_bytes.load();
+    uint64_t sp_aud=stat_tx_audio_bytes.load(), sp_hb=stat_tx_hb_bytes.load();
+    auto print_host_stats = [&](){
+        auto now = std::chrono::steady_clock::now();
+        double win_sec = std::chrono::duration_cast<std::chrono::milliseconds>(now - stats_last).count() / 1000.0;
+        if(win_sec < 2.999) return;
+        long long uptime = std::chrono::duration_cast<std::chrono::seconds>(now - stats_start).count();
+        uint64_t t=stat_tx_total_bytes.load(), f=stat_tx_fft_bytes.load();
+        uint64_t a=stat_tx_audio_bytes.load(), h=stat_tx_hb_bytes.load();
+        bewe_log_push(0,"[HOST] [STATS] room='%s' uptime=%llds | trans: %.1f KB/s | hb=%.1f KB/s fft=%.1f KB/s audio=%.1f KB/s\n",
+            stat_room_id.c_str(), uptime,
+            (double)(t-sp_tot)/win_sec/1024.0,
+            (double)(h-sp_hb)/win_sec/1024.0,
+            (double)(f-sp_fft)/win_sec/1024.0,
+            (double)(a-sp_aud)/win_sec/1024.0);
+        stats_last=now; sp_tot=t; sp_fft=f; sp_aud=a; sp_hb=h;
+    };
 
     // SO_RCVTIMEO 루프 밖에서 한 번만 설정 (HB 주기 3초)
     {
@@ -305,6 +325,7 @@ void CentralClient::mux_loop(int central_fd,
     }
 
     while(mux_running_.load()){
+        print_host_stats();
         CentralMuxHdr mux{};
         ssize_t r = recv(central_fd, &mux, CENTRAL_MUX_HDR_SIZE, MSG_WAITALL);
         if(r <= 0){
@@ -324,6 +345,9 @@ void CentralClient::mux_loop(int central_fd,
                 last_hb = now;
                 CentralMuxHdr hb{}; hb.type = 0x00; hb.len = sizeof(CentralHostHb);
                 CentralHostHb hbp{}; hbp.user_count = count_fn ? count_fn() : 0;
+                uint64_t hb_tot = CENTRAL_MUX_HDR_SIZE + sizeof(CentralHostHb);
+                stat_tx_total_bytes.fetch_add(hb_tot, std::memory_order_relaxed);
+                stat_tx_hb_bytes.fetch_add(hb_tot, std::memory_order_relaxed);
                 enqueue_central(&hb, CENTRAL_MUX_HDR_SIZE, &hbp, sizeof(hbp));
             }
             continue;

@@ -69,6 +69,13 @@ public:
     bool is_central_connected() const { return mux_running_.load(); }
     size_t queue_bytes() const { return central_queue_bytes_; }
 
+    // HOST 주기 STATS 출력용 (3초 평균 전송 바이트/s)
+    std::atomic<uint64_t> stat_tx_total_bytes{0};
+    std::atomic<uint64_t> stat_tx_fft_bytes{0};
+    std::atomic<uint64_t> stat_tx_audio_bytes{0};
+    std::atomic<uint64_t> stat_tx_hb_bytes{0};
+    std::string           stat_room_id;
+
     // HOST→중앙서버 broadcast (conn_id=0xFFFF, 1회 전송 → 중앙서버가 N명에게 fan-out)
     // N× 대역폭 문제 해결: 기존 per-JOIN socketpair 경유 방식 대체
     // no_drop=true: IQ_CHUNK 등 드롭하면 안 되는 패킷
@@ -78,6 +85,14 @@ public:
         CentralMuxHdr mh{}; mh.conn_id = 0xFFFF;
         mh.type = static_cast<uint8_t>(CentralMuxType::DATA);
         mh.len  = (uint32_t)bewe_len;
+        // BEWE 패킷 타입 분류 (bewe_pkt[4] = BEWE type)
+        uint64_t tot = (uint64_t)bewe_len + CENTRAL_MUX_HDR_SIZE;
+        stat_tx_total_bytes.fetch_add(tot, std::memory_order_relaxed);
+        if(bewe_len >= 5){
+            uint8_t bt = bewe_pkt[4];
+            if(bt == BEWE_TYPE_FFT)        stat_tx_fft_bytes.fetch_add(tot, std::memory_order_relaxed);
+            else if(bt == BEWE_TYPE_AUDIO) stat_tx_audio_bytes.fetch_add(tot, std::memory_order_relaxed);
+        }
         enqueue_central(&mh, CENTRAL_MUX_HDR_SIZE, bewe_pkt, bewe_len, no_drop);
     }
 

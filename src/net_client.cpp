@@ -128,7 +128,33 @@ void NetClient::recv_loop(){
     uint64_t pkt_count = 0;
     const char* disc_reason = "unknown";
     bewe_log_push(2,"[NetClient] recv_loop started fd=%d\n", fd_);
+    auto stats_start = std::chrono::steady_clock::now();
+    auto stats_last  = stats_start;
+    uint64_t stats_prev_total = stat_rx_bytes.load();
+    uint64_t stats_prev_fft = stat_rx_fft_bytes.load();
+    uint64_t stats_prev_aud = stat_rx_audio_bytes.load();
+    uint64_t stats_prev_hb  = stat_rx_hb_bytes.load();
+    auto print_stats = [&](){
+        auto now = std::chrono::steady_clock::now();
+        double win_sec = std::chrono::duration_cast<std::chrono::milliseconds>(now - stats_last).count() / 1000.0;
+        if(win_sec < 2.999) return;
+        long long uptime = std::chrono::duration_cast<std::chrono::seconds>(now - stats_start).count();
+        uint64_t t  = stat_rx_bytes.load();
+        uint64_t fb = stat_rx_fft_bytes.load();
+        uint64_t ab = stat_rx_audio_bytes.load();
+        uint64_t hb = stat_rx_hb_bytes.load();
+        bewe_log_push(0,"[JOIN] [STATS] room='%s' uptime=%llds | recv: %.1f KB/s | hb=%.1f KB/s fft=%.1f KB/s audio=%.1f KB/s\n",
+            stat_room_id.c_str(), uptime,
+            (double)(t  - stats_prev_total) / win_sec / 1024.0,
+            (double)(hb - stats_prev_hb)    / win_sec / 1024.0,
+            (double)(fb - stats_prev_fft)   / win_sec / 1024.0,
+            (double)(ab - stats_prev_aud)   / win_sec / 1024.0);
+        stats_last = now;
+        stats_prev_total = t; stats_prev_fft = fb;
+        stats_prev_aud = ab;  stats_prev_hb = hb;
+    };
     while(connected_.load()){
+        print_stats();
         PktHdr hdr{};
         int rc = recv_all_ex(fd_, &hdr, PKT_HDR_SIZE, connected_);
         if(rc == 0) continue;   // timeout → Host 무응답, 소켓 유지하고 재시도
@@ -169,7 +195,17 @@ void NetClient::recv_loop(){
             }
         }
         pkt_count++;
-        stat_rx_bytes.fetch_add(PKT_HDR_SIZE + len, std::memory_order_relaxed);
+        uint64_t total_bytes = PKT_HDR_SIZE + len;
+        stat_rx_bytes.fetch_add(total_bytes, std::memory_order_relaxed);
+        switch(static_cast<PacketType>(hdr.type)){
+            case PacketType::FFT_FRAME:
+                stat_rx_fft_bytes.fetch_add(total_bytes, std::memory_order_relaxed); break;
+            case PacketType::AUDIO_FRAME:
+                stat_rx_audio_bytes.fetch_add(total_bytes, std::memory_order_relaxed); break;
+            case PacketType::HEARTBEAT:
+                stat_rx_hb_bytes.fetch_add(total_bytes, std::memory_order_relaxed); break;
+            default: break;
+        }
         handle_packet(static_cast<PacketType>(hdr.type), payload.data(), len);
     }
     connected_.store(false);
