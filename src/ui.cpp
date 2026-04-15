@@ -759,6 +759,8 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
         float us=(ds+nyq)/(2*nyq)+half_texel, ue=(de+nyq)/(2*nyq)+half_texel;
         float dh=(dr2>=(int)gh)?gh:(float)dr2;
         // 타임머신: tm_display_fft_idx 기준, 일반: current_fft_idx 기준
+        // 매 프레임 tm_update_display() 호출 → 60초 한계 follow 동작 반영
+        if(tm_active.load()) tm_update_display();
         int disp_idx=tm_active.load() ? tm_display_fft_idx : current_fft_idx;
         float vn=(float)(disp_idx%MAX_FFTS_MEMORY)/MAX_FFTS_MEMORY;
         float vt=vn+1.0f/MAX_FFTS_MEMORY;
@@ -1254,6 +1256,7 @@ void run_streaming_viewer(){
     // Record 탭: 세션 중 실시간 녹음 (record/iq, record/audio)
     static std::vector<std::string> rec_iq_files;
     static std::vector<std::string> rec_audio_files;
+    static std::atomic<bool> g_arch_rescan{false}; // 파일 목록 강제 재스캔 플래그 (thread-safe)
     // Private 탭: 이전 세션 녹음 (private/iq, private/audio)
     static std::vector<std::string> priv_iq_files;
     static std::vector<std::string> priv_audio_files;
@@ -2020,7 +2023,7 @@ void run_streaming_viewer(){
                 ctx->thr = std::thread([ctx, req_id, fn, save_path, filesize, &v, &rec_iq_files](){
                     FILE* fp = fopen(save_path.c_str(), "wb");
                     if(!fp){
-                        bewe_log_push(2,"[JOIN] IQ write thread: fopen failed '%s' errno=%d\n",
+                        bewe_log_push(0,"[JOIN] IQ write thread: fopen failed '%s' errno=%d\n",
                                save_path.c_str(), errno);
                         return;
                     }
@@ -2058,7 +2061,20 @@ void run_streaming_viewer(){
                     }
                     fflush(fp);
                     fclose(fp);
-                    bewe_log_push(2,"[JOIN] IQ write done: %s (%.1fMB written)\n", fn.c_str(), written/1048576.0);
+                    bewe_log_push(0,"[JOIN] IQ write done: %s (%.1fMB written)\n", fn.c_str(), written/1048576.0);
+                    // 빈 파일이면 디스크에서 삭제하고 [Done] 표시 안 함
+                    if(written == 0){
+                        remove(save_path.c_str());
+                        bewe_log_push(0,"[JOIN] IQ write: EMPTY file removed '%s'\n", save_path.c_str());
+                        std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                        v.rec_entries.erase(
+                            std::remove_if(v.rec_entries.begin(), v.rec_entries.end(),
+                                [&fn](const FFTViewer::RecEntry& e){
+                                    return e.is_region && e.filename == fn;
+                                }),
+                            v.rec_entries.end());
+                        return;
+                    }
                     // rec_entries: finished 마크 (삭제 X → Record 탭에 [Done] 표시)
                     {
                         std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
@@ -2073,10 +2089,9 @@ void run_streaming_viewer(){
                             }
                         }
                     }
-                    // rec_iq_files에 즉시 추가
-                    bool f2=false;
-                    for(auto& s : rec_iq_files) if(s==fn){f2=true;break;}
-                    if(!f2) rec_iq_files.push_back(fn);
+                    // Archive 강제 재스캔 → 다음 프레임에 디스크 기준으로 rec_iq_files 재구성
+                    // (수동 push_back 대신 scan_dir에 일임하여 경쟁 조건 회피)
+                    g_arch_rescan.store(true);
                 });
                 ctx->thr.detach();
                 // rec_entries 업데이트
@@ -3078,7 +3093,6 @@ void run_streaming_viewer(){
     } rename_modal;
 
     bool g_arch_cache_dirty = false;  // arch_info_cache / arch_info_tip_cache 무효화 플래그
-    bool g_arch_rescan = false;       // 파일 목록 강제 재스캔 플래그
 
     // ── .info 메타데이터 모달 ────────────────────────────────────────────
     struct InfoModal {
@@ -4534,7 +4548,7 @@ void run_streaming_viewer(){
             static std::unordered_map<std::string,std::string> fsz_cache;
             {
                 arch_scan_timer += io.DeltaTime;
-                if(g_arch_rescan){ arch_scan_timer = 99.f; g_arch_rescan = false; fsz_cache.clear(); }
+                if(g_arch_rescan.load()){ arch_scan_timer = 99.f; g_arch_rescan.store(false); fsz_cache.clear(); }
                 if(arch_scan_timer >= 1.0f){
                     arch_scan_timer = 0.0f;
 
@@ -7759,7 +7773,7 @@ void run_streaming_viewer(){
                     std::string dst_info = dst + ".info";
                     ::rename(src_info.c_str(), dst_info.c_str());
                     g_arch_cache_dirty = true;
-                    g_arch_rescan = true;
+                    g_arch_rescan.store(true);
                     if(file_ctx.filepath == src){
                         file_ctx.filepath = dst;
                         file_ctx.filename = nn;

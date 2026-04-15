@@ -205,6 +205,16 @@ void FFTViewer::tm_update_display(){
     // 최대 오프셋 = freeze 시점 기준 버퍼 용량 (최대 MAX_FFTS_MEMORY-1 행)
     int max_rows=std::min(tm_freeze_idx, MAX_FFTS_MEMORY-1);
     tm_max_sec=(float)max_rows/rps;
+    // 60초(1분)로 스크롤 상한 고정
+    const float TM_MAX_SCROLL_SEC = 60.0f;
+    tm_max_sec = std::min(tm_max_sec, TM_MAX_SCROLL_SEC);
+
+    // 60초 한계에 도달한 상태에서 새 FFT가 들어오면 freeze_idx를 현재로 갱신 → 최근 1분 follow
+    const float FOLLOW_EPSILON = 0.5f;
+    if(tm_offset >= tm_max_sec - FOLLOW_EPSILON && current_fft_idx > tm_freeze_idx){
+        tm_freeze_idx = current_fft_idx;
+        tm_offset = tm_max_sec;
+    }
 
     tm_offset=std::max(0.0f,std::min(tm_offset,tm_max_sec));
     int row_offset=(int)(tm_offset*rps);
