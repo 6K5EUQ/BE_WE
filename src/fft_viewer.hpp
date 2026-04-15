@@ -160,6 +160,7 @@ public:
         float  freq_lo=0, freq_hi=0;
         int    fft_top=0, fft_bot=0;
         int64_t time_start_ms=0, time_end_ms=0;
+        int64_t samp_start=0, samp_end=0; // HOST IQ 좌표 직접 지정 시 사용
         int    lclick_count=0;
         float  lclick_timer=0;
 
@@ -540,7 +541,7 @@ public:
         bool        is_region = false; // true=선택영역 IQ
         // 요청 상태 (JOIN 측 region IQ 요청 및 HOST 측 표시용)
         enum ReqState { REQ_NONE=0, REQ_PENDING, REQ_CONFIRMED, REQ_DENIED, REQ_TRANSFERRING } req_state = REQ_NONE;
-        float       req_deny_timer = 30.f; // DENY 후 자동 제거 카운트다운
+        float       req_deny_timer = 5.f; // DENY 후 자동 제거 카운트다운
         uint64_t    xfer_done = 0, xfer_total = 0; // 전송 진행
         uint8_t     req_op_idx = 0;  // HOST: 요청한 op_idx
         char        req_op_name[32] = {}; // HOST: 요청한 op 이름

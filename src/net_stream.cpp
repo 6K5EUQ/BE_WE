@@ -14,6 +14,8 @@ void FFTViewer::net_bcast_worker(){
     float    local_min = -80.f, local_max = 0.f;
     int      local_sz  = 0;
     int64_t  local_wt  = 0;
+    int64_t  local_iq_pos = 0;
+    int64_t  local_iq_total = 0;
 
     while(!net_bcast_stop.load(std::memory_order_relaxed)){
         // 새 FFT 행 대기
@@ -46,6 +48,9 @@ void FFTViewer::net_bcast_worker(){
             local_max = header.power_max;
             local_wt  = (int64_t)time(nullptr);
             int fi    = (current_fft_idx) % MAX_FFTS_MEMORY;
+            // 이 프레임을 생성한 시점의 HOST IQ 좌표 스냅샷
+            local_iq_pos   = row_write_pos[fi];
+            local_iq_total = tm_iq_total_samples;
             const float* rowp = fft_data.data() + fi * fft_size;
             // assign() 대신 resize()+memcpy: fft_size 불변 시 heap 재할당 없음
             if((int)local_fft.size() != fft_size) local_fft.resize(fft_size);
@@ -56,6 +61,7 @@ void FFTViewer::net_bcast_worker(){
         net_srv->broadcast_fft(local_fft.data(), local_sz,
                                local_wt,
                                local_cf, local_sr,
-                               local_min, local_max);
+                               local_min, local_max,
+                               local_iq_pos, local_iq_total);
     }
 }

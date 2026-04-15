@@ -516,7 +516,8 @@ void run_cli_host(){
     srv->cb.on_request_region = [&](uint8_t op_idx, const char* op_name,
                                      int32_t fft_top, int32_t fft_bot,
                                      float freq_lo, float freq_hi,
-                                     int64_t time_start_ms, int64_t time_end_ms){
+                                     int64_t time_start_ms, int64_t time_end_ms,
+                                     int64_t samp_start, int64_t samp_end){
         std::string fname;
         {
             std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
@@ -544,14 +545,16 @@ void run_cli_host(){
         std::string sid = v.station_name + "_" + std::string(login_get_id());
         static std::atomic<uint32_t> g_req_id{1000};
         uint32_t req_id_val = g_req_id.fetch_add(1);
-        std::thread([&v,srv,fl,fh,time_start_ms,time_end_ms,oidx,fname,sid,&central_cli,req_id_val](){
+        std::thread([&v,srv,fl,fh,time_start_ms,time_end_ms,samp_start,samp_end,oidx,fname,sid,&central_cli,req_id_val](){
             uint32_t req_id = req_id_val;
             for(int w=0;w<200&&v.rec_busy_flag.load();w++)
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            v.region.fft_top=0; v.region.fft_bot=0; // 사용 안 함 (time 기반)
+            v.region.fft_top=0; v.region.fft_bot=0; // 사용 안 함 (samp/time 기반)
             v.region.freq_lo=fl; v.region.freq_hi=fh;
             v.region.time_start_ms=time_start_ms;
             v.region.time_end_ms=time_end_ms;
+            v.region.samp_start=samp_start;
+            v.region.samp_end=samp_end;
             v.region.active=true;
             v.rec_busy_flag.store(true);
             v.rec_state = FFTViewer::REC_BUSY;

@@ -792,6 +792,7 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
                 // 5초 단위 시간 태그: 텍스트만
                 ImVec2 tsz=ImGui::CalcTextSize(ev.label);
                 float tx=label_x+(label_w-tsz.x)/2.0f;
+                if(tx<label_x) tx=label_x;
                 dl->AddText(ImVec2(tx,ey-ImGui::GetFontSize()/2),
                             IM_COL32(180,180,180,200), ev.label);
             } else {
@@ -856,6 +857,14 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
                         int64_t now_ms=(int64_t)(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
                         region.time_end_ms  =now_ms-(int64_t)((current_fft_idx-region.fft_top)*1000.0f/rps);
                         region.time_start_ms=now_ms-(int64_t)((current_fft_idx-region.fft_bot)*1000.0f/rps);
+                    }
+                    int64_t sp_top = row_write_pos[region.fft_top % MAX_FFTS_MEMORY];
+                    int64_t sp_bot = row_write_pos[region.fft_bot % MAX_FFTS_MEMORY];
+                    if(sp_top > 0 && sp_bot > 0){
+                        region.samp_end   = sp_top;
+                        region.samp_start = sp_bot;
+                    } else {
+                        region.samp_start = region.samp_end = 0;
                     }
                 }
                 region.active=true;
@@ -1954,7 +1963,7 @@ void run_streaming_viewer(){
                 for(auto& e : v.rec_entries)
                     if(e.is_region && e.req_state==FFTViewer::RecEntry::REQ_CONFIRMED){
                         e.req_state=FFTViewer::RecEntry::REQ_DENIED;
-                        e.req_deny_timer=30.f; break;
+                        e.req_deny_timer=5.f; break;
                     }
             }
         };
@@ -2497,7 +2506,10 @@ void run_streaming_viewer(){
             srv->cb.on_request_region = [&](uint8_t op_idx, const char* op_name,
                                              int32_t fft_top, int32_t fft_bot,
                                              float freq_lo, float freq_hi,
-                                             int32_t time_start, int32_t time_end){
+                                             int64_t time_start_ms, int64_t time_end_ms,
+                                             int64_t samp_start, int64_t samp_end){
+                int32_t time_start = (int32_t)(time_start_ms / 1000);
+                int32_t time_end   = (int32_t)(time_end_ms / 1000);
                 bewe_log_push(0, "[IQ] Region request from '%s' (%.3f-%.3f MHz)\n",
                               op_name?op_name:"?", freq_lo, freq_hi);
                 std::string fname;
@@ -2534,7 +2546,7 @@ void run_streaming_viewer(){
                 std::string central_host_cap = s_central_host;
                 static std::atomic<uint32_t> g_req_id{1000};
                 uint32_t req_id_val = g_req_id.fetch_add(1);
-                std::thread([&v,srv,ft,fb,fl,fh,ts,te,oidx,fname,sid,central_host_cap,&central_cli,req_id_val](){
+                std::thread([&v,srv,ft,fb,fl,fh,ts,te,samp_start,samp_end,oidx,fname,sid,central_host_cap,&central_cli,req_id_val](){
                     uint32_t req_id = req_id_val;
                     // [REC] 상태 표시
                     {
@@ -2548,6 +2560,8 @@ void run_streaming_viewer(){
                     v.region.freq_lo=fl; v.region.freq_hi=fh;
                     v.region.time_start_ms=(int64_t)ts*1000LL;
                     v.region.time_end_ms=(int64_t)te*1000LL;
+                    v.region.samp_start=samp_start;
+                    v.region.samp_end=samp_end;
                     v.region.active=true;
                     v.rec_busy_flag.store(true);
                     v.rec_state = FFTViewer::REC_BUSY;
@@ -3650,10 +3664,18 @@ void run_streaming_viewer(){
                     v.total_ffts++;
                     v.current_fft_idx = v.total_ffts - 1;
                     // JOIN: row_wall_ms 설정 (ms 정밀도, HOST wall_time 기준)
-                    v.row_wall_ms[v.current_fft_idx % MAX_FFTS_MEMORY] =
-                        (frm.wall_time > 0) ? (int64_t)frm.wall_time * 1000LL
-                        : (int64_t)(std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::system_clock::now().time_since_epoch()).count());
+                    {
+                        int _slot = v.current_fft_idx % MAX_FFTS_MEMORY;
+                        v.row_wall_ms[_slot] =
+                            (frm.wall_time > 0) ? (int64_t)frm.wall_time * 1000LL
+                            : (int64_t)(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::system_clock::now().time_since_epoch()).count());
+                        // HOST IQ 좌표를 JOIN row_write_pos에 저장 → region_save가 정확 매핑
+                        if(frm.iq_write_sample > 0){
+                            v.row_write_pos[_slot]  = frm.iq_write_sample;
+                            v.tm_iq_total_samples   = frm.iq_total_samples;
+                        }
+                    }
                     // 시간 태그는 HOST가 on_wf_event로 보내는 것만 사용 (중복 방지)
                     // 오토스케일 누적
                     if(v.autoscale_active){
@@ -3710,12 +3732,21 @@ void run_streaming_viewer(){
                                 v.region.time_end_ms   = wt_top_ms;
                                 v.region.time_start_ms = wt_bot_ms;
                             }
-                            // fallback: 선택 시점 값 유지
+                            // HOST IQ 좌표: row_write_pos 기반 (파이프라인 지연 0)
+                            int64_t sp_top = v.row_write_pos[v.region.fft_top % MAX_FFTS_MEMORY];
+                            int64_t sp_bot = v.row_write_pos[v.region.fft_bot % MAX_FFTS_MEMORY];
+                            if(sp_top > 0 && sp_bot > 0){
+                                v.region.samp_end   = sp_top;
+                                v.region.samp_start = sp_bot;
+                            } else {
+                                v.region.samp_start = v.region.samp_end = 0;
+                            }
                         }
                         v.net_cli->cmd_request_region(
                             v.region.fft_top, v.region.fft_bot,
                             v.region.freq_lo, v.region.freq_hi,
-                            v.region.time_start_ms, v.region.time_end_ms);
+                            v.region.time_start_ms, v.region.time_end_ms,
+                            v.region.samp_start, v.region.samp_end);
                         v.region.active = false;
                         {
                             std::lock_guard<std::mutex> lk(v.rec_entries_mtx);

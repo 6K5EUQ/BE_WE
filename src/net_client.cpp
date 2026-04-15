@@ -205,6 +205,8 @@ void NetClient::handle_packet(PacketType type,
         frm.pmax      = fh->power_max;
         frm.wall_time = fh->wall_time;
         frm.recv_us   = now_us;
+        frm.iq_write_sample  = fh->iq_write_sample;
+        frm.iq_total_samples = fh->iq_total_samples;
 
         {
             std::lock_guard<std::mutex> qlk(fft_queue_mtx_);
@@ -569,11 +571,13 @@ bool NetClient::cmd_delete_pub_file(const char* filename){
 }
 bool NetClient::cmd_request_region(int32_t fft_top, int32_t fft_bot,
                                     float freq_lo, float freq_hi,
-                                    int64_t time_start_ms, int64_t time_end_ms){
+                                    int64_t time_start_ms, int64_t time_end_ms,
+                                    int64_t samp_start, int64_t samp_end){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::REQUEST_REGION;
     c.request_region.fft_top=fft_top; c.request_region.fft_bot=fft_bot;
     c.request_region.freq_lo=freq_lo; c.request_region.freq_hi=freq_hi;
     c.request_region.time_start_ms=time_start_ms; c.request_region.time_end_ms=time_end_ms;
+    c.request_region.samp_start=samp_start; c.request_region.samp_end=samp_end;
     return send_cmd(c);
 }
 bool NetClient::cmd_start_iq_rec(int ch_idx){

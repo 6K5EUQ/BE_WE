@@ -85,6 +85,8 @@ struct __attribute__((packed)) PktFftFrame {
     float    power_min;
     float    power_max;
     int64_t  wall_time;  // unix timestamp (time_t), 0=none
+    int64_t  iq_write_sample;   // HOST tm_iq_write_sample at broadcast (0=N/A)
+    int64_t  iq_total_samples;  // HOST tm_iq_total_samples (rolling buffer capacity)
     // float data[fft_size] follows (raw dB power per bin)
 };
 
@@ -150,14 +152,15 @@ struct __attribute__((packed)) PktCmd {
         struct { uint8_t pause; }                          set_spectrum_pause;
         struct { int32_t fft_top; int32_t fft_bot;
                  float freq_lo; float freq_hi;
-                 int64_t time_start_ms; int64_t time_end_ms; }  request_region;
+                 int64_t time_start_ms; int64_t time_end_ms;
+                 int64_t samp_start; int64_t samp_end; }  request_region;
         struct { uint32_t size; }                          set_fft_size;
         struct { float msps; }                             set_sr;
         struct { uint8_t idx; }                            start_iq_rec;
         struct { uint8_t idx; }                            stop_iq_rec;
         struct { uint8_t idx; uint8_t mode; uint8_t demod_type; uint8_t pad; float baud_rate; } start_digi;
         struct { uint8_t idx; }                            stop_digi;
-        uint8_t raw[32];
+        uint8_t raw[48];
     };
 };
 

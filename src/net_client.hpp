@@ -82,6 +82,8 @@ public:
         float    pmin, pmax;
         int64_t  wall_time;  // seconds since epoch
         int64_t  recv_us;    // steady_clock microseconds at receive time
+        int64_t  iq_write_sample = 0;   // HOST IQ 좌표 (region_save용)
+        int64_t  iq_total_samples = 0;  // HOST 롤링 버퍼 용량
     };
 
     mutable std::mutex   fft_mtx;
@@ -219,7 +221,8 @@ public:
     bool cmd_set_spectrum_pause(bool pause);
     bool cmd_request_region(int32_t fft_top, int32_t fft_bot,
                              float freq_lo, float freq_hi,
-                             int64_t time_start_ms, int64_t time_end_ms);
+                             int64_t time_start_ms, int64_t time_end_ms,
+                             int64_t samp_start=0, int64_t samp_end=0);
     bool cmd_start_iq_rec(int ch_idx);
     bool cmd_stop_iq_rec(int ch_idx);
     bool cmd_start_digi(int ch_idx, int mode, int demod_type, float baud_rate);

@@ -170,7 +170,8 @@ struct ServerCallbacks {
     std::function<void(uint8_t op_idx, const char* op_name,
                        int32_t fft_top, int32_t fft_bot,
                        float freq_lo, float freq_hi,
-                       int64_t time_start_ms, int64_t time_end_ms)> on_request_region;
+                       int64_t time_start_ms, int64_t time_end_ms,
+                       int64_t samp_start, int64_t samp_end)> on_request_region;
     std::function<void(const char* from, const char* msg)> on_chat;
     std::function<void(uint8_t op_idx, const char* filename)> on_share_download_req;
     // JOIN이 파일 업로드 완료: op_idx, op_name, 저장된 절대경로
@@ -222,7 +223,8 @@ public:
     void broadcast_fft(const float* data, int fft_size,
                         int64_t wall_time,
                        uint64_t center_hz, uint32_t sr,
-                       float pmin, float pmax);
+                       float pmin, float pmax,
+                       int64_t iq_write_sample=0, int64_t iq_total_samples=0);
 
     // Audio → operators matching mask (bit0=host, bit1=op1, bit2=op2, ...)
     void send_audio(uint32_t op_mask, uint8_t ch_idx, int8_t pan,

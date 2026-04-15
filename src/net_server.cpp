@@ -270,7 +270,8 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
                     cb.on_request_region(c->op_index, c->name,
                         cmd->request_region.fft_top, cmd->request_region.fft_bot,
                         cmd->request_region.freq_lo, cmd->request_region.freq_hi,
-                        cmd->request_region.time_start_ms, cmd->request_region.time_end_ms);
+                        cmd->request_region.time_start_ms, cmd->request_region.time_end_ms,
+                        cmd->request_region.samp_start, cmd->request_region.samp_end);
                 break;
             case CmdType::CHASSIS_RESET:
                 if(cb.on_chassis_reset) cb.on_chassis_reset(c->name);
@@ -463,7 +464,8 @@ void NetServer::send_to(ClientConn& c, PacketType type,
 void NetServer::broadcast_fft(const float* data, int fft_size,
                                int64_t wall_time,
                                uint64_t center_hz, uint32_t sr,
-                               float pmin, float pmax){
+                               float pmin, float pmax,
+                               int64_t iq_write_sample, int64_t iq_total_samples){
     if(bcast_pause_.load(std::memory_order_relaxed)) return;
     PktFftFrame hdr{};
     hdr.center_freq_hz = center_hz;
@@ -472,6 +474,8 @@ void NetServer::broadcast_fft(const float* data, int fft_size,
     hdr.power_min      = pmin;
     hdr.power_max      = pmax;
     hdr.wall_time      = wall_time;
+    hdr.iq_write_sample  = iq_write_sample;
+    hdr.iq_total_samples = iq_total_samples;
 
     uint32_t data_bytes = (uint32_t)(fft_size * sizeof(float));
     uint32_t total = (uint32_t)(sizeof(PktFftFrame) + data_bytes);

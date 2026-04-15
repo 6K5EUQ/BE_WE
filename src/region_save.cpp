@@ -195,7 +195,11 @@ std::string FFTViewer::do_region_save_work(){
 
     int64_t samp_start = -1, samp_end = -1;
 
-    if(region.time_start_ms > 0 && region.time_end_ms > 0){
+    if(region.samp_start > 0 && region.samp_end > 0){
+        // HOST IQ 좌표 직접 지정 (JOIN이 row_write_pos 기반으로 계산) → 지연 0
+        samp_start = region.samp_start;
+        samp_end   = region.samp_end;
+    } else if(region.time_start_ms > 0 && region.time_end_ms > 0){
         // 절대 wall_time_ms → 샘플 위치 (JOIN 요청 시 가장 정확, ms 정밀도)
         int64_t snap_now_ms = (int64_t)snap_now * 1000LL;
         samp_start = snap_write - (snap_now_ms - region.time_start_ms) * (int64_t)sr / 1000LL;
