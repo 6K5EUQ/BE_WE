@@ -279,9 +279,12 @@ void run_cli_host(){
         v.create_waterfall_texture();
     } else {
         bewe_log_push(0,"[BEWE CLI] SDR: %s detected\n",
-               v.hw.type==HWType::BLADERF ? "BladeRF" : "RTL-SDR");
+               v.hw.type==HWType::BLADERF ? "BladeRF" :
+               v.hw.type==HWType::PLUTO   ? "ADALM-Pluto" : "RTL-SDR");
         if(v.hw.type == HWType::BLADERF)
             cap = std::thread(&FFTViewer::capture_and_process, &v);
+        else if(v.hw.type == HWType::PLUTO)
+            cap = std::thread(&FFTViewer::capture_and_process_pluto, &v);
         else
             cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
     }
@@ -728,6 +731,11 @@ void run_cli_host(){
         bewe_log_push(0, "[CMD:%s] SR > %.2f MSPS\n", who, msps);
         v.pending_sr_msps=msps; v.sr_change_req=true;
     };
+    srv->cb.on_set_antenna = [&](const char* who, const char* antenna){
+        bewe_log_push(0, "[CMD:%s] Antenna > '%s'\n", who, antenna?antenna:"");
+        strncpy(v.host_antenna, antenna?antenna:"", sizeof(v.host_antenna)-1);
+        v.host_antenna[sizeof(v.host_antenna)-1] = '\0';
+    };
     srv->cb.on_chassis_reset = [&](const char* who){ bewe_log_push(0,"[CMD:%s] /chassis 1 reset\n",who); pending_chassis1_reset.store(true); };
     srv->cb.on_net_reset     = [&](const char* who){ bewe_log_push(0,"[CMD:%s] /chassis 2 reset\n",who); pending_chassis2_reset.store(true); };
     srv->cb.on_rx_stop       = [&](const char* who){ bewe_log_push(0,"[CMD:%s] /rx stop\n",who); pending_rx_stop.store(true); };
@@ -1142,10 +1150,11 @@ void run_cli_host(){
             float el = std::chrono::duration<float>(clk::now()-status_last).count();
             if(el >= 1.0f){
                 status_last = clk::now();
+                uint8_t hwt = (v.hw.type==HWType::RTLSDR) ? 1 :
+                              (v.hw.type==HWType::PLUTO)  ? 2 : 0;
                 v.net_srv->broadcast_status(
                     (float)(v.header.center_frequency/1e6),
-                    v.gain_db, v.header.sample_rate,
-                    (v.hw.type==HWType::RTLSDR)?1:0);
+                    v.gain_db, v.header.sample_rate, hwt);
             }
         }
 
@@ -1164,7 +1173,38 @@ void run_cli_host(){
                 uint8_t hst = v.spectrum_pause.load() ? 2 : 0;
                 uint8_t sdr_st = (cur_sdr_err || v.rx_stopped.load()) ? 1 : 0;
                 uint8_t iq_st = v.tm_iq_on.load() ? 1 : 0;
-                v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st, iq_st);
+                v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st, iq_st, 0,0,0, v.host_antenna);
+            }
+        }
+
+        // ── SDR 런타임 교체 ──────────────────────────────────────────────
+        if(v.pending_sdr_switch.load()){
+            v.pending_sdr_switch.store(false);
+            std::string new_sdr;
+            { std::lock_guard<std::mutex> lk(v.pending_sdr_mtx); new_sdr = v.pending_sdr_name; }
+            bewe_log_push(0, "[CLI][SDR] switching to %s ...\n", new_sdr.c_str());
+            float cur_cf = (float)(v.header.center_frequency / 1e6);
+            for(int ci=0; ci<MAX_CHANNELS; ci++){ v.stop_digi(ci); v.stop_dem(ci); }
+            v.is_running = false;
+            v.sdr_stream_error.store(true);
+            if(cap.joinable()) cap.join();
+            v.dev_blade = nullptr; v.dev_rtl = nullptr;
+            v.pluto_ctx=nullptr; v.pluto_phy_dev=nullptr; v.pluto_rx_dev=nullptr;
+            v.pluto_rx_i_ch=nullptr; v.pluto_rx_q_ch=nullptr; v.pluto_rx_buf=nullptr;
+            g_sdr_force = new_sdr;
+            v.is_running = true;
+            if(v.initialize(cur_cf, 0.f)){
+                v.set_gain(v.gain_db);
+                v.sdr_stream_error.store(false);
+                if(v.hw.type == HWType::BLADERF)
+                    cap = std::thread(&FFTViewer::capture_and_process, &v);
+                else if(v.hw.type == HWType::PLUTO)
+                    cap = std::thread(&FFTViewer::capture_and_process_pluto, &v);
+                else
+                    cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
+                bewe_log_push(0,"[CLI][SDR] switched to %s\n", new_sdr.c_str());
+            } else {
+                bewe_log_push(2,"[CLI][SDR] switch to %s FAILED\n", new_sdr.c_str());
             }
         }
 
@@ -1265,6 +1305,8 @@ void run_cli_host(){
                     v.set_gain(v.gain_db);
                     if(v.hw.type == HWType::BLADERF)
                         cap = std::thread(&FFTViewer::capture_and_process, &v);
+                    else if(v.hw.type == HWType::PLUTO)
+                        cap = std::thread(&FFTViewer::capture_and_process_pluto, &v);
                     else
                         cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
                     v.mix_stop.store(false);

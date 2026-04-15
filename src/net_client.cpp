@@ -404,6 +404,9 @@ void NetClient::handle_packet(PacketType type,
             remote_host_cpu.store(hb->host_cpu_pct);
             remote_host_ram.store(hb->host_ram_pct);
             remote_host_cpu_temp.store(hb->host_cpu_temp_c);
+            std::lock_guard<std::mutex> lk(remote_antenna_mtx);
+            memcpy(remote_antenna, hb->antenna, sizeof(remote_antenna));
+            remote_antenna[sizeof(remote_antenna)-1] = '\0';
         }
         auto now = std::chrono::steady_clock::now().time_since_epoch();
         last_heartbeat_time.store(
@@ -598,6 +601,11 @@ bool NetClient::cmd_set_fft_size(uint32_t size){
 bool NetClient::cmd_set_sr(float msps){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::SET_SR;
     c.set_sr.msps=msps;
+    return send_cmd(c);
+}
+bool NetClient::cmd_set_antenna(const char* antenna){
+    PktCmd c{}; c.cmd=(uint8_t)CmdType::SET_ANTENNA;
+    strncpy(c.set_antenna.antenna, antenna ? antenna : "", sizeof(c.set_antenna.antenna)-1);
     return send_cmd(c);
 }
 bool NetClient::cmd_delete_pub_file(const char* filename){

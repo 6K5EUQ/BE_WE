@@ -186,6 +186,7 @@ struct ServerCallbacks {
     std::function<void(const char* who)> on_rx_start;
     std::function<void(const char* who, uint32_t size)> on_set_fft_size;
     std::function<void(const char* who, float msps)>    on_set_sr;
+    std::function<void(const char* who, const char* antenna)> on_set_antenna;
     // JOIN이 public 파일 삭제 요청: op_name, filename (소유자 검증은 ui.cpp에서)
     std::function<void(const char* op_name, const char* filename)> on_pub_delete_req;
     // Report: JOIN/HOST가 파일을 report에 추가
@@ -259,7 +260,8 @@ public:
     // host_state: 0=OK, 1=CHASSIS_RESETTING, 2=SPECTRUM_PAUSED
     // sdr_state:  0=streaming OK, 1=stream error
     void broadcast_heartbeat(uint8_t host_state = 0, uint8_t sdr_temp_c = 0, uint8_t sdr_state = 0, uint8_t iq_on = 0,
-                             uint8_t host_cpu_pct = 0, uint8_t host_ram_pct = 0, uint8_t host_cpu_temp_c = 0);
+                             uint8_t host_cpu_pct = 0, uint8_t host_ram_pct = 0, uint8_t host_cpu_temp_c = 0,
+                             const char* antenna = nullptr);
 
     // /chassis 2 reset: FFT+오디오 방송 일시 중단 / 재개
     void pause_broadcast()  { bcast_pause_.store(true,  std::memory_order_relaxed); }

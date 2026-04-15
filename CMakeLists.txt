@@ -15,6 +15,8 @@ pkg_check_modules(RTLSDR  REQUIRED librtlsdr)
 pkg_check_modules(LIBPNG  REQUIRED libpng)
 
 pkg_check_modules(VOLK REQUIRED volk)
+pkg_check_modules(IIO    REQUIRED libiio)
+pkg_check_modules(AD9361 REQUIRED libad9361)
 
 if(CLI)
     # ── Headless CLI build (no OpenGL/GLFW/ImGui) ─────────────────────────
@@ -42,6 +44,8 @@ if(CLI)
         src/net_client.cpp
         src/net_stream.cpp
         src/central_client.cpp
+        src/lora_demod.cpp
+        src/pluto_io.cpp
     )
 
     target_compile_definitions(BE_WE PRIVATE BEWE_HEADLESS=1)
@@ -55,6 +59,8 @@ if(CLI)
         ${RTLSDR_INCLUDE_DIRS}
         ${LIBPNG_INCLUDE_DIRS}
         ${VOLK_INCLUDE_DIRS}
+        ${IIO_INCLUDE_DIRS}
+        ${AD9361_INCLUDE_DIRS}
     )
 
     target_link_libraries(BE_WE PRIVATE
@@ -65,6 +71,8 @@ if(CLI)
         ${RTLSDR_LIBRARIES}
         ${LIBPNG_LIBRARIES}
         ${VOLK_LIBRARIES}
+        ${IIO_LIBRARIES}
+        ${AD9361_LIBRARIES}
         pthread
         m
     )
@@ -113,6 +121,8 @@ else()
         src/net_stream.cpp
         src/globe.cpp
         src/central_client.cpp
+        src/lora_demod.cpp
+        src/pluto_io.cpp
         ${IMGUI_SOURCES}
     )
 
@@ -125,6 +135,8 @@ else()
         ${RTLSDR_INCLUDE_DIRS}
         ${LIBPNG_INCLUDE_DIRS}
         ${VOLK_INCLUDE_DIRS}
+        ${IIO_INCLUDE_DIRS}
+        ${AD9361_INCLUDE_DIRS}
         ${IMGUI_PATH}
         ${IMGUI_BACKENDS_PATH}
     )
@@ -140,6 +152,8 @@ else()
         GLEW::GLEW
         glfw
         ${VOLK_LIBRARIES}
+        ${IIO_LIBRARIES}
+        ${AD9361_LIBRARIES}
         pthread
         m
     )

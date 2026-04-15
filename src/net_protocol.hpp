@@ -129,6 +129,7 @@ enum class CmdType : uint8_t {
     STOP_IQ_REC     = 0x1A,  // JOIN → server: stop per-ch IQ recording + transfer
     START_DIGI      = 0x1B,  // JOIN → server: start digital demod
     STOP_DIGI       = 0x1C,  // JOIN → server: stop digital demod
+    SET_ANTENNA     = 0x1D,  // bidirectional: set HOST antenna free text (char[32])
 };
 
 struct __attribute__((packed)) PktCmd {
@@ -160,6 +161,7 @@ struct __attribute__((packed)) PktCmd {
         struct { uint8_t idx; }                            stop_iq_rec;
         struct { uint8_t idx; uint8_t mode; uint8_t demod_type; uint8_t pad; float baud_rate; } start_digi;
         struct { uint8_t idx; }                            stop_digi;
+        struct { char    antenna[32]; }                    set_antenna;
         uint8_t raw[48];
     };
 };
@@ -331,6 +333,7 @@ struct __attribute__((packed)) PktHeartbeat {
     uint8_t host_ram_pct;    // HOST RAM % (0-100)
     uint8_t host_cpu_temp_c; // HOST CPU 온도 °C
     uint8_t pad;
+    char    antenna[32];     // HOST 안테나 자유텍스트 (JOIN/HOST 모두에 표시)
 };
 
 // ── IQ_CHUNK ──────────────────────────────────────────────────────────────

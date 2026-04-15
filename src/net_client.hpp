@@ -131,6 +131,8 @@ public:
     std::atomic<uint8_t>  remote_host_ram{0};         // HOST RAM %
     std::atomic<uint8_t>  remote_host_cpu_temp{0};    // HOST CPU 온도 °C
     std::atomic<double>   last_heartbeat_time{0.0};  // glfwGetTime() at last HB
+    std::mutex            remote_antenna_mtx;
+    char                  remote_antenna[32] = {};    // HOST의 안테나 (HB 수신 시 갱신)
 
     // ── Channel sync (from CHANNEL_SYNC packets) ──────────────────────────
     // Applied directly to a FFTViewer's channels array via callback
@@ -241,6 +243,7 @@ public:
     bool cmd_rx_start();                  // JOIN → HOST: /rx start
     bool cmd_set_fft_size(uint32_t size); // JOIN → HOST: FFT 크기 변경
     bool cmd_set_sr(float msps);          // JOIN → HOST: SR 변경
+    bool cmd_set_antenna(const char* antenna);  // bidirectional: antenna text
     bool cmd_db_delete(const char* filename, const char* operator_name);
     bool cmd_db_download(const char* filename, const char* operator_name);
     bool cmd_report_delete(const char* filename);

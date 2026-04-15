@@ -33,6 +33,8 @@
 #include <sys/types.h>
 
 // ── Global log helper (ui.cpp에서 정의, 모든 .cpp에서 사용 가능) ─────────
+extern std::string g_sdr_force; // "" = 자동, "bladerf"|"rtlsdr"|"pluto"
+extern std::vector<std::string> scan_available_sdrs();
 extern void bewe_log(const char* fmt, ...);
 // LOG 오버레이용 글로벌 로그 (col: 0=HOST 1=SERVER 2=JOIN)
 extern void bewe_log_push(int col, const char* fmt, ...);
@@ -382,6 +384,11 @@ public:
     int    eid_decode_mode = 0;      // 0=none, 1=AIS, 2=ADS-B, 3=UAV
     int    eid_decode_scroll = 0;    // 디코더 결과 스크롤 위치
 
+    // LoRa CSS 복조 결과 (Raw 심볼 → 비트 시퀀스)
+    std::vector<uint8_t> eid_decoded_bits;
+    std::string          eid_decoded_label;
+    std::atomic<bool>    eid_lora_busy{false};
+
     // 스펙트로그램 통합 뷰 히스토리
     struct SaViewEntry { float x0,x1,y0,y1; bool had_bpf; };
     std::vector<SaViewEntry> sa_view_history;
@@ -452,6 +459,11 @@ public:
     NetClient*  net_cli   = nullptr;  // CONNECT 모드
     bool        remote_mode = false;  // true = CONNECT 모드 (하드웨어 없음)
     char        host_name[32] = {};   // 접속한 유저 ID (표시용)
+    char        host_antenna[32] = {}; // HOST 안테나 자유텍스트 (Central 통해 동기화)
+    // 런타임 SDR 교체: UI 클릭 시 아래 플래그/이름 세팅 → 메인 루프가 교체 수행
+    std::atomic<bool> pending_sdr_switch{false};
+    std::mutex        pending_sdr_mtx;
+    std::string       pending_sdr_name; // "bladerf" | "pluto" | "rtlsdr"
     uint8_t     my_op_index   = 0;
 
     // ── Globe / Station Discovery ─────────────────────────────────────────
@@ -511,6 +523,13 @@ public:
     HWConfig hw;                          // 런타임 HW 파라미터
     struct bladerf*  dev_blade = nullptr; // BladeRF 디바이스
     rtlsdr_dev_t*    dev_rtl   = nullptr; // RTL-SDR 디바이스
+    // ADALM-Pluto (libiio) — void* 로 선언해 header include 오염 방지
+    void*            pluto_ctx       = nullptr; // iio_context*
+    void*            pluto_phy_dev   = nullptr; // iio_device* (ad9361-phy)
+    void*            pluto_rx_dev    = nullptr; // iio_device* (cf-ad9361-lpc)
+    void*            pluto_rx_i_ch   = nullptr; // iio_channel* voltage0
+    void*            pluto_rx_q_ch   = nullptr; // iio_channel* voltage1
+    void*            pluto_rx_buf    = nullptr; // iio_buffer*
     fftwf_plan      fft_plan=nullptr;
     fftwf_complex  *fft_in=nullptr, *fft_out=nullptr;
     bool  is_running=true;
@@ -574,8 +593,10 @@ public:
     bool initialize(float cf_mhz, float sr_msps = 61.44f); // HW 자동 감지 후 초기화
     bool initialize_bladerf(float cf_mhz, float sr_msps);
     bool initialize_rtlsdr(float cf_mhz);
+    bool initialize_pluto(float cf_mhz, float sr_msps);
     void capture_and_process();
     void capture_and_process_rtl();
+    void capture_and_process_pluto();
     void set_frequency(float cf_mhz);
     void set_gain(float db);
     float gain_db = 0.0f;

@@ -6,6 +6,7 @@
 #include "bewe_paths.hpp"
 #include "globe.hpp"
 #include "central_client.hpp"
+#include "lora_demod.hpp"
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <algorithm>
@@ -2381,6 +2382,8 @@ void run_streaming_viewer(){
         } else {
             if(v.hw.type == HWType::BLADERF)
                 cap = std::thread(&FFTViewer::capture_and_process, &v);
+            else if(v.hw.type == HWType::PLUTO)
+                cap = std::thread(&FFTViewer::capture_and_process_pluto, &v);
             else
                 cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
         }
@@ -2820,6 +2823,11 @@ void run_streaming_viewer(){
             srv->cb.on_set_sr = [&](const char* who, float msps){
                 bewe_log_push(0, "[CMD:%s] SR > %.2f MSPS\n", who, msps);
                 v.pending_sr_msps=msps; v.sr_change_req=true;
+            };
+            srv->cb.on_set_antenna = [&](const char* who, const char* antenna){
+                bewe_log_push(0,"[CMD:%s] Antenna > '%s'\n", who, antenna?antenna:"");
+                strncpy(v.host_antenna, antenna?antenna:"", sizeof(v.host_antenna)-1);
+                v.host_antenna[sizeof(v.host_antenna)-1] = '\0';
             };
             srv->cb.on_chassis_reset = [&](const char* who){
                 bewe_log_push(0, "[CMD:%s] /chassis 1 reset\n", who);
@@ -3273,10 +3281,11 @@ void run_streaming_viewer(){
             float el=std::chrono::duration<float>(now-status_last).count();
             if(el>=1.0f){
                 status_last=now;
+                uint8_t hwt = (v.hw.type==HWType::RTLSDR) ? 1 :
+                              (v.hw.type==HWType::PLUTO)  ? 2 : 0;
                 v.net_srv->broadcast_status(
                     (float)(v.header.center_frequency/1e6),
-                    v.gain_db, v.header.sample_rate,
-                    (v.hw.type==HWType::RTLSDR)?1:0);
+                    v.gain_db, v.header.sample_rate, hwt);
             }
         }
         // ── HOST: 3초마다 HEARTBEAT 브로드캐스트; SDR 뽑힘 감지 시 즉시 ──────
@@ -3304,12 +3313,46 @@ void run_streaming_viewer(){
                 uint8_t h_cpu = (uint8_t)std::min(100.f, std::max(0.f, v.sysmon_cpu));
                 uint8_t h_ram = (uint8_t)std::min(100.f, std::max(0.f, v.sysmon_ram));
                 uint8_t h_ct  = (uint8_t)std::min(255, std::max(0, v.sysmon_cpu_temp_c.load()));
-                v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st, iq_st, h_cpu, h_ram, h_ct);
+                v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st, iq_st, h_cpu, h_ram, h_ct, v.host_antenna);
             }
         }
 
         // ── Scheduled recording tick ──────────────────────────────────────
         if(!v.remote_mode) v.sched_tick();
+
+        // ── SDR 런타임 교체 (HOST/LOCAL) ──────────────────────────────────
+        if(!v.remote_mode && v.pending_sdr_switch.load()){
+            v.pending_sdr_switch.store(false);
+            std::string new_sdr;
+            { std::lock_guard<std::mutex> lk(v.pending_sdr_mtx); new_sdr = v.pending_sdr_name; }
+            bewe_log_push(0, "[SDR] switching to %s ...\n", new_sdr.c_str());
+            float cur_cf = (float)(v.header.center_frequency / 1e6);
+            // 모든 디지털/오디오 워커 중지
+            for(int ci=0; ci<MAX_CHANNELS; ci++){ v.stop_digi(ci); v.stop_dem(ci); }
+            v.is_running = false;
+            v.sdr_stream_error.store(true);
+            if(cap.joinable()) cap.join();
+            // 디바이스 핸들 정리 (worker가 스스로 close함)
+            v.dev_blade = nullptr; v.dev_rtl = nullptr;
+            v.pluto_ctx=nullptr; v.pluto_phy_dev=nullptr; v.pluto_rx_dev=nullptr;
+            v.pluto_rx_i_ch=nullptr; v.pluto_rx_q_ch=nullptr; v.pluto_rx_buf=nullptr;
+            // 강제 선택자 설정 후 재초기화
+            g_sdr_force = new_sdr;
+            v.is_running = true;
+            if(v.initialize(cur_cf, 0.f)){
+                v.set_gain(v.gain_db);
+                v.sdr_stream_error.store(false);
+                if(v.hw.type == HWType::BLADERF)
+                    cap = std::thread(&FFTViewer::capture_and_process, &v);
+                else if(v.hw.type == HWType::PLUTO)
+                    cap = std::thread(&FFTViewer::capture_and_process_pluto, &v);
+                else
+                    cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
+                bewe_log_push(0, "[SDR] switched to %s\n", new_sdr.c_str());
+            } else {
+                bewe_log_push(2, "[SDR] switch to %s FAILED\n", new_sdr.c_str());
+            }
+        }
 
         // ── JOIN>HOST chassis 명령: 네트워크 스레드 플래그 > 메인 루프 처리 ────
         // HOST 직접 입력과 완전히 동일한 경로로 실행 (race condition 방지)
@@ -3520,24 +3563,27 @@ void run_streaming_viewer(){
                 cap_joined.store(true);
             }
 
-            // cap 종료 확인 후 USB reset (chassis reset 요청 시 한 번만)
+            // cap 종료 확인 후 USB reset (BladeRF만 해당, chassis reset 요청 시 한 번만)
             if(cap_joined.load() && usb_reset_pending && !usb_reset_done){
                 usb_reset_done = true;
                 usb_reset_pending = false;
-                usb_reset_in_progress.store(true);
-                // capture_and_process 종료 시 dev_blade가 nullptr로 세팅됨
-                // (혹시 남아있으면 닫기)
-                if(v.dev_blade){
-                    bladerf_close(v.dev_blade);
-                    v.dev_blade = nullptr;
+                if(v.hw.type == HWType::BLADERF){
+                    usb_reset_in_progress.store(true);
+                    // capture_and_process 종료 시 dev_blade가 nullptr로 세팅됨
+                    // (혹시 남아있으면 닫기)
+                    if(v.dev_blade){
+                        bladerf_close(v.dev_blade);
+                        v.dev_blade = nullptr;
+                    }
+                    std::thread([&usb_reset_in_progress = usb_reset_in_progress](){
+                        bewe_log_push(2,"[UI] chassis 1 reset: USB reset BladeRF...\n");
+                        bladerf_usb_reset();
+                        std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+                        bewe_log_push(2,"[UI] USB re-enumeration wait done\n");
+                        usb_reset_in_progress.store(false);
+                    }).detach();
                 }
-                std::thread([&usb_reset_in_progress = usb_reset_in_progress](){
-                    bewe_log_push(2,"[UI] chassis 1 reset: USB reset BladeRF...\n");
-                    bladerf_usb_reset();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(3000));
-                    bewe_log_push(2,"[UI] USB re-enumeration wait done\n");
-                    usb_reset_in_progress.store(false);
-                }).detach();
+                // Pluto/RTL-SDR: USB reset 불필요, 재시도 타이머로 즉시 진행
             }
 
             static float sdr_retry_timer = 0.f;
@@ -3567,6 +3613,8 @@ void run_streaming_viewer(){
                     // 캡처 스레드 재시작
                     if(v.hw.type == HWType::BLADERF)
                         cap = std::thread(&FFTViewer::capture_and_process, &v);
+                    else if(v.hw.type == HWType::PLUTO)
+                        cap = std::thread(&FFTViewer::capture_and_process_pluto, &v);
                     else
                         cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
                     // chassis reset으로 pause 걸린 경우: 1초 후 자동 해제
@@ -4170,17 +4218,15 @@ void run_streaming_viewer(){
         // ── FFT size combo ────────────────────────────────────────────────
         static const int fft_sizes[]={512,1024,2048,4096,8192,16384};
         static const char* fft_lbls[]={"512","1024","2048","4096","8192","16384"};
-        static int fft_si=4;
+        static int fft_si=3; // 기본 4096
         {
             float tw2=ImGui::CalcTextSize(fft_lbls[fft_si]).x;
             float box_w2=72.0f;
             float px2=std::max(2.0f,(box_w2-tw2)*0.5f-12.0f);
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,ImVec2(px2,ImGui::GetStyle().FramePadding.y));
             ImGui::SetNextItemWidth(box_w2);
-            // JOIN: HOST fft_input_size로 콤보 동기화
-            if(v.remote_mode){
-                for(int i=0;i<6;i++) if(fft_sizes[i]==v.fft_input_size){ fft_si=i; break; }
-            }
+            // 실제 fft_input_size와 콤보 인덱스 동기화 (HOST/LOCAL/JOIN 전부)
+            for(int i=0;i<6;i++) if(fft_sizes[i]==v.fft_input_size){ fft_si=i; break; }
             if(ImGui::BeginCombo("##fftsize",fft_lbls[fft_si],ImGuiComboFlags_HeightSmall)){
                 for(int i=0;i<6;i++){
                     bool sel2=(fft_si==i);
@@ -4203,19 +4249,30 @@ void run_streaming_viewer(){
         ImGui::SameLine();
 
         // ── Sample Rate combo (LOCAL/HOST/JOIN 표시) ──────────────────────
-        if((v.dev_blade || v.dev_rtl) || v.remote_mode){
+        if((v.dev_blade || v.dev_rtl || v.pluto_ctx) || v.remote_mode){
             // BladeRF: 2.5/5/10/20/30.72/61.44 MSPS
-            // RTL-SDR: 0.25/0.96/1.44/2.56 MSPS
+            // RTL-SDR: 0.25/0.96/1.44/2.56/3.2 MSPS
+            // Pluto  : 0.52/1/2/2.56/3.2/5 MSPS (USB2 안전선)
             static const float blade_srs[]  = {2.5f,5.0f,10.0f,20.0f,30.72f,61.44f,122.88f};
             static const char* blade_lbls[] = {"2.5M","5M","10M","20M","30.72M","61.44M","122.88M"};
-            static const float rtl_srs[]    = {0.25f,0.96f,1.44f,2.56f};
-            static const char* rtl_lbls[]   = {"0.25M","0.96M","1.44M","2.56M"};
-            // JOIN: HOST hw_type으로 SR 리스트 결정
-            bool use_blade = v.remote_mode ? (v.net_cli && v.net_cli->remote_hw.load()==0)
-                                           : (v.dev_blade != nullptr);
-            const float* sr_list  = use_blade ? blade_srs  : rtl_srs;
-            const char** sr_lbls  = use_blade ? blade_lbls : rtl_lbls;
-            int          sr_count = use_blade ? 7 : 4;
+            static const float rtl_srs[]    = {0.25f,0.96f,1.44f,2.56f,3.2f};
+            static const char* rtl_lbls[]   = {"0.25M","0.96M","1.44M","2.56M","3.2M"};
+            static const float pluto_srs[]  = {0.52f,1.0f,2.0f,2.56f,3.2f,5.0f};
+            static const char* pluto_lbls[] = {"0.52M","1M","2M","2.56M","3.2M","5M"};
+            // 0=blade, 1=rtl, 2=pluto
+            int hw_mode;
+            if(v.remote_mode){
+                uint8_t rh = v.net_cli ? v.net_cli->remote_hw.load() : 1;
+                hw_mode = (rh == 0) ? 0 : (rh == 2) ? 2 : 1;
+            } else if(v.dev_blade) hw_mode = 0;
+            else if(v.pluto_ctx)   hw_mode = 2;
+            else                   hw_mode = 1;
+            const float* sr_list;  const char** sr_lbls;  int sr_count;
+            switch(hw_mode){
+                case 0: sr_list = blade_srs; sr_lbls = blade_lbls; sr_count = 7; break;
+                case 2: sr_list = pluto_srs; sr_lbls = pluto_lbls; sr_count = 6; break;
+                default: sr_list = rtl_srs;  sr_lbls = rtl_lbls;   sr_count = 4; break;
+            }
 
             // 현재 SR에 맞는 인덱스 선택
             static int sr_si = -1;
@@ -4579,6 +4636,139 @@ void run_streaming_viewer(){
                 return hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
             };
 
+            // 공통: 시스템 상태 + 안테나 렌더링 (BOARD, STATUS 양쪽에서 호출)
+            auto draw_system_status = [&](FFTViewer& vv, const char* tag){
+                // Receiver : SDR 이름 [온도°C]  — HOST/LOCAL은 클릭하면 변경 가능
+                const char* sdr_name = "Unknown";
+                uint8_t sdr_t = 0;
+                if(vv.net_cli){
+                    uint8_t rh = vv.net_cli->remote_hw.load();
+                    sdr_name = (rh == 0) ? "BladeRF 2.0 micro xA9" :
+                               (rh == 2) ? "ADALM-Pluto" : "RTL-SDR v4";
+                    sdr_t = vv.net_cli->remote_sdr_temp_c.load();
+                } else {
+                    if(vv.dev_blade){ sdr_name = "BladeRF 2.0 micro xA9";
+                        float _t = 0.f;
+                        if(bladerf_get_rfic_temperature(vv.dev_blade, &_t) == 0)
+                            sdr_t = (uint8_t)std::min(255.f, std::max(0.f, _t));
+                    } else if(vv.hw.type == HWType::PLUTO) sdr_name = "ADALM-Pluto";
+                    else if(vv.dev_rtl) sdr_name = "RTL-SDR v4";
+                }
+                ImGui::PushID(tag);
+                bool is_host_local = !vv.net_cli; // HOST 또는 LOCAL
+                char rx_lbl[128];
+                snprintf(rx_lbl, sizeof(rx_lbl), "Receiver : %s [%d\xC2\xB0""C]", sdr_name, (int)sdr_t);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f,0.85f,1.f,1.f));
+                if(is_host_local){
+                    static std::vector<std::string> s_rx_avail_cache;
+                    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0,0,0,0));
+                    ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0,0,0,0));
+                    if(ImGui::Selectable(rx_lbl, false, 0, ImVec2(320,0))){
+                        s_rx_avail_cache = scan_available_sdrs(); // 팝업 열릴 때 한 번만
+                        ImGui::OpenPopup("##rx_pop");
+                    }
+                    ImGui::PopStyleColor(2);
+                    if(ImGui::BeginPopup("##rx_pop")){
+                        if(s_rx_avail_cache.empty()){
+                            ImGui::TextDisabled("(no SDR detected)");
+                        } else {
+                            for(const auto& nm : s_rx_avail_cache){
+                                const char* pretty = (nm=="bladerf") ? "BladeRF 2.0 micro xA9"
+                                                   : (nm=="pluto")   ? "ADALM-Pluto"
+                                                   :                   "RTL-SDR v4";
+                                bool cur =
+                                    (nm=="bladerf" && vv.hw.type == HWType::BLADERF) ||
+                                    (nm=="pluto"   && vv.hw.type == HWType::PLUTO)   ||
+                                    (nm=="rtlsdr"  && vv.hw.type == HWType::RTLSDR);
+                                if(ImGui::Selectable(pretty, cur) && !cur){
+                                    std::lock_guard<std::mutex> lk(vv.pending_sdr_mtx);
+                                    vv.pending_sdr_name = nm;
+                                    vv.pending_sdr_switch.store(true);
+                                }
+                            }
+                        }
+                        ImGui::EndPopup();
+                    }
+                } else {
+                    ImGui::TextUnformatted(rx_lbl);
+                }
+                ImGui::PopStyleColor();
+                ImGui::PopID();
+
+                // Antenna : 편집 가능 (HOST 직접, JOIN은 SET_ANTENNA cmd)
+                {
+                    ImGui::TextUnformatted("Antenna :"); ImGui::SameLine();
+                    char cur[32] = {};
+                    if(vv.net_cli){
+                        std::lock_guard<std::mutex> lk(vv.net_cli->remote_antenna_mtx);
+                        memcpy(cur, vv.net_cli->remote_antenna, 32);
+                    } else {
+                        memcpy(cur, vv.host_antenna, 32);
+                    }
+                    // 편집 상태: 탭/패널당 고유한 키 필요 (BOARD/STATUS 충돌 방지)
+                    static std::string s_edit_tag;    // 현재 편집 중인 tag
+                    static char        s_edit_buf[32];
+                    bool editing_here = (s_edit_tag == tag);
+                    ImGui::PushID(tag);
+                    if(!editing_here){
+                        // 클릭 가능 라벨
+                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0,0,0,0));
+                        ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0,0,0,0));
+                        bool ant_clicked = ImGui::Selectable(cur[0] ? cur : " ",
+                                             false, 0, ImVec2(320,0));
+                        ImGui::PopStyleColor(2);
+                        if(ant_clicked){
+                            s_edit_tag = tag;
+                            memcpy(s_edit_buf, cur, 32);
+                            s_edit_buf[31] = '\0';
+                        }
+                    } else {
+                        ImGui::SetNextItemWidth(320);
+                        ImGui::SetKeyboardFocusHere();
+                        bool enter = ImGui::InputText("##antenna_edit", s_edit_buf, sizeof(s_edit_buf),
+                            ImGuiInputTextFlags_EnterReturnsTrue|ImGuiInputTextFlags_AutoSelectAll);
+                        bool lost  = !ImGui::IsItemActive() && !ImGui::IsItemHovered();
+                        if(enter || (lost && !ImGui::IsItemActive())){
+                            s_edit_buf[sizeof(s_edit_buf)-1] = '\0';
+                            if(vv.net_cli){
+                                vv.net_cli->cmd_set_antenna(s_edit_buf);
+                            } else {
+                                strncpy(vv.host_antenna, s_edit_buf, sizeof(vv.host_antenna)-1);
+                                vv.host_antenna[sizeof(vv.host_antenna)-1] = '\0';
+                            }
+                            s_edit_tag.clear();
+                        }
+                        if(ImGui::IsKeyPressed(ImGuiKey_Escape)) s_edit_tag.clear();
+                    }
+                    ImGui::PopID();
+                }
+
+                // Freq / Sample Rate
+                {
+                    double cf_mhz = vv.net_cli ? (double)vv.net_cli->remote_cf_mhz.load()
+                                              : vv.header.center_frequency/1e6;
+                    double sr_mhz = vv.net_cli ? vv.net_cli->remote_sr.load()/1e6
+                                              : vv.header.sample_rate/1e6;
+                    ImGui::Text("Freq : %.4fMHz  /  Sample Rate : %.3fMSPS", cf_mhz, sr_mhz);
+                }
+                // HOST CPU/RAM
+                if(vv.net_cli){
+                    int h_cpu = vv.net_cli->remote_host_cpu.load();
+                    int h_ram = vv.net_cli->remote_host_ram.load();
+                    int h_ct  = vv.net_cli->remote_host_cpu_temp.load();
+                    ImGui::Text("HOST | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%", h_cpu, h_ct, h_ram);
+                } else {
+                    int ct = vv.sysmon_cpu_temp_c.load();
+                    ImGui::Text("HOST | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%",
+                        (int)vv.sysmon_cpu, ct, (int)vv.sysmon_ram);
+                }
+                if(vv.net_cli){
+                    int jct = vv.sysmon_cpu_temp_c.load();
+                    ImGui::Text("JOIN | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%",
+                        (int)vv.sysmon_cpu, jct, (int)vv.sysmon_ram);
+                }
+            };
+
             // ── STATUS 버튼 ───────────────────────────────────────────────
             float btn_x = rpx + 6;
             if(subbar_btn(btn_x, "STATUS", stat_open, IM_COL32(80,255,160,255))){
@@ -4778,6 +4968,15 @@ void run_streaming_viewer(){
                 if(ImGui::BeginTabItem("STATUS")){
                     ImGui::BeginChild("##link_scroll", ImVec2(0,0), false,
                         ImGuiWindowFlags_HorizontalScrollbar);
+
+                    // ── System Status (Operators 위) ──────────────────────
+                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                    if(ImGui::CollapsingHeader("System Status##status")){
+                        ImGui::Indent(8.f);
+                        draw_system_status(v, "status");
+                        ImGui::Unindent(8.f);
+                    }
+                    ImGui::Spacing();
 
                     // ── Operators ────────────────────────────────────────
                     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
@@ -6866,61 +7065,9 @@ void run_streaming_viewer(){
 
                 // ── 0. System Status ──────────────────────────────────────
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                if(ImGui::CollapsingHeader("System Status")){
+                if(ImGui::CollapsingHeader("System Status##board")){
                     ImGui::Indent(6.f);
-
-                    // Receiver : SDR 이름 [온도°C]
-                    {
-                        const char* sdr_name = "Unknown";
-                        uint8_t sdr_t = 0;
-                        if(v.net_cli){
-                            uint8_t rh = v.net_cli->remote_hw.load();
-                            sdr_name = (rh == 0) ? "BladeRF 2.0 micro xA9" : "RTL-SDR v4";
-                            sdr_t = v.net_cli->remote_sdr_temp_c.load();
-                        } else {
-                            if(v.dev_blade) sdr_name = "BladeRF 2.0 micro xA9";
-                            else if(v.dev_rtl) sdr_name = "RTL-SDR v4";
-                            // LOCAL/HOST: SDR 온도 직접 조회 (sdr_temp_str에서)
-                            if(v.dev_blade){
-                                float _t = 0.f;
-                                if(bladerf_get_rfic_temperature(v.dev_blade, &_t) == 0)
-                                    sdr_t = (uint8_t)std::min(255.f, std::max(0.f, _t));
-                            }
-                        }
-                        ImGui::TextColored(ImVec4(0.4f,0.85f,1.f,1.f),
-                            "Receiver : %s [%d\xC2\xB0""C]", sdr_name, (int)sdr_t);
-                    }
-
-                    // Freq / Sample Rate
-                    {
-                        double cf_mhz = v.net_cli ? (double)v.net_cli->remote_cf_mhz.load()
-                                                  : v.header.center_frequency/1e6;
-                        double sr_mhz = v.net_cli ? v.net_cli->remote_sr.load()/1e6
-                                                  : v.header.sample_rate/1e6;
-                        ImGui::Text("Freq : %.4fMHz  /  Sample Rate : %.3fMSPS", cf_mhz, sr_mhz);
-                    }
-
-                    // HOST | CPU / RAM
-                    if(v.net_cli){
-                        // JOIN mode: HOST 정보는 heartbeat에서 수신
-                        int h_cpu = v.net_cli->remote_host_cpu.load();
-                        int h_ram = v.net_cli->remote_host_ram.load();
-                        int h_ct  = v.net_cli->remote_host_cpu_temp.load();
-                        ImGui::Text("HOST | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%", h_cpu, h_ct, h_ram);
-                    } else {
-                        // HOST/LOCAL mode: 로컬 값
-                        int ct = v.sysmon_cpu_temp_c.load();
-                        ImGui::Text("HOST | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%",
-                            (int)v.sysmon_cpu, ct, (int)v.sysmon_ram);
-                    }
-
-                    // JOIN | CPU / RAM (항상 로컬)
-                    if(v.net_cli){
-                        int jct = v.sysmon_cpu_temp_c.load();
-                        ImGui::Text("JOIN | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%",
-                            (int)v.sysmon_cpu, jct, (int)v.sysmon_ram);
-                    }
-
+                    draw_system_status(v, "board");
                     ImGui::Unindent(6.f);
                 }
                 ImGui::Spacing();
@@ -9894,13 +10041,18 @@ void run_streaming_viewer(){
                             float baseline=v.eid_baseline_val;
 
                             std::vector<uint8_t> bits;
-                            double first_edge = v.eid_baud_s0;
-                            while(first_edge - interval >= 0) first_edge -= interval;
-                            for(double edge = first_edge; edge + interval <= (double)total; edge += interval){
-                                double mid = edge + interval * 0.5;
-                                int64_t si = (int64_t)mid;
-                                if(si < 0 || si >= total) continue;
-                                bits.push_back((*src_data)[si] > baseline ? 1 : 0);
+                            // LoRa CSS 복조 결과가 있으면 그 비트열을 우선 사용
+                            if(!v.eid_decoded_bits.empty()){
+                                bits = v.eid_decoded_bits;
+                            } else {
+                                double first_edge = v.eid_baud_s0;
+                                while(first_edge - interval >= 0) first_edge -= interval;
+                                for(double edge = first_edge; edge + interval <= (double)total; edge += interval){
+                                    double mid = edge + interval * 0.5;
+                                    int64_t si = (int64_t)mid;
+                                    if(si < 0 || si >= total) continue;
+                                    bits.push_back((*src_data)[si] > baseline ? 1 : 0);
+                                }
                             }
 
                             double baud_rate=(double)sr/interval;
@@ -9914,10 +10066,15 @@ void run_streaming_viewer(){
                                 char sig_len_str[32];
                                 if(sig_len_s >= 1.0) snprintf(sig_len_str,sizeof(sig_len_str),"%.1f s",sig_len_s);
                                 else snprintf(sig_len_str,sizeof(sig_len_str),"%.1f ms",sig_len_s*1000.0);
-                                char hdr[256];
-                                snprintf(hdr,sizeof(hdr),
-                                    "Baud: %.0f | Bits: %d | Bytes: %d | %s",
-                                    baud_rate, n_bits, n_bits/8, sig_len_str);
+                                char hdr[320];
+                                if(!v.eid_decoded_label.empty()){
+                                    snprintf(hdr,sizeof(hdr), "%s | Bits: %d",
+                                        v.eid_decoded_label.c_str(), n_bits);
+                                } else {
+                                    snprintf(hdr,sizeof(hdr),
+                                        "Baud: %.0f | Bits: %d | Bytes: %d | %s",
+                                        baud_rate, n_bits, n_bits/8, sig_len_str);
+                                }
                                 fg->AddText(ImVec2(ea_x0, ca_y0+4), IM_COL32(160,160,180,220), hdr);
                                 if(!v.sa_temp_path.empty()){
                                     const char* fn=v.sa_temp_path.c_str();
@@ -10474,6 +10631,59 @@ void run_streaming_viewer(){
                         v.eid_pending_active=false;
                         eid_tag_ctx.open=false;
                     }
+                    // LoRa CSS 복조: Freq 탭(mode 2)에서만 표시
+                    if(v.eid_view_mode == 2){
+                    ImGui::Separator();
+                    if(ImGui::Selectable("  Demod LoRa CSS")){
+                        int64_t s0 = (int64_t)ctx_s0;
+                        int64_t s1 = (int64_t)ctx_s1;
+                        if(s0 > s1) std::swap(s0, s1);
+                        if(s0 < 0) s0 = 0;
+                        if(s1 > v.eid_total_samples) s1 = v.eid_total_samples;
+                        int64_t n = s1 - s0;
+                        uint32_t sr = v.eid_sample_rate;
+                        if(n < 4096 || sr == 0){
+                            bewe_log_push(2,"[LoRa] 선택 영역이 너무 짧음 (n=%lld, sr=%u)\n", (long long)n, sr);
+                        } else if(v.eid_lora_busy.load()){
+                            bewe_log_push(2,"[LoRa] 이미 복조 중입니다\n");
+                        } else {
+                            v.eid_lora_busy.store(true);
+                            v.eid_decoded_bits.clear();
+                            v.eid_decoded_label = "Decoding LoRa CSS...";
+                            v.eid_pending_active = false;
+                            std::thread([&v, s0, s1, n, sr](){
+                                // eid_ch_i/q 접근은 mutex로 보호
+                                std::vector<float> local_i, local_q;
+                                {
+                                    std::lock_guard<std::mutex> lk(v.eid_data_mtx);
+                                    if((int64_t)v.eid_ch_i.size() < s1 || (int64_t)v.eid_ch_q.size() < s1){
+                                        v.eid_lora_busy.store(false);
+                                        v.eid_decoded_label.clear();
+                                        bewe_log_push(2,"[LoRa] eid IQ 버퍼 부족\n");
+                                        return;
+                                    }
+                                    local_i.assign(v.eid_ch_i.begin()+s0, v.eid_ch_i.begin()+s1);
+                                    local_q.assign(v.eid_ch_q.begin()+s0, v.eid_ch_q.begin()+s1);
+                                }
+                                LoraDemodResult info;
+                                std::vector<uint8_t> bits;
+                                bool ok = lora_demod_auto(local_i.data(), local_q.data(),
+                                                          n, sr, bits, info);
+                                if(ok){
+                                    v.eid_decoded_bits = std::move(bits);
+                                    v.eid_decoded_label = info.detail;
+                                    bewe_log_push(0,"[LoRa] %s\n", info.detail.c_str());
+                                } else {
+                                    v.eid_decoded_bits.clear();
+                                    v.eid_decoded_label = std::string("LoRa decode FAIL: ") + info.detail;
+                                    bewe_log_push(2,"[LoRa] decode failed: %s\n", info.detail.c_str());
+                                }
+                                v.eid_lora_busy.store(false);
+                            }).detach();
+                        }
+                        eid_tag_ctx.open = false;
+                    }
+                    } // end if(eid_view_mode == 2)
                     ImGui::Separator();
                     if(ImGui::Selectable("  Select Samples")){
                         v.eid_push_undo();

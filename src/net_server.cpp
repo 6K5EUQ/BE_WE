@@ -304,6 +304,9 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
             case CmdType::SET_SR:
                 if(cb.on_set_sr) cb.on_set_sr(c->name, cmd->set_sr.msps);
                 break;
+            case CmdType::SET_ANTENNA:
+                if(cb.on_set_antenna) cb.on_set_antenna(c->name, cmd->set_antenna.antenna);
+                break;
             default: break;
         }
         // ACK
@@ -623,9 +626,11 @@ void NetServer::broadcast_chat(const char* from, const char* msg){
 
 // ── Broadcast heartbeat ───────────────────────────────────────────────────
 void NetServer::broadcast_heartbeat(uint8_t host_state, uint8_t sdr_temp_c, uint8_t sdr_state, uint8_t iq_on,
-                                    uint8_t host_cpu_pct, uint8_t host_ram_pct, uint8_t host_cpu_temp_c){
+                                    uint8_t host_cpu_pct, uint8_t host_ram_pct, uint8_t host_cpu_temp_c,
+                                    const char* antenna){
     PktHeartbeat hb{}; hb.host_state = host_state; hb.sdr_temp_c = sdr_temp_c; hb.sdr_state = sdr_state; hb.iq_on = iq_on;
     hb.host_cpu_pct = host_cpu_pct; hb.host_ram_pct = host_ram_pct; hb.host_cpu_temp_c = host_cpu_temp_c;
+    if(antenna) strncpy(hb.antenna, antenna, sizeof(hb.antenna)-1);
     auto pkt = make_packet(PacketType::HEARTBEAT, &hb, sizeof(hb));
     if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size(), false);

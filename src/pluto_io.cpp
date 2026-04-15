@@ -1,61 +1,106 @@
 #include "fft_viewer.hpp"
 #include "net_server.hpp"
+#include "bewe_paths.hpp"
 #include <volk/volk.h>
+#include <iio.h>
+#include <ad9361.h>
 #include <cstring>
 #include <algorithm>
 #include <chrono>
-#include <rtl-sdr.h>
+#include <unistd.h>
 
-// RTL-SDR V4 고정 파라미터
-static constexpr uint32_t RTL_SAMPLE_RATE = 3200000;  // 3.2 MSPS
-static constexpr int      RTL_BUF_COUNT   = 32;       // async 버퍼 수
-static constexpr int      RTL_BUF_LEN     = 16384;    // 버퍼당 바이트 (8192 IQ샘플)
+// ADALM-Pluto 고정 파라미터 (RTL-SDR/BladeRF 경로와 호환)
+static constexpr uint32_t PLUTO_DEFAULT_SR = 3200000;  // 3.2 MSPS
+static constexpr int      PLUTO_BUF_SAMPS  = 8192;     // iio_buffer 샘플 수
 
-// ── RTL-SDR 초기화 ────────────────────────────────────────────────────────
-bool FFTViewer::initialize_rtlsdr(float cf_mhz){
-    uint32_t dev_count = rtlsdr_get_device_count();
-    if(dev_count == 0){ fprintf(stderr,"RTL-SDR: no device found\n"); return false; }
+static struct iio_context*  g_ctx_fallback = nullptr;
 
-    int r = rtlsdr_open(&dev_rtl, 0);
-    if(r < 0){ fprintf(stderr,"RTL-SDR: open failed (%d)\n",r); return false; }
+// ── URI 후보 순회 (USB → IP) ─────────────────────────────────────────────
+static struct iio_context* pluto_open_ctx(){
+    struct iio_context* ctx = nullptr;
+    ctx = iio_create_context_from_uri("usb:");              // 첫 USB 디바이스
+    if(ctx) return ctx;
+    ctx = iio_create_context_from_uri("ip:192.168.2.1");    // 기본 USB RNDIS IP
+    if(ctx) return ctx;
+    ctx = iio_create_default_context();                     // IIOD_REMOTE env 포함 폴백
+    return ctx;
+}
 
-    // 샘플레이트 설정
-    r = rtlsdr_set_sample_rate(dev_rtl, RTL_SAMPLE_RATE);
-    if(r < 0){ fprintf(stderr,"RTL-SDR: set_sample_rate failed\n"); rtlsdr_close(dev_rtl); dev_rtl=nullptr; return false; }
-    uint32_t actual_sr = rtlsdr_get_sample_rate(dev_rtl);
+// phy 설정 헬퍼
+static bool pluto_cfg_attr_ll(struct iio_channel* ch, const char* k, long long v){
+    return iio_channel_attr_write_longlong(ch, k, v) == 0;
+}
+static bool pluto_cfg_attr_s(struct iio_channel* ch, const char* k, const char* v){
+    return iio_channel_attr_write(ch, k, v) >= 0;
+}
 
-    // Direct Sampling: HF (<24MHz) 시 Q-branch 자동 전환
-    if(cf_mhz < 24.0f){
-        rtlsdr_set_direct_sampling(dev_rtl, 2);  // Q-branch
-        bewe_log_push(0,"RTL-SDR: Direct Sampling ON (Q-branch) for HF\n");
-    } else {
-        rtlsdr_set_direct_sampling(dev_rtl, 0);  // 일반 모드
+// ── 초기화 ────────────────────────────────────────────────────────────────
+bool FFTViewer::initialize_pluto(float cf_mhz, float sr_msps){
+    struct iio_context* ctx = pluto_open_ctx();
+    if(!ctx){ fprintf(stderr,"Pluto: no context\n"); return false; }
+
+    struct iio_device* phy = iio_context_find_device(ctx, "ad9361-phy");
+    struct iio_device* rxd = iio_context_find_device(ctx, "cf-ad9361-lpc");
+    if(!phy || !rxd){
+        fprintf(stderr,"Pluto: device not found (phy=%p rxd=%p)\n", (void*)phy,(void*)rxd);
+        iio_context_destroy(ctx); return false;
     }
 
-    // 주파수 설정
-    r = rtlsdr_set_center_freq(dev_rtl, (uint32_t)(cf_mhz * 1e6));
-    if(r < 0){ fprintf(stderr,"RTL-SDR: set_center_freq failed\n"); rtlsdr_close(dev_rtl); dev_rtl=nullptr; return false; }
+    // RX LO (altvoltage0)
+    struct iio_channel* lo = iio_device_find_channel(phy, "altvoltage0", true);
+    // RX RF 포트/gain/BW/sr (voltage0)
+    struct iio_channel* v0 = iio_device_find_channel(phy, "voltage0", false);
+    if(!lo || !v0){
+        fprintf(stderr,"Pluto: phy ch not found (lo=%p v0=%p)\n",(void*)lo,(void*)v0);
+        iio_context_destroy(ctx); return false;
+    }
 
-    // 튜너 BW 자동 (0 = 샘플레이트 기준 자동)
-    rtlsdr_set_tuner_bandwidth(dev_rtl, 0);
+    uint32_t sr = (sr_msps > 0.1f) ? (uint32_t)(sr_msps * 1e6f) : PLUTO_DEFAULT_SR;
+    if(sr < 521000) sr = 521000;          // AD9363 최저 근처
+    if(sr > 5000000u) sr = 5000000u;    // USB 2.0 실용 상한 5 MSPS
 
-    // 수동 게인 모드, 39.6 dB
-    rtlsdr_set_tuner_gain_mode(dev_rtl, 1);
-    rtlsdr_set_tuner_gain(dev_rtl, RTLSDR_RX_GAIN_TENTHS);
+    pluto_cfg_attr_s (v0, "rf_port_select",      "A_BALANCED");
+    pluto_cfg_attr_ll(v0, "sampling_frequency",  (long long)sr);
+    pluto_cfg_attr_ll(v0, "rf_bandwidth",        (long long)sr);
+    pluto_cfg_attr_s (v0, "gain_control_mode",   "manual");
+    pluto_cfg_attr_ll(v0, "hardwaregain",        30);
+    pluto_cfg_attr_ll(lo, "frequency",           (long long)(cf_mhz * 1e6));
 
-    // RTL AGC 끄기 (Manual Gain Control만 사용)
-    rtlsdr_set_agc_mode(dev_rtl, 0);
+    // 실제 값 재읽기
+    long long actual_sr_ll = sr;
+    iio_channel_attr_read_longlong(v0, "sampling_frequency", &actual_sr_ll);
+    uint32_t actual_sr = (uint32_t)actual_sr_ll;
 
-    // 버퍼 초기화
-    rtlsdr_reset_buffer(dev_rtl);
+    // RX IQ 채널 (voltage0=I, voltage1=Q on cf-ad9361-lpc)
+    struct iio_channel* ri = iio_device_find_channel(rxd, "voltage0", false);
+    struct iio_channel* rq = iio_device_find_channel(rxd, "voltage1", false);
+    if(!ri || !rq){
+        fprintf(stderr,"Pluto: rx ch not found\n");
+        iio_context_destroy(ctx); return false;
+    }
+    iio_channel_enable(ri);
+    iio_channel_enable(rq);
 
-    hw = make_rtlsdr_config(actual_sr);
+    struct iio_buffer* buf = iio_device_create_buffer(rxd, PLUTO_BUF_SAMPS, false);
+    if(!buf){
+        fprintf(stderr,"Pluto: iio_device_create_buffer failed (errno=%d)\n", errno);
+        iio_context_destroy(ctx); return false;
+    }
+
+    pluto_ctx     = ctx;
+    pluto_phy_dev = phy;
+    pluto_rx_dev  = rxd;
+    pluto_rx_i_ch = ri;
+    pluto_rx_q_ch = rq;
+    pluto_rx_buf  = buf;
+
+    hw = make_pluto_config(actual_sr);
     gain_db = hw.gain_default;
 
-    bewe_log_push(0,"RTL-SDR: %.2f MHz  %.3f MSPS  gain %.1f dB\n",
-           cf_mhz, actual_sr/1e6, RTLSDR_RX_GAIN_TENTHS/10.0);
+    bewe_log_push(0,"Pluto: %.2f MHz  %.3f MSPS  gain %.0f dB\n",
+           cf_mhz, actual_sr/1e6, gain_db);
 
-    // FFT 헤더
+    // FFT 헤더 (RTL 경로와 동일)
     std::memcpy(header.magic,"FFTD",4);
     fft_input_size = fft_size / FFT_PAD_FACTOR;
     header.version=1; header.fft_size=fft_size; header.sample_rate=actual_sr;
@@ -66,14 +111,13 @@ bool FFTViewer::initialize_rtlsdr(float cf_mhz){
     fft_data.resize(MAX_FFTS_MEMORY*fft_size);
     current_spectrum.resize(fft_size,-100.0f);
 
-    char title[256]; snprintf(title,256,"BEWE RTL-SDR - %.2f MHz",cf_mhz);
+    char title[256]; snprintf(title,256,"BEWE Pluto - %.2f MHz",cf_mhz);
     window_title=title; display_power_min=-100; display_power_max=0;
     fft_in =fftwf_alloc_complex(fft_size);
     fft_out=fftwf_alloc_complex(fft_size);
     memset(fft_in, 0, fft_size*sizeof(fftwf_complex));
     fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_MEASURE);
     memset(fft_in, 0, fft_size*sizeof(fftwf_complex));
-    // Pre-compute Nuttall window + VOLK mag_sq buffer
     if(win_buf) free(win_buf);
     win_buf=(float*)volk_malloc(fft_input_size*sizeof(float), volk_get_alignment());
     fill_nuttall_window(win_buf, fft_input_size);
@@ -83,48 +127,33 @@ bool FFTViewer::initialize_rtlsdr(float cf_mhz){
     return true;
 }
 
-// ── RTL-SDR 주파수 변경 ───────────────────────────────────────────────────
-void FFTViewer::set_frequency(float cf_mhz){
-    if(hw.type == HWType::BLADERF){
-        bladerf_set_frequency(dev_blade, BLADERF_CHANNEL_RX(0), (uint64_t)(cf_mhz*1e6));
-    } else if(hw.type == HWType::RTLSDR){
-        // Direct Sampling 자동 전환
-        if(cf_mhz < 24.0f)
-            rtlsdr_set_direct_sampling(dev_rtl, 2);
-        else
-            rtlsdr_set_direct_sampling(dev_rtl, 0);
-        rtlsdr_set_center_freq(dev_rtl, (uint32_t)(cf_mhz*1e6));
-    }
-    {std::lock_guard<std::mutex> lk(data_mtx);
-     header.center_frequency=(uint64_t)(cf_mhz*1e6);}
-    live_cf_hz.store((uint64_t)(cf_mhz*1e6), std::memory_order_release);
-    bewe_log_push(0,"Freq > %.2f MHz\n", cf_mhz);
-    autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
-}
+// ── 캡처 루프 ────────────────────────────────────────────────────────────
+void FFTViewer::capture_and_process_pluto(){
+    auto* rxd = (struct iio_device*)pluto_rx_dev;
+    auto* phy = (struct iio_device*)pluto_phy_dev;
+    auto* buf = (struct iio_buffer*)pluto_rx_buf;
+    auto* ri  = (struct iio_channel*)pluto_rx_i_ch;
+    auto* rq  = (struct iio_channel*)pluto_rx_q_ch;
+    if(!rxd || !phy || !buf || !ri || !rq){ sdr_stream_error.store(true); return; }
 
-// ── RTL-SDR 캡처 루프 ─────────────────────────────────────────────────────
-// RTL-SDR은 uint8 IQ, center=127.5
-// 동기 read 방식 사용 (async보다 지연 제어 쉬움)
-void FFTViewer::capture_and_process_rtl(){
-    static constexpr int RX_MIN = 8192; // 최소 RX 청크 (USB 오버헤드 최소화)
-    int rx_chunk = std::max(fft_input_size, RX_MIN);
-    size_t    n_bytes = (size_t)rx_chunk * 2;
-    uint8_t*  raw     = new uint8_t[n_bytes];
-    int16_t*  iq16    = new int16_t[rx_chunk * 2];
-    int rx_pos  = 0; // raw/iq16 내 현재 읽기 위치 (샘플 단위)
-    int rx_avail = 0;
+    struct iio_channel* lo  = iio_device_find_channel(phy, "altvoltage0", true);
+    struct iio_channel* v0p = iio_device_find_channel(phy, "voltage0",    false);
+
+    int16_t* iq16 = new int16_t[PLUTO_BUF_SAMPS * 2];
 
     std::vector<float> pacc(fft_size, 0.0f);
     int   fcnt      = 0;
-    static constexpr int WARMUP_FFTS = 15;
+    static constexpr int WARMUP_FFTS = 30;
     int   warmup_cnt = 0;
-    float iq_scale   = hw.iq_scale;   // 127.5f
-    float iq_offset  = hw.iq_offset;  // 127.5f
+    float iq_scale  = hw.iq_scale;   // 2048.0f
+
+    // 내부 RX 버퍼 내 포지션
+    int rx_pos = 0, rx_avail = 0;
 
     while(is_running){
         if(capture_pause.load(std::memory_order_relaxed)){
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
-            rx_avail=0; rx_pos=0;
+            rx_pos=0; rx_avail=0;
             continue;
         }
 
@@ -138,17 +167,12 @@ void FFTViewer::capture_and_process_rtl(){
             fft_out=fftwf_alloc_complex(fft_size);
             memset(fft_in, 0, fft_size*sizeof(fftwf_complex));
             fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_MEASURE);
-    memset(fft_in, 0, fft_size*sizeof(fftwf_complex));
+            memset(fft_in, 0, fft_size*sizeof(fftwf_complex));
             if(win_buf) volk_free(win_buf);
             win_buf=(float*)volk_malloc(fft_input_size*sizeof(float), volk_get_alignment());
             fill_nuttall_window(win_buf, fft_input_size);
             if(mag_sq_buf) volk_free(mag_sq_buf);
             mag_sq_buf=(float*)volk_malloc(fft_size*sizeof(float), volk_get_alignment());
-            rx_chunk = std::max(fft_input_size, RX_MIN);
-            n_bytes = (size_t)rx_chunk * 2;
-            delete[] raw;  raw  = new uint8_t[n_bytes];
-            delete[] iq16; iq16 = new int16_t[rx_chunk*2];
-            rx_pos=0; rx_avail=0;
             pacc.assign(fft_size,0.0f); fcnt=0;
             {std::lock_guard<std::mutex> lk(data_mtx);
              header.fft_size=fft_size;
@@ -162,33 +186,22 @@ void FFTViewer::capture_and_process_rtl(){
         if(sr_change_req){
             sr_change_req=false;
             uint32_t new_sr = (uint32_t)(pending_sr_msps * 1e6f);
+            if(new_sr < 521000) new_sr = 521000;
+            if(new_sr > 5000000u) new_sr = 5000000u;
 
-            // TM IQ 리셋: on/off 여부 관계없이 기존 롤링 파일 삭제 후 재생성
-            bool tm_was_on = tm_iq_on.load(std::memory_order_relaxed);
-            if(tm_was_on) tm_iq_on.store(false);
-            tm_iq_close(); // fd 닫기 + 상태 초기화
-            // 기존 SR 롤링 파일 삭제 (SR 불일치 방지)
-            {
-                std::string tm_dir = BEWEPaths::time_temp_dir();
-                char old_path[256];
-                snprintf(old_path, sizeof(old_path), "%s/iq_rolling_%uMSPS.wav",
-                         tm_dir.c_str(), header.sample_rate/1000000);
-                if(access(old_path, F_OK)==0){ remove(old_path); }
-            }
+            // 버퍼 재생성
+            iio_buffer_destroy(buf);
+            pluto_cfg_attr_ll(v0p, "sampling_frequency", (long long)new_sr);
+            pluto_cfg_attr_ll(v0p, "rf_bandwidth",       (long long)new_sr);
+            buf = iio_device_create_buffer(rxd, PLUTO_BUF_SAMPS, false);
+            pluto_rx_buf = buf;
+            if(!buf){ sdr_stream_error.store(true); break; }
 
-            rtlsdr_set_sample_rate(dev_rtl, new_sr);
-            rtlsdr_set_tuner_bandwidth(dev_rtl, 0); // 0 = SR 기준 자동 BW
-            rtlsdr_reset_buffer(dev_rtl);
-            uint32_t actual_sr = rtlsdr_get_sample_rate(dev_rtl);
+            long long actual_sr_ll = new_sr;
+            iio_channel_attr_read_longlong(v0p, "sampling_frequency", &actual_sr_ll);
+            uint32_t actual_sr = (uint32_t)actual_sr_ll;
 
-            // RX 버퍼 크기 재계산 (rx_chunk * 2 bytes)
-            rx_chunk = std::max(fft_input_size, RX_MIN);
-            n_bytes = (size_t)rx_chunk * 2;
-            delete[] raw;  raw  = new uint8_t[n_bytes];
-            delete[] iq16; iq16 = new int16_t[rx_chunk*2];
-            rx_pos=0; rx_avail=0;
-
-            hw = make_rtlsdr_config(actual_sr);
+            hw = make_pluto_config(actual_sr);
             iq_scale  = hw.iq_scale;
             time_average = hw.compute_time_average(fft_input_size);
 
@@ -202,26 +215,17 @@ void FFTViewer::capture_and_process_rtl(){
              wf_events.clear(); last_tagged_sec=-1;}
 
             pacc.assign(fft_size,0.0f); fcnt=0; warmup_cnt=0;
+            rx_pos=0; rx_avail=0;
             texture_needs_recreate=true;
-            // TM IQ가 켜져 있었으면 새 SR로 롤링 파일 재시작
-            if(tm_was_on){
-                tm_iq_open();
-                tm_iq_on.store(true);
-            }
             bewe_log_push(0,"SR > %.3f MSPS\n", actual_sr/1e6f);
             continue;
         }
 
-        // 주파수 변경 - set 후 한 사이클 쉬고 read_sync 재개 (RTL-SDR v4 USB 안정화)
+        // 주파수 변경
         if(freq_req && !freq_prog){
             freq_prog=true;
-            // Direct Sampling 자동 전환
-            if(pending_cf < 24.0f)
-                rtlsdr_set_direct_sampling(dev_rtl, 2);
-            else
-                rtlsdr_set_direct_sampling(dev_rtl, 0);
-            rtlsdr_set_center_freq(dev_rtl, (uint32_t)(pending_cf*1e6));
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            pluto_cfg_attr_ll(lo, "frequency", (long long)(pending_cf * 1e6));
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
             rx_pos=0; rx_avail=0;
             {std::lock_guard<std::mutex> lk(data_mtx);
              header.center_frequency=(uint64_t)(pending_cf*1e6);}
@@ -231,45 +235,50 @@ void FFTViewer::capture_and_process_rtl(){
             warmup_cnt=0;
             update_dem_by_freq(pending_cf);
             freq_req=false; freq_prog=false;
-            continue; // read_sync 호출을 다음 사이클로 미룸
+            continue;
         }
 
-        // ── RX: 고정 청크(min 8192)로 읽기 > USB 오버헤드 최소화 ──────────
+        // ── RX ──
         if(rx_avail == 0){
-            int n_read = 0;
-            int r = rtlsdr_read_sync(dev_rtl, raw, (int)n_bytes, &n_read);
-            if(r < 0 || n_read < (int)n_bytes){
-                fprintf(stderr,"RTL-SDR RX: r=%d n_read=%d - SDR disconnected\n", r, n_read);
+            ssize_t nbytes = iio_buffer_refill(buf);
+            if(nbytes <= 0){
+                fprintf(stderr,"Pluto RX: refill=%zd - disconnected\n", nbytes);
                 sdr_stream_error.store(true);
-                // 디바이스 닫고 루프 종료 > ui는 sdr_stream_error 빨간불 표시
-                rtlsdr_close(dev_rtl);
-                dev_rtl = nullptr;
                 break;
             }
-            // uint8 > int16 변환 (ring/TM IQ용)
-            for(int i=0; i<rx_chunk*2; i++){
-                iq16[i] = (int16_t)((int)raw[i] - 128) << 4;
+            // 인터리브 int16 I/Q 꺼내기
+            ssize_t i_step = iio_buffer_step(buf);
+            char*   p_end  = (char*)iio_buffer_end(buf);
+            char*   p      = (char*)iio_buffer_first(buf, ri);
+            int n = 0;
+            for(; p < p_end && n < PLUTO_BUF_SAMPS; p += i_step){
+                int16_t si = ((int16_t*)p)[0];
+                int16_t sq = ((int16_t*)p)[1];
+                // libiio는 12-bit signed를 하위 12bit에 정렬; <<4로 ±32768 스케일 매칭
+                iq16[n*2+0] = (int16_t)(si << 4);
+                iq16[n*2+1] = (int16_t)(sq << 4);
+                n++;
             }
-            // IQ Ring write: 전체 청크
+
+            // IQ Ring + TM IQ 기록
             bool need_ring = rec_on.load(std::memory_order_relaxed);
             if(!need_ring) for(int i=0;i<MAX_CHANNELS;i++) if(channels[i].dem_run.load()){need_ring=true;break;}
             bool need_tm = tm_iq_on.load(std::memory_order_relaxed) && (warmup_cnt>=WARMUP_FFTS);
             if(need_ring || need_tm){
                 size_t wp=ring_wp.load(std::memory_order_relaxed);
-                size_t n=(size_t)rx_chunk, cap=IQ_RING_CAPACITY;
-                if(wp+n<=cap) memcpy(&ring[wp*2],iq16,n*2*sizeof(int16_t));
+                size_t nn=(size_t)n, cap=IQ_RING_CAPACITY;
+                if(wp+nn<=cap) memcpy(&ring[wp*2],iq16,nn*2*sizeof(int16_t));
                 else{
-                    size_t p1=cap-wp, p2=n-p1;
+                    size_t p1=cap-wp, p2=nn-p1;
                     memcpy(&ring[wp*2],iq16,p1*2*sizeof(int16_t));
                     memcpy(&ring[0],iq16+p1*2,p2*2*sizeof(int16_t));
                 }
-                ring_wp.store((wp+n)&IQ_RING_MASK, std::memory_order_release);
-                if(need_tm) tm_iq_write(iq16,(int)n);
+                ring_wp.store((wp+nn)&IQ_RING_MASK, std::memory_order_release);
+                if(need_tm) tm_iq_write(iq16, n);
             }
-            rx_pos=0; rx_avail=rx_chunk;
+            rx_pos=0; rx_avail=n;
         }
 
-        // ── FFT: 버퍼에서 fft_input_size씩 처리 ─────────────────────────
         if(rx_avail < fft_input_size){ rx_avail=0; rx_pos=0; continue; }
 
         if(!render_visible.load(std::memory_order_relaxed)){
@@ -278,15 +287,14 @@ void FFTViewer::capture_and_process_rtl(){
             continue;
         }
         if(!spectrum_pause.load(std::memory_order_relaxed)){
-            const uint8_t* rp = raw + rx_pos*2;
+            const int16_t* rp = iq16 + rx_pos*2;
+            const float inv_scale = 1.0f / iq_scale;
             for(int i=0;i<fft_input_size;i++){
-                fft_in[i][0] = ((float)rp[i*2  ] - iq_offset) / iq_scale;
-                fft_in[i][1] = ((float)rp[i*2+1] - iq_offset) / iq_scale;
+                fft_in[i][0] = (float)rp[i*2+0] * inv_scale;
+                fft_in[i][1] = (float)rp[i*2+1] * inv_scale;
             }
-            // Nuttall window via VOLK SIMD
             volk_32fc_32f_multiply_32fc((lv_32fc_t*)fft_in, (lv_32fc_t*)fft_in,
                                         win_buf, fft_input_size);
-            // pad region은 init/resize 시 한 번만 0 초기화
             fftwf_execute(fft_plan);
             {
                 volk_32fc_magnitude_squared_32f(mag_sq_buf, (lv_32fc_t*)fft_out, fft_size);
@@ -326,10 +334,10 @@ void FFTViewer::capture_and_process_rtl(){
                      }
                      float el=std::chrono::duration<float>(std::chrono::steady_clock::now()-autoscale_last).count();
                      if(el>=1.0f&&(autoscale_buf_full||autoscale_wp>0)){
-                         size_t n=autoscale_buf_full?cap:autoscale_wp;
+                         size_t nn=autoscale_buf_full?cap:autoscale_wp;
                          std::vector<float> tmp(autoscale_accum.begin(),
-                                                autoscale_accum.begin()+(ptrdiff_t)n);
-                         size_t idx_lo=(size_t)(n*0.15f);
+                                                autoscale_accum.begin()+(ptrdiff_t)nn);
+                         size_t idx_lo=(size_t)(nn*0.15f);
                          std::nth_element(tmp.begin(),tmp.begin()+(ptrdiff_t)idx_lo,tmp.end());
                          float noise=tmp[idx_lo];
                          float peak=*std::max_element(tmp.begin(),tmp.end());
@@ -360,10 +368,12 @@ void FFTViewer::capture_and_process_rtl(){
                 }
                 std::fill(pacc.begin(),pacc.end(),0.0f); fcnt=0;
             }
-        } // end !spectrum_pause
+        }
         rx_pos+=fft_input_size; rx_avail-=fft_input_size;
     }
-    delete[] raw;
+
     delete[] iq16;
-    if(dev_rtl){ rtlsdr_close(dev_rtl); dev_rtl=nullptr; }
+    if(pluto_rx_buf){ iio_buffer_destroy((struct iio_buffer*)pluto_rx_buf); pluto_rx_buf=nullptr; }
+    if(pluto_ctx){ iio_context_destroy((struct iio_context*)pluto_ctx); pluto_ctx=nullptr; }
+    pluto_phy_dev=nullptr; pluto_rx_dev=nullptr; pluto_rx_i_ch=nullptr; pluto_rx_q_ch=nullptr;
 }

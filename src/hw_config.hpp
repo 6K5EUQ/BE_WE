@@ -3,7 +3,7 @@
 #include <cstdlib>  // abs(int)
 
 // ── 하드웨어 타입 ──────────────────────────────────────────────────────────
-enum class HWType { NONE, BLADERF, RTLSDR };
+enum class HWType { NONE, BLADERF, RTLSDR, PLUTO };
 
 // ── 런타임 HW 파라미터 (초기화 시 채워짐) ────────────────────────────────
 struct HWConfig {
@@ -79,6 +79,24 @@ inline HWConfig make_bladerf_config(uint32_t actual_sr){
     c.gain_min        = 0.0f;
     c.gain_max        = 60.0f;
     c.gain_default    = (float)BLADERF_RX_GAIN;
+    return c;
+}
+
+// ADALM-Pluto (AD936x) 기본값
+inline HWConfig make_pluto_config(uint32_t actual_sr){
+    HWConfig c;
+    c.type            = HWType::PLUTO;
+    c.sample_rate     = actual_sr;
+    c.sample_rate_mhz = actual_sr / 1e6f;
+    c.freq_min_hz     = 70e6;       // firmware hack 없으면 325MHz
+    c.freq_max_hz     = 6000e6;     // firmware hack 없으면 3800MHz
+    c.iq_scale        = 2048.0f;    // libiio 12-bit signed
+    c.iq_offset       = 0.0f;
+    c.eff_bw_ratio    = 0.875f;
+    c.name            = "ADALM-Pluto";
+    c.gain_min        = 0.0f;       // AD9363 manual gain 0..71
+    c.gain_max        = 71.0f;
+    c.gain_default    = 30.0f;
     return c;
 }
 
