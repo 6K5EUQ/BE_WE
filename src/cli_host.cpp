@@ -178,7 +178,11 @@ static std::string prompt_input(const char* label, const char* def=nullptr){
         bewe_log_push(0,"%s: ", label);
     fflush(stdout);
     char buf[128]={};
-    if(!fgets(buf,sizeof(buf),stdin)) return def ? def : "";
+    if(!fgets(buf,sizeof(buf),stdin)){
+        // Ctrl+C 또는 EOF (fgets가 EINTR로 중단되거나 stdin 닫힘)
+        if(g_shutdown.load()) std::exit(0);
+        return def ? def : "";
+    }
     buf[strcspn(buf,"\r\n")]=0;
     if(buf[0]=='\0' && def) return def;
     return buf;
@@ -198,8 +202,13 @@ static bool read_line_nb(std::string& out){
 
 // ══════════════════════════════════════════════════════════════════════════
 void run_cli_host(){
-    signal(SIGINT,  sig_handler);
-    signal(SIGTERM, sig_handler);
+    // SA_RESTART 없이 등록 → fgets 등 blocking syscall이 Ctrl+C에 EINTR로 중단됨
+    struct sigaction sa{};
+    sa.sa_handler = sig_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;  // SA_RESTART 미설정
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
 
     // ── Interactive prompts ──────────────────────────────────────────────
     bewe_log_push(0,"\n=== BE_WE Headless HOST ===\n\n");
@@ -214,7 +223,12 @@ void run_cli_host(){
     new_t.c_lflag &= ~(ECHO);
     tcsetattr(STDIN_FILENO,TCSANOW,&new_t);
     char pw_buf[64]={};
-    if(!fgets(pw_buf,sizeof(pw_buf),stdin)){ bewe_log_push(0,"\nAborted.\n"); tcsetattr(STDIN_FILENO,TCSANOW,&old_t); return; }
+    if(!fgets(pw_buf,sizeof(pw_buf),stdin)){
+        tcsetattr(STDIN_FILENO,TCSANOW,&old_t);
+        if(g_shutdown.load()){ bewe_log_push(0,"\n"); std::exit(0); }
+        bewe_log_push(0,"\nAborted.\n");
+        return;
+    }
     tcsetattr(STDIN_FILENO,TCSANOW,&old_t);
     pw_buf[strcspn(pw_buf,"\r\n")]=0;
     bewe_log_push(0,"\n");
