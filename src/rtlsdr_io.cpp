@@ -329,9 +329,18 @@ void FFTViewer::capture_and_process_rtl(){
                          size_t n=autoscale_buf_full?cap:autoscale_wp;
                          std::vector<float> tmp(autoscale_accum.begin(),
                                                 autoscale_accum.begin()+(ptrdiff_t)n);
-                         size_t idx=(size_t)(n*0.15f);
-                         std::nth_element(tmp.begin(),tmp.begin()+(ptrdiff_t)idx,tmp.end());
-                         display_power_min=tmp[idx]-10.0f;
+                         size_t idx_lo=(size_t)(n*0.15f);
+                         std::nth_element(tmp.begin(),tmp.begin()+(ptrdiff_t)idx_lo,tmp.end());
+                         float noise=tmp[idx_lo];
+                         float peak=*std::max_element(tmp.begin(),tmp.end());
+                         display_power_min=noise-5.0f;
+                         display_power_max=peak+20.0f;
+                         if(display_power_max-display_power_min<20.f)
+                             display_power_max=display_power_min+20.f;
+                         header.power_min=display_power_min;
+                         header.power_max=display_power_max;
+                         bewe_log_push(0,"[autoscale] noise=%.1f peak=%.1f → pmin=%.1f pmax=%.1f\n",
+                             noise, peak, display_power_min, display_power_max);
                          autoscale_active=false; autoscale_init=false;
                          autoscale_wp=0; autoscale_buf_full=false;
                          cached_sp_idx=-1;

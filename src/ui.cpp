@@ -584,8 +584,17 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         // 눈금 짧은 선: 모든 i
         dl->AddLine(ImVec2(gx-5,y),ImVec2(gx,y),IM_COL32(100,100,100,200),1);
 
-        // i=0, i=10: 레이블/버튼 없음 (숨김)
-        if(i == 0 || i == 10) continue;
+        // i=0: 상단 max 값은 별도 최상단 라벨로 표시되므로 숨김
+        if(i == 0) continue;
+        // i=10: 최소값 텍스트만 그리고 편집 버튼은 생략
+        if(i == 10){
+            char lb[16]; snprintf(lb, sizeof(lb), "%.0f", db);
+            ImVec2 ts = ImGui::CalcTextSize(lb);
+            float lx = gx - 10 - ts.x;
+            float ly = y - ts.y * 0.5f;
+            dl->AddText(ImVec2(lx, ly), IM_COL32(200,200,200,255), lb);
+            continue;
+        }
 
         // i=1: max 편집 칸, i=9: min 편집 칸
         bool is_edit_row = (i == 1 || i == 9);
@@ -3693,15 +3702,25 @@ void run_streaming_viewer(){
                         float _el=std::chrono::duration<float>(
                             std::chrono::steady_clock::now()-v.autoscale_last).count();
                         if(_el>=1.0f && !v.autoscale_accum.empty()){
-                            size_t _idx=(size_t)(v.autoscale_accum.size()*0.15f);
+                            size_t _n = v.autoscale_accum.size();
+                            size_t _lo = (size_t)(_n * 0.15f);
                             std::nth_element(v.autoscale_accum.begin(),
-                                v.autoscale_accum.begin()+_idx,
+                                v.autoscale_accum.begin()+_lo,
                                 v.autoscale_accum.end());
-                            v.display_power_min = v.autoscale_accum[_idx] - 10.f;
-                            v.display_power_max = v.display_power_min + 60.f;
+                            float _noise = v.autoscale_accum[_lo];
+                            // 피크: 실제 max (99% 분위수는 신호 bin이 너무 적어 노이즈권에 머무름)
+                            float _peak = *std::max_element(v.autoscale_accum.begin(),
+                                v.autoscale_accum.end());
+                            v.display_power_min = _noise - 5.f;
+                            v.display_power_max = _peak + 20.f;
+                            if(v.display_power_max - v.display_power_min < 20.f)
+                                v.display_power_max = v.display_power_min + 20.f;
+                            v.join_manual_scale = true; // 수신 frm.pmin 덮어쓰기 차단
                             v.autoscale_accum.clear();
                             v.autoscale_active = false;
                             v.cached_sp_idx = -1;
+                            bewe_log_push(0,"[autoscale-JOIN] noise=%.1f peak=%.1f → pmin=%.1f pmax=%.1f\n",
+                                _noise, _peak, v.display_power_min, v.display_power_max);
                         }
                     }
                     v.header.num_ffts = std::min(v.total_ffts, MAX_FFTS_MEMORY);
