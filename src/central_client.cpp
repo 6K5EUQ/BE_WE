@@ -325,7 +325,6 @@ void CentralClient::mux_loop(int central_fd,
                 CentralMuxHdr hb{}; hb.type = 0x00; hb.len = sizeof(CentralHostHb);
                 CentralHostHb hbp{}; hbp.user_count = count_fn ? count_fn() : 0;
                 enqueue_central(&hb, CENTRAL_MUX_HDR_SIZE, &hbp, sizeof(hbp));
-                bewe_log_push(1,"[CentralClient] HB enqueued (users=%u)\n", hbp.user_count);
             }
             continue;
         }

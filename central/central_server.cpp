@@ -140,7 +140,6 @@ void CentralServer::accept_loop(){
 
         char ip_str[INET_ADDRSTRLEN] = {};
         inet_ntop(AF_INET, &caddr.sin_addr, ip_str, sizeof(ip_str));
-        printf("[Central] accept: fd=%d from %s:%d\n", cfd, ip_str, ntohs(caddr.sin_port));
 
         int ka = 1; setsockopt(cfd, SOL_SOCKET, SO_KEEPALIVE, &ka, sizeof(ka));
         int bufsize = 4 * 1024 * 1024;  // 4MB (HOST FFT 스트림 버스트 흡수)

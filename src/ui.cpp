@@ -1901,7 +1901,7 @@ void run_streaming_viewer(){
             {
                 std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                 for(auto& e : v.rec_entries)
-                    if(e.is_region && e.req_state==FFTViewer::RecEntry::REQ_TRANSFERRING && e.filename==name){
+                    if(e.is_region && !e.finished && e.req_state==FFTViewer::RecEntry::REQ_TRANSFERRING && e.filename==name){
                         e.xfer_done=done; break;
                     }
             }
@@ -1926,7 +1926,7 @@ void run_streaming_viewer(){
             {
                 std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                 for(auto& e : v.rec_entries)
-                    if(e.is_region && e.req_state==FFTViewer::RecEntry::REQ_TRANSFERRING && e.filename==name){
+                    if(e.is_region && !e.finished && e.req_state==FFTViewer::RecEntry::REQ_TRANSFERRING && e.filename==name){
                         e.req_state=FFTViewer::RecEntry::REQ_NONE;
                         e.finished=true; e.path=path;
                         is_region_iq = true; break;
@@ -1979,6 +1979,7 @@ void run_streaming_viewer(){
                     if(e.req_state == FFTViewer::RecEntry::REQ_CONFIRMED && e.filename.empty())
                         e.filename = fn;
                 }
+                if(e.finished) continue; // 이미 완료된 엔트리는 건너뛰기 (같은 파일명 재요청 대비)
                 if(e.filename == fn || (p.phase == 0 && e.req_state == FFTViewer::RecEntry::REQ_CONFIRMED)){
                     if(p.phase == 0){
                         // [REC] Recording...
@@ -1992,6 +1993,7 @@ void run_streaming_viewer(){
                         // [Done]
                         e.xfer_done = p.total; e.xfer_total = p.total;
                         e.finished = true;
+                        e.req_state = FFTViewer::RecEntry::REQ_NONE;
                     }
                     break;
                 }
@@ -2055,7 +2057,7 @@ void run_streaming_viewer(){
                             // 진행률 업데이트
                             std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                             for(auto& e : v.rec_entries)
-                                if(e.is_region && e.filename == fn){ e.xfer_done = written; break; }
+                                if(e.is_region && !e.finished && e.filename == fn){ e.xfer_done = written; break; }
                         }
                     }
                     // 남은 청크 모두 처리
@@ -2088,7 +2090,7 @@ void run_streaming_viewer(){
                     {
                         std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                         for(auto& e : v.rec_entries){
-                            if(e.is_region && e.filename == fn){
+                            if(e.is_region && !e.finished && e.filename == fn){
                                 e.finished = true;
                                 e.req_state = FFTViewer::RecEntry::REQ_NONE;
                                 if(e.xfer_total == 0) e.xfer_total = written;
@@ -4014,15 +4016,32 @@ void run_streaming_viewer(){
         // ── 우측 패널 토글 (S키) ──────────────────────────────────────────────
         // saved_ratio: 사용자가 마지막으로 설정한 패널 너비 (0=초기상태 미설정)
         static float right_panel_saved_ratio = 0.0f;
+        // 가장 상단 오버레이 추적: 0=none 1=EID 2=LOG 3=DIGI 4=SIDE
+        static int g_top_overlay = 0;
         if(!v.eid_panel_open && ImGui::IsKeyPressed(ImGuiKey_S, false) && !ImGui::GetIO().WantTextInput){
             if(v.right_panel_ratio > 0.01f){
                 // 열려있음 > 저장 후 닫기
                 right_panel_saved_ratio = v.right_panel_ratio;
                 v.right_panel_ratio = 0.0f;
+                if(g_top_overlay == 4) g_top_overlay = 0;
             } else {
                 // 닫혀있음 > 마지막 저장값으로 열기 (미설정시 기본값 0.3)
                 v.right_panel_ratio = (right_panel_saved_ratio > 0.01f) ? right_panel_saved_ratio : 0.3f;
+                g_top_overlay = 4; // SIDE panel
             }
+        }
+
+        // ── 숫자키 1/2/3/4: STATUS/ARCHIVE/BOARD/SCHED 탭 전환 ─────────────
+        // 우측 패널이 "가장 상단 오버레이"일 때만 숫자키 전환 적용 (EID/LOG/DIGI이 위면 무시)
+        if(g_top_overlay == 4 && v.right_panel_ratio > 0.01f && !ImGui::GetIO().WantTextInput){
+            auto sel = [&](int n){
+                stat_open = (n==1); archive_open = (n==2);
+                board_open = (n==3); v.sched_panel_open = (n==4);
+            };
+            if(ImGui::IsKeyPressed(ImGuiKey_1, false)) sel(1);
+            else if(ImGui::IsKeyPressed(ImGuiKey_2, false)) sel(2);
+            else if(ImGui::IsKeyPressed(ImGuiKey_3, false)) sel(3);
+            else if(ImGui::IsKeyPressed(ImGuiKey_4, false)) sel(4);
         }
 
         // ── 채팅창 토글 / 빠른 명령 입력 (항상 우선 처리, editing 무관) ─────
@@ -4345,25 +4364,27 @@ void run_streaming_viewer(){
         const float div_h=14.0f, vdiv_w=8.0f;
 
         // ── Signal Analysis 토글 (E키) ─── 독립 오버레이 ────
-        static int last_overlay = 0; // 0=none 1=EID 2=LOG
+        // g_top_overlay: 0=none 1=EID 2=LOG 3=DIGI 4=SIDE (S패널)
         if(ImGui::IsKeyPressed(ImGuiKey_E, false) && !io.WantTextInput){
             v.eid_panel_open = !v.eid_panel_open;
             if(v.eid_panel_open){
-                last_overlay = 1;
+                g_top_overlay = 1;
                 if(!v.sa_temp_path.empty() &&
                    !v.eid_computing.load() && !v.eid_data_ready.load())
                     v.eid_start(v.sa_temp_path);
-            }
+            } else if(g_top_overlay == 1) g_top_overlay = 0;
         }
         // ── LOG 토글 (L키) ─── 독립 오버레이 ────
         if(ImGui::IsKeyPressed(ImGuiKey_L, false) && !io.WantTextInput){
             v.log_panel_open = !v.log_panel_open;
-            if(v.log_panel_open) last_overlay = 2;
+            if(v.log_panel_open) g_top_overlay = 2;
+            else if(g_top_overlay == 2) g_top_overlay = 0;
         }
         // ── DIGITAL DECODE 토글 (Q키) ─── 독립 오버레이 ────
         if(ImGui::IsKeyPressed(ImGuiKey_Q, false) && !io.WantTextInput){
             v.digi_decode_panel_open = !v.digi_decode_panel_open;
-            if(v.digi_decode_panel_open) last_overlay = 3;
+            if(v.digi_decode_panel_open) g_top_overlay = 3;
+            else if(g_top_overlay == 3) g_top_overlay = 0;
         }
 
         // ── 우측 패널 계산 ────────────────────────────────────────────────
@@ -4535,18 +4556,18 @@ void run_streaming_viewer(){
                 if(archive_open){ stat_open=false; v.sched_panel_open=false; board_open=false; }
             }
 
-            // ── SCHED 버튼 ───────────────────────────────────────────────
-            float sched_btn_x = arch_btn_x + 64;
-            if(subbar_btn(sched_btn_x, "SCHED", v.sched_panel_open, IM_COL32(255,100,100,255))){
-                v.sched_panel_open = !v.sched_panel_open;
-                if(v.sched_panel_open){ stat_open=false; archive_open=false; board_open=false; }
-            }
-
             // ── BOARD 버튼 ───────────────────────────────────────────────
-            float board_btn_x = sched_btn_x + 56;
+            float board_btn_x = arch_btn_x + 64;
             if(subbar_btn(board_btn_x, "BOARD", board_open, IM_COL32(255,200,80,255))){
                 board_open = !board_open;
                 if(board_open){ stat_open=false; archive_open=false; v.sched_panel_open=false; }
+            }
+
+            // ── SCHED 버튼 ───────────────────────────────────────────────
+            float sched_btn_x = board_btn_x + 56;
+            if(subbar_btn(sched_btn_x, "SCHED", v.sched_panel_open, IM_COL32(255,100,100,255))){
+                v.sched_panel_open = !v.sched_panel_open;
+                if(v.sched_panel_open){ stat_open=false; archive_open=false; board_open=false; }
             }
 
             // ── 패널 콘텐츠 영역 ─────────────────────────────────────────
@@ -4715,9 +4736,9 @@ void run_streaming_viewer(){
                 if(ImGui::BeginTabBar("##stat_tabs")){
 
                 // ══════════════════════════════════════════════════════════
-                // ── LINK 탭 ───────────────────────────────────────────────
+                // ── STATUS 탭 ─────────────────────────────────────────────
                 // ══════════════════════════════════════════════════════════
-                if(ImGui::BeginTabItem("LINK")){
+                if(ImGui::BeginTabItem("STATUS")){
                     ImGui::BeginChild("##link_scroll", ImVec2(0,0), false,
                         ImGuiWindowFlags_HorizontalScrollbar);
 
@@ -5229,7 +5250,7 @@ void run_streaming_viewer(){
                                                 ImGui::PushStyleColor(ImGuiCol_Text,col);
                                                 ImGui::Text("[REC]  IQ Recording ...");
                                                 ImGui::PopStyleColor();
-                                            } else if(re.req_state==RS::REQ_TRANSFERRING){
+                                            } else if(re.req_state==RS::REQ_TRANSFERRING && !re.finished){
                                                 // 전송 중
                                                 col=IM_COL32(80,180,255,255);
                                                 ImGui::PushStyleColor(ImGuiCol_Text,col);
@@ -5854,6 +5875,15 @@ void run_streaming_viewer(){
                     ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar|
                     ImGuiWindowFlags_NoDecoration);
 
+                ImGui::PushStyleColor(ImGuiCol_Tab,       ImVec4(0.12f,0.12f,0.16f,1.f));
+                ImGui::PushStyleColor(ImGuiCol_TabHovered,ImVec4(0.20f,0.30f,0.45f,1.f));
+                ImGui::PushStyleColor(ImGuiCol_TabActive, ImVec4(0.15f,0.40f,0.65f,1.f));
+                if(ImGui::BeginTabBar("##sched_tabs")){
+                    if(ImGui::BeginTabItem("SCHED")) ImGui::EndTabItem();
+                    ImGui::EndTabBar();
+                }
+                ImGui::PopStyleColor(3);
+
                 ImGui::TextColored(ImVec4(1.f,0.4f,0.4f,1.f), "Scheduled IQ Recording");
                 ImGui::Separator();
 
@@ -5930,11 +5960,19 @@ void run_streaming_viewer(){
                 ImGui::SetNextWindowPos(ImVec2(px,py));
                 ImGui::SetNextWindowSize(ImVec2(pw,ph));
                 ImGui::SetNextWindowBgAlpha(0.0f);
-                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6,4));
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8,8));
                 ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.04f,0.04f,0.06f,1.f));
                 ImGui::Begin("##archive_panel", nullptr,
                     ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
                     ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar);
+                ImGui::PushStyleColor(ImGuiCol_Tab,       ImVec4(0.12f,0.12f,0.16f,1.f));
+                ImGui::PushStyleColor(ImGuiCol_TabHovered,ImVec4(0.20f,0.30f,0.45f,1.f));
+                ImGui::PushStyleColor(ImGuiCol_TabActive, ImVec4(0.15f,0.40f,0.65f,1.f));
+                if(ImGui::BeginTabBar("##archive_tabs")){
+                    if(ImGui::BeginTabItem("ARCHIVE")) ImGui::EndTabItem();
+                    ImGui::EndTabBar();
+                }
+                ImGui::PopStyleColor(3);
                 ImGui::BeginChild("##archive_scroll", ImVec2(0,0), false,
                     ImGuiWindowFlags_HorizontalScrollbar);
 
@@ -6678,8 +6716,8 @@ void run_streaming_viewer(){
                         v.eid_view_t1 = (double)v.eid_total_samples;
                     }
 
-                    // ── 뷰 모드 전환 (1/2/3/4 키) ────────────────────────
-                    if(mouse_in_eid){
+                    // ── 뷰 모드 전환 (1/2/3/4 키) ─ EID가 가장 상단일 때만
+                    if(mouse_in_eid && g_top_overlay == 1){
                         if(ImGui::IsKeyPressed(ImGuiKey_1, false)) v.eid_view_mode = 0;
                         if(ImGui::IsKeyPressed(ImGuiKey_2, false)) v.eid_view_mode = 1;
                         if(ImGui::IsKeyPressed(ImGuiKey_3, false)) v.eid_view_mode = 2;
@@ -6770,12 +6808,21 @@ void run_streaming_viewer(){
                 ImGui::SetNextWindowPos(ImVec2(px,py));
                 ImGui::SetNextWindowSize(ImVec2(pw,ph));
                 ImGui::SetNextWindowBgAlpha(0.0f);
-                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8,6));
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8,8));
                 ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0,0,0,0));
                 ImGui::Begin("##board_panel", nullptr,
                     ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
                     ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar|
                     ImGuiWindowFlags_NoDecoration);
+
+                ImGui::PushStyleColor(ImGuiCol_Tab,       ImVec4(0.12f,0.12f,0.16f,1.f));
+                ImGui::PushStyleColor(ImGuiCol_TabHovered,ImVec4(0.20f,0.30f,0.45f,1.f));
+                ImGui::PushStyleColor(ImGuiCol_TabActive, ImVec4(0.15f,0.40f,0.65f,1.f));
+                if(ImGui::BeginTabBar("##board_tabs")){
+                    if(ImGui::BeginTabItem("BOARD")) ImGui::EndTabItem();
+                    ImGui::EndTabBar();
+                }
+                ImGui::PopStyleColor(3);
 
                 ImGui::BeginChild("##board_scroll", ImVec2(0,0), false,
                     ImGuiWindowFlags_HorizontalScrollbar);
@@ -8311,8 +8358,8 @@ void run_streaming_viewer(){
                 ImGui::PopStyleVar();
             }
 
-            // 1~7 키로 뷰 전환 (뷰 동기화 포함)
-            if(!io.WantTextInput){
+            // 1~7 키로 뷰 전환 (뷰 동기화 포함) — EID가 가장 상단일 때만
+            if(!io.WantTextInput && g_top_overlay == 1){
                 int new_mode=-1;
                 if(ImGui::IsKeyPressed(ImGuiKey_1,false)) new_mode=0;
                 if(ImGui::IsKeyPressed(ImGuiKey_2,false)) new_mode=1;
@@ -10453,7 +10500,7 @@ void run_streaming_viewer(){
         if(v.digi_decode_panel_open){
             ImGui::SetNextWindowPos(ImVec2(0,0));
             ImGui::SetNextWindowSize(ImVec2(disp_w, disp_h));
-            if(last_overlay == 3) ImGui::SetNextWindowFocus();
+            if(g_top_overlay == 3) ImGui::SetNextWindowFocus();
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
             ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.03f,0.03f,0.05f,0.97f));
             ImGui::Begin("##digi_overlay", nullptr,
@@ -10545,7 +10592,7 @@ void run_streaming_viewer(){
         if(v.log_panel_open){
             ImGui::SetNextWindowPos(ImVec2(0,0));
             ImGui::SetNextWindowSize(ImVec2(disp_w, disp_h));
-            if(last_overlay == 2) ImGui::SetNextWindowFocus();
+            if(g_top_overlay == 2) ImGui::SetNextWindowFocus();
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
             ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.03f,0.03f,0.05f,0.97f));
             ImGui::Begin("##log_overlay", nullptr,
