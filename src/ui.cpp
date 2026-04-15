@@ -3654,26 +3654,7 @@ void run_streaming_viewer(){
                         (frm.wall_time > 0) ? (int64_t)frm.wall_time * 1000LL
                         : (int64_t)(std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::system_clock::now().time_since_epoch()).count());
-                    // wall_time 기반 워터폴 시간태그
-                    if(frm.wall_time > 0){
-                        time_t wt = (time_t)frm.wall_time;
-                        struct tm* tt = localtime(&wt);
-                        int cur5 = tt->tm_hour*720+tt->tm_min*12+tt->tm_sec/5;
-                        if(cur5 != v.last_tagged_sec){
-                            v.last_tagged_sec = cur5;
-                            FFTViewer::WfEvent wev{};
-                            wev.fft_idx  = v.current_fft_idx;
-                            wev.wall_time= wt;
-                            wev.type     = 0;
-                            strftime(wev.label,sizeof(wev.label),"%H:%M:%S",tt);
-                            std::lock_guard<std::mutex> wlk(v.wf_events_mtx);
-                            v.wf_events.push_back(wev);
-                            int cutoff=v.current_fft_idx-MAX_FFTS_MEMORY;
-                            v.wf_events.erase(std::remove_if(v.wf_events.begin(),v.wf_events.end(),
-                                [&](const FFTViewer::WfEvent& e){return e.fft_idx<cutoff;}),
-                                v.wf_events.end());
-                        }
-                    }
+                    // 시간 태그는 HOST가 on_wf_event로 보내는 것만 사용 (중복 방지)
                     // 오토스케일 누적
                     if(v.autoscale_active){
                         if(!v.autoscale_init){
