@@ -1,4 +1,5 @@
 #include "fft_viewer.hpp"
+#include "audio_playback.hpp"
 #include "net_protocol.hpp"
 #include <algorithm>
 #include <mutex>
@@ -240,4 +241,35 @@ FFTViewer::~FFTViewer(){
         join_if(channels[i].dem_thr);
         join_if(channels[i].digi_thr);
     }
+}
+
+// ── EID Audio 탭 재생 ─────────────────────────────────────────────────────
+void FFTViewer::audio_play_start(const std::string& path, double offset_sec){
+    if(!audio_player) audio_player = std::make_unique<AudioPlayback>();
+    audio_player->start(path, AUDIO_SR, offset_sec);
+}
+void FFTViewer::audio_play_stop(){
+    if(audio_player) audio_player->stop();
+}
+void FFTViewer::audio_play_pause(){
+    if(audio_player) audio_player->pause();
+}
+void FFTViewer::audio_play_resume(){
+    if(audio_player) audio_player->resume();
+}
+bool FFTViewer::audio_play_active() const {
+    return audio_player && audio_player->active();
+}
+bool FFTViewer::audio_play_paused() const {
+    return audio_player && audio_player->paused();
+}
+float FFTViewer::audio_play_pos_sec() const {
+    return audio_player ? audio_player->position_sec() : 0.f;
+}
+float FFTViewer::audio_play_total_sec() const {
+    return audio_player ? audio_player->total_sec() : 0.f;
+}
+const std::string& FFTViewer::audio_play_path() const {
+    static const std::string empty;
+    return audio_player ? audio_player->path() : empty;
 }

@@ -1,5 +1,6 @@
 #include "fft_viewer.hpp"
 #include "audio.hpp"
+#include "audio_playback.hpp"
 #include "net_client.hpp"
 #include <vector>
 #include <algorithm>
@@ -59,6 +60,13 @@ void FFTViewer::mix_worker(){
                     if(lco==0)      { L+=smp; }
                     else if(lco==2) { R+=smp; }
                     else            { L+=smp; R+=smp; }
+                }
+            }
+            // EID Audio 탭 재생: 활성 시 frame 단위로 합산 (로컬 ALSA만, 브로드캐스트 X)
+            if(audio_player && audio_player->active() && !audio_player->paused()){
+                float pL=0, pR=0;
+                if(audio_player->pop_stereo(pL, pR)){
+                    L += pL; R += pR;
                 }
             }
             L=L<-1.0f?-1.0f:L>1.0f?1.0f:L;

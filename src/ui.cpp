@@ -3923,7 +3923,9 @@ void run_streaming_viewer(){
                 }
             }
             // 스페이스바: TM 토글 (진입/해제)
-            if(ImGui::IsKeyPressed(ImGuiKey_Space,false)){
+            // EID Audio 탭(mode 8) 활성 시에는 audio play/pause 전용 — TM 토글 비활성
+            if(ImGui::IsKeyPressed(ImGuiKey_Space,false)
+               && !(v.eid_panel_open && v.eid_view_mode == 8)){
                 if(v.tm_active.load()){
                     v.tm_offset=0.0f;
                     v.tm_active.store(false);
@@ -6952,12 +6954,18 @@ void run_streaming_viewer(){
                         v.eid_view_t1 = (double)v.eid_total_samples;
                     }
 
-                    // ── 뷰 모드 전환 (1/2/3/4 키) ─ EID가 가장 상단일 때만
+                    // ── 뷰 모드 전환 (1~9 키, sa_btns 디스플레이 순서) ─ EID가 가장 상단일 때만
+                    // 1=Spectrogram 2=Amp 3=Freq 4=Phase 5=I/Q 6=Const 7=Audio 8=Power 9=Bits
                     if(mouse_in_eid && top_ov() == 1){
                         if(ImGui::IsKeyPressed(ImGuiKey_1, false)) v.eid_view_mode = 0;
                         if(ImGui::IsKeyPressed(ImGuiKey_2, false)) v.eid_view_mode = 1;
                         if(ImGui::IsKeyPressed(ImGuiKey_3, false)) v.eid_view_mode = 2;
                         if(ImGui::IsKeyPressed(ImGuiKey_4, false)) v.eid_view_mode = 3;
+                        if(ImGui::IsKeyPressed(ImGuiKey_5, false)) v.eid_view_mode = 4;
+                        if(ImGui::IsKeyPressed(ImGuiKey_6, false)) v.eid_view_mode = 5;
+                        if(ImGui::IsKeyPressed(ImGuiKey_7, false)) v.eid_view_mode = 8; // Audio
+                        if(ImGui::IsKeyPressed(ImGuiKey_8, false)) v.eid_view_mode = 6; // Power
+                        if(ImGui::IsKeyPressed(ImGuiKey_9, false)) v.eid_view_mode = 7; // Bits
                         // 좌우 방향키: 현재 화면 폭만큼 팬
                         if(!io.WantTextInput){
                             double span = vt1 - vt0;
@@ -7737,6 +7745,9 @@ void run_streaming_viewer(){
                 v.sa_temp_path = file_ctx.filepath;
                 v.eid_panel_open = true;
                 v.eid_view_mode = 1; // 기본 Amp
+                // 기존 audio 재생 정지 + cursor 리셋
+                v.audio_play_stop();
+                v.eid_audio_cursor_sample = 0;
                 // 시간 도메인 데이터 로드
                 v.eid_cleanup();
                 v.eid_start(file_ctx.filepath);
@@ -8402,6 +8413,7 @@ void run_streaming_viewer(){
                 {"Phase",       3, IM_COL32(255,220,80,255)},
                 {"I/Q",         4, IM_COL32(80,180,255,255)},
                 {"Const",       5, IM_COL32(200,80,255,255)},
+                {"Audio",       8, IM_COL32(80,255,200,255)},
                 {"Power",       6, IM_COL32(255,100,100,255)},
                 {"Bits",        7, IM_COL32(120,220,255,255)},
             };
@@ -8447,6 +8459,7 @@ void run_streaming_viewer(){
                 fg->AddText(ImVec2(cx, cy), chov ? IM_COL32(255,100,100,255) : IM_COL32(160,160,180,200), close_lbl);
                 if(chov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
                     v.eid_panel_open = false;
+                    v.audio_play_stop(); // Audio 재생 중이었으면 정지
                 }
             }
 
@@ -9150,6 +9163,214 @@ void run_streaming_viewer(){
                         }
                         if(ImGui::IsMouseDoubleClicked(0))
                             v.eid_const_zoom=0.0f;
+                    }
+                }
+
+            // ── Audio 모드 (mode 8): WAV 재생 + bipolar waveform + cursor ──
+            } else if(eid_mode == 8 && v.eid_data_ready.load()){
+                const float LM=20.f, RM=10.f, TM=24.f, BM=30.f;
+                float ea_x0=ov_x0+LM, ea_y0=ca_y0+TM;
+                float ea_x1=ov_x1-RM, ea_y1=ca_y1-BM;
+                float ea_w=ea_x1-ea_x0, ea_h=ea_y1-ea_y0;
+                if(ea_w>10.f && ea_h>10.f){
+                    uint32_t sr=v.eid_sample_rate; if(sr==0) sr=1;
+                    ImDrawList* fg2=ImGui::GetForegroundDrawList();
+
+                    // 배경
+                    fg2->AddRectFilled(ImVec2(ea_x0,ea_y0), ImVec2(ea_x1,ea_y1),
+                                       IM_COL32(22,22,28,255));
+                    fg2->AddRect(ImVec2(ea_x0,ea_y0), ImVec2(ea_x1,ea_y1),
+                                 IM_COL32(60,60,80,255));
+
+                    double vt0=v.eid_view_t0, vt1=v.eid_view_t1;
+                    double vis_samp=vt1-vt0; if(vis_samp<1.0) vis_samp=1.0;
+                    int pixels=(int)ea_w; if(pixels<1) pixels=1;
+                    double spp=vis_samp/pixels;
+
+                    float y_mid  = (ea_y0 + ea_y1) * 0.5f;
+                    float half_h = (ea_y1 - ea_y0) * 0.5f;
+                    // 파형이 쓰는 실제 반높이 — 상하 20%씩 헤드룸 (여유)
+                    float usable_h = half_h * 0.6f;
+
+                    // 시간 포맷 헬퍼: MM:SS.ss 또는 H:MM:SS.ss
+                    auto fmt_time = [](double t_sec, char* buf, size_t bufsz, bool subsec){
+                        if(t_sec < 0) t_sec = 0;
+                        int h = (int)(t_sec / 3600.0);
+                        int m = (int)((t_sec - h*3600.0) / 60.0);
+                        double s = t_sec - h*3600.0 - m*60.0;
+                        if(h > 0){
+                            if(subsec) snprintf(buf,bufsz,"%d:%02d:%05.2f",h,m,s);
+                            else       snprintf(buf,bufsz,"%d:%02d:%02d",h,m,(int)s);
+                        } else if(subsec){
+                            snprintf(buf,bufsz,"%02d:%05.2f",m,s);
+                        } else {
+                            snprintf(buf,bufsz,"%02d:%02d",m,(int)s);
+                        }
+                    };
+
+                    // 중앙선 (0 기준선)
+                    fg2->AddLine(ImVec2(ea_x0,y_mid), ImVec2(ea_x1,y_mid),
+                                 IM_COL32(70,70,90,255));
+
+                    // X축 시간 그리드 + MM:SS 라벨 (상단)
+                    {
+                        double t0s=(double)vt0/sr, t1s=(double)vt1/sr, dts=t1s-t0s;
+                        double rs = dts / std::max(2.0, (double)(pixels/120));
+                        double mg = pow(10.0, floor(log10(rs)));
+                        double nm = rs/mg;
+                        double ns = (nm<=1.0)?1.0*mg:(nm<=2.0)?2.0*mg
+                                  :(nm<=5.0)?5.0*mg:10.0*mg;
+                        if(ns < 0.001) ns = 0.001; // 최소 1ms
+                        double su = ceil(t0s/ns)*ns;
+                        bool subsec = (dts < 10.0);
+                        for(double ts=su; ts<=t1s+ns*0.5; ts+=ns){
+                            float xx=ea_x0+(float)((ts*sr-vt0)/vis_samp)*ea_w;
+                            if(xx<ea_x0||xx>ea_x1) continue;
+                            fg2->AddLine(ImVec2(xx,ea_y0), ImVec2(xx,ea_y1),
+                                         IM_COL32(40,40,55,255));
+                            char lbl[32]; fmt_time(ts, lbl, sizeof(lbl), subsec);
+                            ImVec2 tsz=ImGui::CalcTextSize(lbl);
+                            fg2->AddText(ImVec2(xx-tsz.x*0.5f, ea_y1+4),
+                                         IM_COL32(130,130,160,255), lbl);
+                        }
+                    }
+
+                    // Waveform (Audacity 스타일) — Peak(반투명) + RMS(진함)
+                    // 픽셀당 min/max(peak)와 RMS를 동시에 계산해서 이중 렌더링
+                    fg2->PushClipRect(ImVec2(ea_x0,ea_y0), ImVec2(ea_x1,ea_y1), true);
+                    {
+                        const auto& ch = v.eid_ch_i;
+                        int64_t total = (int64_t)ch.size();
+                        if(total > 0){
+                            const ImU32 col_rms = IM_COL32(240,70,70,255); // RMS 진한 빨강
+                            if(spp<=1.0){
+                                // 픽셀당 샘플 1개 이하 — 그냥 라인 한 줄
+                                std::vector<ImVec2> pts;
+                                int64_t s0c=std::max((int64_t)0,(int64_t)vt0);
+                                int64_t s1c=std::min(total,(int64_t)ceil(vt1)+1);
+                                pts.reserve((size_t)(s1c-s0c));
+                                for(int64_t s=s0c; s<s1c; s++){
+                                    float val = ch[s];
+                                    if(val<-1.f) val=-1.f;
+                                    if(val>1.f)  val=1.f;
+                                    float yy = y_mid - val*usable_h;
+                                    float xx = ea_x0 + (float)((s-vt0)/vis_samp)*ea_w;
+                                    pts.push_back(ImVec2(xx,yy));
+                                }
+                                if(pts.size()>=2)
+                                    fg2->AddPolyline(pts.data(),(int)pts.size(),
+                                                     col_rms,ImDrawFlags_None,1.2f);
+                            } else {
+                                // 픽셀당 여러 샘플 — Peak + RMS 이중 렌더링
+                                for(int px=0; px<pixels; px++){
+                                    int64_t s0=(int64_t)(vt0+px*spp);
+                                    int64_t s1=(int64_t)(vt0+(px+1)*spp);
+                                    s0=std::max((int64_t)0,std::min(s0,total-1));
+                                    s1=std::max(s0+1,std::min(s1,total));
+                                    double sum_sq=0.0; int64_t n=0;
+                                    for(int64_t s=s0; s<s1; s++){
+                                        float val=ch[s];
+                                        sum_sq += (double)val*val;
+                                        n++;
+                                    }
+                                    float rms = (n>0) ? (float)sqrt(sum_sq/(double)n) : 0.f;
+                                    if(rms>1.f) rms=1.f;
+
+                                    // RMS 수직 막대 — 말하는 구간이 두툼하게 부풀어 오름
+                                    float y_hi_rms = y_mid - rms*usable_h;
+                                    float y_lo_rms = y_mid + rms*usable_h;
+                                    fg2->AddRectFilled(ImVec2((float)(ea_x0+px),     y_hi_rms),
+                                                       ImVec2((float)(ea_x0+px+1.f), y_lo_rms),
+                                                       col_rms);
+                                }
+                            }
+                        }
+                    }
+
+                    // 재생 중이면 cursor = 현재 재생 위치로 실시간 동기화
+                    if(v.audio_play_active()){
+                        double pos_sec = (double)v.audio_play_pos_sec();
+                        v.eid_audio_cursor_sample = (int64_t)(pos_sec * sr);
+                    }
+
+                    // Cursor 밴드 + 중심선 (노란색) — 재생 중이면 자연스럽게 움직임
+                    {
+                        int64_t cs = v.eid_audio_cursor_sample;
+                        if(cs >= (int64_t)vt0 && cs <= (int64_t)vt1){
+                            float cxp = ea_x0 + (float)(((double)cs-vt0)/vis_samp)*ea_w;
+                            fg2->AddRectFilled(ImVec2(cxp-3,ea_y0),
+                                               ImVec2(cxp+3,ea_y1),
+                                               IM_COL32(255,235,80,40));
+                            fg2->AddLine(ImVec2(cxp,ea_y0), ImVec2(cxp,ea_y1),
+                                         IM_COL32(255,235,80,255), 1.5f);
+                        }
+                    }
+                    fg2->PopClipRect();
+
+                    // 상태 헤더 (PLAY/PAUSE + cursor - total)
+                    {
+                        bool is_playing = v.audio_play_active() && !v.audio_play_paused();
+                        const char* state = is_playing ? "PLAY" : "PAUSE";
+                        ImU32 scol = is_playing ? IM_COL32(80,255,140,255)
+                                                : IM_COL32(255,180,80,255);
+                        double cs_sec    = (double)v.eid_audio_cursor_sample / sr;
+                        double total_sec = (double)v.eid_total_samples / sr;
+                        char ct[32]; fmt_time(cs_sec,    ct, sizeof(ct), true);
+                        char tt[32]; fmt_time(total_sec, tt, sizeof(tt), true);
+                        char info[128];
+                        snprintf(info, sizeof(info), "%s   %s - %s", state, ct, tt);
+                        fg2->AddText(ImVec2(ov_x0+8, ca_y0+4), scol, info);
+                    }
+
+                    // ── 인터랙션 ──
+                    bool hov = (io.MousePos.x >= ea_x0 && io.MousePos.x <= ea_x1
+                             && io.MousePos.y >= ea_y0 && io.MousePos.y <= ea_y1);
+
+                    // 마우스 휠 → X축 줌 (마우스 위치 기준)
+                    if(hov && io.MouseWheel != 0.f){
+                        double zoom_f = (io.MouseWheel > 0) ? 0.8 : 1.25;
+                        double mouse_t = vt0 + ((io.MousePos.x - ea_x0) / ea_w) * vis_samp;
+                        double frac = (mouse_t - vt0) / vis_samp;
+                        if(frac < 0.0) frac = 0.0;
+                        if(frac > 1.0) frac = 1.0;
+                        double new_vis = vis_samp * zoom_f;
+                        double nt0 = mouse_t - new_vis * frac;
+                        double nt1 = nt0 + new_vis;
+                        if(nt0 < 0){ nt1 -= nt0; nt0 = 0; }
+                        if(nt1 > (double)v.eid_total_samples){
+                            nt0 -= (nt1 - (double)v.eid_total_samples);
+                            nt1 = (double)v.eid_total_samples;
+                        }
+                        nt0 = std::max(0.0, nt0);
+                        nt1 = std::min((double)v.eid_total_samples, nt1);
+                        if(nt1 - nt0 < 32.0){
+                            double mid = (nt0 + nt1) * 0.5;
+                            nt0 = mid - 16.0; nt1 = mid + 16.0;
+                        }
+                        v.eid_view_t0 = nt0;
+                        v.eid_view_t1 = nt1;
+                    }
+
+                    // 좌클릭 → cursor 설정 (재생 중이면 정지 후 새 위치 대기)
+                    if(hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                        double sx = vt0 + ((io.MousePos.x - ea_x0) / ea_w) * vis_samp;
+                        if(sx<0) sx=0;
+                        if(sx>(double)v.eid_total_samples) sx=(double)v.eid_total_samples;
+                        v.eid_audio_cursor_sample = (int64_t)sx;
+                        if(v.audio_play_active()) v.audio_play_stop();
+                    }
+
+                    // 스페이스 → 재생/일시정지 토글
+                    if(!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Space, false)){
+                        if(!v.audio_play_active()){
+                            double off_sec = (double)v.eid_audio_cursor_sample / sr;
+                            if(!v.sa_temp_path.empty())
+                                v.audio_play_start(v.sa_temp_path, off_sec);
+                        } else if(v.audio_play_paused()){
+                            v.audio_play_resume();
+                        } else {
+                            v.audio_play_pause();
+                        }
                     }
                 }
 

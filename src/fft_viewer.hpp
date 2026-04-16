@@ -5,6 +5,7 @@
 #include "net_client.hpp"
 #include "hw_config.hpp"
 #include "channel.hpp"
+#include "audio_playback.hpp"
 
 #ifndef BEWE_HEADLESS
   #include <GL/glew.h>
@@ -30,6 +31,7 @@
 #include <algorithm>
 #include <deque>
 #include <condition_variable>
+#include <memory>
 #include <sys/types.h>
 
 // ── Global log helper (ui.cpp에서 정의, 모든 .cpp에서 사용 가능) ─────────
@@ -588,6 +590,20 @@ public:
     // ── Audio mix ─────────────────────────────────────────────────────────
     std::atomic<bool> mix_stop{false};
     std::thread       mix_thr;
+
+    // ── EID Audio 탭 재생 ─────────────────────────────────────────────────
+    // EID 패널 Audio 탭에서 좌클릭 cursor → 스페이스로 재생/일시정지
+    std::unique_ptr<AudioPlayback> audio_player;
+    int64_t eid_audio_cursor_sample = 0;  // 좌클릭으로 설정된 cursor (샘플 인덱스)
+    void  audio_play_start(const std::string& path, double offset_sec);
+    void  audio_play_stop();
+    void  audio_play_pause();
+    void  audio_play_resume();
+    bool  audio_play_active() const;
+    bool  audio_play_paused() const;
+    float audio_play_pos_sec() const;
+    float audio_play_total_sec() const;
+    const std::string& audio_play_path() const;
 
     // ── hw_detect / bladerf_io / rtlsdr_io ───────────────────────────────
     bool initialize(float cf_mhz, float sr_msps = 61.44f); // HW 자동 감지 후 초기화
