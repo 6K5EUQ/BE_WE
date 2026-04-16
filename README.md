@@ -77,7 +77,7 @@ Most SDR applications are designed for a single operator on a single machine. BE
 
 ### Demodulation
 - **Analog** — AM, FM, MAGIC (auto-detect AM/FM/DSB/SSB/CW)
-- **Digital** — AIS (marine vessel tracking)
+- **Digital** — AIS (marine vessel tracking), LoRa
 - Up to 10 simultaneous channels with independent mode selection
 
 ### Audio
@@ -214,9 +214,10 @@ Use cases:
 | Device | Frequency Range | Gain | Format |
 |--------|----------------|------|--------|
 | **BladeRF** | 47 MHz – 6 GHz | 0 – 60 dB | SC16_Q11 |
+| **ADALM-Pluto** | 70 MHz – 6 GHz | 0 – 71 dB | SC16 (12-bit) |
 | **RTL-SDR** | 500 kHz – 1.766 GHz | 0 – 49.6 dB (29 steps) | uint8 offset binary |
 
-Hardware is auto-detected at startup. If no SDR is found, you can still JOIN a remote HOST.
+Hardware is auto-detected at startup (priority: BladeRF → Pluto → RTL-SDR). If no SDR is found, you can still JOIN a remote HOST. The active SDR can be switched at runtime without restarting (HOST/LOCAL: click the Receiver field).
 
 ---
 
@@ -316,6 +317,9 @@ sudo apt install -y build-essential cmake pkg-config
 # SDR libraries
 sudo apt install -y libbladerf-dev librtlsdr-dev
 
+# ADALM-Pluto (AD936x) — required for Pluto support
+sudo apt install -y libiio-dev libad9361-dev
+
 # DSP / Audio
 sudo apt install -y libfftw3-dev libasound2-dev libmpg123-dev libvolk-dev
 
@@ -330,16 +334,17 @@ sudo apt install -y libstb-dev
 
 ```bash
 sudo apt install -y build-essential cmake pkg-config \
-  libbladerf-dev librtlsdr-dev libfftw3-dev libasound2-dev \
-  libmpg123-dev libvolk-dev libglew-dev libglfw3-dev libgl-dev libpng-dev libstb-dev
+  libbladerf-dev librtlsdr-dev libiio-dev libad9361-dev \
+  libfftw3-dev libasound2-dev libmpg123-dev libvolk-dev \
+  libglew-dev libglfw3-dev libgl-dev libpng-dev libstb-dev
 ```
 
 ### One-liner (headless CLI only — no GPU required)
 
 ```bash
 sudo apt install -y build-essential cmake pkg-config \
-  libbladerf-dev librtlsdr-dev libfftw3-dev libasound2-dev \
-  libmpg123-dev libvolk-dev libpng-dev
+  libbladerf-dev librtlsdr-dev libiio-dev libad9361-dev \
+  libfftw3-dev libasound2-dev libmpg123-dev libvolk-dev libpng-dev
 ```
 
 ### Compile — GUI (default)
@@ -359,7 +364,7 @@ make -j$(nproc)
 git clone https://github.com/6K5EUQ/BE_WE.git
 cd BE_WE
 mkdir build_cli && cd build_cli
-cmake -DBEWE_HEADLESS=ON ..
+cmake -DCLI=ON ..
 make -j$(nproc)
 ./BE_WE
 ```
@@ -484,7 +489,7 @@ sudo apt install -y build-essential cmake pkg-config \
 # 2. Clone and build
 cd ~ && git clone https://github.com/6K5EUQ/BE_WE.git
 cd BE_WE && mkdir build_cli && cd build_cli
-cmake -DBEWE_HEADLESS=ON .. && make -j4
+cmake -DCLI=ON .. && make -j4
 
 # 3. Apply performance tuning
 sudo bash ~/BE_WE/setup_pi_performance.sh
@@ -570,6 +575,18 @@ sudo udevadm control --reload-rules
 # Re-plug the device
 ```
 
+### ADALM-Pluto not detected
+
+```bash
+# USB 연결 확인
+lsusb | grep Analog
+
+# libiio 컨텍스트 스캔 테스트
+iio_info -s
+
+# "Bad URI: 'usb:'" 출력은 정상 — Pluto 미연결 시 scan 과정에서 발생하는 메시지
+```
+
 ### RTL-SDR claimed by kernel DVB driver
 
 ```bash
@@ -589,6 +606,8 @@ See [System Dependencies](#system-dependencies) above. All required packages:
 | `alsa` | `libasound2-dev` |
 | `libmpg123` | `libmpg123-dev` |
 | `librtlsdr` | `librtlsdr-dev` |
+| `libiio` | `libiio-dev` |
+| `libad9361` | `libad9361-dev` |
 | `volk` | `libvolk-dev` |
 | `libpng` | `libpng-dev` |
 | OpenGL | `libgl-dev` |
@@ -607,11 +626,13 @@ BE_WE/
 │   ├── fft_viewer.hpp/cpp    # FFT computation & waterfall rendering
 │   ├── bladerf_io.cpp        # BladeRF SDR capture
 │   ├── rtlsdr_io.cpp         # RTL-SDR capture
+│   ├── pluto_io.cpp          # ADALM-Pluto SDR capture
 │   ├── hw_detect.cpp         # Hardware auto-detection
 │   ├── hw_config.hpp         # Runtime hardware parameters
 │   ├── demod.cpp             # AM / FM / MAGIC demodulation
 │   ├── audio.hpp/cpp         # ALSA output + 5 noise reduction algorithms
 │   ├── ais.cpp               # AIS digital decoder
+│   ├── lora_demod.cpp/hpp    # LoRa demodulator
 │   ├── sa_compute.cpp        # Signal Analyzer offline FFT
 │   ├── eid_compute.cpp       # EID transmitter fingerprint analysis
 │   ├── net_protocol.hpp      # Binary protocol specification (BEWE)
