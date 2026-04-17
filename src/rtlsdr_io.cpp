@@ -100,6 +100,8 @@ void FFTViewer::set_frequency(float cf_mhz){
     live_cf_hz.store((uint64_t)(cf_mhz*1e6), std::memory_order_release);
     bewe_log_push(0,"Freq > %.2f MHz\n", cf_mhz);
     autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
+    // 범위 밖 채널 Holding 전환 + JOIN에 CH_SYNC 브로드캐스트
+    update_dem_by_freq(cf_mhz);
 }
 
 // ── RTL-SDR 캡처 루프 ─────────────────────────────────────────────────────

@@ -493,6 +493,7 @@ public:
     // JOIN에서 M이면 cmd_toggle_recv(ch, false) 전송
     int  local_ch_out[MAX_CHANNELS] = {1,1,1,1,1,1,1,1,1,1}; // 기본: L+R
     bool ch_created_by_me[MAX_CHANNELS] = {}; // JOIN: 내가 생성한 채널 여부
+    bool ch_pending_create[MAX_CHANNELS] = {}; // JOIN: CMD_CREATE_CH 송신 후 HOST 확인 전 (stale sync 무시용)
     bool digi_panel_on[MAX_CHANNELS] = {};   // 채널별 디지털 버튼 패널 표시 여부 (D키 토글)
     // JOIN: 서버에서 수신한 전체 audio_mask (리스너 표시용)
     uint32_t srv_audio_mask[MAX_CHANNELS] = {};

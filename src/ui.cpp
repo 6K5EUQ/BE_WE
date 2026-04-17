@@ -195,6 +195,7 @@ void FFTViewer::handle_new_channel_drag(float gx, float gw){
                         // JOIN: 서버에 CMD_CREATE_CH 전송 (서버가 처리 후 sync)
                         net_cli->cmd_create_ch(slot, new_drag.s, new_drag.e);
                         ch_created_by_me[slot] = true; // 내가 만든 채널 > 초기 Mute 제외
+                        ch_pending_create[slot] = true; // HOST 확인 전까지 stale sync 무시
                         // 로컬에도 즉시 값 설정 (CH_SYNC 도착 전까지 UI 일관성 유지)
                         channels[slot].reset_slot();
                         channels[slot].s = new_drag.s;
@@ -348,7 +349,7 @@ void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float 
             channels[ci].reset_slot();
             if(net_cli) net_cli->audio[ci].clear();
             local_ch_out[ci] = 1;
-            ch_created_by_me[ci] = false;
+            ch_created_by_me[ci] = false; ch_pending_create[ci] = false;
             if(selected_ch==ci) selected_ch=-1;
             if(net_srv) net_srv->broadcast_channel_sync(channels, MAX_CHANNELS);
         }
@@ -1808,6 +1809,11 @@ void run_streaming_viewer(){
                 auto  was_mode  = v.channels[i].mode;
                 bool now_active = (sync.ch[i].active != 0);
                 auto now_mode   = (Channel::DemodMode)sync.ch[i].mode;
+
+                // CMD_CREATE_CH 송신 후 HOST 미반영 상태의 stale sync 무시
+                // (HOST가 현재 inactive라고 응답 중 — 곧 active로 바뀔 예정)
+                if(v.ch_pending_create[i] && !now_active) continue;
+                if(now_active) v.ch_pending_create[i] = false;
 
                 v.channels[i].filter_active = now_active;
                 // 드래그 중인 채널은 s/e를 덮어쓰지 않음 (덜덜 떨림 방지)
@@ -5235,7 +5241,7 @@ void run_streaming_viewer(){
                                     v.channels[ci].reset_slot();
                                     if(v.net_cli) v.net_cli->audio[ci].clear();
                                     v.local_ch_out[ci]=1;
-                                    v.ch_created_by_me[ci]=false;
+                                    v.ch_created_by_me[ci] = false; v.ch_pending_create[ci] = false;
                                     v.digi_panel_on[ci]=false;
                                     if(v.selected_ch==ci) v.selected_ch=-1;
                                     if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
@@ -5260,7 +5266,7 @@ void run_streaming_viewer(){
                                 v.channels[ci].reset_slot();
                                 if(v.net_cli) v.net_cli->audio[ci].clear();
                                 v.local_ch_out[ci]=1;
-                                v.ch_created_by_me[ci]=false;
+                                v.ch_created_by_me[ci] = false; v.ch_pending_create[ci] = false;
                                 v.digi_panel_on[ci]=false;
                                 if(v.selected_ch==ci) v.selected_ch=-1;
                                 if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
