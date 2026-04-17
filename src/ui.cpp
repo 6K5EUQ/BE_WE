@@ -54,6 +54,8 @@ static std::string fmt_filesize(const std::string& dir, const std::string& fname
 // filter_active인 모든 채널에 대해 동작 (복조 없어도 회색 상태에서 작동)
 // dB값이 FFT 스펙트럼과 동일한 스케일 (-100~0)
 void FFTViewer::update_channel_squelch(){
+    // JOIN 모드: 스컬치 계산은 HOST 전담. CH_SYNC로 받은 sq_threshold/sq_sig/sq_gate만 표시.
+    if(remote_mode) return;
     if(total_ffts < 1 || fft_size < 1) return;
     std::lock_guard<std::mutex> lk(data_mtx);
     float cf_mhz = (float)(header.center_frequency / 1e6);
