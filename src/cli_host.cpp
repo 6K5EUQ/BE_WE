@@ -745,6 +745,130 @@ void run_cli_host(){
         strncpy(v.host_antenna, antenna?antenna:"", sizeof(v.host_antenna)-1);
         v.host_antenna[sizeof(v.host_antenna)-1] = '\0';
     };
+
+    // ── 예약 녹음 (JOIN → HOST) ───────────────────────────────────────────
+    srv->cb.on_add_sched = [&](uint8_t op_idx, const char* op_name,
+                                int64_t start_time, float duration_sec,
+                                float freq_mhz, float bw_khz){
+        if(duration_sec <= 0 || freq_mhz <= 0 || bw_khz <= 0){
+            bewe_log_push(0,"[CMD:%s] SCHED add denied: invalid params\n", op_name);
+            return;
+        }
+        time_t now = time(nullptr);
+        if((time_t)start_time + (time_t)duration_sec < now){
+            bewe_log_push(0,"[CMD:%s] SCHED add denied: past time\n", op_name);
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lk(v.sched_mtx);
+            if(v.sched_has_overlap((time_t)start_time, duration_sec)){
+                bewe_log_push(0,"[CMD:%s] SCHED add denied: overlap\n", op_name);
+                return;
+            }
+            if((int)v.sched_entries.size() >= MAX_SCHED_ENTRIES){
+                bewe_log_push(0,"[CMD:%s] SCHED add denied: list full\n", op_name);
+                return;
+            }
+            FFTViewer::SchedEntry e;
+            e.start_time   = (time_t)start_time;
+            e.duration_sec = duration_sec;
+            e.freq_mhz     = freq_mhz;
+            e.bw_khz       = bw_khz;
+            e.status       = FFTViewer::SchedEntry::WAITING;
+            e.op_index     = op_idx;
+            strncpy(e.operator_name, op_name?op_name:"", sizeof(e.operator_name)-1);
+            v.sched_entries.push_back(e);
+            bewe_log_push(0,"[CMD:%s] SCHED added: %.3fMHz %.0fkHz dur=%.0fs at %lld\n",
+                          op_name, freq_mhz, bw_khz, duration_sec, (long long)start_time);
+        }
+        v.broadcast_sched_list();
+    };
+    srv->cb.on_remove_sched = [&](uint8_t op_idx, const char* op_name,
+                                   int64_t start_time, float freq_mhz){
+        bool removed = false;
+        {
+            std::lock_guard<std::mutex> lk(v.sched_mtx);
+            for(auto it = v.sched_entries.begin(); it != v.sched_entries.end(); ++it){
+                if((time_t)start_time != it->start_time) continue;
+                if(fabsf(freq_mhz - it->freq_mhz) > 0.0001f) continue;
+                // 권한: 본인(op_idx 일치) 또는 HOST 자체(op_idx=0)
+                if(it->op_index != op_idx && op_idx != 0){
+                    bewe_log_push(0,"[CMD:%s] SCHED remove denied: not owner\n", op_name);
+                    return;
+                }
+                if(it->status == FFTViewer::SchedEntry::RECORDING){
+                    bewe_log_push(0,"[CMD:%s] SCHED remove denied: recording in progress\n", op_name);
+                    return;
+                }
+                v.sched_entries.erase(it);
+                removed = true;
+                break;
+            }
+        }
+        if(removed){
+            bewe_log_push(0,"[CMD:%s] SCHED removed\n", op_name);
+            v.broadcast_sched_list();
+        }
+    };
+
+    // 예약 녹음 완료 시 자동 DB 업로드: HOST가 로컬 파일을 central DB로 전송
+    // on_relay_broadcast가 central_cli에 연결되어 있으면 그 경로로, 아니면 로컬 DB 폴더에 복사
+    v.sched_db_upload_fn = [&, srv](const std::string& path, const std::string& op, const std::string& info){
+        FILE* fp = fopen(path.c_str(), "rb");
+        if(!fp){ bewe_log_push(0,"[SCHED-DB] open failed: %s\n", path.c_str()); return; }
+        fseek(fp, 0, SEEK_END); long total = ftell(fp); fseek(fp, 0, SEEK_SET);
+        if(total <= 0){ fclose(fp); return; }
+
+        const char* slash = strrchr(path.c_str(), '/');
+        const char* base = slash ? slash+1 : path.c_str();
+
+        bool relay_ok = (srv && srv->cb.on_relay_broadcast) ? true : false;
+
+        if(relay_ok){
+            PktDbSaveMeta meta{};
+            strncpy(meta.filename, base, sizeof(meta.filename)-1);
+            meta.total_bytes = (uint64_t)total;
+            static std::atomic<uint32_t> g_tid{1};
+            meta.transfer_id = (uint8_t)(g_tid.fetch_add(1) & 0xFF);
+            strncpy(meta.operator_name, op.c_str(), sizeof(meta.operator_name)-1);
+            strncpy(meta.info_data, info.c_str(), sizeof(meta.info_data)-1);
+
+            auto meta_pkt = make_packet(PacketType::DB_SAVE_META, &meta, sizeof(meta));
+            srv->cb.on_relay_broadcast(meta_pkt.data(), meta_pkt.size(), true);
+
+            constexpr size_t CHUNK = 64*1024;
+            std::vector<uint8_t> buf(sizeof(PktDbSaveData) + CHUNK);
+            long sent = 0;
+            while(sent < total){
+                size_t n = (size_t)std::min<long>(CHUNK, total - sent);
+                auto* d = reinterpret_cast<PktDbSaveData*>(buf.data());
+                d->transfer_id = meta.transfer_id;
+                d->is_last     = (sent + (long)n >= total) ? 1 : 0;
+                d->chunk_bytes = (uint32_t)n;
+                if(fread(buf.data() + sizeof(PktDbSaveData), 1, n, fp) != n) break;
+                auto data_pkt = make_packet(PacketType::DB_SAVE_DATA, buf.data(), sizeof(PktDbSaveData)+n);
+                srv->cb.on_relay_broadcast(data_pkt.data(), data_pkt.size(), true);
+                sent += (long)n;
+            }
+            bewe_log_push(0,"[SCHED-DB] uploaded %s (%ld bytes) by %s\n", base, total, op.c_str());
+        } else {
+            // 로컬 DB 폴더에 복사 (central 미연결 시 폴백)
+            std::string db_path = BEWEPaths::database_dir() + "/" + base;
+            FILE* out = fopen(db_path.c_str(), "wb");
+            if(out){
+                constexpr size_t BUF = 64*1024;
+                std::vector<uint8_t> tmp(BUF);
+                size_t n;
+                while((n = fread(tmp.data(), 1, BUF, fp)) > 0) fwrite(tmp.data(), 1, n, out);
+                fclose(out);
+                std::string info_path = db_path + ".info";
+                FILE* fi = fopen(info_path.c_str(), "w");
+                if(fi){ fputs(info.c_str(), fi); fclose(fi); }
+                bewe_log_push(0,"[SCHED-DB] saved locally: %s\n", db_path.c_str());
+            }
+        }
+        fclose(fp);
+    };
     srv->cb.on_chassis_reset = [&](const char* who){ bewe_log_push(0,"[CMD:%s] /chassis 1 reset\n",who); pending_chassis1_reset.store(true); };
     srv->cb.on_net_reset     = [&](const char* who){ bewe_log_push(0,"[CMD:%s] /chassis 2 reset\n",who); pending_chassis2_reset.store(true); };
     srv->cb.on_rx_stop       = [&](const char* who){ bewe_log_push(0,"[CMD:%s] /rx stop\n",who); pending_rx_stop.store(true); };

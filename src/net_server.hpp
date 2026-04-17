@@ -178,6 +178,11 @@ struct ServerCallbacks {
     std::function<void(uint8_t op_idx, const char* op_name, const char* saved_path)> on_share_upload_done;
     std::function<void(uint8_t op_idx, const char* who, uint8_t ch_idx)> on_start_iq_rec;
     std::function<void(uint8_t op_idx, const char* who, uint8_t ch_idx)> on_stop_iq_rec;
+    // 예약 녹음: JOIN → server add/remove
+    std::function<void(uint8_t op_idx, const char* op_name, int64_t start_time,
+                       float duration_sec, float freq_mhz, float bw_khz)> on_add_sched;
+    std::function<void(uint8_t op_idx, const char* op_name,
+                       int64_t start_time, float freq_mhz)> on_remove_sched;
     std::function<void(const char* who, uint8_t ch_idx, uint8_t mode, uint8_t demod_type, float baud_rate)> on_start_digi;
     std::function<void(const char* who, uint8_t ch_idx)> on_stop_digi;
     std::function<void(const char* who)> on_chassis_reset;
@@ -252,6 +257,9 @@ public:
 
     // Channel state → all clients
     void broadcast_channel_sync(const Channel* chs, int n);
+
+    // Scheduled recording list snapshot → all clients
+    void broadcast_sched_sync(const PktSchedSync& pkt);
 
     // Digital decode log → clients with audio_mask bit set
     void broadcast_digi_log(uint8_t tab, uint8_t ch_idx, const char* msg, uint32_t audio_mask);

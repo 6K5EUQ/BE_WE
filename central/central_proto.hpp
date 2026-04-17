@@ -137,6 +137,7 @@ static constexpr uint8_t BEWE_TYPE_RPT_UPDATE   = 0x2B;
 static constexpr uint8_t BEWE_TYPE_DB_DL_INFO   = 0x2D;
 static constexpr uint8_t BEWE_TYPE_DB_LIST_REQ  = 0x2E;
 static constexpr uint8_t BEWE_TYPE_REPORT_LIST_REQ = 0x2F;
+static constexpr uint8_t BEWE_TYPE_SCHED_SYNC      = 0x30;
 
 static constexpr uint8_t BEWE_TYPE_CHAT     = 0x07;
 

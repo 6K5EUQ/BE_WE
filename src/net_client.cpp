@@ -286,6 +286,13 @@ void NetClient::handle_packet(PacketType type,
         break;
     }
 
+    case PacketType::SCHED_SYNC: {
+        if(len < sizeof(PktSchedSync)) break;
+        auto* sync = reinterpret_cast<const PktSchedSync*>(payload);
+        if(on_sched_sync) on_sched_sync(*sync);
+        break;
+    }
+
     case PacketType::WF_EVENT: {
         if(len < sizeof(PktWfEvent)) break;
         auto* ev = reinterpret_cast<const PktWfEvent*>(payload);
@@ -606,6 +613,20 @@ bool NetClient::cmd_set_sr(float msps){
 bool NetClient::cmd_set_antenna(const char* antenna){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::SET_ANTENNA;
     strncpy(c.set_antenna.antenna, antenna ? antenna : "", sizeof(c.set_antenna.antenna)-1);
+    return send_cmd(c);
+}
+bool NetClient::cmd_add_sched(int64_t start_time, float duration_sec, float freq_mhz, float bw_khz){
+    PktCmd c{}; c.cmd=(uint8_t)CmdType::ADD_SCHED;
+    c.add_sched.start_time   = start_time;
+    c.add_sched.duration_sec = duration_sec;
+    c.add_sched.freq_mhz     = freq_mhz;
+    c.add_sched.bw_khz       = bw_khz;
+    return send_cmd(c);
+}
+bool NetClient::cmd_remove_sched(int64_t start_time, float freq_mhz){
+    PktCmd c{}; c.cmd=(uint8_t)CmdType::REMOVE_SCHED;
+    c.remove_sched.start_time = start_time;
+    c.remove_sched.freq_mhz   = freq_mhz;
     return send_cmd(c);
 }
 bool NetClient::cmd_delete_pub_file(const char* filename){

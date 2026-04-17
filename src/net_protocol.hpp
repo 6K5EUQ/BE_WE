@@ -52,6 +52,7 @@ enum class PacketType : uint8_t {
     DB_DOWNLOAD_INFO   = 0x2D,  // central → client: DB file .info contents (sent before DATA)
     DB_LIST_REQ        = 0x2E,  // client → central: request DB list refresh
     REPORT_LIST_REQ    = 0x2F,  // client → central: request Report list refresh
+    SCHED_SYNC         = 0x30,  // server → all clients: scheduled recording list snapshot
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────
@@ -130,6 +131,8 @@ enum class CmdType : uint8_t {
     START_DIGI      = 0x1B,  // JOIN → server: start digital demod
     STOP_DIGI       = 0x1C,  // JOIN → server: stop digital demod
     SET_ANTENNA     = 0x1D,  // bidirectional: set HOST antenna free text (char[32])
+    ADD_SCHED       = 0x1E,  // JOIN → server: add scheduled IQ recording
+    REMOVE_SCHED    = 0x1F,  // JOIN → server: remove own scheduled entry
 };
 
 struct __attribute__((packed)) PktCmd {
@@ -162,6 +165,8 @@ struct __attribute__((packed)) PktCmd {
         struct { uint8_t idx; uint8_t mode; uint8_t demod_type; uint8_t pad; float baud_rate; } start_digi;
         struct { uint8_t idx; }                            stop_digi;
         struct { char    antenna[32]; }                    set_antenna;
+        struct { int64_t start_time; float duration_sec; float freq_mhz; float bw_khz; } add_sched;
+        struct { int64_t start_time; float freq_mhz; }     remove_sched;
         uint8_t raw[48];
     };
 };
@@ -247,6 +252,26 @@ struct __attribute__((packed)) PktChannelSync {
 // 중앙 릴레이(central_proto.hpp)의 CH_SYNC_ENTRY_SIZE와 반드시 일치해야 함.
 // 이 값이 바뀌면 central도 같이 고쳐야 함.
 static_assert(sizeof(ChSyncEntry) == 136, "ChSyncEntry size must match central/central_proto.hpp CH_SYNC_ENTRY_SIZE");
+
+// ── SCHED_SYNC: 예약 녹음 리스트 전체 스냅샷 (server → all) ───────────────
+static constexpr int MAX_SCHED_ENTRIES = 32;
+struct __attribute__((packed)) SchedSyncEntry {
+    uint8_t  valid;            // 1=유효, 0=빈 슬롯
+    uint8_t  status;           // SchedEntry::Status
+    uint8_t  op_index;         // 0=HOST, 1..N=JOIN op_index
+    uint8_t  _pad;
+    int64_t  start_time;       // Unix epoch seconds
+    float    duration_sec;
+    float    freq_mhz;
+    float    bw_khz;
+    char     operator_name[32];
+}; // 56 bytes
+static_assert(sizeof(SchedSyncEntry) == 56, "SchedSyncEntry size");
+struct __attribute__((packed)) PktSchedSync {
+    uint8_t        count;
+    uint8_t        _pad[3];
+    SchedSyncEntry entries[MAX_SCHED_ENTRIES];
+};
 
 // ── DIGI_LOG ─────────────────────────────────────────────────────────────
 struct __attribute__((packed)) PktDigiLog {

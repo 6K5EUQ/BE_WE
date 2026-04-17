@@ -137,6 +137,7 @@ public:
     // ── Channel sync (from CHANNEL_SYNC packets) ──────────────────────────
     // Applied directly to a FFTViewer's channels array via callback
     std::function<void(const PktChannelSync&)> on_channel_sync;
+    std::function<void(const PktSchedSync&)>   on_sched_sync;
     std::function<void(const PktWfEvent&)>     on_wf_event;
     std::function<void(uint8_t tab, uint8_t ch_idx, const char* msg)> on_digi_log;
     std::function<void(const std::string& name, uint64_t total)> on_file_meta;
@@ -244,6 +245,8 @@ public:
     bool cmd_set_fft_size(uint32_t size); // JOIN → HOST: FFT 크기 변경
     bool cmd_set_sr(float msps);          // JOIN → HOST: SR 변경
     bool cmd_set_antenna(const char* antenna);  // bidirectional: antenna text
+    bool cmd_add_sched(int64_t start_time, float duration_sec, float freq_mhz, float bw_khz);
+    bool cmd_remove_sched(int64_t start_time, float freq_mhz);
     bool cmd_db_delete(const char* filename, const char* operator_name);
     bool cmd_db_download(const char* filename, const char* operator_name);
     bool cmd_report_delete(const char* filename);

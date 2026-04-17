@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <cmath>
 #include <vector>
 #include <string>
@@ -239,6 +240,8 @@ public:
         enum Status : int { WAITING=0, RECORDING=1, DONE=2, FAILED=3 } status = WAITING;
         int     temp_ch_idx  = -1;
         std::chrono::steady_clock::time_point rec_started;
+        char    operator_name[32] = {};  // 예약자 (HOST면 login_get_id(), JOIN이면 op_name)
+        uint8_t op_index          = 0;   // 0=HOST, 1..N=JOIN op_index (remove 권한 검증용)
     };
     std::vector<SchedEntry> sched_entries;
     std::mutex              sched_mtx;
@@ -248,6 +251,13 @@ public:
     void sched_tick();
     void sched_start_entry(int idx);
     void sched_stop_entry(int idx);
+    // Overlap 검사 — [start, start+dur)이 기존 WAITING/RECORDING entry와 겹치는지 (sched_mtx 잡은 채로 호출)
+    bool sched_has_overlap(time_t start, float dur) const;
+    // 전체 sched 리스트를 JOIN 클라이언트에 브로드캐스트 (SCHED_SYNC)
+    void broadcast_sched_list();
+    // 예약 녹음 완료 시 자동 DB 업로드 콜백 (cli_host/ui.cpp에서 설정)
+    // args: (file_path, operator_name, info_text)
+    std::function<void(const std::string& path, const std::string& op, const std::string& info)> sched_db_upload_fn;
 
     // ── LOG 오버레이 (L키 토글) ──────────────────────────────────────────
     bool log_panel_open = false;

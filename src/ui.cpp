@@ -1900,6 +1900,25 @@ void run_streaming_viewer(){
             }
         };
 
+        // 예약 녹음 리스트 수신 → 로컬 sched_entries 재구성
+        cli->on_sched_sync = [&](const PktSchedSync& sync){
+            std::lock_guard<std::mutex> lk(v.sched_mtx);
+            v.sched_entries.clear();
+            for(int i=0; i<sync.count && i<MAX_SCHED_ENTRIES; i++){
+                const auto& se = sync.entries[i];
+                if(!se.valid) continue;
+                FFTViewer::SchedEntry e;
+                e.start_time   = (time_t)se.start_time;
+                e.duration_sec = se.duration_sec;
+                e.freq_mhz     = se.freq_mhz;
+                e.bw_khz       = se.bw_khz;
+                e.status       = (FFTViewer::SchedEntry::Status)se.status;
+                e.op_index     = se.op_index;
+                strncpy(e.operator_name, se.operator_name, sizeof(e.operator_name)-1);
+                v.sched_entries.push_back(e);
+            }
+        };
+
         // WF 이벤트 수신 콜백 (IQ Start/Stop 표시)
         cli->on_wf_event = [&](const PktWfEvent& ev){
             FFTViewer::WfEvent wev{};
@@ -2862,6 +2881,51 @@ void run_streaming_viewer(){
                 bewe_log_push(0,"[CMD:%s] Antenna > '%s'\n", who, antenna?antenna:"");
                 strncpy(v.host_antenna, antenna?antenna:"", sizeof(v.host_antenna)-1);
                 v.host_antenna[sizeof(v.host_antenna)-1] = '\0';
+            };
+            // ── 예약 녹음 (JOIN → HOST) ──────────────────────────────────
+            srv->cb.on_add_sched = [&](uint8_t op_idx, const char* op_name,
+                                        int64_t start_time, float duration_sec,
+                                        float freq_mhz, float bw_khz){
+                if(duration_sec <= 0 || freq_mhz <= 0 || bw_khz <= 0) return;
+                time_t now = time(nullptr);
+                if((time_t)start_time + (time_t)duration_sec < now) return;
+                {
+                    std::lock_guard<std::mutex> lk(v.sched_mtx);
+                    if(v.sched_has_overlap((time_t)start_time, duration_sec)){
+                        bewe_log_push(0,"[CMD:%s] SCHED denied: overlap\n", op_name);
+                        return;
+                    }
+                    if((int)v.sched_entries.size() >= MAX_SCHED_ENTRIES) return;
+                    FFTViewer::SchedEntry e;
+                    e.start_time   = (time_t)start_time;
+                    e.duration_sec = duration_sec;
+                    e.freq_mhz     = freq_mhz;
+                    e.bw_khz       = bw_khz;
+                    e.status       = FFTViewer::SchedEntry::WAITING;
+                    e.op_index     = op_idx;
+                    strncpy(e.operator_name, op_name?op_name:"", sizeof(e.operator_name)-1);
+                    v.sched_entries.push_back(e);
+                    bewe_log_push(0,"[CMD:%s] SCHED added: %.3fMHz %.0fkHz dur=%.0fs\n",
+                                  op_name, freq_mhz, bw_khz, duration_sec);
+                }
+                v.broadcast_sched_list();
+            };
+            srv->cb.on_remove_sched = [&](uint8_t op_idx, const char* op_name,
+                                           int64_t start_time, float freq_mhz){
+                bool removed = false;
+                {
+                    std::lock_guard<std::mutex> lk(v.sched_mtx);
+                    for(auto it = v.sched_entries.begin(); it != v.sched_entries.end(); ++it){
+                        if((time_t)start_time != it->start_time) continue;
+                        if(fabsf(freq_mhz - it->freq_mhz) > 0.0001f) continue;
+                        if(it->op_index != op_idx && op_idx != 0) return;
+                        if(it->status == FFTViewer::SchedEntry::RECORDING) return;
+                        v.sched_entries.erase(it);
+                        removed = true;
+                        break;
+                    }
+                }
+                if(removed) v.broadcast_sched_list();
             };
             srv->cb.on_chassis_reset = [&](const char* who){
                 bewe_log_push(0, "[CMD:%s] /chassis 1 reset\n", who);
@@ -6235,7 +6299,10 @@ void run_streaming_viewer(){
                 ImGui::SetNextItemWidth(100); ImGui::InputFloat("Freq(MHz)",&sfreq,0.1f,1.0f,"%.4f");
                 ImGui::SetNextItemWidth(80); ImGui::InputFloat("BW(kHz)",&sbw,1,10,"%.1f");
 
-                bool can_add = !v.remote_mode && (v.dev_blade || v.dev_rtl);
+                // LOCAL/HOST: SDR 필수, JOIN: net_cli 연결 필수
+                bool can_add = v.remote_mode
+                    ? (v.net_cli && v.net_cli->is_connected())
+                    : (v.dev_blade || v.dev_rtl);
                 if(!can_add) ImGui::BeginDisabled();
                 if(ImGui::Button("ADD")){
                     time_t now=time(nullptr);
@@ -6243,16 +6310,31 @@ void run_streaming_viewer(){
                     tm2.tm_hour=sh; tm2.tm_min=sm; tm2.tm_sec=ss;
                     time_t st=mktime(&tm2);
                     if(st <= now) st += 86400; // if time already passed, schedule tomorrow
-                    std::lock_guard<std::mutex> lk(v.sched_mtx);
-                    FFTViewer::SchedEntry e;
-                    e.start_time=st; e.duration_sec=sdur;
-                    e.freq_mhz=sfreq; e.bw_khz=sbw;
-                    v.sched_entries.push_back(e);
-                    bewe_log_push(0,"[SCHED] Added: %02d:%02d:%02d dur=%.0fs freq=%.3fMHz bw=%.0fkHz\n",
-                                  sh,sm,ss,sdur,sfreq,sbw);
+                    if(v.remote_mode && v.net_cli){
+                        // JOIN: HOST에 예약 요청. 결과는 SCHED_SYNC로 받음.
+                        v.net_cli->cmd_add_sched((int64_t)st, sdur, sfreq, sbw);
+                        bewe_log_push(0,"[SCHED] Request sent: %02d:%02d:%02d dur=%.0fs freq=%.3fMHz bw=%.0fkHz\n",
+                                      sh,sm,ss,sdur,sfreq,sbw);
+                    } else {
+                        std::lock_guard<std::mutex> lk(v.sched_mtx);
+                        bool overlap = v.sched_has_overlap(st, sdur);
+                        if(overlap){
+                            bewe_log_push(0,"[SCHED] Denied: overlap with existing entry\n");
+                        } else {
+                            FFTViewer::SchedEntry e;
+                            e.start_time=st; e.duration_sec=sdur;
+                            e.freq_mhz=sfreq; e.bw_khz=sbw;
+                            e.op_index = 0;
+                            strncpy(e.operator_name, login_get_id(), sizeof(e.operator_name)-1);
+                            v.sched_entries.push_back(e);
+                            bewe_log_push(0,"[SCHED] Added: %02d:%02d:%02d dur=%.0fs freq=%.3fMHz bw=%.0fkHz\n",
+                                          sh,sm,ss,sdur,sfreq,sbw);
+                        }
+                    }
                 }
                 if(!can_add) ImGui::EndDisabled();
-                if(v.remote_mode) ImGui::TextColored(ImVec4(1,0.5f,0.3f,1),"HOST mode only");
+                if(v.remote_mode && !can_add)
+                    ImGui::TextColored(ImVec4(1,0.5f,0.3f,1),"HOST not connected");
 
                 ImGui::Separator();
 
@@ -6270,14 +6352,28 @@ void run_streaming_viewer(){
                         ImGui::SameLine();
                         struct tm t2; localtime_r(&e.start_time,&t2);
                         char tb[16]; strftime(tb,sizeof(tb),"%H:%M:%S",&t2);
-                        ImGui::Text("%s  %.3fMHz  BW=%.0fkHz  %.0fs",tb,e.freq_mhz,e.bw_khz,e.duration_sec);
+                        const char* opn = e.operator_name[0] ? e.operator_name : "?";
+                        ImGui::Text("%s  %.3fMHz  BW=%.0fkHz  %.0fs  by %s",
+                                    tb,e.freq_mhz,e.bw_khz,e.duration_sec, opn);
                         ImGui::SameLine();
-                        if(e.status!=FFTViewer::SchedEntry::RECORDING){
-                            if(ImGui::SmallButton("X")){
+                        // Remove 권한: HOST(local)이면 항상, JOIN이면 본인 entry만
+                        bool can_remove = (e.status != FFTViewer::SchedEntry::RECORDING);
+                        if(can_remove && v.remote_mode){
+                            const char* me = login_get_id();
+                            can_remove = (strncmp(opn, me, 31) == 0);
+                        }
+                        if(!can_remove) ImGui::BeginDisabled();
+                        if(ImGui::SmallButton("X")){
+                            if(v.remote_mode && v.net_cli){
+                                v.net_cli->cmd_remove_sched((int64_t)e.start_time, e.freq_mhz);
+                            } else {
                                 v.sched_entries.erase(v.sched_entries.begin()+i);
-                                ImGui::PopID(); break;
+                                ImGui::PopID();
+                                if(!can_remove) ImGui::EndDisabled();
+                                break;
                             }
                         }
+                        if(!can_remove) ImGui::EndDisabled();
                         ImGui::PopID();
                     }
                 }

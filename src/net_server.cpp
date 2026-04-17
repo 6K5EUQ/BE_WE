@@ -307,6 +307,15 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
             case CmdType::SET_ANTENNA:
                 if(cb.on_set_antenna) cb.on_set_antenna(c->name, cmd->set_antenna.antenna);
                 break;
+            case CmdType::ADD_SCHED:
+                if(cb.on_add_sched) cb.on_add_sched(c->op_index, c->name,
+                    cmd->add_sched.start_time, cmd->add_sched.duration_sec,
+                    cmd->add_sched.freq_mhz, cmd->add_sched.bw_khz);
+                break;
+            case CmdType::REMOVE_SCHED:
+                if(cb.on_remove_sched) cb.on_remove_sched(c->op_index, c->name,
+                    cmd->remove_sched.start_time, cmd->remove_sched.freq_mhz);
+                break;
             default: break;
         }
         // ACK
@@ -595,6 +604,18 @@ void NetServer::broadcast_channel_sync(const Channel* chs, int n){
         }
     }
     auto pkt = make_packet(PacketType::CHANNEL_SYNC, &sync, sizeof(sync));
+    if(cb.on_relay_broadcast)
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
+    std::lock_guard<std::mutex> lk(clients_mtx_);
+    for(auto& c : clients_){
+        if(c->is_relay || !c->authed || !c->alive.load()) continue;
+        c->enqueue(pkt, false);
+    }
+}
+
+// ── Broadcast scheduled recording list → all clients ────────────────────
+void NetServer::broadcast_sched_sync(const PktSchedSync& sync){
+    auto pkt = make_packet(PacketType::SCHED_SYNC, &sync, sizeof(sync));
     if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
     std::lock_guard<std::mutex> lk(clients_mtx_);
