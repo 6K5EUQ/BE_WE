@@ -337,8 +337,11 @@ void FFTViewer::update_dem_by_freq(float new_cf_mhz){
         Channel& ch = channels[i];
         if(!ch.filter_active) continue;  // 필터 없으면 무시
 
-        // 채널 범위가 보이는 주파수 범위와 겹치는지 확인
-        bool visible = (ch.e > vis_lo) && (ch.s < vis_hi);
+        // 채널 대역 전체가 가시 범위 안에 포함되어야 visible (full containment)
+        // 일부라도 범위 밖이면 Holding — 음성 깨짐 방지
+        float ch_lo = std::min(ch.s, ch.e);
+        float ch_hi = std::max(ch.s, ch.e);
+        bool visible = (ch_lo >= vis_lo) && (ch_hi <= vis_hi);
 
         if(visible){
             // 범위 안 → pause 상태였으면 해제 (+ 보존된 mode가 있으면 복조 재개)

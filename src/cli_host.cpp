@@ -106,8 +106,8 @@ void FFTViewer::update_channel_squelch(){
         }
         ch.sq_gate.store(gate, std::memory_order_relaxed);
 
-        // 스컬치 누적 시간 추적
-        if(ch.filter_active){
+        // 스컬치 누적 시간 추적 — Holding(dem_paused) 중에는 정지
+        if(ch.filter_active && !ch.dem_paused.load()){
             float fps = (float)header.sample_rate / (float)std::max(1,fft_input_size) / (float)std::max(1,time_average);
             if(fps > 0){
                 float dt = 1.0f / fps;
@@ -116,7 +116,7 @@ void FFTViewer::update_channel_squelch(){
                     if(gate) ch.sq_active_time += dt;
                 }
             }
-        } else {
+        } else if(!ch.filter_active){
             ch.sq_active_time = 0;
             ch.sq_total_time = 0;
         }
