@@ -1774,6 +1774,7 @@ void run_streaming_viewer(){
         v.net_cli     = cli;
         v.my_op_index = cli->my_op_index;
         strncpy(v.host_name, cli->my_name, 31);
+        v.station_name = pending_join.name;
         // 워터폴 타임스탬프 초기화
         { std::lock_guard<std::mutex> wlk(v.wf_events_mtx); v.wf_events.clear(); }
         v.last_tagged_sec = -1;
@@ -4273,7 +4274,7 @@ void run_streaming_viewer(){
             switch(hw_mode){
                 case 0: sr_list = blade_srs; sr_lbls = blade_lbls; sr_count = 7; break;
                 case 2: sr_list = pluto_srs; sr_lbls = pluto_lbls; sr_count = 6; break;
-                default: sr_list = rtl_srs;  sr_lbls = rtl_lbls;   sr_count = 4; break;
+                default: sr_list = rtl_srs;  sr_lbls = rtl_lbls;   sr_count = 5; break;
             }
 
             // 현재 SR에 맞는 인덱스 선택
@@ -4419,6 +4420,22 @@ void run_streaming_viewer(){
                 }
             }
             ImGui::SetCursorScreenPos(ImVec2(sp.x+SLIDER_W+6,ImGui::GetCursorScreenPos().y));
+        }
+
+        // ── Center: mode / station label (LOCAL / HOST : name / JOIN : name) ──
+        {
+            char mbuf[96];
+            if(v.remote_mode){
+                snprintf(mbuf, sizeof(mbuf), "JOIN : %s", v.station_name.c_str());
+            } else if(!v.station_name.empty()){
+                snprintf(mbuf, sizeof(mbuf), "HOST : %s", v.station_name.c_str());
+            } else {
+                snprintf(mbuf, sizeof(mbuf), "LOCAL");
+            }
+            ImVec2 msz = ImGui::CalcTextSize(mbuf);
+            float mx = (disp_w - msz.x) * 0.5f;
+            float my = (TOPBAR_H - ImGui::GetFontSize()) / 2.0f;
+            dl->AddText(ImVec2(mx, my), IM_COL32(140,200,255,255), mbuf);
         }
 
         // ── Right side: channel status + REC + PAUSED ────────────────────
