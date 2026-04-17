@@ -132,6 +132,8 @@ void FFTViewer::sched_start_entry(int idx){
     // Wait briefly for demod thread to initialize and squelch to calibrate
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
+    // 예약 녹음: squelch 무관하게 전 구간 녹음
+    channels[slot].iq_rec_force_all.store(true);
     // Start IQ recording
     start_iq_rec(slot);
 

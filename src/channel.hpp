@@ -196,6 +196,7 @@ struct Channel {
 
     // ── Per-channel IQ recording (demod 스레드 내에서만 접근) ────────────
     std::atomic<bool> iq_rec_on{false};
+    std::atomic<bool> iq_rec_force_all{false}; // true면 squelch와 무관하게 전 구간 녹음 (예약 녹음용)
     FILE*             iq_rec_fp      = nullptr;
     uint64_t          iq_rec_frames  = 0;
     uint32_t          iq_rec_sr      = 0;
@@ -232,20 +233,24 @@ struct Channel {
         if(!iq_rec_on.load(std::memory_order_relaxed)) return;
         if(!iq_rec_fp) return;
         if(dem_paused.load(std::memory_order_relaxed)) return; // Holding 중 쓰기 정지
+        // 예약 녹음(force_all): squelch 무시하고 전 구간 녹음
+        bool force = iq_rec_force_all.load(std::memory_order_relaxed);
         uint32_t tail_samples = iq_rec_sr; // 1 second tail
-        switch(iq_sqr_state){
-        case SQR_IDLE:
-            if(!gate_open) return;
-            iq_sqr_state = SQR_RECORDING;
-            break;
-        case SQR_RECORDING:
-            if(!gate_open){ iq_sqr_state = SQR_TAIL; iq_sqr_tail_remain = tail_samples; }
-            break;
-        case SQR_TAIL:
-            if(gate_open) iq_sqr_state = SQR_RECORDING;
-            else if(iq_sqr_tail_remain == 0){ iq_sqr_state = SQR_IDLE; return; }
-            else iq_sqr_tail_remain--;
-            break;
+        if(!force){
+            switch(iq_sqr_state){
+            case SQR_IDLE:
+                if(!gate_open) return;
+                iq_sqr_state = SQR_RECORDING;
+                break;
+            case SQR_RECORDING:
+                if(!gate_open){ iq_sqr_state = SQR_TAIL; iq_sqr_tail_remain = tail_samples; }
+                break;
+            case SQR_TAIL:
+                if(gate_open) iq_sqr_state = SQR_RECORDING;
+                else if(iq_sqr_tail_remain == 0){ iq_sqr_state = SQR_IDLE; return; }
+                else iq_sqr_tail_remain--;
+                break;
+            }
         }
         auto c16=[](float v)->int16_t{ return (int16_t)(v<-1.f?-32767:v>1.f?32767:(int)(v*32767.f)); };
         int16_t si=c16(fi), sq=c16(fq);
@@ -312,6 +317,7 @@ struct Channel {
         // iq recording
         iq_sqr_state=SQR_IDLE;
         iq_sqr_tail_remain=0;
+        iq_rec_force_all.store(false);
         // squelch
         sq_threshold.store(-50.0f);
         sq_sig.store(-120.0f);
