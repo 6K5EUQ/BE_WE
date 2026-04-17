@@ -7,7 +7,7 @@
 
 // ── BE_WE 런타임 경로 ─────────────────────────────────────────────────────
 // assets : 실행 파일 옆 (AppImage 내부 or 설치 경로)
-// data   : $HOME/.local/share/BE_WE/ (녹음, 임시파일)
+// data   : $HOME/BE_WE/ (녹음, 임시파일, DataBase)
 //
 // 폴더 구조:
 //   recordings/
@@ -55,17 +55,14 @@ static inline std::string assets_dir(){
     return exe_dir()+"/assets";
 }
 
-// 사용자 데이터: $HOME/.local/share/BE_WE/
+// 사용자 데이터: $HOME/BE_WE/
 static inline std::string data_dir(){
     const char* home=getenv("HOME");
-    std::string base=(home?std::string(home):std::string("/tmp"))+
-                     "/.local/share/BE_WE";
-    return base;
+    return (home?std::string(home):std::string("/tmp"))+"/BE_WE";
 }
 
 static inline std::string recordings_dir(){
-    const char* home=getenv("HOME");
-    return (home?std::string(home):std::string("/tmp"))+"/BE_WE/recordings";
+    return data_dir()+"/recordings";
 }
 
 // ── 세션 중 실시간 녹음 폴더 ─────────────────────────────────────────────
@@ -97,8 +94,7 @@ static inline std::string report_audio_dir() { return report_dir()+"/audio"; }
 // Central server의 ./BE_WE/DataBase/{operator}/ 에 저장
 // 클라이언트 측에서도 로컬 DB 캐시로 사용
 static inline std::string database_dir(){
-    const char* home = getenv("HOME");
-    return home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
+    return data_dir()+"/DataBase";
 }
 
 // ── 기존 임시 폴더 (로직 유지) ───────────────────────────────────────────
