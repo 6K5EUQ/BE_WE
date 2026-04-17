@@ -198,6 +198,9 @@ void FFTViewer::handle_new_channel_drag(float gx, float gw){
                         net_cli->cmd_create_ch(slot, new_drag.s, new_drag.e);
                         ch_created_by_me[slot] = true; // 내가 만든 채널 > 초기 Mute 제외
                         ch_pending_create[slot] = true; // HOST 확인 전까지 stale sync 무시
+                        // 중앙 릴레이의 recv_audio[] 잔존 상태(이전 세션/다른 JOIN에 의한 mute)를
+                        // 명시적으로 ON으로 초기화. 없으면 UI L+R 녹색인데 소리 안 나는 버그 발생.
+                        net_cli->cmd_toggle_recv(slot, true);
                         // 로컬에도 즉시 값 설정 (CH_SYNC 도착 전까지 UI 일관성 유지)
                         channels[slot].reset_slot();
                         channels[slot].s = new_drag.s;

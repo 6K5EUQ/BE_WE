@@ -821,6 +821,19 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
             }
             return true;  // HOST에 포워드 안 함
         }
+        // CREATE_CH: HOST에 포워드하되, 해당 slot의 모든 JOIN의 recv_audio를 true로 리셋
+        // (이전 세션/다른 JOIN에 의한 mute 잔존 상태 제거 → 재생성 시 silent 버그 방지)
+        if(cmd_type == BEWE_CMD_CREATE_CH && cmd_len >= 5){
+            uint8_t ch_idx = cmd_payload[4];
+            if(ch_idx < MAX_CHANNELS_RELAY){
+                std::lock_guard<std::mutex> jlk(room->joins_mtx);
+                for(auto& other : room->joins){
+                    if(other) other->recv_audio[ch_idx] = true;
+                }
+                printf("[Central] CREATE_CH ch=%u: reset recv_audio[] for all JOINs\n", ch_idx);
+            }
+            return false;  // HOST에 포워드
+        }
         return false;  // 다른 CMD는 HOST에 포워드
     }
 

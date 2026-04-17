@@ -1271,6 +1271,32 @@ void run_cli_host(){
             }
         }
 
+        // ── Scheduled recording tick (1초마다) ───────────────────────────
+        {
+            static auto sched_last = clk::now();
+            float el = std::chrono::duration<float>(clk::now()-sched_last).count();
+            if(el >= 1.0f){
+                sched_last = clk::now();
+                // 상태 변화 감지용 스냅샷
+                uint32_t before_hash = 0;
+                {
+                    std::lock_guard<std::mutex> lk(v.sched_mtx);
+                    for(auto& e : v.sched_entries)
+                        before_hash = before_hash*131 + (uint32_t)e.status;
+                }
+                v.sched_tick();
+                uint32_t after_hash = 0;
+                {
+                    std::lock_guard<std::mutex> lk(v.sched_mtx);
+                    for(auto& e : v.sched_entries)
+                        after_hash = after_hash*131 + (uint32_t)e.status;
+                }
+                // 상태 전이 발생 시 JOIN들에게 즉시 통지
+                if(before_hash != after_hash)
+                    v.broadcast_sched_list();
+            }
+        }
+
         // ── Time tag + wf_event broadcast (5초마다) ─────────────────────
         {
             static int cli_last_tagged_sec = -1;
