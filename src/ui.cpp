@@ -6288,40 +6288,84 @@ void run_streaming_viewer(){
                 ImGui::TextColored(ImVec4(1.f,0.4f,0.4f,1.f), "Scheduled IQ Recording");
                 ImGui::Separator();
 
-                // Input form
+                // ── 현재 시각 (상단 표시) ─────────────────────────────────
+                {
+                    time_t now_t = time(nullptr);
+                    struct tm tmn; localtime_r(&now_t, &tmn);
+                    char nbuf[32]; strftime(nbuf, sizeof(nbuf), "%H:%M:%S", &tmn);
+                    ImGui::TextDisabled("Now  %s", nbuf);
+                }
+
+                // ── Input form ────────────────────────────────────────────
                 static int sh=0,sm=0,ss=0;
                 static float sdur=60, sfreq=100.0f, sbw=25.0f;
-                ImGui::SetNextItemWidth(30); ImGui::InputInt("##sh",&sh,0,0); ImGui::SameLine();
-                ImGui::Text(":"); ImGui::SameLine();
-                ImGui::SetNextItemWidth(30); ImGui::InputInt("##sm",&sm,0,0); ImGui::SameLine();
-                ImGui::Text(":"); ImGui::SameLine();
-                ImGui::SetNextItemWidth(30); ImGui::InputInt("##ss",&ss,0,0); ImGui::SameLine();
-                ImGui::TextDisabled("(HH:MM:SS)");
 
-                ImGui::SetNextItemWidth(80); ImGui::InputFloat("Dur(s)",&sdur,1,10,"%.0f"); ImGui::SameLine();
-                ImGui::SetNextItemWidth(100); ImGui::InputFloat("Freq(MHz)",&sfreq,0.1f,1.0f,"%.4f");
-                ImGui::SetNextItemWidth(80); ImGui::InputFloat("BW(kHz)",&sbw,1,10,"%.1f");
+                ImGui::Text("When :"); ImGui::SameLine();
+                ImGui::SetNextItemWidth(40); ImGui::InputInt("##sh",&sh,0,0); ImGui::SameLine(0,2);
+                ImGui::Text(":"); ImGui::SameLine(0,2);
+                ImGui::SetNextItemWidth(40); ImGui::InputInt("##sm",&sm,0,0); ImGui::SameLine(0,2);
+                ImGui::Text(":"); ImGui::SameLine(0,2);
+                ImGui::SetNextItemWidth(40); ImGui::InputInt("##ss",&ss,0,0); ImGui::SameLine(0,6);
+                // 빠른 프리셋 버튼
+                auto set_time_offset = [&](int delta_sec){
+                    time_t now2 = time(nullptr) + delta_sec;
+                    struct tm t3; localtime_r(&now2, &t3);
+                    sh = t3.tm_hour; sm = t3.tm_min; ss = t3.tm_sec;
+                };
+                if(ImGui::SmallButton("+1m")) set_time_offset(60); ImGui::SameLine(0,2);
+                if(ImGui::SmallButton("+5m")) set_time_offset(300); ImGui::SameLine(0,2);
+                if(ImGui::SmallButton("+30m")) set_time_offset(1800);
+
+                ImGui::Text("Dur  :"); ImGui::SameLine();
+                ImGui::SetNextItemWidth(80); ImGui::InputFloat("##dur",&sdur,1,10,"%.0f s");
+                ImGui::SameLine();
+                ImGui::Text("Freq :"); ImGui::SameLine();
+                ImGui::SetNextItemWidth(100); ImGui::InputFloat("##freq",&sfreq,0.1f,1.0f,"%.4f MHz");
+                ImGui::SameLine();
+                ImGui::Text("BW  :"); ImGui::SameLine();
+                ImGui::SetNextItemWidth(80); ImGui::InputFloat("##bw",&sbw,1,10,"%.1f kHz");
+
+                // 입력 시각을 절대시간으로 환산해 미리 표시 + overlap 프리뷰
+                time_t preview_st = 0;
+                {
+                    time_t now3 = time(nullptr);
+                    struct tm t4; localtime_r(&now3,&t4);
+                    t4.tm_hour=sh; t4.tm_min=sm; t4.tm_sec=ss;
+                    preview_st = mktime(&t4);
+                    if(preview_st <= now3) preview_st += 86400;
+                    int delta = (int)(preview_st - now3);
+                    int dmin = delta/60, dsec = delta%60;
+                    ImGui::TextDisabled("Starts in %d:%02d  (duration %.0fs)", dmin, dsec, sdur);
+                }
+                bool preview_overlap = false;
+                {
+                    std::lock_guard<std::mutex> lk(v.sched_mtx);
+                    preview_overlap = v.sched_has_overlap(preview_st, sdur);
+                }
+                if(preview_overlap)
+                    ImGui::TextColored(ImVec4(1,0.4f,0.4f,1), "! overlaps existing entry");
 
                 // LOCAL/HOST: SDR 필수, JOIN: net_cli 연결 필수
                 bool can_add = v.remote_mode
                     ? (v.net_cli && v.net_cli->is_connected())
                     : (v.dev_blade || v.dev_rtl);
-                if(!can_add) ImGui::BeginDisabled();
-                if(ImGui::Button("ADD")){
+                bool block_add = !can_add || preview_overlap;
+                if(block_add) ImGui::BeginDisabled();
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f,0.55f,0.2f,1.f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f,0.7f,0.3f,1.f));
+                if(ImGui::Button("  ADD  ")){
                     time_t now=time(nullptr);
                     struct tm tm2; localtime_r(&now,&tm2);
                     tm2.tm_hour=sh; tm2.tm_min=sm; tm2.tm_sec=ss;
                     time_t st=mktime(&tm2);
-                    if(st <= now) st += 86400; // if time already passed, schedule tomorrow
+                    if(st <= now) st += 86400;
                     if(v.remote_mode && v.net_cli){
-                        // JOIN: HOST에 예약 요청. 결과는 SCHED_SYNC로 받음.
                         v.net_cli->cmd_add_sched((int64_t)st, sdur, sfreq, sbw);
                         bewe_log_push(0,"[SCHED] Request sent: %02d:%02d:%02d dur=%.0fs freq=%.3fMHz bw=%.0fkHz\n",
                                       sh,sm,ss,sdur,sfreq,sbw);
                     } else {
                         std::lock_guard<std::mutex> lk(v.sched_mtx);
-                        bool overlap = v.sched_has_overlap(st, sdur);
-                        if(overlap){
+                        if(v.sched_has_overlap(st, sdur)){
                             bewe_log_push(0,"[SCHED] Denied: overlap with existing entry\n");
                         } else {
                             FFTViewer::SchedEntry e;
@@ -6335,31 +6379,82 @@ void run_streaming_viewer(){
                         }
                     }
                 }
-                if(!can_add) ImGui::EndDisabled();
-                if(v.remote_mode && !can_add)
-                    ImGui::TextColored(ImVec4(1,0.5f,0.3f,1),"HOST not connected");
+                ImGui::PopStyleColor(2);
+                if(block_add) ImGui::EndDisabled();
+                if(v.remote_mode && !can_add){
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(1,0.5f,0.3f,1)," HOST not connected");
+                }
 
                 ImGui::Separator();
 
-                // Schedule list
+                // ── Schedule list ─────────────────────────────────────────
                 ImGui::BeginChild("##sched_list",ImVec2(0,0),false);
                 {
                     std::lock_guard<std::mutex> lk(v.sched_mtx);
-                    for(int i=0;i<(int)v.sched_entries.size();i++){
+                    time_t now_t = time(nullptr);
+                    // 시작시각 오름차순 정렬용 인덱스
+                    std::vector<int> order(v.sched_entries.size());
+                    for(int i=0;i<(int)order.size();i++) order[i]=i;
+                    std::sort(order.begin(), order.end(), [&](int a, int b){
+                        return v.sched_entries[a].start_time < v.sched_entries[b].start_time;
+                    });
+
+                    const ImU32 col_border_rec = IM_COL32(220,60,60,255);
+                    const ImU32 col_bg_rec     = IM_COL32(120,20,20,120);
+
+                    for(int oi=0; oi<(int)order.size(); oi++){
+                        int i = order[oi];
                         auto& e=v.sched_entries[i];
                         ImGui::PushID(i);
+                        // 상태별 색상/아이콘
                         static const char* st_names[]={"WAIT","REC","DONE","FAIL"};
+                        static const char* st_icons[]={"[ ]","[R]","[\xE2\x9C\x93]","[X]"}; // [ ] [R] [✓] [X]
                         static const ImVec4 st_cols[]={
-                            {0.6f,0.6f,0.7f,1},{1,0.3f,0.3f,1},{0.3f,0.9f,0.3f,1},{0.9f,0.2f,0.2f,1}};
-                        ImGui::TextColored(st_cols[e.status],"[%s]",st_names[e.status]);
+                            {0.7f,0.7f,0.8f,1},{1,0.3f,0.3f,1},{0.3f,0.9f,0.3f,1},{0.9f,0.2f,0.2f,1}};
+
+                        // RECORDING 엔트리는 깜빡이는 배경 + 테두리
+                        if(e.status == FFTViewer::SchedEntry::RECORDING){
+                            float t2=(float)ImGui::GetTime();
+                            float a = 0.5f + 0.5f*sinf(t2*4.f);
+                            ImVec2 cp = ImGui::GetCursorScreenPos();
+                            float rw = ImGui::GetContentRegionAvail().x;
+                            float rh = ImGui::GetTextLineHeight() + 6.f;
+                            ImGui::GetWindowDrawList()->AddRectFilled(
+                                ImVec2(cp.x-4, cp.y-2), ImVec2(cp.x+rw, cp.y+rh),
+                                IM_COL32(120,20,20,(int)(120*a)), 3.f);
+                            ImGui::GetWindowDrawList()->AddRect(
+                                ImVec2(cp.x-4, cp.y-2), ImVec2(cp.x+rw, cp.y+rh),
+                                col_border_rec, 3.f, 0, 1.5f);
+                        }
+
+                        ImGui::TextColored(st_cols[e.status],"%s", st_icons[e.status]);
                         ImGui::SameLine();
                         struct tm t2; localtime_r(&e.start_time,&t2);
                         char tb[16]; strftime(tb,sizeof(tb),"%H:%M:%S",&t2);
                         const char* opn = e.operator_name[0] ? e.operator_name : "?";
-                        ImGui::Text("%s  %.3fMHz  BW=%.0fkHz  %.0fs  by %s",
-                                    tb,e.freq_mhz,e.bw_khz,e.duration_sec, opn);
+
+                        // 상태에 따라 추가 정보
+                        char tail[64] = "";
+                        if(e.status == FFTViewer::SchedEntry::WAITING){
+                            int d = (int)(e.start_time - now_t);
+                            if(d > 0){
+                                int m=d/60, s=d%60;
+                                if(m >= 60){ int h=m/60; m%=60; snprintf(tail, sizeof(tail), "  in %dh%02dm", h,m); }
+                                else snprintf(tail, sizeof(tail), "  in %d:%02d", m,s);
+                            }
+                        } else if(e.status == FFTViewer::SchedEntry::RECORDING){
+                            float el = std::chrono::duration<float>(
+                                std::chrono::steady_clock::now() - e.rec_started).count();
+                            int cur = (int)el, tot = (int)e.duration_sec;
+                            snprintf(tail, sizeof(tail), "  REC %d/%ds", cur, tot);
+                        }
+
+                        ImGui::Text("%s  %.3fMHz  BW=%.0fkHz  %.0fs  by %s%s",
+                                    tb,e.freq_mhz,e.bw_khz,e.duration_sec, opn, tail);
                         ImGui::SameLine();
-                        // Remove 권한: HOST(local)이면 항상, JOIN이면 본인 entry만
+
+                        // Remove 권한: HOST(local)이면 항상, JOIN이면 본인 entry만, RECORDING은 불가
                         bool can_remove = (e.status != FFTViewer::SchedEntry::RECORDING);
                         if(can_remove && v.remote_mode){
                             const char* me = login_get_id();
@@ -6379,6 +6474,8 @@ void run_streaming_viewer(){
                         if(!can_remove) ImGui::EndDisabled();
                         ImGui::PopID();
                     }
+                    if(v.sched_entries.empty())
+                        ImGui::TextDisabled("  (no scheduled entries)");
                 }
                 ImGui::EndChild();
 
