@@ -244,6 +244,10 @@ struct __attribute__((packed)) PktChannelSync {
     ChSyncEntry ch[10]; // MAX_CHANNELS
 };
 
+// 중앙 릴레이(central_proto.hpp)의 CH_SYNC_ENTRY_SIZE와 반드시 일치해야 함.
+// 이 값이 바뀌면 central도 같이 고쳐야 함.
+static_assert(sizeof(ChSyncEntry) == 136, "ChSyncEntry size must match central/central_proto.hpp CH_SYNC_ENTRY_SIZE");
+
 // ── DIGI_LOG ─────────────────────────────────────────────────────────────
 struct __attribute__((packed)) PktDigiLog {
     uint8_t  tab;       // 0=AIS, 1=ADS-B, 2=UAV, 3=DEMOD
