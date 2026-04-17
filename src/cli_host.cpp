@@ -1125,12 +1125,20 @@ void run_cli_host(){
             }
         }
 
-        // ── Channel sync broadcast (100ms) ───────────────────────────────
+        // ── Squelch update (20ms, GUI 프레임레이트와 유사) + sync broadcast (100ms 유지) ─
+        // 빠른 update는 스퀄치 캘리브레이션(60 샘플)이 ~1.2초 내 완료되도록 함
+        if(v.net_srv){
+            static auto sq_update_last = clk::now();
+            float el_up = std::chrono::duration<float>(clk::now()-sq_update_last).count();
+            if(el_up >= 0.02f){
+                sq_update_last = clk::now();
+                v.update_channel_squelch();
+            }
+        }
         if(v.net_srv && v.net_srv->client_count()>0){
             float el = std::chrono::duration<float>(clk::now()-sq_sync_last).count();
             if(el >= 0.1f){
                 sq_sync_last = clk::now();
-                v.update_channel_squelch();
                 v.net_srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
             }
         }
