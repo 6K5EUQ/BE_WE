@@ -23,9 +23,11 @@ void FFTViewer::eid_start(const std::string& wav_path){
         long     data_offset = 44;
         long     data_size   = 0;
 
-        // fmt chunk sample_rate
-        fseek(f, 24, SEEK_SET);
+        // fmt chunk: num_channels (offset 22), sample_rate (offset 24)
+        fseek(f, 22, SEEK_SET);
+        uint16_t wav_ch = 0; fread(&wav_ch, 2, 1, f);
         uint32_t wav_sr = 0; fread(&wav_sr, 4, 1, f);
+        if(wav_ch == 0) wav_ch = 2; // 헤더 이상 → 기존 IQ 가정
 
         // 청크 순회
         fseek(f, 12, SEEK_SET);
@@ -69,14 +71,17 @@ void FFTViewer::eid_start(const std::string& wav_path){
             }
         }
         if(data_size <= 0){ fclose(f); eid_computing.store(false); return; }
-        int64_t n_samples = data_size / (int64_t)(2 * sizeof(int16_t));
+        const int nch = (wav_ch >= 2) ? 2 : 1;  // 1=mono(audio), 2=stereo(IQ)
+        int64_t n_samples = data_size / (int64_t)(nch * (int)sizeof(int16_t));
         if(n_samples < 1){ fclose(f); eid_computing.store(false); return; }
 
-        // ── IQ 로드 + envelope/I/Q/phase/freq 추출 ──────────────────────────
+        // ── WAV 로드 + envelope/I/Q/phase/freq 추출 ─────────────────────────
+        // mono: 오디오로 취급 (I=sample, Q=0, env=|sample|, phase/freq는 의미 없음)
+        // stereo: IQ로 취급 (기존 로직)
         const int64_t BLOCK = 65536;
         std::vector<float> env(n_samples), ch_i(n_samples), ch_q(n_samples);
         std::vector<float> phase(n_samples), inst_freq(n_samples);
-        std::vector<int16_t> raw(BLOCK * 2);
+        std::vector<int16_t> raw(BLOCK * nch);
         int64_t done = 0;
         const float SCL = 1.0f / 32768.0f;
         float prev_phase = 0.f;
@@ -84,23 +89,31 @@ void FFTViewer::eid_start(const std::string& wav_path){
 
         while(done < n_samples){
             int64_t todo = std::min(BLOCK, n_samples - done);
-            int64_t got = (int64_t)fread(raw.data(), sizeof(int16_t), (size_t)(todo * 2), f) / 2;
+            int64_t got = (int64_t)fread(raw.data(), sizeof(int16_t), (size_t)(todo * nch), f) / nch;
             if(got <= 0) break;
             for(int64_t i = 0; i < got; i++){
-                float fi = raw[i * 2    ] * SCL;
-                float fq = raw[i * 2 + 1] * SCL;
                 int64_t idx = done + i;
-                env[idx]  = sqrtf(fi * fi + fq * fq);
-                ch_i[idx] = fi;
-                ch_q[idx] = fq;
-                float ph  = atan2f(fq, fi);
-                phase[idx] = ph;
-                // unwrapped phase diff → instantaneous frequency
-                float dp = ph - prev_phase;
-                if(dp >  3.14159265f) dp -= TWO_PI;
-                if(dp < -3.14159265f) dp += TWO_PI;
-                inst_freq[idx] = (idx == 0) ? 0.f : dp;
-                prev_phase = ph;
+                if(nch == 2){
+                    float fi = raw[i * 2    ] * SCL;
+                    float fq = raw[i * 2 + 1] * SCL;
+                    env[idx]  = sqrtf(fi * fi + fq * fq);
+                    ch_i[idx] = fi;
+                    ch_q[idx] = fq;
+                    float ph  = atan2f(fq, fi);
+                    phase[idx] = ph;
+                    float dp = ph - prev_phase;
+                    if(dp >  3.14159265f) dp -= TWO_PI;
+                    if(dp < -3.14159265f) dp += TWO_PI;
+                    inst_freq[idx] = (idx == 0) ? 0.f : dp;
+                    prev_phase = ph;
+                } else {
+                    float s = raw[i] * SCL;
+                    env[idx]       = fabsf(s);
+                    ch_i[idx]      = s;
+                    ch_q[idx]      = 0.f;
+                    phase[idx]     = 0.f;
+                    inst_freq[idx] = 0.f;
+                }
             }
             done += got;
         }
