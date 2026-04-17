@@ -213,7 +213,8 @@ struct __attribute__((packed)) ChSyncEntry {
     float    sq_threshold; // squelch threshold dB
     float    sq_sig;       // current signal level dB (for sq meter UI)
     uint8_t  sq_gate;      // squelch gate open (1=open)
-    uint8_t  _pad2[3];
+    uint8_t  dem_paused;   // 1=Holding (out-of-range, demod paused)
+    uint8_t  _pad2[2];
     char     owner_name[32]; // channel creator ID
     // ── 녹음 상태 (HOST → JOIN 동기화) ──
     uint32_t iq_rec_secs;     // IQ 녹음 경과 시간 (초)

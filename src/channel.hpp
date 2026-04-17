@@ -99,7 +99,7 @@ struct Channel {
     std::atomic<bool>   dem_stop_req{false};
     std::thread         dem_thr;
     std::atomic<size_t> dem_rp{0};
-    bool                dem_paused=false;         // 주파수 범위 벗어나 자동 pause됨
+    std::atomic<bool>   dem_paused{false};        // 주파수 범위 벗어나 자동 pause됨 (Holding)
     DemodMode           dem_paused_mode=DM_NONE;  // pause 직전 mode 보존
 
     // Digital decode thread (AIS 등)
@@ -162,6 +162,7 @@ struct Channel {
     inline void maybe_rec_audio(float out, bool gate_open){
         if(!audio_rec_on.load(std::memory_order_relaxed)) return;
         if(!audio_rec_fp) return;
+        if(dem_paused.load(std::memory_order_relaxed)) return; // Holding 중 쓰기 정지
 
         uint32_t tail_samples = audio_rec_sr; // 1초
 
@@ -230,6 +231,7 @@ struct Channel {
     inline void maybe_rec_iq(float fi, float fq, bool gate_open){
         if(!iq_rec_on.load(std::memory_order_relaxed)) return;
         if(!iq_rec_fp) return;
+        if(dem_paused.load(std::memory_order_relaxed)) return; // Holding 중 쓰기 정지
         uint32_t tail_samples = iq_rec_sr; // 1 second tail
         switch(iq_sqr_state){
         case SQR_IDLE:
@@ -298,7 +300,7 @@ struct Channel {
         audio_mask.store(0x1);
         // demod/digi 스레드는 호출 전에 stop_dem/stop_digi로 정리할 것
         dem_rp.store(0);
-        dem_paused=false;
+        dem_paused.store(false);
         dem_paused_mode=DM_NONE;
         digi_rp.store(0);
         // audio ring

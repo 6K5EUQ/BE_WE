@@ -342,17 +342,20 @@ void FFTViewer::update_dem_by_freq(float new_cf_mhz){
 
         if(visible){
             // 범위 안 → pause 상태였으면 재시작
-            if(ch.dem_paused && ch.dem_paused_mode != Channel::DM_NONE){
-                ch.dem_paused = false;
+            if(ch.dem_paused.load() && ch.dem_paused_mode != Channel::DM_NONE){
+                ch.dem_paused.store(false);
                 start_dem(i, ch.dem_paused_mode);
             }
         } else {
             // 범위 밖 → 복조 중이면 pause
-            if(ch.dem_run.load() && !ch.dem_paused){
-                ch.dem_paused      = true;
-                ch.dem_paused_mode = ch.mode;  // mode 보존
-                stop_dem(i);                   // stop_dem이 mode=NONE으로 지움
+            if(ch.dem_run.load() && !ch.dem_paused.load()){
+                ch.dem_paused_mode = ch.mode;     // mode 먼저 보존
+                ch.dem_paused.store(true);        // Holding 진입 (녹음/시간 즉시 정지)
+                stop_dem(i);                      // stop_dem이 mode=NONE으로 지움
             }
         }
     }
+
+    // JOIN에 pause 상태 즉시 반영
+    if(net_srv) net_srv->broadcast_channel_sync(channels, MAX_CHANNELS);
 }

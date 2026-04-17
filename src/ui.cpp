@@ -141,7 +141,8 @@ void FFTViewer::update_channel_squelch(){
         ch.sq_gate.store(gate, std::memory_order_relaxed);
 
         // 스컬치 누적 시간 추적 (프레임 기반 — SDR 멈추면 시간도 정지)
-        if(ch.filter_active){
+        // Holding(dem_paused) 상태에서는 증가 정지 — JOIN도 HOST 값이 멈춘 상태로 받음
+        if(ch.filter_active && !ch.dem_paused.load()){
             // JOIN: CH_SYNC에서 HOST 값을 직접 사용 (로컬 증가 안 함)
             if(!remote_mode){
                 float fps = (float)header.sample_rate / (float)std::max(1,fft_input_size) / (float)std::max(1,time_average);
@@ -153,7 +154,7 @@ void FFTViewer::update_channel_squelch(){
                     }
                 }
             }
-        } else {
+        } else if(!ch.filter_active){
             ch.sq_active_time = 0;
             ch.sq_total_time = 0;
         }
@@ -194,6 +195,11 @@ void FFTViewer::handle_new_channel_drag(float gx, float gw){
                         // JOIN: 서버에 CMD_CREATE_CH 전송 (서버가 처리 후 sync)
                         net_cli->cmd_create_ch(slot, new_drag.s, new_drag.e);
                         ch_created_by_me[slot] = true; // 내가 만든 채널 > 초기 Mute 제외
+                        // 로컬에도 즉시 값 설정 (CH_SYNC 도착 전까지 UI 일관성 유지)
+                        channels[slot].reset_slot();
+                        channels[slot].s = new_drag.s;
+                        channels[slot].e = new_drag.e;
+                        channels[slot].filter_active = true;
                     } else {
                         channels[slot].reset_slot();
                         channels[slot].s=new_drag.s; channels[slot].e=new_drag.e;
@@ -1813,6 +1819,8 @@ void run_streaming_viewer(){
                                            std::memory_order_relaxed);
                 v.channels[i].sq_gate.store(sync.ch[i].sq_gate != 0,
                                             std::memory_order_relaxed);
+                v.channels[i].dem_paused.store(sync.ch[i].dem_paused != 0,
+                                               std::memory_order_relaxed);
                 strncpy(v.channels[i].owner, sync.ch[i].owner_name, 31);
                 v.srv_audio_mask[i] = sync.ch[i].audio_mask; // 전체 서버 마스크 보존
                 // HOST 녹음 시간 동기화
@@ -5039,56 +5047,45 @@ void run_streaming_viewer(){
                     }
                     ImGui::Spacing();
 
-                    // ── Active Channels ──────────────────────────────────
-                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                    if(ImGui::CollapsingHeader("Active Channels")){
-                        ImGui::Indent(8.f);
-                        auto set_local_out = [&](int ci, int lco){
-                            int prev = v.local_ch_out[ci];
-                            v.local_ch_out[ci] = lco;
-                            if(v.net_cli){
-                                bool now_mute=(lco==3), was_mute=(prev==3);
-                                if(now_mute&&!was_mute) v.net_cli->cmd_toggle_recv(ci,false);
-                                else if(!now_mute&&was_mute) v.net_cli->cmd_toggle_recv(ci,true);
-                            }
-                            if(v.net_srv){
-                                uint32_t mask=v.channels[ci].audio_mask.load();
-                                if(lco==3) mask&=~0x1u; else mask|=0x1u;
-                                v.channels[ci].audio_mask.store(mask);
-                                v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
-                            }
-                        };
-                        bool any_ch = false;
-                        // 주파수 오름차순 정렬
-                        int ch_order[MAX_CHANNELS];
-                        int ch_count=0;
-                        for(int i=0;i<MAX_CHANNELS;i++)
-                            if(v.channels[i].filter_active) ch_order[ch_count++]=i;
-                        std::sort(ch_order, ch_order+ch_count, [&](int a, int b){
-                            float ca=(v.channels[a].s+v.channels[a].e)*0.5f;
-                            float cb=(v.channels[b].s+v.channels[b].e)*0.5f;
-                            return ca<cb;
-                        });
-                        for(int ci_idx=0;ci_idx<ch_count;ci_idx++){
-                            int ci=ch_order[ci_idx];
-                            Channel& ch=v.channels[ci];
-                            any_ch = true;
+                    // ── Active Channels / Holding Channels 공통 렌더링 ───
+                    auto set_local_out = [&](int ci, int lco){
+                        int prev = v.local_ch_out[ci];
+                        v.local_ch_out[ci] = lco;
+                        if(v.net_cli){
+                            bool now_mute=(lco==3), was_mute=(prev==3);
+                            if(now_mute&&!was_mute) v.net_cli->cmd_toggle_recv(ci,false);
+                            else if(!now_mute&&was_mute) v.net_cli->cmd_toggle_recv(ci,true);
+                        }
+                        if(v.net_srv){
+                            uint32_t mask=v.channels[ci].audio_mask.load();
+                            if(lco==3) mask&=~0x1u; else mask|=0x1u;
+                            v.channels[ci].audio_mask.store(mask);
+                            v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
+                        }
+                    };
+                    // 한 채널 행 렌더링 — return true면 이 채널은 delete/skip 처리되어 다음으로
+                    auto render_channel_row = [&](int ci, bool is_holding) -> void {
+                        Channel& ch = v.channels[ci];
 
                             float cf_mhz=(ch.s+ch.e)/2.0f;
                             float bw_khz=(ch.e-ch.s)*1000.0f;
                             const char* mnames[]={"--","AM","FM","MAG"};
-                            int mi=(int)ch.mode; if(mi<0||mi>3) mi=0;
+                            // Holding: stop_dem이 ch.mode를 NONE으로 지우므로 dem_paused_mode를 표시
+                            int mi_raw = is_holding ? (int)ch.dem_paused_mode : (int)ch.mode;
+                            int mi = mi_raw; if(mi<0||mi>3) mi=0;
 
                             // ── 채널 색상 (draw_all_channels와 동일) ──────
-                            bool is_arec = ch.audio_rec_on.load();
-                            bool is_irec = (v.rec_on.load()&&ci==v.rec_ch);
-                            bool dem = v.remote_mode
+                            bool is_arec = !is_holding && ch.audio_rec_on.load();
+                            bool is_irec = !is_holding && (v.rec_on.load()&&ci==v.rec_ch);
+                            bool dem = !is_holding && (v.remote_mode
                                 ? (ch.mode!=Channel::DM_NONE)
-                                : ch.dem_run.load();
-                            bool gate = ch.sq_gate.load();
+                                : ch.dem_run.load());
+                            bool gate = !is_holding && ch.sq_gate.load();
 
                             ImU32 mode_col;
-                            if(is_irec||is_arec)
+                            if(is_holding)
+                                mode_col=IM_COL32(120,120,140,255); // Holding: 어두운 회색
+                            else if(is_irec||is_arec)
                                 mode_col=IM_COL32(255,60,60,255);
                             else if(!dem||ch.mode==Channel::DM_NONE)
                                 mode_col=IM_COL32(160,160,160,255);
@@ -5251,7 +5248,7 @@ void run_streaming_viewer(){
                                 if(v.selected_ch==ci) v.selected_ch=-1;
                                 if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
                                 ImGui::PopID();
-                                continue;
+                                return;
                             }
 
                             // L/L+R/R/M 버튼
@@ -5343,9 +5340,49 @@ void run_streaming_viewer(){
                                 }
                             }
                             ImGui::PopID();
+                    }; // end render_channel_row
+
+                    // 주파수 오름차순 정렬 헬퍼
+                    auto collect_sorted = [&](bool want_holding, int* out, int& out_n){
+                        out_n = 0;
+                        for(int i=0;i<MAX_CHANNELS;i++){
+                            if(!v.channels[i].filter_active) continue;
+                            bool h = v.channels[i].dem_paused.load();
+                            if(h != want_holding) continue;
+                            out[out_n++] = i;
                         }
-                        if(!any_ch) ImGui::TextDisabled("  (none)");
+                        std::sort(out, out+out_n, [&](int a, int b){
+                            float ca=(v.channels[a].s+v.channels[a].e)*0.5f;
+                            float cb=(v.channels[b].s+v.channels[b].e)*0.5f;
+                            return ca<cb;
+                        });
+                    };
+
+                    // ── Active Channels ──────────────────────────────────
+                    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+                    if(ImGui::CollapsingHeader("Active Channels")){
+                        ImGui::Indent(8.f);
+                        int ch_order[MAX_CHANNELS]; int ch_count=0;
+                        collect_sorted(false, ch_order, ch_count);
+                        for(int ci_idx=0; ci_idx<ch_count; ci_idx++)
+                            render_channel_row(ch_order[ci_idx], false);
+                        if(ch_count==0) ImGui::TextDisabled("  (none)");
                         ImGui::Unindent(8.f);
+                    }
+                    ImGui::Spacing();
+
+                    // ── Holding Channels (범위 밖으로 나가 자동 pause됨) ──
+                    {
+                        int hold_order[MAX_CHANNELS]; int hold_count=0;
+                        collect_sorted(true, hold_order, hold_count);
+                        ImGui::SetNextItemOpen(hold_count>0, ImGuiCond_Always);
+                        if(ImGui::CollapsingHeader("Holding Channels")){
+                            ImGui::Indent(8.f);
+                            for(int hi_idx=0; hi_idx<hold_count; hi_idx++)
+                                render_channel_row(hold_order[hi_idx], true);
+                            if(hold_count==0) ImGui::TextDisabled("  (none)");
+                            ImGui::Unindent(8.f);
+                        }
                     }
                     ImGui::Spacing();
 

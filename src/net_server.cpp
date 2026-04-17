@@ -562,6 +562,7 @@ void NetServer::broadcast_channel_sync(const Channel* chs, int n){
         sync.ch[i].sq_threshold  = chs[i].sq_threshold.load(std::memory_order_relaxed);
         sync.ch[i].sq_sig        = chs[i].sq_sig.load(std::memory_order_relaxed);
         sync.ch[i].sq_gate       = chs[i].sq_gate.load(std::memory_order_relaxed) ? 1 : 0;
+        sync.ch[i].dem_paused    = chs[i].dem_paused.load(std::memory_order_relaxed) ? 1 : 0;
         strncpy(sync.ch[i].owner_name, chs[i].owner, 31);
         sync.ch[i].iq_rec_secs    = (chs[i].iq_rec_sr > 0) ? (uint32_t)(chs[i].iq_rec_frames / chs[i].iq_rec_sr) : 0;
         sync.ch[i].audio_rec_secs = (chs[i].audio_rec_sr > 0) ? (uint32_t)(chs[i].audio_rec_frames / chs[i].audio_rec_sr) : 0;

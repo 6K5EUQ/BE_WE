@@ -251,6 +251,8 @@ void FFTViewer::capture_and_process(){
             set_gain(gain_db);
             dem_restart_needed.store(true); // demod가 새 SR로 재초기화되도록
             bewe_log("SR > %.2f MSPS  BW > %.2f MHz\n", actual_sr/1e6f, actual_bw/1e6f);
+            // SR 변경으로 가시 대역폭이 달라짐 → 범위 재평가 (Holding/Active 전환)
+            update_dem_by_freq(header.center_frequency/1e6f);
             continue;
         }
 

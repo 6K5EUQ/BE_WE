@@ -360,6 +360,8 @@ void run_cli_host(){
     };
     srv->cb.on_create_ch  = [&](int idx, float s, float e, const char* creator){
         if(idx<0||idx>=MAX_CHANNELS) return;
+        bewe_log_push(0, "[CMD:%s] CH%d create s=%.4f e=%.4f bw=%.4f\n",
+                      creator?creator:"?", idx, s, e, fabsf(e-s));
         v.stop_dem(idx); v.stop_digi(idx);
         v.channels[idx].reset_slot();
         v.channels[idx].s=s; v.channels[idx].e=e;
