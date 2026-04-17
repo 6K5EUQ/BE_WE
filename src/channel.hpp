@@ -269,7 +269,7 @@ struct Channel {
     std::atomic<bool>  sq_calibrated{false};
     // 캘리브레이션 (UI 스레드 전용)
     int   sq_calib_cnt = 0;
-    float sq_calib_buf[90] = {};  // ~1.5초 (GUI 60fps) / ~1.8초 (CLI 50Hz) — 초기 FFT warmup 영향 감소
+    float sq_calib_buf[60] = {};  // ~1초 (GUI 60fps) / ~1.2초 (CLI 50Hz)
     int   sq_gate_hold = 0;      // gate hold 카운터 (프레임 단위)
     float sq_last_close_t = -10.f; // 게이트 마지막 닫힌 시점 (ImGui::GetTime)
     bool  sq_gate_prev = false;  // 이전 프레임 게이트 상태

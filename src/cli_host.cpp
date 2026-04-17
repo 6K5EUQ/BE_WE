@@ -49,11 +49,6 @@ void FFTViewer::update_channel_squelch(){
     float real_dt = std::chrono::duration<float>(sq_now - sq_last_tick).count();
     if(real_dt > 0.5f) real_dt = 0.02f; // 첫 호출/정지 이후 복귀 보정
     sq_last_tick = sq_now;
-    // 새 FFT row가 아직 안 왔으면 이번 tick 스킵 (같은 row 중복 샘플링 방지)
-    static uint64_t sq_last_fft_idx = (uint64_t)-1;
-    uint64_t cur_fft_idx = (uint64_t)total_ffts;
-    if(cur_fft_idx == sq_last_fft_idx) return;
-    sq_last_fft_idx = cur_fft_idx;
 
     std::lock_guard<std::mutex> lk(data_mtx);
     float cf_mhz = (float)(header.center_frequency / 1e6);
@@ -89,14 +84,13 @@ void FFTViewer::update_channel_squelch(){
         float sig = 0.3f * peak_db + 0.7f * prev;
         ch.sq_sig.store(sig, std::memory_order_relaxed);
         if(!ch.sq_calibrated.load(std::memory_order_relaxed)){
-            if(ch.sq_calib_cnt < 90)
+            if(ch.sq_calib_cnt < 60)
                 ch.sq_calib_buf[ch.sq_calib_cnt++] = peak_db;
-            if(ch.sq_calib_cnt >= 90){
-                // 초기 15 샘플은 버림 (FFT warmup / AGC 정착)
-                float tmp[75];
-                memcpy(tmp, ch.sq_calib_buf + 15, sizeof(tmp));
-                std::nth_element(tmp, tmp + 15, tmp + 75); // 20th percentile = 15/75
-                ch.sq_threshold.store(tmp[15] + 10.0f, std::memory_order_relaxed);
+            if(ch.sq_calib_cnt >= 60){
+                float tmp[60];
+                memcpy(tmp, ch.sq_calib_buf, sizeof(tmp));
+                std::nth_element(tmp, tmp + 12, tmp + 60); // 20th percentile
+                ch.sq_threshold.store(tmp[12] + 10.0f, std::memory_order_relaxed);
                 ch.sq_calibrated.store(true, std::memory_order_relaxed);
                 ch.sq_calib_cnt = 0;
             }
@@ -1083,11 +1077,12 @@ void run_cli_host(){
     //  Main loop
     // ══════════════════════════════════════════════════════════════════════
     while(!g_shutdown.load()){
-        // ~10Hz loop (100ms sleep)
+        // ~50Hz loop (20ms sleep) — squelch 캘리브레이션이 1.2초 내 완료되도록
+        // 다른 주기적 작업들은 자체 interval check 있어서 부하 무관
         auto now = clk::now();
         float dt = std::chrono::duration<float>(now - loop_last).count();
         loop_last = now;
-        int sleep_ms = 100 - (int)(dt * 1000);
+        int sleep_ms = 20 - (int)(dt * 1000);
         if(sleep_ms > 0){
             struct pollfd pfd{STDIN_FILENO, POLLIN, 0};
             poll(&pfd, 1, sleep_ms);

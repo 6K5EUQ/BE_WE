@@ -107,15 +107,15 @@ void FFTViewer::update_channel_squelch(){
 
         // 캘리브레이션: 처음 60프레임(~1초) 수집 후 20th percentile + 10dB
         if(!ch.sq_calibrated.load(std::memory_order_relaxed)){
-            if(ch.sq_calib_cnt < 90){
+            if(ch.sq_calib_cnt < 60){
                 ch.sq_calib_buf[ch.sq_calib_cnt++] = peak_db;
             }
-            if(ch.sq_calib_cnt >= 90){
-                // 초기 15 샘플은 warmup으로 제외, 20th percentile + 10dB
-                float tmp[75];
-                memcpy(tmp, ch.sq_calib_buf + 15, sizeof(tmp));
-                std::nth_element(tmp, tmp + 15, tmp + 75);
-                float noise_floor = tmp[15];
+            if(ch.sq_calib_cnt >= 60){
+                // 20th percentile + 10dB
+                float tmp[60];
+                memcpy(tmp, ch.sq_calib_buf, sizeof(tmp));
+                std::nth_element(tmp, tmp + 12, tmp + 60);
+                float noise_floor = tmp[12];
                 ch.sq_threshold.store(noise_floor + 10.0f, std::memory_order_relaxed);
                 ch.sq_calibrated.store(true, std::memory_order_relaxed);
                 ch.sq_calib_cnt = 0;
