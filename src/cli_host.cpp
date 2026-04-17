@@ -43,6 +43,18 @@ bool bladerf_usb_reset();
 // ── 채널 스컬치 (ui.cpp에서 추출 - GUI 의존성 없음) ──────────────────────
 void FFTViewer::update_channel_squelch(){
     if(total_ffts < 1 || fft_size < 1) return;
+    // 호출 간격 기반 실 delta 시간 (시간 카운터용)
+    static auto sq_last_tick = std::chrono::steady_clock::now();
+    auto sq_now = std::chrono::steady_clock::now();
+    float real_dt = std::chrono::duration<float>(sq_now - sq_last_tick).count();
+    if(real_dt > 0.5f) real_dt = 0.02f; // 첫 호출/정지 이후 복귀 보정
+    sq_last_tick = sq_now;
+    // 새 FFT row가 아직 안 왔으면 이번 tick 스킵 (같은 row 중복 샘플링 방지)
+    static uint64_t sq_last_fft_idx = (uint64_t)-1;
+    uint64_t cur_fft_idx = (uint64_t)total_ffts;
+    if(cur_fft_idx == sq_last_fft_idx) return;
+    sq_last_fft_idx = cur_fft_idx;
+
     std::lock_guard<std::mutex> lk(data_mtx);
     float cf_mhz = (float)(header.center_frequency / 1e6);
     float nyq_mhz = header.sample_rate / 2e6f;
@@ -77,13 +89,14 @@ void FFTViewer::update_channel_squelch(){
         float sig = 0.3f * peak_db + 0.7f * prev;
         ch.sq_sig.store(sig, std::memory_order_relaxed);
         if(!ch.sq_calibrated.load(std::memory_order_relaxed)){
-            if(ch.sq_calib_cnt < 60)
+            if(ch.sq_calib_cnt < 90)
                 ch.sq_calib_buf[ch.sq_calib_cnt++] = peak_db;
-            if(ch.sq_calib_cnt >= 60){
-                float tmp[60];
-                memcpy(tmp, ch.sq_calib_buf, sizeof(tmp));
-                std::nth_element(tmp, tmp + 12, tmp + 60);
-                ch.sq_threshold.store(tmp[12] + 10.0f, std::memory_order_relaxed);
+            if(ch.sq_calib_cnt >= 90){
+                // 초기 15 샘플은 버림 (FFT warmup / AGC 정착)
+                float tmp[75];
+                memcpy(tmp, ch.sq_calib_buf + 15, sizeof(tmp));
+                std::nth_element(tmp, tmp + 15, tmp + 75); // 20th percentile = 15/75
+                ch.sq_threshold.store(tmp[15] + 10.0f, std::memory_order_relaxed);
                 ch.sq_calibrated.store(true, std::memory_order_relaxed);
                 ch.sq_calib_cnt = 0;
             }
@@ -106,15 +119,11 @@ void FFTViewer::update_channel_squelch(){
         }
         ch.sq_gate.store(gate, std::memory_order_relaxed);
 
-        // 스컬치 누적 시간 추적 — Holding(dem_paused) 중에는 정지
+        // 스컬치 누적 시간 — 실벽시계 delta 사용 (Holding 중에는 정지)
         if(ch.filter_active && !ch.dem_paused.load()){
-            float fps = (float)header.sample_rate / (float)std::max(1,fft_input_size) / (float)std::max(1,time_average);
-            if(fps > 0){
-                float dt = 1.0f / fps;
-                if(!sdr_stream_error.load()){
-                    ch.sq_total_time += dt;
-                    if(gate) ch.sq_active_time += dt;
-                }
+            if(!sdr_stream_error.load()){
+                ch.sq_total_time += real_dt;
+                if(gate) ch.sq_active_time += real_dt;
             }
         } else if(!ch.filter_active){
             ch.sq_active_time = 0;

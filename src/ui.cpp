@@ -105,15 +105,15 @@ void FFTViewer::update_channel_squelch(){
 
         // 캘리브레이션: 처음 60프레임(~1초) 수집 후 20th percentile + 10dB
         if(!ch.sq_calibrated.load(std::memory_order_relaxed)){
-            if(ch.sq_calib_cnt < 60){
+            if(ch.sq_calib_cnt < 90){
                 ch.sq_calib_buf[ch.sq_calib_cnt++] = peak_db;
             }
-            if(ch.sq_calib_cnt >= 60){
-                // 20th percentile
-                float tmp[60];
-                memcpy(tmp, ch.sq_calib_buf, sizeof(tmp));
-                std::nth_element(tmp, tmp + 12, tmp + 60);  // 12/60 = 20%
-                float noise_floor = tmp[12];
+            if(ch.sq_calib_cnt >= 90){
+                // 초기 15 샘플은 warmup으로 제외, 20th percentile + 10dB
+                float tmp[75];
+                memcpy(tmp, ch.sq_calib_buf + 15, sizeof(tmp));
+                std::nth_element(tmp, tmp + 15, tmp + 75);
+                float noise_floor = tmp[15];
                 ch.sq_threshold.store(noise_floor + 10.0f, std::memory_order_relaxed);
                 ch.sq_calibrated.store(true, std::memory_order_relaxed);
                 ch.sq_calib_cnt = 0;
@@ -5398,8 +5398,8 @@ void run_streaming_viewer(){
                     {
                         int hold_order[MAX_CHANNELS]; int hold_count=0;
                         collect_sorted(true, hold_order, hold_count);
-                        // 사용자 토글 허용: 첫 프레임에서 hold 있으면 열어두고, 이후는 사용자 의지대로
-                        ImGui::SetNextItemOpen(hold_count>0, ImGuiCond_Once);
+                        // 기본으로 열림. 사용자가 이후 토글 가능
+                        ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
                         if(ImGui::CollapsingHeader("Holding Channels")){
                             ImGui::Indent(8.f);
                             for(int hi_idx=0; hi_idx<hold_count; hi_idx++)
@@ -5498,31 +5498,39 @@ void run_streaming_viewer(){
                                             } else {
                                                 float t2=(float)ImGui::GetTime();
                                                 bool blink=(fmodf(t2,0.8f)<0.4f);
-                                                ImGui::PushStyleColor(ImGuiCol_Text,
-                                                    blink?IM_COL32(255,80,80,255):IM_COL32(200,60,60,255));
+                                                bool iq_hld = (re.ch_idx>=0 && v.channels[re.ch_idx].dem_paused.load());
+                                                ImU32 iq_col = iq_hld
+                                                    ? IM_COL32(150,150,150,255)
+                                                    : (blink?IM_COL32(255,80,80,255):IM_COL32(200,60,60,255));
+                                                ImGui::PushStyleColor(ImGuiCol_Text, iq_col);
                                                 // 녹음 중 파일 크기: 0.5초마다만 갱신
                                                 static std::unordered_map<std::string,std::pair<float,std::string>> rec_sz_cache;
                                                 auto& rc=rec_sz_cache[re.filename];
                                                 if(t2-rc.first >= 0.5f){ rc.first=t2; rc.second=fmt_filesize("",re.path); }
                                                 int iq_rec_secs=0;
-                                                int iq_total_secs=0;
                                                 if(re.ch_idx>=0){
                                                     if(v.channels[re.ch_idx].iq_rec_on.load() && v.channels[re.ch_idx].iq_rec_sr>0)
                                                         iq_rec_secs=(int)(v.channels[re.ch_idx].iq_rec_frames/v.channels[re.ch_idx].iq_rec_sr);
                                                 }
+                                                // Holding 중에는 전체 경과 시간 정지
                                                 if(!re.finished){
-                                                    float el=std::chrono::duration<float>(std::chrono::steady_clock::now()-re.t_start).count();
-                                                    iq_total_secs=(int)el;
+                                                    auto nowt = std::chrono::steady_clock::now();
+                                                    if(re.t_last_tick.time_since_epoch().count()==0) re.t_last_tick = re.t_start;
+                                                    float dt = std::chrono::duration<float>(nowt - re.t_last_tick).count();
+                                                    re.t_last_tick = nowt;
+                                                    if(!iq_hld) re.total_elapsed += dt;
                                                 }
+                                                int iq_total_secs = (int)re.total_elapsed;
                                                 int iq_secs=iq_total_secs;
                                                 int iq_dn=re.ch_idx>=0?v.freq_sorted_display_num(re.ch_idx):0;
                                                 char iq_lbl[512];
+                                                const char* iq_tag = iq_hld ? "[HLD]" : "[REC]";
                                                 if(!rc.second.empty())
-                                                    snprintf(iq_lbl,sizeof(iq_lbl),"[REC] [%2d] %s  [%d/%ds]  %s",
-                                                             iq_dn, re.filename.c_str(), iq_rec_secs, iq_secs, rc.second.c_str());
+                                                    snprintf(iq_lbl,sizeof(iq_lbl),"%s [%2d] %s  [%d/%ds]  %s",
+                                                             iq_tag, iq_dn, re.filename.c_str(), iq_rec_secs, iq_secs, rc.second.c_str());
                                                 else
-                                                    snprintf(iq_lbl,sizeof(iq_lbl),"[REC] [%2d] %s  [%d/%ds]",
-                                                             iq_dn, re.filename.c_str(), iq_rec_secs, iq_secs);
+                                                    snprintf(iq_lbl,sizeof(iq_lbl),"%s [%2d] %s  [%d/%ds]",
+                                                             iq_tag, iq_dn, re.filename.c_str(), iq_rec_secs, iq_secs);
                                                 ImGui::Selectable(iq_lbl, re.ch_idx>=0 && v.selected_ch==re.ch_idx);
                                                 if(ImGui::IsItemHovered()){
                                                     if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
@@ -5651,29 +5659,37 @@ void run_streaming_viewer(){
                                         ImGui::PushID(ri+32000);
                                         {
                                             int rec_secs=0; // 스컬치 넘긴 실 녹음 시간
-                                            int total_secs=0; // 전체 경과 시간
+                                            bool is_hld = (re.ch_idx>=0 && v.channels[re.ch_idx].dem_paused.load());
                                             if(re.ch_idx>=0){
                                                 if(v.channels[re.ch_idx].audio_rec_on.load() && v.channels[re.ch_idx].audio_rec_sr>0)
                                                     rec_secs=(int)(v.channels[re.ch_idx].audio_rec_frames/v.channels[re.ch_idx].audio_rec_sr);
                                             }
+                                            // Holding 중에는 전체 경과 시간 정지, 아니면 실 delta 누적
                                             if(!re.finished){
-                                                float el=std::chrono::duration<float>(std::chrono::steady_clock::now()-re.t_start).count();
-                                                total_secs=(int)el;
+                                                auto nowt = std::chrono::steady_clock::now();
+                                                if(re.t_last_tick.time_since_epoch().count()==0) re.t_last_tick = re.t_start;
+                                                float dt = std::chrono::duration<float>(nowt - re.t_last_tick).count();
+                                                re.t_last_tick = nowt;
+                                                if(!is_hld) re.total_elapsed += dt;
                                             }
+                                            int total_secs = (int)re.total_elapsed;
                                             int secs=total_secs;
                                             float t2=(float)ImGui::GetTime();
                                             bool blink=(fmodf(t2,0.8f)<0.4f);
-                                            ImGui::PushStyleColor(ImGuiCol_Text,
-                                                blink?IM_COL32(255,80,80,255):IM_COL32(200,60,60,255));
+                                            ImU32 col_active = is_hld
+                                                ? IM_COL32(150,150,150,255)
+                                                : (blink?IM_COL32(255,80,80,255):IM_COL32(200,60,60,255));
+                                            ImGui::PushStyleColor(ImGuiCol_Text, col_active);
                                             static std::unordered_map<std::string,std::pair<float,std::string>> aud_sz_cache;
                                             auto& ac=aud_sz_cache[re.filename];
                                             if(t2-ac.first >= 0.5f){ ac.first=t2; ac.second=fmt_filesize("",re.path); }
                                             char rec_lbl[512];
                                             int dn=re.ch_idx>=0?v.freq_sorted_display_num(re.ch_idx):0;
+                                            const char* tag = is_hld ? "[HLD]" : "[REC]";
                                             if(!ac.second.empty())
-                                                snprintf(rec_lbl,sizeof(rec_lbl),"[REC] [%2d] %s  [%d/%ds]  %s", dn, re.filename.c_str(), rec_secs, secs, ac.second.c_str());
+                                                snprintf(rec_lbl,sizeof(rec_lbl),"%s [%2d] %s  [%d/%ds]  %s", tag, dn, re.filename.c_str(), rec_secs, secs, ac.second.c_str());
                                             else
-                                                snprintf(rec_lbl,sizeof(rec_lbl),"[REC] [%2d] %s  [%d/%ds]", dn, re.filename.c_str(), rec_secs, secs);
+                                                snprintf(rec_lbl,sizeof(rec_lbl),"%s [%2d] %s  [%d/%ds]", tag, dn, re.filename.c_str(), rec_secs, secs);
                                             ImGui::Selectable(rec_lbl, re.ch_idx>=0 && v.selected_ch==re.ch_idx);
                                             if(ImGui::IsItemHovered()){
                                                 if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
