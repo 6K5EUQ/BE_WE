@@ -369,6 +369,8 @@ void run_cli_host(){
         strncpy(v.channels[idx].owner, creator?creator:"", 31);
         v.channels[idx].audio_mask.store(0xFFFFFFFFu & ~0x1u);
         v.local_ch_out[idx] = 3;
+        // 생성 직후 범위 판정 (범위 밖이면 Holding으로) + CH_SYNC 브로드캐스트
+        v.update_dem_by_freq(v.header.center_frequency/1e6f);
         srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
     };
     srv->cb.on_delete_ch  = [&](const char* who, int idx){
@@ -668,6 +670,8 @@ void run_cli_host(){
             Channel::DemodMode md = v.channels[idx].mode;
             v.stop_dem(idx); v.start_dem(idx, md);
         }
+        // 리사이즈로 범위 밖/안 전환될 수 있음 → 재평가
+        v.update_dem_by_freq(v.header.center_frequency/1e6f);
         srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
     };
     srv->cb.on_start_rec  = [&](int){ v.start_rec(); };

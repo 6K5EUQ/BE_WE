@@ -341,17 +341,22 @@ void FFTViewer::update_dem_by_freq(float new_cf_mhz){
         bool visible = (ch.e > vis_lo) && (ch.s < vis_hi);
 
         if(visible){
-            // 범위 안 → pause 상태였으면 재시작
-            if(ch.dem_paused.load() && ch.dem_paused_mode != Channel::DM_NONE){
+            // 범위 안 → pause 상태였으면 해제 (+ 보존된 mode가 있으면 복조 재개)
+            if(ch.dem_paused.load()){
                 ch.dem_paused.store(false);
-                start_dem(i, ch.dem_paused_mode);
+                if(ch.dem_paused_mode != Channel::DM_NONE){
+                    start_dem(i, ch.dem_paused_mode);
+                    ch.dem_paused_mode = Channel::DM_NONE;
+                }
             }
         } else {
-            // 범위 밖 → 복조 중이면 pause
-            if(ch.dem_run.load() && !ch.dem_paused.load()){
-                ch.dem_paused_mode = ch.mode;     // mode 먼저 보존
-                ch.dem_paused.store(true);        // Holding 진입 (녹음/시간 즉시 정지)
-                stop_dem(i);                      // stop_dem이 mode=NONE으로 지움
+            // 범위 밖 → 항상 Holding 표시. 복조 중이었으면 mode 보존 + stop_dem
+            if(!ch.dem_paused.load()){
+                if(ch.dem_run.load()){
+                    ch.dem_paused_mode = ch.mode;
+                    stop_dem(i);
+                }
+                ch.dem_paused.store(true);
             }
         }
     }

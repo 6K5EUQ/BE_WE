@@ -207,6 +207,7 @@ void FFTViewer::handle_new_channel_drag(float gx, float gw){
                         channels[slot].audio_mask.store(0xFFFFFFFFu);
                         strncpy(channels[slot].owner, host_name[0]?host_name:"Host", 31);
                         srv_audio_mask[slot] = channels[slot].audio_mask.load();
+                        update_dem_by_freq(header.center_frequency/1e6f); // 범위 밖이면 Holding 즉시 진입
                         if(net_srv) net_srv->broadcast_channel_sync(channels, MAX_CHANNELS);
                     }
                     if(selected_ch>=0) channels[selected_ch].selected=false;
@@ -250,18 +251,23 @@ void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float 
             }
         } else {
             // drag ended > restart demod if active
+            bool any_resized = false;
             for(int i=0;i<MAX_CHANNELS;i++){
                 if(!channels[i].resize_drag) continue;
                 channels[i].resize_drag=false;
+                any_resized = true;
                 if(channels[i].dem_run.load()){
                     Channel::DemodMode md=channels[i].mode;
                     stop_dem(i); start_dem(i,md);
                 }
-                // HOST: sync to JOIN clients
-                if(net_srv) net_srv->broadcast_channel_sync(channels, MAX_CHANNELS);
                 // JOIN: send new range to HOST
                 if(net_cli && remote_mode)
                     net_cli->cmd_update_ch_range(i, channels[i].s, channels[i].e);
+            }
+            if(any_resized){
+                // 리사이즈 결과 범위 밖/안 전환 재평가 (LOCAL/HOST)
+                if(!remote_mode) update_dem_by_freq(header.center_frequency/1e6f);
+                if(net_srv) net_srv->broadcast_channel_sync(channels, MAX_CHANNELS);
             }
         }
         return;
@@ -283,21 +289,26 @@ void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float 
                 channels[i].s=new_cf-half_bw; channels[i].e=new_cf+half_bw;
             }
         } else {
+            bool any_moved = false;
             for(int i=0;i<MAX_CHANNELS;i++){
                 if(!channels[i].move_drag) continue;
                 bool moved=(channels[i].s!=channels[i].move_s0||channels[i].e!=channels[i].move_e0);
                 channels[i].move_drag=false;
                 if(moved){
+                    any_moved = true;
                     if(channels[i].dem_run.load()){
                         Channel::DemodMode md=channels[i].mode;
                         stop_dem(i); start_dem(i,md);
                     }
-                    // HOST: sync to JOIN clients
-                    if(net_srv) net_srv->broadcast_channel_sync(channels, MAX_CHANNELS);
                     // JOIN: send new range to HOST
                     if(net_cli && remote_mode)
                         net_cli->cmd_update_ch_range(i, channels[i].s, channels[i].e);
                 }
+            }
+            if(any_moved){
+                // 이동 결과 범위 밖/안 전환 재평가 (LOCAL/HOST)
+                if(!remote_mode) update_dem_by_freq(header.center_frequency/1e6f);
+                if(net_srv) net_srv->broadcast_channel_sync(channels, MAX_CHANNELS);
             }
         }
         return;
@@ -1802,6 +1813,12 @@ void run_streaming_viewer(){
                 // 드래그 중인 채널은 s/e를 덮어쓰지 않음 (덜덜 떨림 방지)
                 bool dragging = v.channels[i].move_drag || v.channels[i].resize_drag;
                 if(!dragging){
+                    // DEBUG: 비정상 BW 수신 감지
+                    float in_bw = fabsf(sync.ch[i].e - sync.ch[i].s);
+                    if(in_bw > 1.0f && sync.ch[i].active){
+                        bewe_log_push(0, "[JOIN-DBG] rx ch%d HUGE bw=%.4f s=%.4f e=%.4f\n",
+                                      i, in_bw, sync.ch[i].s, sync.ch[i].e);
+                    }
                     v.channels[i].s   = sync.ch[i].s;
                     v.channels[i].e   = sync.ch[i].e;
                 }
@@ -5375,7 +5392,8 @@ void run_streaming_viewer(){
                     {
                         int hold_order[MAX_CHANNELS]; int hold_count=0;
                         collect_sorted(true, hold_order, hold_count);
-                        ImGui::SetNextItemOpen(hold_count>0, ImGuiCond_Always);
+                        // 사용자 토글 허용: 첫 프레임에서 hold 있으면 열어두고, 이후는 사용자 의지대로
+                        ImGui::SetNextItemOpen(hold_count>0, ImGuiCond_Once);
                         if(ImGui::CollapsingHeader("Holding Channels")){
                             ImGui::Indent(8.f);
                             for(int hi_idx=0; hi_idx<hold_count; hi_idx++)
