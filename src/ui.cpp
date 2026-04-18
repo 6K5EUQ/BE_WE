@@ -2424,6 +2424,8 @@ void run_streaming_viewer(){
             // SDR 없음: 오류 상태로 표시하고 대기 (프로그램은 계속 실행)
             bewe_log_push(2,"SDR init failed - running without hardware (SDR LED red)\n");
             v.sdr_stream_error.store(true);
+            // 초기에 SDR이 없으면 파일 분석 모드로 간주 → 주기적 재탐지 비활성화 (CPU/로그 스팸 방지)
+            v.rx_stopped.store(true);
             // 버퍼/텍스처 기본 초기화 (SA 재생 등은 가능)
             v.fft_size = DEFAULT_FFT_SIZE;
             v.header.fft_size  = DEFAULT_FFT_SIZE;

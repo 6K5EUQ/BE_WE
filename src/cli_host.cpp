@@ -269,6 +269,8 @@ void run_cli_host(){
     if(!v.initialize(cf)){
         bewe_log_push(0,"[BEWE CLI] SDR init failed - running without hardware\n");
         v.sdr_stream_error.store(true);
+        // 초기 SDR 없음 → 파일 분석 모드. 주기적 재탐지 비활성화 (CPU/로그 스팸 방지)
+        v.rx_stopped.store(true);
         v.fft_size = DEFAULT_FFT_SIZE * FFT_PAD_FACTOR;
         v.fft_input_size = DEFAULT_FFT_SIZE;
         v.header.fft_size  = DEFAULT_FFT_SIZE;
