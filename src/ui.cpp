@@ -4150,6 +4150,7 @@ void run_streaming_viewer(){
                     }
                     if(can_delete){
                         remove(file_ctx.filepath.c_str());
+                        remove((file_ctx.filepath + ".info").c_str()); // 동반 info 삭제
                         auto rm_from = [&](std::vector<std::string>& v2){
                             v2.erase(std::remove(v2.begin(),v2.end(),file_ctx.filename),v2.end());
                         };
@@ -8198,6 +8199,7 @@ void run_streaming_viewer(){
                     can_delete ? ImVec4(1.f,0.35f,0.35f,1.f) : ImVec4(0.4f,0.4f,0.4f,1.f));
                 if(ImGui::Selectable("  Delete") && can_delete){
                     remove(file_ctx.filepath.c_str());
+                    remove((file_ctx.filepath + ".info").c_str()); // 동반 info 삭제
                     // 모든 파일 목록에서 제거
                     auto rm_from = [&](std::vector<std::string>& v2){
                         v2.erase(std::remove(v2.begin(),v2.end(),file_ctx.filename),v2.end());
