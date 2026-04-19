@@ -471,6 +471,7 @@ void NetClient::handle_packet(PacketType type,
         auto* h = reinterpret_cast<const PktIqChunkHdr*>(payload);
         const uint8_t* data = payload + sizeof(PktIqChunkHdr);
         uint32_t data_len = (len > sizeof(PktIqChunkHdr)) ? (len - (uint32_t)sizeof(PktIqChunkHdr)) : 0;
+        stat_rx_db_bytes.fetch_add(data_len, std::memory_order_relaxed);
         if(on_iq_chunk) on_iq_chunk(h->req_id, h->seq, h->filename, h->filesize, data, data_len);
         break;
     }

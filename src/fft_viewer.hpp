@@ -89,10 +89,6 @@ public:
     float right_panel_ratio=0.0f;
     std::atomic<bool> render_visible{true}; // false=좌측 패널 완전 숨김 → FFT/WF 연산 중단
 
-    // 워터폴 표시 속도 (5~50 rows/s, 5 단위, Ctrl+↑↓ 조절)
-    int display_fps = 50;
-    std::chrono::steady_clock::time_point wf_display_last_tp{};
-
     // ── System monitor (bottom bar) ───────────────────────────────────────
     float sysmon_cpu=0, sysmon_ghz=0, sysmon_ram=0, sysmon_io=0;
     std::atomic<int> sysmon_cpu_temp_c{0};  // CPU 온도 (정수 °C, heartbeat 전송용)
