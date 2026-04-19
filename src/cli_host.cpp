@@ -1527,14 +1527,17 @@ void run_cli_host(){
             if(cap_joined.load() && usb_reset_pending && !usb_reset_done){
                 usb_reset_done = true;
                 usb_reset_pending = false;
-                usb_reset_in_progress.store(true);
-                if(v.dev_blade){ bladerf_close(v.dev_blade); v.dev_blade=nullptr; }
-                std::thread([&usb_reset_in_progress](){
-                    bewe_log_push(0,"[CLI] chassis 1 reset: USB reset BladeRF...\n");
-                    bladerf_usb_reset();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(3000));
-                    usb_reset_in_progress.store(false);
-                }).detach();
+                if(v.hw.type == HWType::BLADERF){
+                    usb_reset_in_progress.store(true);
+                    if(v.dev_blade){ bladerf_close(v.dev_blade); v.dev_blade=nullptr; }
+                    std::thread([&usb_reset_in_progress](){
+                        bewe_log_push(0,"[CLI] chassis 1 reset: USB reset BladeRF...\n");
+                        bladerf_usb_reset();
+                        std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+                        usb_reset_in_progress.store(false);
+                    }).detach();
+                }
+                // Pluto/RTL-SDR: USB reset 불필요, 재시도 타이머로 즉시 진행
             }
 
             sdr_retry_timer -= dt;
@@ -1558,6 +1561,8 @@ void run_cli_host(){
                     v.set_gain(v.gain_db);
                     if(v.hw.type == HWType::BLADERF)
                         cap = std::thread(&FFTViewer::capture_and_process, &v);
+                    else if(v.hw.type == HWType::PLUTO)
+                        cap = std::thread(&FFTViewer::capture_and_process_pluto, &v);
                     else
                         cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
                     if(v.spectrum_pause.load())

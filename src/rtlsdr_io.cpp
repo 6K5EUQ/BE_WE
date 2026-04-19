@@ -83,7 +83,7 @@ bool FFTViewer::initialize_rtlsdr(float cf_mhz){
     return true;
 }
 
-// ── RTL-SDR 주파수 변경 ───────────────────────────────────────────────────
+// ── 공통 주파수 변경 (BladeRF/RTL-SDR/Pluto) ──────────────────────────────
 void FFTViewer::set_frequency(float cf_mhz){
     if(hw.type == HWType::BLADERF){
         bladerf_set_frequency(dev_blade, BLADERF_CHANNEL_RX(0), (uint64_t)(cf_mhz*1e6));
@@ -94,6 +94,12 @@ void FFTViewer::set_frequency(float cf_mhz){
         else
             rtlsdr_set_direct_sampling(dev_rtl, 0);
         rtlsdr_set_center_freq(dev_rtl, (uint32_t)(cf_mhz*1e6));
+    } else if(hw.type == HWType::PLUTO){
+        // Pluto는 capture_and_process_pluto 루프가 freq_req를 처리 (LO + header + log)
+        pending_cf = cf_mhz;
+        freq_req = true;
+        autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
+        return;
     }
     {std::lock_guard<std::mutex> lk(data_mtx);
      header.center_frequency=(uint64_t)(cf_mhz*1e6);}
