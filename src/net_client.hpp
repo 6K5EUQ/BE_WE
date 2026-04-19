@@ -15,8 +15,8 @@
 struct NetAudioRing {
     static constexpr size_t SZ   = 32768;
     static constexpr size_t MASK = SZ - 1;
-    // 재생 시작 전 최소 축적량 (48kHz 기준 ~20ms)
-    static constexpr size_t JITTER_FILL = 960;
+    // 재생 시작 전 최소 축적량 (48kHz 기준 ~50ms)
+    static constexpr size_t JITTER_FILL = 2400;
     // 언더런 발생 시 재축적 임계값 (JITTER_FILL의 절반)
     static constexpr size_t JITTER_RESUME = JITTER_FILL / 2;
 
