@@ -456,6 +456,12 @@ void run_cli_host(){
             v.tm_iq_on.store(false); v.tm_add_event_tag(2); v.tm_iq_was_stopped=true;
             srv->broadcast_wf_event(0,(int64_t)time(nullptr),2,"IQ Stop");
         } else {
+            // Pluto 61.44 MSPS에서는 파워 스펙트럼 관측 전용 → 롤링 IQ 차단
+            if(v.hw.type == HWType::PLUTO && v.header.sample_rate > 10000000u){
+                bewe_log_push(0,"[TM IQ] blocked: Pluto SR %.2f MSPS (power spectrum only)\n",
+                              v.header.sample_rate/1e6f);
+                return;
+            }
             if(v.tm_iq_was_stopped){ v.tm_iq_close(); v.tm_iq_was_stopped=false; }
             v.tm_iq_open();
             if(v.tm_iq_file_ready){

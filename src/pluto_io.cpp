@@ -11,6 +11,10 @@
 
 // ADALM-Pluto 고정 파라미터 (RTL-SDR/BladeRF 경로와 호환)
 static constexpr uint32_t PLUTO_DEFAULT_SR = 3200000;  // 3.2 MSPS
+static constexpr uint32_t PLUTO_MAX_SR     = 61440000; // 61.44 MSPS (AD9361 최대, USB2 드롭 발생)
+// Pluto에서 TM IQ 롤링 허용 상한 (Pluto 3.2 이하만 허용; 61.44는 차단)
+// Pluto 프리셋은 {..., 3.2M, 61.44M}이므로 10M 기준으로 둘을 분리
+static constexpr uint32_t PLUTO_IQ_REC_MAX_SR = 10000000;
 static constexpr int      PLUTO_BUF_MIN    = 8192;     // iio_buffer 최소 샘플 수
 static constexpr int      PLUTO_BUF_SAMPS  = 8192;     // 초기 iio_buffer 샘플 수 (FFT size 변경 시 확장됨)
 
@@ -58,7 +62,7 @@ bool FFTViewer::initialize_pluto(float cf_mhz, float sr_msps){
 
     uint32_t sr = (sr_msps > 0.1f) ? (uint32_t)(sr_msps * 1e6f) : PLUTO_DEFAULT_SR;
     if(sr < 521000) sr = 521000;          // AD9363 최저 근처
-    if(sr > 5000000u) sr = 5000000u;    // USB 2.0 실용 상한 5 MSPS
+    if(sr > PLUTO_MAX_SR) sr = PLUTO_MAX_SR;  // 61.44 MSPS AD9361 최대 (USB2 드롭 감수)
 
     pluto_cfg_attr_s (v0, "rf_port_select",      "A_BALANCED");
     pluto_cfg_attr_ll(v0, "sampling_frequency",  (long long)sr);
@@ -209,7 +213,7 @@ void FFTViewer::capture_and_process_pluto(){
             sr_change_req=false;
             uint32_t new_sr = (uint32_t)(pending_sr_msps * 1e6f);
             if(new_sr < 521000) new_sr = 521000;
-            if(new_sr > 5000000u) new_sr = 5000000u;
+            if(new_sr > PLUTO_MAX_SR) new_sr = PLUTO_MAX_SR;
 
             // TM IQ 리셋: on/off 여부 관계없이 기존 롤링 파일 삭제 후 재생성
             bool tm_was_on = tm_iq_on.load(std::memory_order_relaxed);
@@ -252,10 +256,15 @@ void FFTViewer::capture_and_process_pluto(){
             pacc.assign(fft_size,0.0f); fcnt=0; warmup_cnt=0;
             rx_pos=0; rx_avail=0;
             texture_needs_recreate=true;
-            // TM IQ가 켜져 있었으면 새 SR로 롤링 파일 재시작
+            // TM IQ가 켜져 있었고 새 SR이 Pluto 허용 범위면 재시작. 61.44 MSPS면 차단.
             if(tm_was_on){
-                tm_iq_open();
-                tm_iq_on.store(true);
+                if(new_sr > PLUTO_IQ_REC_MAX_SR){
+                    bewe_log_push(0,"[TM IQ] disabled: Pluto SR %.2f MSPS (power spectrum only)\n",
+                                  new_sr/1e6f);
+                } else {
+                    tm_iq_open();
+                    tm_iq_on.store(true);
+                }
             }
             dem_restart_needed.store(true); // demod가 새 SR로 재초기화되도록
             bewe_log_push(0,"SR > %.3f MSPS\n", actual_sr/1e6f);
