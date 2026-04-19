@@ -94,7 +94,11 @@ void FFTViewer::sched_start_entry(int idx){
 
     // Validate
     if(remote_mode){ e.status=SchedEntry::FAILED; bewe_log_push(0,"[SCHED] Failed: JOIN mode\n"); return; }
-    if(!dev_blade && !dev_rtl){ e.status=SchedEntry::FAILED; bewe_log_push(0,"[SCHED] Failed: no SDR\n"); return; }
+    // SDR 활성 여부: BladeRF/RTL-SDR/Pluto 어느 하나라도 잡혀 있어야 함
+    bool sdr_ok = (dev_blade != nullptr)
+               || (dev_rtl   != nullptr)
+               || (hw.type == HWType::PLUTO && pluto_ctx != nullptr);
+    if(!sdr_ok){ e.status=SchedEntry::FAILED; bewe_log_push(0,"[SCHED] Failed: no SDR\n"); return; }
 
     // Save current frequency
     sched_saved_cf = (float)(header.center_frequency / 1e6);

@@ -6303,30 +6303,62 @@ void run_streaming_viewer(){
                 static int sh=0,sm=0,ss=0;
                 static float sdur=60, sfreq=100.0f, sbw=25.0f;
 
-                ImGui::Text("When :"); ImGui::SameLine();
-                ImGui::SetNextItemWidth(40); ImGui::InputInt("##sh",&sh,0,0); ImGui::SameLine(0,2);
-                ImGui::Text(":"); ImGui::SameLine(0,2);
-                ImGui::SetNextItemWidth(40); ImGui::InputInt("##sm",&sm,0,0); ImGui::SameLine(0,2);
-                ImGui::Text(":"); ImGui::SameLine(0,2);
-                ImGui::SetNextItemWidth(40); ImGui::InputInt("##ss",&ss,0,0); ImGui::SameLine(0,6);
-                // 빠른 프리셋 버튼
+                // 라벨을 일정 폭으로 정렬해 가독성 향상
+                const float LBL_W = 56.f;
+
+                // ── When 행 ──────────────────────────────────────────────
+                ImGui::AlignTextToFramePadding();
+                ImGui::Text("When"); ImGui::SameLine(LBL_W);
+                ImGui::SetNextItemWidth(56); ImGui::InputInt("##sh",&sh,0,0); ImGui::SameLine(0,3);
+                ImGui::Text(":"); ImGui::SameLine(0,3);
+                ImGui::SetNextItemWidth(56); ImGui::InputInt("##sm",&sm,0,0); ImGui::SameLine(0,3);
+                ImGui::Text(":"); ImGui::SameLine(0,3);
+                ImGui::SetNextItemWidth(56); ImGui::InputInt("##ss",&ss,0,0); ImGui::SameLine(0,8);
                 auto set_time_offset = [&](int delta_sec){
                     time_t now2 = time(nullptr) + delta_sec;
                     struct tm t3; localtime_r(&now2, &t3);
                     sh = t3.tm_hour; sm = t3.tm_min; ss = t3.tm_sec;
                 };
-                if(ImGui::SmallButton("+1m")) set_time_offset(60); ImGui::SameLine(0,2);
-                if(ImGui::SmallButton("+5m")) set_time_offset(300); ImGui::SameLine(0,2);
-                if(ImGui::SmallButton("+30m")) set_time_offset(1800);
+                if(ImGui::SmallButton("Now"))    set_time_offset(0);    ImGui::SameLine(0,3);
+                if(ImGui::SmallButton("+10s"))   set_time_offset(10);   ImGui::SameLine(0,3);
+                if(ImGui::SmallButton("+1m"))    set_time_offset(60);   ImGui::SameLine(0,3);
+                if(ImGui::SmallButton("+5m"))    set_time_offset(300);  ImGui::SameLine(0,3);
+                if(ImGui::SmallButton("+30m"))   set_time_offset(1800);
 
-                ImGui::Text("Dur  :"); ImGui::SameLine();
-                ImGui::SetNextItemWidth(80); ImGui::InputFloat("##dur",&sdur,1,10,"%.0f s");
-                ImGui::SameLine();
-                ImGui::Text("Freq :"); ImGui::SameLine();
-                ImGui::SetNextItemWidth(100); ImGui::InputFloat("##freq",&sfreq,0.1f,1.0f,"%.4f MHz");
-                ImGui::SameLine();
-                ImGui::Text("BW  :"); ImGui::SameLine();
-                ImGui::SetNextItemWidth(80); ImGui::InputFloat("##bw",&sbw,1,10,"%.1f kHz");
+                // ── Duration 행 ──────────────────────────────────────────
+                ImGui::AlignTextToFramePadding();
+                ImGui::Text("Dur"); ImGui::SameLine(LBL_W);
+                ImGui::SetNextItemWidth(140); ImGui::InputFloat("##dur",&sdur,1,10,"%.0f s");
+                ImGui::SameLine(0,8);
+                if(ImGui::SmallButton("10s"))  sdur = 10;   ImGui::SameLine(0,3);
+                if(ImGui::SmallButton("30s"))  sdur = 30;   ImGui::SameLine(0,3);
+                if(ImGui::SmallButton("1m"))   sdur = 60;   ImGui::SameLine(0,3);
+                if(ImGui::SmallButton("5m"))   sdur = 300;  ImGui::SameLine(0,3);
+                if(ImGui::SmallButton("10m"))  sdur = 600;
+                if(sdur < 1.f) sdur = 1.f;
+
+                // ── Freq 행 ──────────────────────────────────────────────
+                ImGui::AlignTextToFramePadding();
+                ImGui::Text("Freq"); ImGui::SameLine(LBL_W);
+                ImGui::SetNextItemWidth(140); ImGui::InputFloat("##freq",&sfreq,0.1f,1.0f,"%.4f MHz");
+                ImGui::SameLine(0,8);
+                if(ImGui::SmallButton("Use current")){
+                    double cur_cf = v.remote_mode
+                        ? (v.net_cli ? (double)v.net_cli->remote_cf_mhz.load() : 0.0)
+                        : (double)(v.header.center_frequency / 1e6);
+                    if(cur_cf > 0.0) sfreq = (float)cur_cf;
+                }
+
+                // ── BW 행 ────────────────────────────────────────────────
+                ImGui::AlignTextToFramePadding();
+                ImGui::Text("BW"); ImGui::SameLine(LBL_W);
+                ImGui::SetNextItemWidth(140); ImGui::InputFloat("##bw",&sbw,1,10,"%.1f kHz");
+                ImGui::SameLine(0,8);
+                if(ImGui::SmallButton("12.5"))  sbw = 12.5f;  ImGui::SameLine(0,3);
+                if(ImGui::SmallButton("25"))    sbw = 25;     ImGui::SameLine(0,3);
+                if(ImGui::SmallButton("100"))   sbw = 100;    ImGui::SameLine(0,3);
+                if(ImGui::SmallButton("1MHz"))  sbw = 1000;
+                if(sbw < 1.f) sbw = 1.f;
 
                 // 입력 시각을 절대시간으로 환산해 미리 표시 + overlap 프리뷰
                 time_t preview_st = 0;
@@ -6348,10 +6380,11 @@ void run_streaming_viewer(){
                 if(preview_overlap)
                     ImGui::TextColored(ImVec4(1,0.4f,0.4f,1), "! overlaps existing entry");
 
-                // LOCAL/HOST: SDR 필수, JOIN: net_cli 연결 필수
+                // LOCAL/HOST: SDR 필수 (BladeRF/RTL-SDR/Pluto), JOIN: net_cli 연결 필수
                 bool can_add = v.remote_mode
                     ? (v.net_cli && v.net_cli->is_connected())
-                    : (v.dev_blade || v.dev_rtl);
+                    : (v.dev_blade || v.dev_rtl
+                       || (v.hw.type == HWType::PLUTO && v.pluto_ctx != nullptr));
                 bool block_add = !can_add || preview_overlap;
                 if(block_add) ImGui::BeginDisabled();
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f,0.55f,0.2f,1.f));
