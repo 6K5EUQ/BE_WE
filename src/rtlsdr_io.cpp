@@ -71,7 +71,7 @@ bool FFTViewer::initialize_rtlsdr(float cf_mhz){
     fft_in =fftwf_alloc_complex(fft_size);
     fft_out=fftwf_alloc_complex(fft_size);
     memset(fft_in, 0, fft_size*sizeof(fftwf_complex));
-    fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_MEASURE);
+    fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_ESTIMATE);
     memset(fft_in, 0, fft_size*sizeof(fftwf_complex));
     // Pre-compute Nuttall window + VOLK mag_sq buffer
     if(win_buf) free(win_buf);
@@ -146,7 +146,7 @@ void FFTViewer::capture_and_process_rtl(){
             fft_in =fftwf_alloc_complex(new_fft_sz);
             fft_out=fftwf_alloc_complex(new_fft_sz);
             memset(fft_in, 0, new_fft_sz*sizeof(fftwf_complex));
-            fft_plan=fftwf_plan_dft_1d(new_fft_sz,fft_in,fft_out,FFTW_FORWARD,FFTW_MEASURE);
+            fft_plan=fftwf_plan_dft_1d(new_fft_sz,fft_in,fft_out,FFTW_FORWARD,FFTW_ESTIMATE);
             memset(fft_in, 0, new_fft_sz*sizeof(fftwf_complex));
             if(win_buf) volk_free(win_buf);
             win_buf=(float*)volk_malloc(new_input*sizeof(float), volk_get_alignment());

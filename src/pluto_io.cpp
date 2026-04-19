@@ -11,7 +11,8 @@
 
 // ADALM-Pluto 고정 파라미터 (RTL-SDR/BladeRF 경로와 호환)
 static constexpr uint32_t PLUTO_DEFAULT_SR = 3200000;  // 3.2 MSPS
-static constexpr int      PLUTO_BUF_SAMPS  = 8192;     // iio_buffer 샘플 수
+static constexpr int      PLUTO_BUF_MIN    = 8192;     // iio_buffer 최소 샘플 수
+static constexpr int      PLUTO_BUF_SAMPS  = 8192;     // 초기 iio_buffer 샘플 수 (FFT size 변경 시 확장됨)
 
 static struct iio_context*  g_ctx_fallback = nullptr;
 
@@ -116,7 +117,7 @@ bool FFTViewer::initialize_pluto(float cf_mhz, float sr_msps){
     fft_in =fftwf_alloc_complex(fft_size);
     fft_out=fftwf_alloc_complex(fft_size);
     memset(fft_in, 0, fft_size*sizeof(fftwf_complex));
-    fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_MEASURE);
+    fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_ESTIMATE);
     memset(fft_in, 0, fft_size*sizeof(fftwf_complex));
     if(win_buf) free(win_buf);
     win_buf=(float*)volk_malloc(fft_input_size*sizeof(float), volk_get_alignment());
@@ -139,7 +140,9 @@ void FFTViewer::capture_and_process_pluto(){
     struct iio_channel* lo  = iio_device_find_channel(phy, "altvoltage0", true);
     struct iio_channel* v0p = iio_device_find_channel(phy, "voltage0",    false);
 
-    int16_t* iq16 = new int16_t[PLUTO_BUF_SAMPS * 2];
+    // 현재 iio_buffer 샘플 용량 (FFT size 변경 시 확장)
+    int cur_buf_samps = PLUTO_BUF_SAMPS;
+    int16_t* iq16 = new int16_t[cur_buf_samps * 2];
 
     std::vector<float> pacc(fft_size, 0.0f);
     int   fcnt      = 0;
@@ -162,12 +165,26 @@ void FFTViewer::capture_and_process_pluto(){
             fft_size_change_req=false; int ns=pending_fft_size;
             int new_input = ns;
             int new_fft_sz = ns * FFT_PAD_FACTOR;
+            // iio_buffer가 fft_input_size보다 작으면 확장 (Pluto 고유: 고정 크기라 동적 재생성 필요)
+            int need_buf = std::max(PLUTO_BUF_MIN, new_input);
+            if(need_buf > cur_buf_samps){
+                iio_buffer_destroy(buf);
+                buf = iio_device_create_buffer(rxd, need_buf, false);
+                if(!buf){
+                    fprintf(stderr,"Pluto: iio_buffer recreate failed (size=%d errno=%d)\n", need_buf, errno);
+                    sdr_stream_error.store(true); break;
+                }
+                pluto_rx_buf = buf;
+                delete[] iq16; iq16 = new int16_t[need_buf * 2];
+                cur_buf_samps = need_buf;
+                rx_pos=0; rx_avail=0;
+            }
             // ① Off-lock: capture 전용 FFTW/VOLK 자원 재구성
             fftwf_destroy_plan(fft_plan); fftwf_free(fft_in); fftwf_free(fft_out);
             fft_in =fftwf_alloc_complex(new_fft_sz);
             fft_out=fftwf_alloc_complex(new_fft_sz);
             memset(fft_in, 0, new_fft_sz*sizeof(fftwf_complex));
-            fft_plan=fftwf_plan_dft_1d(new_fft_sz,fft_in,fft_out,FFTW_FORWARD,FFTW_MEASURE);
+            fft_plan=fftwf_plan_dft_1d(new_fft_sz,fft_in,fft_out,FFTW_FORWARD,FFTW_ESTIMATE);
             memset(fft_in, 0, new_fft_sz*sizeof(fftwf_complex));
             if(win_buf) volk_free(win_buf);
             win_buf=(float*)volk_malloc(new_input*sizeof(float), volk_get_alignment());
@@ -277,7 +294,7 @@ void FFTViewer::capture_and_process_pluto(){
             char*   p_end  = (char*)iio_buffer_end(buf);
             char*   p      = (char*)iio_buffer_first(buf, ri);
             int n = 0;
-            for(; p < p_end && n < PLUTO_BUF_SAMPS; p += i_step){
+            for(; p < p_end && n < cur_buf_samps; p += i_step){
                 int16_t si = ((int16_t*)p)[0];
                 int16_t sq = ((int16_t*)p)[1];
                 // libiio는 12-bit signed를 하위 12bit에 정렬; <<4로 ±32768 스케일 매칭
