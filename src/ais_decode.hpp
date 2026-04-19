@@ -67,7 +67,7 @@ static inline Result decode(const std::vector<uint8_t>& bits, int offset = 0){
             auto sl = ep.rfind('/');
             if(sl != std::string::npos){
                 std::string dir = ep.substr(0, sl);
-                // build/ 또는 build_headless/ 에서 실행 → 상위의 decoder/AIS/
+                // build/ 또는 build-cli/ 에서 실행 → 상위의 decoder/AIS/
                 std::string try1 = dir + "/../decoder/AIS/ais_decoder.py";
                 if(access(try1.c_str(), F_OK)==0) decoder_path = try1;
             }

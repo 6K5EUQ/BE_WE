@@ -1086,7 +1086,7 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
     }
 }
 
-// g_db_list / g_db_list_mtx: fft_viewer.cpp에서 정의 (headless에서도 접근 가능)
+// g_db_list / g_db_list_mtx: fft_viewer.cpp에서 정의 (CLI에서도 접근 가능)
 extern std::vector<DbFileEntry> g_db_list;
 extern std::mutex g_db_list_mtx;
 

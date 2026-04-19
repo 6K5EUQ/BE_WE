@@ -143,7 +143,8 @@ void CentralClient::poll_loop(std::string host, int port,
     while(poll_running_.load()){
         auto st = fetch_stations(host, port);
         cb(st); // 빈 벡터도 전달 (stale 정리용)
-        for(int i = 0; i < 100 && poll_running_.load(); i++)
+        // 1초 폴링 (지구본 station 닫힘 반영 빠르게)
+        for(int i = 0; i < 10 && poll_running_.load(); i++)
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 }

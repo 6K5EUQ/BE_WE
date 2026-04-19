@@ -1,4 +1,4 @@
-// ── BE_WE CLI Headless HOST Mode ─────────────────────────────────────────
+// ── BE_WE CLI HOST Mode ──────────────────────────────────────────────────
 // 라즈베리파이5 등 디스플레이 없는 환경에서 HOST 모드 전용 실행
 // GLFW/OpenGL/ImGui 의존성 없음
 
@@ -214,7 +214,7 @@ void run_cli_host(){
     sigaction(SIGTERM, &sa, nullptr);
 
     // ── Interactive prompts ──────────────────────────────────────────────
-    bewe_log_push(0,"\n=== BE_WE Headless HOST ===\n\n");
+    bewe_log_push(0,"\n=== BE_WE CLI HOST ===\n\n");
 
     std::string id_str = prompt_input("ID ");
     if(id_str.empty()){ bewe_log_push(0,"Aborted.\n"); return; }
@@ -1504,6 +1504,18 @@ void run_cli_host(){
                 v.spectrum_pause.store(false);
                 if(v.net_srv) v.net_srv->broadcast_heartbeat(0, 0, 0);
                 bewe_log_push(0,"[CLI] chassis 1 reset: spectrum_pause released\n");
+            }
+        }
+
+        // ── SR 변경 후 demod 재시작 (BladeRF/RTL-SDR/Pluto 공통) ────────
+        if(v.dem_restart_needed.load()){
+            v.dem_restart_needed.store(false);
+            for(int di=0; di<MAX_CHANNELS; di++){
+                if(v.channels[di].dem_run.load()){
+                    auto dm = v.channels[di].mode;
+                    v.stop_dem(di);
+                    v.start_dem(di, dm);
+                }
             }
         }
 

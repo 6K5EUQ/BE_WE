@@ -9,5 +9,5 @@ const char* login_get_pw();
 int         login_get_tier();
 const char* login_get_server();  // Central Server 주소
 
-// CLI headless login: 직접 전역 로그인 변수 설정
+// CLI login: 직접 전역 로그인 변수 설정
 bool cli_login(const char* id, const char* pw, int tier, const char* server);

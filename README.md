@@ -29,7 +29,7 @@
 
 BE_WE is a Linux-native SDR (Software Defined Radio) application built with C++17, OpenGL, and ImGui. A single HOST captures RF spectrum from an SDR device and streams it in real-time to multiple JOIN clients over TCP. Every operator sees the same live waterfall, can create channels, demodulate signals, chat, and share recordings — all from separate machines.
 
-BE_WE also supports **headless CLI mode** — deploy a Raspberry Pi 5 as a remote HOST base station with zero display dependencies. JOIN clients connecting to a headless HOST see absolutely no difference from a GUI HOST.
+BE_WE also supports **CLI mode** — deploy a Raspberry Pi 5 as a remote HOST base station with zero display dependencies. JOIN clients connecting to a CLI HOST see absolutely no difference from a GUI HOST.
 
 ---
 
@@ -111,8 +111,8 @@ Most SDR applications are designed for a single operator on a single machine. BE
 - Dynamic FFT size and sample rate changes from JOIN
 - Real-time network monitoring: TX/RX throughput, packet drops, queue depth, audio underruns
 
-### Headless CLI Host
-- Compile-time `BEWE_HEADLESS` flag — zero OpenGL/GLFW/ImGui dependencies
+### CLI Host
+- Compile-time `-DCLI=ON` flag — zero OpenGL/GLFW/ImGui dependencies
 - Interactive prompt-based startup (ID, password, tier, station, coordinates, frequency)
 - Full backend: FFT, demodulation, audio, network, discovery, central relay — all identical to GUI HOST
 - stdin command loop: `/status`, `/clients`, `/chassis 1 reset`, `/rx stop`, `/shutdown`
@@ -339,7 +339,7 @@ sudo apt install -y build-essential cmake pkg-config \
   libglew-dev libglfw3-dev libgl-dev libpng-dev libstb-dev
 ```
 
-### One-liner (headless CLI only — no GPU required)
+### One-liner (CLI only — no GPU required)
 
 ```bash
 sudo apt install -y build-essential cmake pkg-config \
@@ -358,7 +358,7 @@ make -j$(nproc)
 ./BE_WE
 ```
 
-### Compile — Headless CLI Host
+### Compile — CLI Host
 
 ```bash
 git clone https://github.com/6K5EUQ/BE_WE.git
@@ -369,7 +369,7 @@ make -j$(nproc)
 ./BE_WE
 ```
 
-> **Note:** The headless binary has zero OpenGL/GLFW/ImGui dependencies. It runs HOST mode only with an interactive prompt-based startup. JOIN clients see no difference from a GUI HOST.
+> **Note:** The CLI binary has zero OpenGL/GLFW/ImGui dependencies. It runs HOST mode only with an interactive prompt-based startup. JOIN clients see no difference from a GUI HOST.
 
 ---
 
@@ -391,18 +391,18 @@ make -j$(nproc)
 4. Click a station marker and press **JOIN**
 5. Live spectrum, audio, and channels stream in real-time
 
-### CLI Host Mode (Headless)
+### CLI Host Mode
 
-1. Build with `cmake -DBEWE_HEADLESS=ON`
+1. Build with `cmake -DCLI=ON`
 2. Run `./BE_WE` — interactive prompts guide you through setup:
 
 ```
-=== BE_WE Headless HOST ===
+=== BE_WE CLI HOST ===
 
 ID: junseo.park
 Password: ****
 Tier (1/2) [1]:
-Central server [144.24.86.137]:
+Central server [20.2.86.135]:
 Station name: DGS-5
 Latitude [0.0]: 37.56
 Longitude [0.0]: 126.97
@@ -476,12 +476,12 @@ Also included in the 30-second automatic status line.
 
 ## Raspberry Pi 5 Deployment
 
-Deploy a Pi 5 as a headless remote HOST base station.
+Deploy a Pi 5 as a CLI remote HOST base station.
 
 ### Quick Start
 
 ```bash
-# 1. Install headless dependencies
+# 1. Install CLI dependencies
 sudo apt install -y build-essential cmake pkg-config \
   libbladerf-dev librtlsdr-dev libfftw3-dev libasound2-dev \
   libmpg123-dev libvolk-dev libpng-dev
@@ -511,7 +511,7 @@ The included script configures the Pi for maximum performance with zero power sa
 | USB autosuspend | `2s` → `disabled` | Prevents SDR disconnects |
 | VM swappiness | `60` → `10` | Minimizes swap thrashing |
 | zswap | `enabled` → `disabled` | Removes compression CPU overhead |
-| GPU memory | default → `16 MB` | Frees RAM for DSP (headless needs no GPU) |
+| GPU memory | default → `16 MB` | Frees RAM for DSP (CLI needs no GPU) |
 | IO scheduler | `mq-deadline` → `none` | Lowest disk latency |
 | Unused services | bluetooth, cups, ModemManager | Disabled — frees CPU and memory |
 | Network buffers | default → `16 MB rmem/wmem` | Higher throughput for streaming |
@@ -646,7 +646,7 @@ BE_WE/
 │   ├── timemachine.cpp       # IQ rolling record & playback
 │   ├── region_save.cpp       # Region IQ export
 │   ├── iq_record.cpp         # IQ / audio recording + per-channel squelch-gated recording
-│   ├── cli_host.cpp          # Headless CLI host mode (BEWE_HEADLESS)
+│   ├── cli_host.cpp          # CLI host mode
 │   ├── login.hpp/cpp         # Authentication & tier selection
 │   ├── channel.hpp           # Per-channel state
 │   ├── config.hpp            # Global constants

@@ -189,6 +189,19 @@ void FFTViewer::capture_and_process_pluto(){
             if(new_sr < 521000) new_sr = 521000;
             if(new_sr > 5000000u) new_sr = 5000000u;
 
+            // TM IQ 리셋: on/off 여부 관계없이 기존 롤링 파일 삭제 후 재생성
+            bool tm_was_on = tm_iq_on.load(std::memory_order_relaxed);
+            if(tm_was_on) tm_iq_on.store(false);
+            tm_iq_close(); // fd 닫기 + 상태 초기화
+            // 기존 SR 롤링 파일 삭제 (SR 불일치 방지)
+            {
+                std::string tm_dir = BEWEPaths::time_temp_dir();
+                char old_path[256];
+                snprintf(old_path, sizeof(old_path), "%s/iq_rolling_%uMSPS.wav",
+                         tm_dir.c_str(), header.sample_rate/1000000);
+                if(access(old_path, F_OK)==0){ remove(old_path); }
+            }
+
             // 버퍼 재생성
             iio_buffer_destroy(buf);
             pluto_cfg_attr_ll(v0p, "sampling_frequency", (long long)new_sr);
@@ -217,6 +230,12 @@ void FFTViewer::capture_and_process_pluto(){
             pacc.assign(fft_size,0.0f); fcnt=0; warmup_cnt=0;
             rx_pos=0; rx_avail=0;
             texture_needs_recreate=true;
+            // TM IQ가 켜져 있었으면 새 SR로 롤링 파일 재시작
+            if(tm_was_on){
+                tm_iq_open();
+                tm_iq_on.store(true);
+            }
+            dem_restart_needed.store(true); // demod가 새 SR로 재초기화되도록
             bewe_log_push(0,"SR > %.3f MSPS\n", actual_sr/1e6f);
             // SR 변경으로 가시 대역폭이 달라짐 → 범위 재평가 (Holding/Active 전환)
             update_dem_by_freq(header.center_frequency/1e6f);

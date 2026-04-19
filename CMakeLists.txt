@@ -4,7 +4,7 @@ project(BE_WE)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-option(CLI "Build headless CLI-only binary (no OpenGL/GLFW/ImGui)" OFF)
+option(CLI "Build CLI-only binary (no OpenGL/GLFW/ImGui)" OFF)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(BLADERF REQUIRED libbladeRF)
@@ -19,7 +19,7 @@ pkg_check_modules(IIO    REQUIRED libiio)
 pkg_check_modules(AD9361 REQUIRED libad9361)
 
 if(CLI)
-    # ── Headless CLI build (no OpenGL/GLFW/ImGui) ─────────────────────────
+    # ── CLI build (no OpenGL/GLFW/ImGui) ──────────────────────────────────
     add_executable(BE_WE
         src/main.cpp
         src/cli_host.cpp
