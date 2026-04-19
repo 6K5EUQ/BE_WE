@@ -779,8 +779,14 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
     if(!waterfall_texture) create_waterfall_texture();
     // 타임머신 모드 아닐 때만 텍스처 업데이트
     // 워터폴 텍스처 업데이트: TM 모드 중에도 계속 갱신 (복귀 시 검은화면 방지)
-    if(total_ffts>0&&last_wf_update_idx!=current_fft_idx){
-        update_wf_row(current_fft_idx); last_wf_update_idx=current_fft_idx;
+    if(total_ffts>0 && last_wf_update_idx!=current_fft_idx){
+        auto _now = std::chrono::steady_clock::now();
+        if(std::chrono::duration<float>(_now - wf_display_last_tp).count()
+           >= 1.0f / (float)display_fps){
+            update_wf_row(current_fft_idx);
+            last_wf_update_idx = current_fft_idx;
+            wf_display_last_tp = _now;
+        }
     }
     if(waterfall_texture){
         float ds,de; get_disp(ds,de);
@@ -3909,7 +3915,14 @@ void run_streaming_viewer(){
                     }
                     v.header.num_ffts = std::min(v.total_ffts, MAX_FFTS_MEMORY);
                 }
-                v.update_wf_row(v.current_fft_idx);
+                {
+                    auto _now = std::chrono::steady_clock::now();
+                    if(std::chrono::duration<float>(_now - v.wf_display_last_tp).count()
+                       >= 1.0f / (float)v.display_fps){
+                        v.update_wf_row(v.current_fft_idx);
+                        v.wf_display_last_tp = _now;
+                    }
+                }
             }
         }
 
@@ -4140,8 +4153,17 @@ void run_streaming_viewer(){
                 };
                 if(ImGui::IsKeyPressed(ImGuiKey_LeftArrow,false))  arrow_set_out(sci, 0); // L
                 if(ImGui::IsKeyPressed(ImGuiKey_RightArrow,false)) arrow_set_out(sci, 2); // R
-                if(ImGui::IsKeyPressed(ImGuiKey_UpArrow,false))    arrow_set_out(sci, 1); // L+R
-                if(ImGui::IsKeyPressed(ImGuiKey_DownArrow,false))  arrow_set_out(sci, 3); // M(뮤트)
+                if(!io.KeyCtrl){
+                    if(ImGui::IsKeyPressed(ImGuiKey_UpArrow,false))    arrow_set_out(sci, 1); // L+R
+                    if(ImGui::IsKeyPressed(ImGuiKey_DownArrow,false))  arrow_set_out(sci, 3); // M(뮤트)
+                }
+            }
+            // Ctrl+↑↓: 워터폴/스펙트럼 표시 속도 조절 (5~50 rows/s)
+            if(io.KeyCtrl && v.render_visible.load()){
+                if(ImGui::IsKeyPressed(ImGuiKey_UpArrow,false))
+                    v.display_fps = std::min(50, v.display_fps + 5);
+                if(ImGui::IsKeyPressed(ImGuiKey_DownArrow,false))
+                    v.display_fps = std::max(5, v.display_fps - 5);
             }
             if(ImGui::IsKeyPressed(ImGuiKey_O,false) && !editing){
                 ops_open = !ops_open;

@@ -51,8 +51,8 @@ struct HWConfig {
         }
         return best;
     }
-    // 워터폴 행 속도를 HW에 관계없이 동일하게 유지 (37.5 rows/sec 기준)
-    static constexpr float TARGET_ROWS_PER_SEC = 37.5f;
+    // 워터폴 행 속도를 HW에 관계없이 동일하게 유지 (50 rows/sec 기준)
+    static constexpr float TARGET_ROWS_PER_SEC = 50.0f;
 
     float eff_bw_mhz() const { return sample_rate_mhz * eff_bw_ratio; }
     float nyq_mhz()    const { return sample_rate_mhz * 0.5f; }
