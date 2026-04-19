@@ -136,29 +136,34 @@ void FFTViewer::capture_and_process_rtl(){
             continue;
         }
 
-        // FFT size 변경
+        // FFT size 변경 — off-lock 재할당 + atomic swap (broadcast race 방지)
         if(fft_size_change_req){
             fft_size_change_req=false; int ns=pending_fft_size;
+            int new_input = ns;
+            int new_fft_sz = ns * FFT_PAD_FACTOR;
+            // ① Off-lock: capture 전용 FFTW/VOLK 자원 재구성
             fftwf_destroy_plan(fft_plan); fftwf_free(fft_in); fftwf_free(fft_out);
-            fft_input_size=ns; fft_size=ns*FFT_PAD_FACTOR;
-            time_average=hw.compute_time_average(fft_input_size);
-            fft_in =fftwf_alloc_complex(fft_size);
-            fft_out=fftwf_alloc_complex(fft_size);
-            memset(fft_in, 0, fft_size*sizeof(fftwf_complex));
-            fft_plan=fftwf_plan_dft_1d(fft_size,fft_in,fft_out,FFTW_FORWARD,FFTW_MEASURE);
-    memset(fft_in, 0, fft_size*sizeof(fftwf_complex));
+            fft_in =fftwf_alloc_complex(new_fft_sz);
+            fft_out=fftwf_alloc_complex(new_fft_sz);
+            memset(fft_in, 0, new_fft_sz*sizeof(fftwf_complex));
+            fft_plan=fftwf_plan_dft_1d(new_fft_sz,fft_in,fft_out,FFTW_FORWARD,FFTW_MEASURE);
+            memset(fft_in, 0, new_fft_sz*sizeof(fftwf_complex));
             if(win_buf) volk_free(win_buf);
-            win_buf=(float*)volk_malloc(fft_input_size*sizeof(float), volk_get_alignment());
-            fill_nuttall_window(win_buf, fft_input_size);
+            win_buf=(float*)volk_malloc(new_input*sizeof(float), volk_get_alignment());
+            fill_nuttall_window(win_buf, new_input);
             if(mag_sq_buf) volk_free(mag_sq_buf);
-            mag_sq_buf=(float*)volk_malloc(fft_size*sizeof(float), volk_get_alignment());
-            rx_chunk = std::max(fft_input_size, RX_MIN);
+            mag_sq_buf=(float*)volk_malloc(new_fft_sz*sizeof(float), volk_get_alignment());
+            rx_chunk = std::max(new_input, RX_MIN);
             n_bytes = (size_t)rx_chunk * 2;
             delete[] raw;  raw  = new uint8_t[n_bytes];
             delete[] iq16; iq16 = new int16_t[rx_chunk*2];
             rx_pos=0; rx_avail=0;
-            pacc.assign(fft_size,0.0f); fcnt=0;
+            pacc.assign(new_fft_sz,0.0f); fcnt=0;
+            // ② 원자적 스왑: fft_size와 fft_data 동시 교체
             {std::lock_guard<std::mutex> lk(data_mtx);
+             fft_input_size=new_input;
+             fft_size=new_fft_sz;
+             time_average=hw.compute_time_average(fft_input_size);
              header.fft_size=fft_size;
              fft_data.assign(MAX_FFTS_MEMORY*fft_size,0);
              current_spectrum.assign(fft_size,-80.0f);
