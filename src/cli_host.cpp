@@ -1130,7 +1130,12 @@ void run_cli_host(){
                                  reconnect_fn](){
                     std::thread([&v, &central_cli, rh, rp, reconnect_fn](){
                         for(int attempt=0; attempt<5; attempt++){
-                            std::this_thread::sleep_for(std::chrono::seconds(3));
+                            // 3초 대기를 0.1초 단위로 쪼개어 shutdown 즉시 반응
+                            for(int i=0;i<30;i++){
+                                if(g_shutdown.load()) return;
+                                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                            }
+                            if(g_shutdown.load()) return;
                             if(!v.net_srv) return;
                             bewe_log_push(0,"[CLI] Central auto-reconnect attempt %d/5\n", attempt+1);
                             std::string sid2 = v.station_name + "_" + std::string(login_get_id());
@@ -1709,6 +1714,11 @@ void run_cli_host(){
     // ══════════════════════════════════════════════════════════════════════
     bewe_log_push(0,"[BEWE CLI] Shutting down...\n");
 
+    // 1) Central 쪽을 먼저 완전히 끊어서 auto-reconnect 스레드가 더 이상
+    //    mux_adapter를 살리지 못하게 함 (g_shutdown 체크로 reconnect도 자가 종료)
+    central_cli.stop_mux_adapter();
+    central_cli.stop_polling();
+
     v.is_running = false;
     if(v.dev_rtl) rtlsdr_cancel_async(v.dev_rtl);
     v.stop_all_dem();
@@ -1721,8 +1731,6 @@ void run_cli_host(){
     v.net_bcast_stop.store(true);
     v.net_bcast_cv.notify_all();
     if(v.net_bcast_thr.joinable()) v.net_bcast_thr.join();
-    central_cli.stop_mux_adapter();
-    central_cli.stop_polling();
     if(v.net_srv){ v.net_srv->stop(); delete v.net_srv; v.net_srv=nullptr; }
     if(!v.remote_mode && cap.joinable()) cap.join();
     if(v.dev_blade){
