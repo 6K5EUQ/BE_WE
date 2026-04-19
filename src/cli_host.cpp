@@ -1366,11 +1366,11 @@ void run_cli_host(){
             }
         }
 
-        // ── Heartbeat (3s) ───────────────────────────────────────────────
+        // ── Heartbeat (1s) ───────────────────────────────────────────────
         if(v.net_srv){
             float el = std::chrono::duration<float>(clk::now()-heartbeat_last).count();
             bool cur_sdr_err = v.sdr_stream_error.load();
-            if(el >= 3.0f){
+            if(el >= 1.0f){
                 heartbeat_last = clk::now();
                 uint8_t sdr_t_hb = 0;
                 if(v.dev_blade){

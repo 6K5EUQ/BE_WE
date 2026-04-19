@@ -13,7 +13,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 
-static constexpr int HOST_TIMEOUT_SEC  = 20;  // HB 간격(3s) + 데이터 프레임 SNDTIMEO(3s) + 마진
+static constexpr int HOST_TIMEOUT_SEC  = 3;   // HB 간격 1s 가정, 3초 미수신 시 dead 처리 (globe에서 즉시 제거)
 static constexpr int HANDSHAKE_TIMEOUT = 10;
 static constexpr size_t PIPE_BUF_SZ    = 65536;
 
@@ -1333,7 +1333,7 @@ std::shared_ptr<HostRoom> CentralServer::find_room(const std::string& id) const 
 
 void CentralServer::watchdog_loop(){
     while(running_.load()){
-        std::this_thread::sleep_for(std::chrono::seconds(3));
+        std::this_thread::sleep_for(std::chrono::seconds(1));
         auto now = std::chrono::steady_clock::now();
         std::lock_guard<std::mutex> lk(rooms_mtx_);
         for(auto& r : rooms_){

@@ -1393,7 +1393,7 @@ void run_streaming_viewer(){
                             s.lon        = rs.lon;
                             s.user_count = rs.user_count;
                             s.host_tier  = rs.host_tier ? rs.host_tier : 1;
-                            s.last_seen  = now + 12.0;
+                            s.last_seen  = now + 2.0;
                             found = true; break;
                         }
                     }
@@ -1447,7 +1447,8 @@ void run_streaming_viewer(){
         toggle_fullscreen();
         ImGuiIO& io = ImGui::GetIO();
 
-        // Purge stale stations (>6 s without announcement)
+        // Purge stale stations: last_seen이 현재 시각보다 과거면 즉시 제거
+        // (last_seen = now + 2 로 설정되므로 poll에서 2초간 갱신 없으면 사라짐)
         {
             std::lock_guard<std::mutex> lk(v.discovered_stations_mtx);
             double now2 = glfwGetTime();
@@ -1455,7 +1456,7 @@ void run_streaming_viewer(){
                 std::remove_if(v.discovered_stations.begin(),
                                v.discovered_stations.end(),
                                [now2](const FFTViewer::DiscoveredStation& s){
-                                   return now2 - s.last_seen > 6.0;
+                                   return now2 > s.last_seen;
                                }),
                 v.discovered_stations.end());
         }
@@ -3427,7 +3428,7 @@ void run_streaming_viewer(){
             auto now2=std::chrono::steady_clock::now();
             float elh=std::chrono::duration<float>(now2-heartbeat_last).count();
             bool sdr_err_changed = (cur_sdr_err != prev_sdr_err);
-            if(elh>=3.0f || sdr_err_changed){
+            if(elh>=1.0f || sdr_err_changed){
                 if(sdr_err_changed) prev_sdr_err = cur_sdr_err;
                 heartbeat_last=now2;
                 uint8_t sdr_t_hb = 0;
