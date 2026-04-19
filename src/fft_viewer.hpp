@@ -633,7 +633,7 @@ public:
     const std::string& audio_play_path() const;
 
     // ── hw_detect / bladerf_io / rtlsdr_io ───────────────────────────────
-    bool initialize(float cf_mhz, float sr_msps = 61.44f); // HW 자동 감지 후 초기화
+    bool initialize(float cf_mhz, float sr_msps = 0.f);  // sr_msps=0 → HW별 기본 (BladeRF 61.44, Pluto 3.2)
     bool initialize_bladerf(float cf_mhz, float sr_msps);
     bool initialize_rtlsdr(float cf_mhz);
     bool initialize_pluto(float cf_mhz, float sr_msps);
