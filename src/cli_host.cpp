@@ -239,7 +239,7 @@ void run_cli_host(){
     int tier = atoi(prompt_input("Tier ").c_str());
     if(tier<1||tier>2){ bewe_log_push(0,"CLI HOST requires tier 1 or 2.\n"); return; }
 
-    std::string server_str = "144.24.86.137";
+    std::string server_str = "20.2.86.135";
 
     float lat = atof(prompt_input("Latitude ").c_str());
     float lon = -atof(prompt_input("Longitude").c_str()); // 양수 입력 = 동경(E), 내부 규약은 서경=양수이므로 부호 반전

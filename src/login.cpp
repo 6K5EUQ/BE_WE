@@ -16,7 +16,7 @@ extern void bewe_log_push(int col, const char* fmt, ...);
 static char g_login_id    [64]  = {};
 static char g_login_pw    [64]  = {};
 static int  g_login_tier        = 1;
-static char g_login_server[128] = "144.24.86.137";
+static char g_login_server[128] = "20.2.86.135";
 
 const char* login_get_id()     { return g_login_id; }
 const char* login_get_pw()     { return g_login_pw; }
@@ -160,7 +160,7 @@ bool draw_login_screen(int win_w, int win_h){
     ImGui::PopStyleVar(2);
 
     // ── 로그인 패널 ──────────────────────────────────────────────────────
-    static char server_buf[128] = "144.24.86.137";
+    static char server_buf[128] = "20.2.86.135";
 
     bool is_t3 = (tier == 3);
     const float PW_=290.0f,PH_=360.0f,PAD=28.0f;
