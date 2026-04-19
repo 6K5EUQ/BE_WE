@@ -46,6 +46,20 @@ extern void bewe_log_push(int col, const char* fmt, ...);
 extern void bewe_digi_push(int tab, const char* fmt, ...);
 extern void bewe_digi_push_ch(int tab, int ch_idx, const char* fmt, ...);
 
+// ── 녹음 .info 자동 생성 (이미 존재하면 덮어쓰지 않음) ─────────────────────
+// source_type: "IQ Recording" / "Audio Recording" / "Region IQ" / "Scheduled IQ"
+// modulation: "AM"/"FM"/"MAGIC"/"" 등
+// freq/bw/duration이 0이면 해당 줄 빈 값으로 둠
+void write_default_info_file(const std::string& wav_path,
+                             const char* source_type,
+                             double freq_mhz,
+                             double bw_khz,
+                             double duration_sec,
+                             const char* modulation,
+                             const char* operator_name,
+                             const char* station_name,
+                             time_t start_wall_time);
+
 // ── FFTViewer ─────────────────────────────────────────────────────────────
 class FFTViewer {
 public:

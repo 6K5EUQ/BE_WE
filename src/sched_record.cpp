@@ -165,16 +165,18 @@ void FFTViewer::sched_stop_entry(int idx){
     float  entry_freq  = e.freq_mhz;
     float  entry_bw    = e.bw_khz;
 
-    // Stop IQ recording
-    if(slot >= 0 && slot < MAX_CHANNELS)
-        stop_iq_rec(slot);
-
-    // Tear down temporary channel
+    // 1) demod 스레드를 먼저 join → maybe_rec_iq() 호출이 더 이상 일어나지 않음
+    //    (이 순서가 아니면 stop_iq_rec와 fwrite 사이 race로 frame 카운트 어긋남)
     if(slot >= 0 && slot < MAX_CHANNELS){
         stop_dem(slot);
         stop_digi(slot);
-        channels[slot].reset_slot();
     }
+    // 2) IQ 녹음 finalize (헤더 갱신 + .info Duration 갱신)
+    if(slot >= 0 && slot < MAX_CHANNELS)
+        stop_iq_rec(slot);
+
+    if(slot >= 0 && slot < MAX_CHANNELS)
+        channels[slot].reset_slot();
 
     // Restore frequency
     set_frequency(sched_saved_cf);
@@ -190,21 +192,49 @@ void FFTViewer::sched_stop_entry(int idx){
     if(!iq_path.empty() && sched_db_upload_fn){
         auto upload_fn = sched_db_upload_fn;
         std::thread([upload_fn, iq_path, entry_op, entry_start, entry_dur, entry_freq, entry_bw](){
-            // 파일 flush/close 마무리 대기
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            char info[512];
+            // 파일 flush/close + .info 갱신 마무리 대기 (디스크 sync 안전 마진)
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+            // stop_iq_rec()가 이미 표준 Key:Value 형식 .info를 생성/갱신했음.
+            // 그 내용을 그대로 read해서 업로드 (free-form 텍스트 대신 표준 포맷 보장)
+            std::string info_str;
+            std::string ipath = iq_path + ".info";
+            FILE* fi = fopen(ipath.c_str(), "r");
+            if(fi){
+                char buf[2048];
+                size_t n = fread(buf, 1, sizeof(buf)-1, fi);
+                buf[n] = 0;
+                info_str = buf;
+                fclose(fi);
+            }
+            // sched 특유 메타를 Notes에 추가 (info_str이 비었거나 Notes 라인 비어있으면 채움)
             char tbuf[64] = {};
             struct tm tm_utc; gmtime_r(&entry_start, &tm_utc);
             strftime(tbuf, sizeof(tbuf), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
-            snprintf(info, sizeof(info),
-                "This is a scheduled recording file.\n"
-                "Scheduled by: %s\n"
-                "Start time (UTC): %s\n"
-                "Duration: %.0f sec\n"
-                "Center frequency: %.4f MHz\n"
-                "Bandwidth: %.1f kHz\n",
-                entry_op[0] ? entry_op : "?", tbuf, entry_dur, entry_freq, entry_bw);
-            upload_fn(iq_path, entry_op, info);
+            char sched_note[256];
+            snprintf(sched_note, sizeof(sched_note),
+                "Notes: Scheduled by %s @ %s, dur=%.0fs, BW=%.1fkHz\n",
+                entry_op[0] ? entry_op : "?", tbuf, entry_dur, entry_bw);
+            // Notes: 라인 교체 (없으면 끝에 append)
+            std::string out;
+            bool note_replaced = false;
+            size_t pos = 0;
+            while(pos < info_str.size()){
+                size_t eol = info_str.find('\n', pos);
+                if(eol == std::string::npos) eol = info_str.size();
+                std::string line = info_str.substr(pos, eol - pos);
+                if(!note_replaced && line.rfind("Notes:", 0) == 0){
+                    out += sched_note;
+                    note_replaced = true;
+                } else {
+                    out += line;
+                    if(eol < info_str.size()) out += "\n";
+                }
+                pos = eol + 1;
+            }
+            if(!note_replaced) out += sched_note;
+            (void)entry_freq; // freq는 표준 .info의 Freq 필드에 이미 들어있음
+            upload_fn(iq_path, entry_op, out);
         }).detach();
     }
 }

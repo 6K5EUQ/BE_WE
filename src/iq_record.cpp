@@ -1,7 +1,102 @@
 #include "fft_viewer.hpp"
+#include "login.hpp"
 #include <ctime>
 #include <algorithm>
 #include <chrono>
+#include <unistd.h>
+#include <sys/stat.h>
+
+// ── 녹음 .info 자동 생성 ─────────────────────────────────────────────────
+void write_default_info_file(const std::string& wav_path,
+                             const char* source_type,
+                             double freq_mhz,
+                             double bw_khz,
+                             double duration_sec,
+                             const char* modulation,
+                             const char* operator_name,
+                             const char* station_name,
+                             time_t start_wall_time)
+{
+    std::string info_path = wav_path + ".info";
+    if(access(info_path.c_str(), F_OK) == 0) return; // 이미 있으면 보존
+    FILE* f = fopen(info_path.c_str(), "w");
+    if(!f) return;
+
+    if(start_wall_time <= 0) start_wall_time = time(nullptr);
+    struct tm tm2; localtime_r(&start_wall_time, &tm2);
+    char day_buf[64], time_buf[64];
+    strftime(day_buf,  sizeof(day_buf),  "%b %d, %Y", &tm2);
+    strftime(time_buf, sizeof(time_buf), "%H:%M:%S",  &tm2);
+
+    fprintf(f, "Day: %s\n", day_buf);
+    fprintf(f, "Time: %s\n", time_buf);
+    if(freq_mhz > 0) fprintf(f, "Freq: %.4f MHz\n", freq_mhz);
+    else             fprintf(f, "Freq: \n");
+    fprintf(f, "Target: \n");
+    fprintf(f, "Location: %s\n", station_name ? station_name : "");
+    fprintf(f, "Modulation: %s\n", modulation ? modulation : "");
+    if(bw_khz > 0) fprintf(f, "Bandwidth: %.1f kHz\n", bw_khz);
+    else           fprintf(f, "Bandwidth: \n");
+    fprintf(f, "Signal Strength: \n");
+    fprintf(f, "Protocol: \n");
+    fprintf(f, "Source Type: %s\n", source_type ? source_type : "");
+    if(duration_sec > 0) fprintf(f, "Content: Duration %.1f s\n", duration_sec);
+    else                 fprintf(f, "Content: \n");
+    fprintf(f, "Notes: \n");
+    fprintf(f, "Tags: \n");
+    fprintf(f, "Priority: \n");
+    fprintf(f, "Operator: %s\n", operator_name ? operator_name : "");
+
+    fclose(f);
+}
+
+// .info 파일의 Content 라인에 Duration 값 갱신 (다른 필드 보존)
+static void update_info_file_duration(const std::string& wav_path, double duration_sec){
+    std::string info_path = wav_path + ".info";
+    FILE* f = fopen(info_path.c_str(), "r");
+    if(!f) return;
+    std::vector<std::string> lines;
+    char buf[1024];
+    while(fgets(buf, sizeof(buf), f)) lines.emplace_back(buf);
+    fclose(f);
+
+    bool updated = false;
+    for(auto& l : lines){
+        if(l.rfind("Content:", 0) == 0){
+            // 사용자가 직접 작성한 내용이 있으면 보존
+            std::string body = l.substr(8);
+            // trim leading space
+            size_t lead = body.find_first_not_of(" \t");
+            std::string trimmed = (lead == std::string::npos) ? "" : body.substr(lead);
+            // trim trailing newline
+            while(!trimmed.empty() && (trimmed.back()=='\n' || trimmed.back()=='\r'))
+                trimmed.pop_back();
+            // 빈 칸이거나 "Duration "으로 시작하면 갱신
+            if(trimmed.empty() || trimmed.rfind("Duration ", 0) == 0){
+                char nl[128];
+                snprintf(nl, sizeof(nl), "Content: Duration %.1f s\n", duration_sec);
+                l = nl;
+                updated = true;
+            }
+            break;
+        }
+    }
+    if(!updated) return;
+    f = fopen(info_path.c_str(), "w");
+    if(!f) return;
+    for(auto& l : lines) fputs(l.c_str(), f);
+    fclose(f);
+}
+
+// 채널 모드 enum → 문자열
+static const char* dem_mode_name(Channel::DemodMode m){
+    switch(m){
+        case Channel::DM_AM:    return "AM";
+        case Channel::DM_FM:    return "FM";
+        case Channel::DM_MAGIC: return "MAGIC";
+        default:                return "";
+    }
+}
 
 // ── IQ 녹음 워커 ─────────────────────────────────────────────────────────
 void FFTViewer::rec_worker(){
@@ -39,6 +134,10 @@ void FFTViewer::rec_worker(){
     }
     wav.close();
     bewe_log("REC IQ done: %llu frames → %s\n",(unsigned long long)rec_frames.load(),rec_filename.c_str());
+
+    // .info Duration 갱신
+    if(actual_sr > 0)
+        update_info_file_duration(rec_filename, (double)rec_frames.load() / (double)actual_sr);
 
     // RecEntry 완료 표시
     {
@@ -88,6 +187,11 @@ void FFTViewer::start_rec(){
 
     rec_thr=std::thread(&FFTViewer::rec_worker,this);
     bewe_log("REC start ch%d → %s  SR=%u\n",fi,fn,rec_sr);
+
+    write_default_info_file(rec_filename, "Region IQ Recording",
+                            (double)rec_cf_mhz, (se-ss)*1000.0, 0.0,
+                            "", login_get_id(), station_name.c_str(),
+                            time(nullptr));
 }
 
 void FFTViewer::stop_rec(){
@@ -146,6 +250,12 @@ void FFTViewer::start_audio_rec(int ch_idx){
     }
 
     bewe_log("Audio REC start ch%d → %s  SR=%u\n",ch_idx,fn,asr);
+
+    float bw_khz = fabsf(ch.e - ch.s) * 1000.f;
+    write_default_info_file(fn, "Audio Recording",
+                            (double)cf_mhz, (double)bw_khz, 0.0,
+                            dem_mode_name(ch.mode), login_get_id(),
+                            station_name.c_str(), time(nullptr));
 }
 
 void FFTViewer::stop_audio_rec(int ch_idx){
@@ -177,6 +287,11 @@ void FFTViewer::stop_audio_rec(int ch_idx){
 
     bewe_log("Audio REC done: %llu frames → %s\n",
              (unsigned long long)ch.audio_rec_frames, ch.audio_rec_path.c_str());
+
+    // .info Duration 갱신
+    if(ch.audio_rec_sr > 0)
+        update_info_file_duration(ch.audio_rec_path,
+                                  (double)ch.audio_rec_frames / (double)ch.audio_rec_sr);
 
     // RecEntry 완료 표시
     {
@@ -236,6 +351,12 @@ void FFTViewer::start_iq_rec(int ch_idx){
         rec_entries.push_back(e);
     }
     bewe_log("IQ REC start ch%d > %s  SR=%u\n",ch_idx,fn,actual_inter);
+
+    float bw_khz_iq = fabsf(ch.e - ch.s) * 1000.f;
+    write_default_info_file(fn, "IQ Recording (per-channel)",
+                            (double)cf_mhz, (double)bw_khz_iq, 0.0,
+                            dem_mode_name(ch.mode), login_get_id(),
+                            station_name.c_str(), time(nullptr));
 }
 
 void FFTViewer::stop_iq_rec(int ch_idx){
@@ -266,6 +387,10 @@ void FFTViewer::stop_iq_rec(int ch_idx){
 
     bewe_log("IQ REC done: %llu frames > %s\n",
              (unsigned long long)ch.iq_rec_frames, ch.iq_rec_path.c_str());
+
+    if(ch.iq_rec_sr > 0)
+        update_info_file_duration(ch.iq_rec_path,
+                                  (double)ch.iq_rec_frames / (double)ch.iq_rec_sr);
     {
         std::lock_guard<std::mutex> lk(rec_entries_mtx);
         for(auto& e : rec_entries)
@@ -312,6 +437,12 @@ void FFTViewer::start_join_audio_rec(int ch_idx){
         rec_entries.push_back(e);
     }
     bewe_log("JOIN Audio REC start ch%d → %s  SR=%u\n",ch_idx,fn,asr);
+
+    float bw_khz_jaud = fabsf(ch.e - ch.s) * 1000.f;
+    write_default_info_file(fn, "Audio Recording (JOIN)",
+                            (double)cf_mhz, (double)bw_khz_jaud, 0.0,
+                            dem_mode_name(ch.mode), login_get_id(),
+                            station_name.c_str(), time(nullptr));
 }
 
 void FFTViewer::stop_join_audio_rec(int ch_idx){
@@ -343,6 +474,10 @@ void FFTViewer::stop_join_audio_rec(int ch_idx){
 
     bewe_log("JOIN Audio REC done: %llu frames → %s\n",
              (unsigned long long)ch.audio_rec_frames, ch.audio_rec_path.c_str());
+
+    if(ch.audio_rec_sr > 0)
+        update_info_file_duration(ch.audio_rec_path,
+                                  (double)ch.audio_rec_frames / (double)ch.audio_rec_sr);
     {
         std::lock_guard<std::mutex> lk(rec_entries_mtx);
         for(auto& e : rec_entries)

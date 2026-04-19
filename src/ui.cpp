@@ -2259,6 +2259,7 @@ void run_streaming_viewer(){
         static FILE* db_dl_fp = nullptr;
         static std::string db_dl_path;
         cli->on_db_download_data = [&](const PktDbDownloadData* d, const uint8_t* data, uint32_t data_len){
+            static uint64_t db_dl_recv = 0;
             if(d->is_first){
                 bool is_iq = (strncmp(d->filename,"IQ_",3)==0||strncmp(d->filename,"sa_",3)==0);
                 std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
@@ -2266,15 +2267,43 @@ void run_streaming_viewer(){
                 db_dl_path = dir + "/" + d->filename;
                 if(db_dl_fp) fclose(db_dl_fp);
                 db_dl_fp = fopen(db_dl_path.c_str(), "wb");
+                db_dl_recv = 0;
                 bewe_log_push(2,"[DB] Download start: %s (%.1fMB)\n", d->filename, d->total_bytes/1048576.0);
+                // 진행률 표시용 file_xfers 등록
+                std::lock_guard<std::mutex> lk(v.file_xfer_mtx);
+                FFTViewer::FileXfer xf{};
+                xf.filename = d->filename;
+                xf.total_bytes = d->total_bytes;
+                xf.done_bytes = 0;
+                v.file_xfers.push_back(xf);
             }
             if(db_dl_fp && data_len > 0){
                 fwrite(data, 1, data_len, db_dl_fp);
+                db_dl_recv += data_len;
+                // 진행률 갱신
+                std::lock_guard<std::mutex> lk(v.file_xfer_mtx);
+                for(auto& x : v.file_xfers)
+                    if(x.filename == d->filename && !x.finished){
+                        x.done_bytes = db_dl_recv;
+                        if(x.total_bytes == 0) x.total_bytes = d->total_bytes;
+                        break;
+                    }
             }
             if(d->is_last && db_dl_fp){
                 fclose(db_dl_fp);
                 db_dl_fp = nullptr;
                 bewe_log_push(2,"[DB] Download done: %s\n", db_dl_path.c_str());
+                // 완료 표시
+                {
+                    std::lock_guard<std::mutex> lk(v.file_xfer_mtx);
+                    for(auto& x : v.file_xfers)
+                        if(x.filename == d->filename && !x.finished){
+                            x.finished = true;
+                            x.local_path = db_dl_path;
+                            x.done_bytes = x.total_bytes;
+                            break;
+                        }
+                }
                 // record 목록에 추가
                 bool is_iq = (strncmp(d->filename,"IQ_",3)==0||strncmp(d->filename,"sa_",3)==0);
                 std::string fn2(d->filename);
@@ -6539,6 +6568,49 @@ void run_streaming_viewer(){
                     ImGui::EndTabBar();
                 }
                 ImGui::PopStyleColor(3);
+                // ── 진행 중인 파일 전송 표시 (Save DB / DB Download) ──────
+                {
+                    std::lock_guard<std::mutex> lk(v.file_xfer_mtx);
+                    bool any_active = false;
+                    for(auto& x : v.file_xfers) if(!x.finished){ any_active = true; break; }
+                    if(any_active){
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f,0.95f,1.0f,1.f));
+                        ImGui::Text("Transferring");
+                        ImGui::PopStyleColor();
+                        for(auto& x : v.file_xfers){
+                            if(x.finished) continue;
+                            float frac = (x.total_bytes > 0)
+                                ? (float)((double)x.done_bytes / (double)x.total_bytes) : 0.f;
+                            if(frac < 0.f) frac = 0.f;
+                            if(frac > 1.f) frac = 1.f;
+                            char buf[128];
+                            auto fmt_sz = [](uint64_t b, char* o, size_t sz){
+                                if(b < 1024)               snprintf(o,sz,"%llu B",(unsigned long long)b);
+                                else if(b < 1024*1024)     snprintf(o,sz,"%.1f KB",(double)b/1024);
+                                else if(b < 1024ULL*1024*1024) snprintf(o,sz,"%.1f MB",(double)b/(1024*1024));
+                                else                       snprintf(o,sz,"%.2f GB",(double)b/(1024ULL*1024*1024));
+                            };
+                            char dn[32], tn[32];
+                            fmt_sz(x.done_bytes, dn, sizeof(dn));
+                            fmt_sz(x.total_bytes, tn, sizeof(tn));
+                            snprintf(buf,sizeof(buf),"%s / %s (%.0f%%)", dn, tn, frac*100.f);
+                            ImGui::ProgressBar(frac, ImVec2(-1, 0), buf);
+                            ImGui::TextDisabled("  %s", x.filename.c_str());
+                        }
+                        // 완료된 항목은 약 5초 후 정리
+                        static double last_purge = 0;
+                        double now_t = ImGui::GetTime();
+                        if(now_t - last_purge > 1.0){
+                            last_purge = now_t;
+                            v.file_xfers.erase(std::remove_if(v.file_xfers.begin(),
+                                v.file_xfers.end(),
+                                [](const FFTViewer::FileXfer& f){ return f.finished; }),
+                                v.file_xfers.end());
+                        }
+                        ImGui::Separator();
+                    }
+                }
+
                 ImGui::BeginChild("##archive_scroll", ImVec2(0,0), false,
                     ImGuiWindowFlags_HorizontalScrollbar);
 
@@ -8159,16 +8231,45 @@ void run_streaming_viewer(){
                 std::string fp_cap = file_ctx.filepath;
                 std::string fn_cap = file_ctx.filename;
                 std::string op_cap = op_name;
+                // 파일 크기 미리 측정 (진행률 표시용)
+                uint64_t file_total = 0;
+                {
+                    FILE* fmeasure = fopen(fp_cap.c_str(),"rb");
+                    if(fmeasure){
+                        fseek(fmeasure,0,SEEK_END);
+                        file_total = (uint64_t)ftell(fmeasure);
+                        fclose(fmeasure);
+                    }
+                }
+                // file_xfers에 등록 (UI에서 진행률 표시)
+                {
+                    std::lock_guard<std::mutex> lk(v.file_xfer_mtx);
+                    FFTViewer::FileXfer xf{};
+                    xf.filename = fn_cap;
+                    xf.total_bytes = file_total;
+                    xf.done_bytes = 0;
+                    v.file_xfers.push_back(xf);
+                }
                 if(v.net_cli){
                     // JOIN: cmd_db_save (HOST→Central relay로 전달됨)
                     NetClient* cli_cap = v.net_cli;
-                    std::thread([cli_cap, fp_cap, op_cap](){
+                    auto* viewer = &v;
+                    std::thread([cli_cap, fp_cap, op_cap, fn_cap, viewer](){
                         cli_cap->cmd_db_save(fp_cap.c_str(), op_cap.c_str());
+                        // 완료 표시 (cmd_db_save 동기 — 끝나면 done)
+                        std::lock_guard<std::mutex> lk(viewer->file_xfer_mtx);
+                        for(auto& x : viewer->file_xfers)
+                            if(x.filename == fn_cap && !x.finished){
+                                x.finished = true;
+                                x.done_bytes = x.total_bytes;
+                                break;
+                            }
                     }).detach();
                 } else if(v.net_srv && v.net_srv->cb.on_relay_broadcast){
                     // HOST: DB_SAVE를 Central relay로 직접 전송
                     NetServer* srv_cap = v.net_srv;
-                    std::thread([srv_cap, fp_cap, fn_cap, op_cap](){
+                    auto* viewer = &v;
+                    std::thread([srv_cap, fp_cap, fn_cap, op_cap, viewer](){
                         FILE* fp=fopen(fp_cap.c_str(),"rb");
                         if(!fp) return;
                         fseek(fp,0,SEEK_END); uint64_t fsz=(uint64_t)ftell(fp); fseek(fp,0,SEEK_SET);
@@ -8184,6 +8285,7 @@ void run_streaming_viewer(){
                           srv_cap->cb.on_relay_broadcast(pkt.data(),pkt.size(),true); }
                         const size_t CHUNK=64*1024;
                         std::vector<uint8_t> buf(sizeof(PktDbSaveData)+CHUNK);
+                        uint64_t sent = 0;
                         while(true){
                             size_t n=fread(buf.data()+sizeof(PktDbSaveData),1,CHUNK,fp);
                             if(n==0) break;
@@ -8191,8 +8293,24 @@ void run_streaming_viewer(){
                             d->transfer_id=1; d->is_last=feof(fp)?1:0; d->chunk_bytes=(uint32_t)n;
                             auto pkt=make_packet(PacketType::DB_SAVE_DATA,buf.data(),(uint32_t)(sizeof(PktDbSaveData)+n));
                             srv_cap->cb.on_relay_broadcast(pkt.data(),pkt.size(),true);
+                            sent += n;
+                            // 진행률 갱신
+                            std::lock_guard<std::mutex> lk(viewer->file_xfer_mtx);
+                            for(auto& x : viewer->file_xfers)
+                                if(x.filename == fn_cap && !x.finished){
+                                    x.done_bytes = sent;
+                                    break;
+                                }
                         }
                         fclose(fp);
+                        // 완료 표시
+                        std::lock_guard<std::mutex> lk(viewer->file_xfer_mtx);
+                        for(auto& x : viewer->file_xfers)
+                            if(x.filename == fn_cap && !x.finished){
+                                x.finished = true;
+                                x.done_bytes = x.total_bytes;
+                                break;
+                            }
                     }).detach();
                 } else {
                     // LOCAL: 로컬 저장 fallback (flat — operator는 .info 의 Operator: 필드로 보존)

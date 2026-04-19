@@ -134,6 +134,7 @@ void NetClient::recv_loop(){
     uint64_t stats_prev_fft = stat_rx_fft_bytes.load();
     uint64_t stats_prev_aud = stat_rx_audio_bytes.load();
     uint64_t stats_prev_hb  = stat_rx_hb_bytes.load();
+    uint64_t stats_prev_db  = stat_rx_db_bytes.load() + stat_tx_db_bytes.load();
     auto print_stats = [&](){
         auto now = std::chrono::steady_clock::now();
         double win_sec = std::chrono::duration_cast<std::chrono::milliseconds>(now - stats_last).count() / 1000.0;
@@ -143,15 +144,18 @@ void NetClient::recv_loop(){
         uint64_t fb = stat_rx_fft_bytes.load();
         uint64_t ab = stat_rx_audio_bytes.load();
         uint64_t hb = stat_rx_hb_bytes.load();
-        bewe_log_push(0,"[JOIN] [STATS] room='%s' uptime=%llds | recv: %.1f KB/s | hb=%.1f KB/s fft=%.1f KB/s audio=%.1f KB/s\n",
+        uint64_t db = stat_rx_db_bytes.load() + stat_tx_db_bytes.load();
+        bewe_log_push(0,"[JOIN] [STATS] room='%s' uptime=%llds | recv: %.1f KB/s | hb=%.1f KB/s fft=%.1f KB/s audio=%.1f KB/s File=%.1f KB/s\n",
             stat_room_id.c_str(), uptime,
             (double)(t  - stats_prev_total) / win_sec / 1024.0,
             (double)(hb - stats_prev_hb)    / win_sec / 1024.0,
             (double)(fb - stats_prev_fft)   / win_sec / 1024.0,
-            (double)(ab - stats_prev_aud)   / win_sec / 1024.0);
+            (double)(ab - stats_prev_aud)   / win_sec / 1024.0,
+            (double)(db - stats_prev_db)    / win_sec / 1024.0);
         stats_last = now;
         stats_prev_total = t; stats_prev_fft = fb;
         stats_prev_aud = ab;  stats_prev_hb = hb;
+        stats_prev_db  = db;
     };
     while(connected_.load()){
         print_stats();
@@ -204,6 +208,11 @@ void NetClient::recv_loop(){
                 stat_rx_audio_bytes.fetch_add(total_bytes, std::memory_order_relaxed); break;
             case PacketType::HEARTBEAT:
                 stat_rx_hb_bytes.fetch_add(total_bytes, std::memory_order_relaxed); break;
+            case PacketType::DB_SAVE_META:
+            case PacketType::DB_SAVE_DATA:
+            case PacketType::DB_DOWNLOAD_DATA:
+            case PacketType::DB_DOWNLOAD_INFO:
+                stat_rx_db_bytes.fetch_add(total_bytes, std::memory_order_relaxed); break;
             default: break;
         }
         handle_packet(static_cast<PacketType>(hdr.type), payload.data(), len);
@@ -723,6 +732,7 @@ bool NetClient::cmd_db_save(const char* filepath, const char* operator_name){
     strncpy(meta.operator_name, operator_name, 31);
     strncpy(meta.info_data, info_data, 511);
     raw_send(PacketType::DB_SAVE_META, &meta, sizeof(meta));
+    stat_tx_db_bytes.fetch_add(PKT_HDR_SIZE + sizeof(meta), std::memory_order_relaxed);
     // send data chunks
     const size_t CHUNK = 64 * 1024;
     std::vector<uint8_t> buf(sizeof(PktDbSaveData) + CHUNK);
@@ -733,7 +743,9 @@ bool NetClient::cmd_db_save(const char* filepath, const char* operator_name){
         d->transfer_id = 1;
         d->is_last = (feof(fp) ? 1 : 0);
         d->chunk_bytes = (uint32_t)n;
-        raw_send(PacketType::DB_SAVE_DATA, buf.data(), (uint32_t)(sizeof(PktDbSaveData) + n));
+        size_t pkt_total = sizeof(PktDbSaveData) + n;
+        raw_send(PacketType::DB_SAVE_DATA, buf.data(), (uint32_t)pkt_total);
+        stat_tx_db_bytes.fetch_add(PKT_HDR_SIZE + pkt_total, std::memory_order_relaxed);
     }
     fclose(fp);
     return true;

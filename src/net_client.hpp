@@ -182,6 +182,8 @@ public:
     std::atomic<uint64_t> stat_rx_fft_bytes{0};
     std::atomic<uint64_t> stat_rx_audio_bytes{0};
     std::atomic<uint64_t> stat_rx_hb_bytes{0};
+    std::atomic<uint64_t> stat_rx_db_bytes{0};  // DB 파일 송수신 (DB_SAVE_* / DB_DOWNLOAD_*)
+    std::atomic<uint64_t> stat_tx_db_bytes{0};  // 업로드 측 누적 (cmd_db_save 호출 시 추적)
     std::string           stat_room_id;        // JOIN 접속 station_id
 
     struct NetStats {
