@@ -4048,9 +4048,9 @@ void run_streaming_viewer(){
                         v.tm_iq_was_stopped=true;
                         if(v.net_srv) v.net_srv->broadcast_wf_event(0,(int64_t)time(nullptr),2,"IQ Stop");
                     } else {
-                        // Pluto 61.44 MSPS에서는 파워 스펙트럼 관측 전용 → 롤링 IQ 차단
+                        // Pluto에서 SR > 3.2 MSPS (10/20/40/61.44)는 파워 스펙트럼 관측 전용 → 롤링 IQ 차단
                         bool pluto_hi = (v.hw.type == HWType::PLUTO
-                                      && v.header.sample_rate > 10000000u);
+                                      && v.header.sample_rate > 3200000u);
                         if(pluto_hi){
                             bewe_log_push(0,"[TM IQ] blocked: Pluto SR %.2f MSPS (power spectrum only)\n",
                                           v.header.sample_rate/1e6f);
@@ -4399,13 +4399,13 @@ void run_streaming_viewer(){
         if((v.dev_blade || v.dev_rtl || v.pluto_ctx) || v.remote_mode){
             // BladeRF: 2.5/5/10/20/30.72/61.44 MSPS
             // RTL-SDR: 0.25/0.96/1.44/2.56/3.2 MSPS
-            // Pluto  : 0.52/1/2/2.56/3.2/61.44 MSPS (61.44는 USB2 드롭 전제, 파워 스펙트럼 관측 전용)
+            // Pluto  : 0.52/1/2/2.56/3.2/10/20/40/61.44 MSPS (3.2 초과는 USB2 드롭 전제, 파워 스펙트럼 관측 전용)
             static const float blade_srs[]  = {2.5f,5.0f,10.0f,20.0f,30.72f,61.44f,122.88f};
             static const char* blade_lbls[] = {"2.5M","5M","10M","20M","30.72M","61.44M","122.88M"};
             static const float rtl_srs[]    = {0.25f,0.96f,1.44f,2.56f,3.2f};
             static const char* rtl_lbls[]   = {"0.25M","0.96M","1.44M","2.56M","3.2M"};
-            static const float pluto_srs[]  = {0.52f,1.0f,2.0f,2.56f,3.2f,61.44f};
-            static const char* pluto_lbls[] = {"0.52M","1M","2M","2.56M","3.2M","61.44M"};
+            static const float pluto_srs[]  = {0.52f,1.0f,2.0f,2.56f,3.2f,10.0f,20.0f,40.0f,61.44f};
+            static const char* pluto_lbls[] = {"0.52M","1M","2M","2.56M","3.2M","10M","20M","40M","61.44M"};
             // 0=blade, 1=rtl, 2=pluto
             int hw_mode;
             if(v.remote_mode){
@@ -4417,7 +4417,7 @@ void run_streaming_viewer(){
             const float* sr_list;  const char** sr_lbls;  int sr_count;
             switch(hw_mode){
                 case 0: sr_list = blade_srs; sr_lbls = blade_lbls; sr_count = 7; break;
-                case 2: sr_list = pluto_srs; sr_lbls = pluto_lbls; sr_count = 6; break;
+                case 2: sr_list = pluto_srs; sr_lbls = pluto_lbls; sr_count = 9; break;
                 default: sr_list = rtl_srs;  sr_lbls = rtl_lbls;   sr_count = 5; break;
             }
 

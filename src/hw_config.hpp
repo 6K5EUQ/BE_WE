@@ -58,8 +58,12 @@ struct HWConfig {
     float nyq_mhz()    const { return sample_rate_mhz * 0.5f; }
 
     // fft_size에 맞는 time_average 자동 계산
+    // Pluto는 USB 2.0 실효 ~8 MSPS라 명목 SR이 그 이상이면 ta가 과도해져서 row 갱신이 느려짐.
+    // 실효 throughput 기준으로 계산해 워터폴/파워스펙트럼 갱신 속도를 일정하게 유지.
     int compute_time_average(int fft_sz) const {
-        int ta = (int)((float)sample_rate / (float)fft_sz / TARGET_ROWS_PER_SEC);
+        uint32_t eff_sr = sample_rate;
+        if(type == HWType::PLUTO && eff_sr > 8000000u) eff_sr = 8000000u;
+        int ta = (int)((float)eff_sr / (float)fft_sz / TARGET_ROWS_PER_SEC);
         return ta < 1 ? 1 : ta;
     }
 };
