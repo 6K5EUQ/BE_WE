@@ -160,6 +160,38 @@ static float read_ghz(){
     }
     return cnt>0?(float)(sum/cnt/1e6):0.0f;
 }
+static int read_cpu_temp_c(){
+    // 1) hwmon coretemp (Intel/AMD)
+    for(int i=0;i<32;i++){
+        char np[80]; snprintf(np,sizeof(np),"/sys/class/hwmon/hwmon%d/name",i);
+        FILE* fn=fopen(np,"r"); if(!fn) continue;
+        char name[32]={}; fgets(name,sizeof(name),fn); fclose(fn);
+        if(strncmp(name,"coretemp",8)==0 || strncmp(name,"k10temp",7)==0
+           || strncmp(name,"cpu_thermal",11)==0){
+            char tp[80]; snprintf(tp,sizeof(tp),"/sys/class/hwmon/hwmon%d/temp1_input",i);
+            FILE* ft=fopen(tp,"r"); if(!ft) continue;
+            int milli=0; if(fscanf(ft,"%d",&milli)==1){ fclose(ft); return milli/1000; }
+            fclose(ft);
+        }
+    }
+    // 2) thermal_zone: x86_pkg_temp / TCPU / cpu-thermal (RPi5 등 ARM)
+    for(int i=0;i<16;i++){
+        char tt[80]; snprintf(tt,sizeof(tt),"/sys/class/thermal/thermal_zone%d/type",i);
+        FILE* ft=fopen(tt,"r"); if(!ft) continue;
+        char zt[32]={}; fgets(zt,sizeof(zt),ft); fclose(ft);
+        if(strncmp(zt,"x86_pkg_temp",12)==0 || strncmp(zt,"TCPU",4)==0
+           || strncmp(zt,"cpu-thermal",11)==0 || strncmp(zt,"cpu_thermal",11)==0){
+            char tp[80]; snprintf(tp,sizeof(tp),"/sys/class/thermal/thermal_zone%d/temp",i);
+            FILE* fv=fopen(tp,"r"); if(!fv) continue;
+            int milli=0; if(fscanf(fv,"%d",&milli)==1){ fclose(fv); return milli/1000; }
+            fclose(fv);
+        }
+    }
+    // 3) fallback: thermal_zone0
+    FILE* fv=fopen("/sys/class/thermal/thermal_zone0/temp","r");
+    if(fv){ int milli=0; if(fscanf(fv,"%d",&milli)==1 && milli>0){ fclose(fv); return milli/1000; } fclose(fv); }
+    return 0;
+}
 static long long read_io_ms(){
     FILE* f=fopen("/proc/diskstats","r"); if(!f) return 0;
     long long sum=0; char dev[32]; unsigned int maj,min_;
@@ -1230,6 +1262,7 @@ void run_cli_host(){
                 cpu_last_idle=idle; cpu_last_total=total;
                 v.sysmon_ghz=read_ghz();
                 v.sysmon_ram=read_ram();
+                v.sysmon_cpu_temp_c.store(read_cpu_temp_c());
                 long long io_now=read_io_ms();
                 v.sysmon_io=std::min(100.0f,(float)(io_now-io_last_ms)/10.0f);
                 io_last_ms=io_now;
@@ -1344,11 +1377,18 @@ void run_cli_host(){
                     float _t = 0.f;
                     if(bladerf_get_rfic_temperature(v.dev_blade, &_t) == 0)
                         sdr_t_hb = (uint8_t)std::min(255.f, std::max(0.f, _t));
+                } else if(v.pluto_ctx){
+                    float _t = v.pluto_get_temp_c();
+                    if(_t > 0.f) sdr_t_hb = (uint8_t)std::min(255.f, _t);
                 }
                 uint8_t hst = v.spectrum_pause.load() ? 2 : 0;
                 uint8_t sdr_st = (cur_sdr_err || v.rx_stopped.load()) ? 1 : 0;
                 uint8_t iq_st = v.tm_iq_on.load() ? 1 : 0;
-                v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st, iq_st, 0,0,0, v.host_antenna);
+                uint8_t cpu_pct  = (uint8_t)std::min(255.f, std::max(0.f, v.sysmon_cpu));
+                uint8_t ram_pct  = (uint8_t)std::min(255.f, std::max(0.f, v.sysmon_ram));
+                uint8_t cpu_temp = (uint8_t)std::min(255, std::max(0, v.sysmon_cpu_temp_c.load()));
+                v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st, iq_st,
+                                               cpu_pct, ram_pct, cpu_temp, v.host_antenna);
             }
         }
 

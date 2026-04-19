@@ -398,3 +398,23 @@ void FFTViewer::capture_and_process_pluto(){
     if(pluto_ctx){ iio_context_destroy((struct iio_context*)pluto_ctx); pluto_ctx=nullptr; }
     pluto_phy_dev=nullptr; pluto_rx_dev=nullptr; pluto_rx_i_ch=nullptr; pluto_rx_q_ch=nullptr;
 }
+
+// ── AD9361 내부 온도 읽기 ────────────────────────────────────────────────
+// 성공 시 °C, 실패 시 음수 반환
+float FFTViewer::pluto_get_temp_c() const {
+    auto* phy = (struct iio_device*)pluto_phy_dev;
+    if(!phy) return -1.f;
+    struct iio_channel* tch = iio_device_find_channel(phy, "temp0", false);
+    if(!tch) return -1.f;
+    // Pluto: in_temp0_input이 이미 milli-°C 단위로 환산된 값을 제공
+    long long milli = 0;
+    if(iio_channel_attr_read_longlong(tch, "input", &milli) == 0)
+        return (float)milli / 1000.f;
+    // fallback: raw + offset + scale
+    long long raw = 0, off = 0;
+    double scale = 1.0;
+    if(iio_channel_attr_read_longlong(tch, "raw", &raw) != 0) return -1.f;
+    iio_channel_attr_read_longlong(tch, "offset", &off);
+    iio_channel_attr_read_double  (tch, "scale",  &scale);
+    return (float)((raw + off) * scale / 1000.0);
+}

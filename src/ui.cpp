@@ -3435,6 +3435,9 @@ void run_streaming_viewer(){
                     float _t = 0.f;
                     if(bladerf_get_rfic_temperature(v.dev_blade, &_t) == 0)
                         sdr_t_hb = (uint8_t)std::min(255.f, std::max(0.f, _t));
+                } else if(v.pluto_ctx){
+                    float _t = v.pluto_get_temp_c();
+                    if(_t > 0.f) sdr_t_hb = (uint8_t)std::min(255.f, _t);
                 }
                 // host_state: 0=OK, 2=SPECTRUM_PAUSED (JOIN에게 노란 LINK 표시)
                 uint8_t hst = (v.spectrum_pause.load() || !v.render_visible.load()) ? 2 : 0;
@@ -7866,26 +7869,10 @@ void run_streaming_viewer(){
                 char clock_str[16];
                 strftime(clock_str, sizeof(clock_str), "%H:%M:%S", &tlocal);
 
-                // 조합 문자열: "CPU: ##°C  HH:MM:SS  SDR: ##°C"
-                char center_str[80] = {};
-                {
-                    std::lock_guard<std::mutex> lk(cpu_temp_mtx);
-                    std::lock_guard<std::mutex> lk2(sdr_temp_mtx);
-                    if(cpu_temp_str[0] && sdr_temp_str[0])
-                        snprintf(center_str, sizeof(center_str),
-                                 "CPU: %s  %s  SDR: %s", cpu_temp_str, clock_str, sdr_temp_str);
-                    else if(cpu_temp_str[0])
-                        snprintf(center_str, sizeof(center_str),
-                                 "CPU: %s  %s", cpu_temp_str, clock_str);
-                    else if(sdr_temp_str[0])
-                        snprintf(center_str, sizeof(center_str),
-                                 "%s  SDR: %s", clock_str, sdr_temp_str);
-                    else
-                        snprintf(center_str, sizeof(center_str), "%s", clock_str);
-                }
-                ImVec2 csz = ImGui::CalcTextSize(center_str);
+                // 중앙 하단: 시간만 표시 (CPU/SDR 온도는 STATUS 패널과 중복이라 생략)
+                ImVec2 csz = ImGui::CalcTextSize(clock_str);
                 dl->AddText(ImVec2((disp_w - csz.x) / 2.f, ty_b),
-                            IM_COL32(200,200,200,255), center_str);
+                            IM_COL32(200,200,200,255), clock_str);
             }
 
             // ── 좌측: 타임머신 오프셋 (TM 모드 + 오프셋 있을 때만 표시) ─

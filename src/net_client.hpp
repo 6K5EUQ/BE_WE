@@ -19,6 +19,8 @@ struct NetAudioRing {
     static constexpr size_t JITTER_FILL = 2400;
     // 언더런 발생 시 재축적 임계값 (JITTER_FILL의 절반)
     static constexpr size_t JITTER_RESUME = JITTER_FILL / 2;
+    // 지연 한계: 초과 시 오래된 샘플을 버리고 최신 JITTER_FILL만 재생 (돌이표 방지, ~150ms)
+    static constexpr size_t JITTER_MAX = JITTER_FILL * 3;
 
     float                   buf[SZ]{};
     int8_t                  pan[SZ]{};
@@ -26,6 +28,7 @@ struct NetAudioRing {
     bool                    primed = false; // jitter buffer 축적 완료 여부
 
     std::atomic<uint64_t> stat_underruns{0};  // 언더런 횟수
+    std::atomic<uint64_t> stat_drops{0};      // 누적 지연으로 건너뛴 샘플 수
 
     void push(float v, int8_t p){
         size_t w = wp.load(std::memory_order_relaxed);
@@ -37,6 +40,7 @@ struct NetAudioRing {
     // jitter buffer를 거쳐 pop
     // primed 전: 데이터가 JITTER_FILL 이상 쌓일 때까지 false 반환
     // primed 후: 정상 pop. 언더런 시 primed 해제 → 재축적
+    // 재축적 완료 / 정상 재생 중 avail이 JITTER_MAX 초과하면 오래된 샘플 폐기 (돌이표 방지)
     bool pop(float& v, int8_t& p){
         size_t w = wp.load(std::memory_order_acquire);
         size_t r = rp.load(std::memory_order_relaxed);
@@ -44,6 +48,13 @@ struct NetAudioRing {
 
         if(!primed){
             if(avail < JITTER_FILL) return false;
+            // 재축적 완료 시점에 너무 많이 쌓였으면 최신 JITTER_FILL만 남기고 폐기
+            if(avail > JITTER_FILL){
+                size_t new_r = w - JITTER_FILL;
+                stat_drops.fetch_add(avail - JITTER_FILL, std::memory_order_relaxed);
+                rp.store(new_r, std::memory_order_release);
+                r = new_r; avail = JITTER_FILL;
+            }
             primed = true;
         }
         if(avail == 0){
@@ -51,6 +62,13 @@ struct NetAudioRing {
             primed = false;
             stat_underruns.fetch_add(1, std::memory_order_relaxed);
             return false;
+        }
+        // 정상 재생 중에도 점진적 누적 감지 시 최신 구간으로 점프
+        if(avail > JITTER_MAX){
+            size_t new_r = w - JITTER_FILL;
+            stat_drops.fetch_add(avail - JITTER_FILL, std::memory_order_relaxed);
+            rp.store(new_r, std::memory_order_release);
+            r = new_r;
         }
         v = buf[r & MASK]; p = pan[r & MASK];
         rp.store(r+1, std::memory_order_release);
@@ -190,6 +208,7 @@ public:
         uint64_t rx_bytes    = 0;
         uint64_t tx_bytes    = 0;
         uint64_t underruns   = 0;   // 전체 채널 언더런 합계
+        uint64_t drops       = 0;   // 전체 채널 drop 샘플 합계 (지연 누적 폐기)
         size_t   jitter_fill = 0;   // 현재 지터버퍼 샘플 수 (max across channels)
     };
     NetStats collect_stats() const {
@@ -198,6 +217,7 @@ public:
         s.tx_bytes = stat_tx_bytes.load(std::memory_order_relaxed);
         for(int i = 0; i < MAX_CHANNELS; i++){
             s.underruns += audio[i].stat_underruns.load(std::memory_order_relaxed);
+            s.drops     += audio[i].stat_drops.load(std::memory_order_relaxed);
             size_t avail = audio[i].wp.load(std::memory_order_relaxed)
                          - audio[i].rp.load(std::memory_order_relaxed);
             if(avail > s.jitter_fill) s.jitter_fill = avail;

@@ -637,6 +637,7 @@ public:
     bool initialize_bladerf(float cf_mhz, float sr_msps);
     bool initialize_rtlsdr(float cf_mhz);
     bool initialize_pluto(float cf_mhz, float sr_msps);
+    float pluto_get_temp_c() const;  // AD9361 내부 온도 °C (실패 시 음수)
     void capture_and_process();
     void capture_and_process_rtl();
     void capture_and_process_pluto();
