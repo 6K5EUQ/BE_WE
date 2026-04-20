@@ -104,6 +104,16 @@ inline HWConfig make_pluto_config(uint32_t actual_sr){
     return c;
 }
 
+// 녹음 Recorder 필드용 장비 표시명 (.info 파일)
+inline const char* hw_recorder_name(HWType t){
+    switch(t){
+        case HWType::BLADERF: return "BladeRF 2.0 micro xA9 (12bit ADC)";
+        case HWType::PLUTO:   return "ADALM Pluto SDR (12bit ADC)";
+        case HWType::RTLSDR:  return "RTL-SDR v4 (8bit ADC)";
+        default:              return "";
+    }
+}
+
 // RTL-SDR 기본값 (2.56 MSPS)
 inline HWConfig make_rtlsdr_config(uint32_t actual_sr){
     HWConfig c;

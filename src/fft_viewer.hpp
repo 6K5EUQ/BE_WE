@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <climits>
 #include <functional>
 #include <cmath>
 #include <vector>
@@ -58,7 +59,8 @@ void write_default_info_file(const std::string& wav_path,
                              const char* modulation,
                              const char* operator_name,
                              const char* station_name,
-                             time_t start_wall_time);
+                             time_t start_wall_time,
+                             int utc_offset_hours = INT_MIN);
 
 // ── FFTViewer ─────────────────────────────────────────────────────────────
 class FFTViewer {
@@ -340,6 +342,8 @@ public:
 
     // center freq (표시용)
     uint64_t eid_center_freq_hz = 0;
+    // 원본 WAV bewe 청크 start_time (Save File 시 새 WAV에 보존)
+    int64_t  eid_start_time_meta = 0;
 
     // 뷰 상태 (double: 대용량 샘플 인덱스 정밀도)
     double  eid_view_t0 = 0.0;   // 보이는 시작 (샘플 인덱스)
@@ -464,6 +468,37 @@ public:
     void eid_undo_bpf();
     void eid_recompute_derived();
     void sa_recompute_from_iq(bool reset_view = false);
+    // Save File: 현재 eid_ch_i/q 상태(필터·샘플 수정 반영)를 원본 폴더에 새 WAV로 저장.
+    // 파일명: IQ_Filtered_... / Audio_Filtered_... 형식, 중복 시 _2, _3 접미.
+    // 원본 .info가 있으면 같은 규칙으로 복사. 반환: 생성 경로(실패 시 "").
+    std::string eid_save_filtered();
+    // 기본 저장 경로 계산만 수행 (파일명 결정, 중복 _N 처리)
+    std::string eid_default_filtered_path();
+    // 지정 경로에 WAV만 저장 (헤더/bewe 청크/stereo int16). .info는 호출자 책임.
+    std::string eid_save_filtered_to(const std::string& out_path);
+
+    // .info 파일의 Recorder 필드용 장비 표시명 (HOST/Local=hw.type, JOIN=remote_hw)
+    const char* recorder_name() const {
+        if(remote_mode && net_cli){
+            uint8_t rh = net_cli->remote_hw.load();
+            if(rh == 0) return "BladeRF 2.0 micro xA9 (12bit ADC)";
+            if(rh == 1) return "RTL-SDR v4 (8bit ADC)";
+            if(rh == 2) return "ADALM Pluto SDR (12bit ADC)";
+            return "";
+        }
+        return hw_recorder_name(hw.type);
+    }
+    // UTC 오프셋(시간 단위): HOST/Local은 station_lon, 그 외는 시스템 TZ
+    int utc_offset_hours() const {
+        if(!remote_mode && station_lon != 0.f){
+            // 경도 15° = 1시간 (반올림)
+            float v = station_lon / 15.0f;
+            return (int)(v >= 0 ? v + 0.5f : v - 0.5f);
+        }
+        time_t now = time(nullptr);
+        struct tm lt; localtime_r(&now, &lt);
+        return (int)(lt.tm_gmtoff / 3600);
+    }
 
     // tm_rec 내부 상태
     bool    tm_rec_active=false;

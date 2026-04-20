@@ -394,10 +394,11 @@ std::string FFTViewer::do_region_save_work(){
     // .info 자동 생성 (SA 모드 아닐 때만 — SA는 분석 임시 파일)
     if(!sa_mode){
         double duration_sec = (out_sr > 0) ? (double)n_out / (double)out_sr : 0.0;
-        write_default_info_file(outpath, "Region IQ Save",
+        write_default_info_file(outpath, recorder_name(),
                                 cf_abs_mhz, (double)bw_khz, duration_sec,
                                 "", login_get_id(), station_name.c_str(),
-                                region.time_start_ms / 1000LL);
+                                region.time_start_ms / 1000LL,
+                                utc_offset_hours());
     }
 
     // SA 모드: 저장 완료 후 SA 워터폴 계산 시작

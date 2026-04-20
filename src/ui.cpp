@@ -3262,16 +3262,26 @@ void run_streaming_viewer(){
     bool g_arch_cache_dirty = false;  // arch_info_cache / arch_info_tip_cache 무효화 플래그
 
     // ── .info 메타데이터 모달 ────────────────────────────────────────────
+    // 인덱스: 0=File Name, 1=Day, 2=Up Time, 3=Down Time, 4=Duration,
+    //        5=Frequency, 6=Target, 7=Location, 8=Modulation, 9=Bandwidth,
+    //        10=Signal Strength, 11=Protocol, 12=Recorder, 13=Notes,
+    //        14=Tags, 15=Priority, 16=Operator
     struct InfoModal {
         bool open = false;
+        bool save_and_write = false; // true: Save 누르면 WAV/IQ 파일도 생성 (EID Save File 플로우)
+        std::function<std::string(const std::string&)> save_file_fn;
         std::string filepath, info_path;
+        std::string src_filepath;
         bool exists = false;
-        char fields[15][256] = {};
-        enum { N_FIELDS = 15 };
-        const char* names[15] = {
-            "Day","Time","Freq","Target","Location",
-            "Modulation","Bandwidth","Signal Strength","Protocol","Source Type",
-            "Content","Notes","Tags","Priority","Operator"
+        int  utc_off_override = INT_MIN; // HOST 좌표 기반 UTC; INT_MIN이면 시스템 TZ
+        char ext_buf[16] = {};      // 확장자 (.wav 등, 표시만, 편집 불가)
+        char fields[17][256] = {};
+        enum { N_FIELDS = 17 };
+        const char* names[17] = {
+            "File Name","Day","Up Time","Down Time","Duration",
+            "Frequency","Target","Location","Modulation","Bandwidth",
+            "Signal Strength","Protocol","Recorder","Notes",
+            "Tags","Priority","Operator"
         };
         void load(){
             FILE* f = fopen(info_path.c_str(), "r");
@@ -3280,8 +3290,15 @@ void run_streaming_viewer(){
             while(fgets(line, sizeof(line), f)){
                 char key[64]={}, val[256]={};
                 if(sscanf(line, "%63[^:]: %255[^\n]", key, val) >= 1){
+                    // 레거시 호환 매핑
+                    const char* mapped = key;
+                    if(strcmp(key, "Time") == 0)       mapped = "Up Time";
+                    else if(strcmp(key, "Freq") == 0)  mapped = "Frequency";
+                    else if(strcmp(key, "Source Type")==0) mapped = "Recorder";
+                    // "Content" 는 제거됨 (무시)
+                    if(strcmp(key, "Content") == 0)    continue;
                     for(int i=0;i<N_FIELDS;i++){
-                        if(strcmp(key, names[i])==0){
+                        if(strcmp(mapped, names[i])==0){
                             strncpy(fields[i], val, 255);
                             break;
                         }
@@ -3297,9 +3314,44 @@ void run_streaming_viewer(){
                 fprintf(f, "%s: %s\n", names[i], fields[i]);
             fclose(f);
         }
+        // WAV 파일 길이 초 단위 추정 (헤더 + 파일 크기)
+        static double wav_duration_sec(const std::string& path){
+            FILE* f = fopen(path.c_str(), "rb");
+            if(!f) return 0.0;
+            double dur = 0.0;
+            uint8_t hdr[44];
+            if(fread(hdr, 1, 44, f) == 44){
+                uint32_t sr  = *(uint32_t*)(hdr+24);
+                uint16_t ch  = *(uint16_t*)(hdr+22);
+                uint16_t bps = *(uint16_t*)(hdr+34);
+                struct stat st{};
+                if(::stat(path.c_str(), &st) == 0 && sr>0 && ch>0 && bps>0)
+                    dur = (double)(st.st_size - 44) / (sr * ch * (bps/8));
+            }
+            fclose(f);
+            return dur;
+        }
+        // 로컬 UTC 오프셋 (시간 단위)
+        static int utc_off_hours(){
+            time_t now = time(nullptr);
+            struct tm lt; localtime_r(&now, &lt);
+            return (int)(lt.tm_gmtoff / 3600);
+        }
+        // HH:MM:SS (UTC+N) 포맷
+        static void fmt_time_utc(char* out, size_t sz, const struct tm& lt, int off){
+            char base[16]; strftime(base, sizeof(base), "%H:%M:%S", &lt);
+            if(off >= 0) snprintf(out, sz, "%s (UTC+%d)", base, off);
+            else         snprintf(out, sz, "%s (UTC%d)",  base, off);
+        }
         void autofill(const std::string& filename){
             memset(fields, 0, sizeof(fields));
-            // Freq: parse _XXX.XXXMHz_
+            // File Name (stem, 확장자 제외)
+            {
+                size_t dot = filename.find_last_of('.');
+                std::string stem = (dot==std::string::npos) ? filename : filename.substr(0, dot);
+                strncpy(fields[0], stem.c_str(), 255);
+            }
+            // Frequency: parse _XXX.XXXMHz_
             float mhz=0;
             const char* p = strstr(filename.c_str(), "MHz");
             if(p){
@@ -3307,8 +3359,9 @@ void run_streaming_viewer(){
                 while(q > filename.c_str() && ((*q>='0'&&*q<='9')||*q=='.')) q--;
                 if(q < p-1) mhz = (float)atof(q+1);
             }
-            if(mhz > 0) snprintf(fields[2], 256, "%.3f MHz", mhz);
-            // Day/Time: parse _MonDD_YYYY_HHMMSS from filename
+            if(mhz > 0) snprintf(fields[5], 256, "%.3f MHz", mhz);
+            // Day / Up Time: parse _MonDD_YYYY_HHMMSS
+            int utc_off = (utc_off_override == INT_MIN) ? utc_off_hours() : utc_off_override;
             bool dt_found = false;
             const char* under = filename.c_str();
             for(int i=0; i<3 && under; i++) under = strchr(under+1, '_');
@@ -3316,22 +3369,71 @@ void run_streaming_viewer(){
                 char mon[4]={};
                 int day=0,yr=0,hh=0,mm=0,ss=0;
                 if(sscanf(under-3, "%3s%2d_%4d_%2d%2d%2d", mon,&day,&yr,&hh,&mm,&ss) >= 5){
-                    snprintf(fields[0], 256, "%s %02d, %04d", mon, day, yr);
-                    snprintf(fields[1], 256, "%02d:%02d:%02d", hh, mm, ss);
+                    snprintf(fields[1], 256, "%s %02d, %04d", mon, day, yr);
+                    if(utc_off >= 0) snprintf(fields[2], 256, "%02d:%02d:%02d (UTC+%d)", hh, mm, ss, utc_off);
+                    else             snprintf(fields[2], 256, "%02d:%02d:%02d (UTC%d)",  hh, mm, ss, utc_off);
                     dt_found = true;
                 }
             }
-            // fallback: 현재 시각
             if(!dt_found){
                 time_t now = time(nullptr);
-                struct tm tm2; localtime_r(&now, &tm2);
-                strftime(fields[0], 256, "%b %d, %Y", &tm2);
-                strftime(fields[1], 256, "%H:%M:%S", &tm2);
+                struct tm lt; localtime_r(&now, &lt);
+                strftime(fields[1], 256, "%b %d, %Y", &lt);
+                fmt_time_utc(fields[2], 256, lt, utc_off);
+            }
+            // Duration: WAV 파일 직접 측정
+            if(!filepath.empty()){
+                double d = wav_duration_sec(filepath);
+                if(d > 0) snprintf(fields[4], 256, "%.1f s", d);
             }
             // Operator
-            strncpy(fields[14], login_get_id(), 255);
+            strncpy(fields[16], login_get_id(), 255);
+        }
+        // 확장자 초기화 (파일명 fields[0]과 분리)
+        void init_ext(){
+            const char* fn = strrchr(filepath.c_str(), '/');
+            fn = fn ? fn+1 : filepath.c_str();
+            const char* dot = strrchr(fn, '.');
+            if(dot){ strncpy(ext_buf, dot, sizeof(ext_buf)-1); ext_buf[sizeof(ext_buf)-1] = '\0'; }
+            else   { ext_buf[0] = '\0'; }
+            // fields[0] (File Name)가 비어있으면 stem으로 채움
+            if(fields[0][0] == '\0'){
+                size_t stem_len = dot ? (size_t)(dot - fn) : strlen(fn);
+                if(stem_len >= sizeof(fields[0])) stem_len = sizeof(fields[0])-1;
+                memcpy(fields[0], fn, stem_len); fields[0][stem_len] = '\0';
+            }
         }
     } info_modal;
+
+    // HH:MM:SS (UTC+N) 또는 HHMMSS 입력 → HH:MM:SS (UTC+N) 형식으로 자동 변환
+    auto fmt_time_field = [](char* buf){
+        if(!buf || !buf[0]) return;
+        // 이미 콜론 있으면 그대로
+        if(strchr(buf, ':')) return;
+        // UTC 태그 추출 (있으면 나중에 다시 붙임)
+        char utc_tag[32] = {};
+        char* paren = strchr(buf, '(');
+        if(paren){
+            strncpy(utc_tag, paren, sizeof(utc_tag)-1);
+            utc_tag[sizeof(utc_tag)-1] = '\0';
+            // paren 이전 trim
+            while(paren > buf && (paren[-1]==' '||paren[-1]=='\t')) paren--;
+            *paren = '\0';
+        }
+        // 숫자만 추출
+        char digits[8]={}; int dn=0;
+        for(char* p=buf; *p && dn<7; p++) if(*p>='0' && *p<='9') digits[dn++] = *p;
+        if(dn == 6){
+            char out[64];
+            if(utc_tag[0])
+                snprintf(out, sizeof(out), "%c%c:%c%c:%c%c %s",
+                         digits[0],digits[1],digits[2],digits[3],digits[4],digits[5], utc_tag);
+            else
+                snprintf(out, sizeof(out), "%c%c:%c%c:%c%c",
+                         digits[0],digits[1],digits[2],digits[3],digits[4],digits[5]);
+            strncpy(buf, out, 255); buf[255]='\0';
+        }
+    };
 
     // chassis 1 reset 후 HOST 재시작: stable 메시지 (JOIN 재접속 전이므로 로컬만)
     if(mode_sel == 1 && chassis_reset_mode == 1 && v.net_srv){
@@ -6668,21 +6770,36 @@ void run_streaming_viewer(){
                         ImGui::TextDisabled("%s", cached.c_str());
                     }
                     if(item_hov){
-                        // .info 파일이 있으면 툴팁 표시
+                        // .info 파일이 있으면 툴팁 표시 (핵심 필드만)
                         std::string ipath = fp + ".info";
                         auto& tip = arch_info_tip_cache[fp];
                         if(tip.empty()){
                             FILE* fi = fopen(ipath.c_str(), "r");
                             if(fi){
+                                // 핵심 필드만: Day, Up Time, Down Time, Frequency, Modulation
+                                // 레거시 "Time"/"Freq" 매핑 포함
+                                static const char* key_fields[] = {
+                                    "Day", "Up Time", "Down Time", "Time",
+                                    "Frequency", "Freq", "Modulation"
+                                };
+                                constexpr int KEY_N = sizeof(key_fields)/sizeof(key_fields[0]);
                                 char line[256]; std::string acc;
                                 while(fgets(line,sizeof(line),fi)){
-                                    // 빈 값 스킵 ("Key: \n")
                                     char k[64]={},val[256]={};
-                                    if(sscanf(line,"%63[^:]: %255[^\n]",k,val)==2 && val[0])
-                                        { acc += k; acc += ": "; acc += val; acc += "\n"; }
+                                    if(sscanf(line,"%63[^:]: %255[^\n]",k,val)!=2 || !val[0])
+                                        continue;
+                                    for(int ki=0; ki<KEY_N; ki++){
+                                        if(strcmp(k, key_fields[ki]) == 0){
+                                            const char* disp_k = k;
+                                            if(strcmp(k, "Time")==0) disp_k = "Up Time";
+                                            else if(strcmp(k, "Freq")==0) disp_k = "Frequency";
+                                            acc += disp_k; acc += ": "; acc += val; acc += "\n";
+                                            break;
+                                        }
+                                    }
                                 }
                                 fclose(fi);
-                                tip = acc.empty() ? " " : acc; // space = no info
+                                tip = acc.empty() ? " " : acc;
                             } else {
                                 tip = " ";
                             }
@@ -8178,11 +8295,19 @@ void run_streaming_viewer(){
                 bool has_info = (access(ip.c_str(), F_OK) == 0);
                 if(ImGui::Selectable(has_info ? "  Info" : "  Add Info")){
                     info_modal.open = true;
+                    info_modal.save_and_write = false;
+                    info_modal.save_file_fn = nullptr;
+                    info_modal.src_filepath.clear();
                     info_modal.filepath = file_ctx.filepath;
                     info_modal.info_path = ip;
                     info_modal.exists = has_info;
-                    if(has_info) info_modal.load();
+                    info_modal.utc_off_override = v.utc_offset_hours();
+                    if(has_info){
+                        memset(info_modal.fields, 0, sizeof(info_modal.fields));
+                        info_modal.load();
+                    }
                     else info_modal.autofill(file_ctx.filename);
+                    info_modal.init_ext();
                     file_ctx.open = false;
                 }
             }
@@ -8403,40 +8528,119 @@ void run_streaming_viewer(){
         if(info_modal.open){
             ImVec2 center(disp_w * 0.5f, disp_h * 0.5f);
             ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-            ImGui::SetNextWindowSize(ImVec2(440, 540), ImGuiCond_Appearing);
+            ImGui::SetNextWindowSize(ImVec2(500, 560), ImGuiCond_Appearing);
             ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f,0.08f,0.12f,0.98f));
-            ImGui::Begin("File Info##info_modal", &info_modal.open,
+            const char* modal_title = info_modal.save_and_write
+                ? "Save File##info_modal" : "File Info##info_modal";
+            ImGui::Begin(modal_title, &info_modal.open,
                 ImGuiWindowFlags_NoCollapse);
-            // 파일명 표시
-            const char* fn_show = strrchr(info_modal.filepath.c_str(), '/');
-            fn_show = fn_show ? fn_show+1 : info_modal.filepath.c_str();
-            ImGui::TextColored(ImVec4(0.5f,0.8f,1.f,1.f), "%s", fn_show);
-            ImGui::Separator();
-            ImGui::Spacing();
+
+            // 엔터 감지: 이 모달 내 아무 InputText에서 Enter 시 Save 처리
+            bool submit = false;
+
             for(int i=0; i<info_modal.N_FIELDS; i++){
                 ImGui::Text("%-18s", info_modal.names[i]);
                 ImGui::SameLine(140);
                 char id[32]; snprintf(id, sizeof(id), "##inf_%d", i);
-                ImGui::SetNextItemWidth(-1);
-                // Content/Notes: 멀티라인
-                if(i == 10 || i == 11){
+                // 파일명(0)은 옆에 확장자 라벨 표시
+                if(i == 0 && info_modal.ext_buf[0]){
+                    float ext_w = ImGui::CalcTextSize(info_modal.ext_buf).x
+                                + ImGui::GetStyle().ItemSpacing.x + 6.f;
+                    ImGui::SetNextItemWidth(-ext_w);
+                    bool e = ImGui::InputText(id, info_modal.fields[i], 256,
+                        ImGuiInputTextFlags_EnterReturnsTrue);
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s", info_modal.ext_buf);
+                    if(e) submit = true;
+                } else if(i == 13){
+                    // Notes: 멀티라인 (멀티라인은 엔터가 개행)
+                    ImGui::SetNextItemWidth(-1);
                     ImGui::InputTextMultiline(id, info_modal.fields[i], 256,
                         ImVec2(-1, ImGui::GetTextLineHeight()*3));
                 } else {
-                    ImGui::InputText(id, info_modal.fields[i], 256);
+                    ImGui::SetNextItemWidth(-1);
+                    bool e = ImGui::InputText(id, info_modal.fields[i], 256,
+                        ImGuiInputTextFlags_EnterReturnsTrue);
+                    if(e) submit = true;
+                    // Up Time(2) / Down Time(3): 포커스 잃을 때 자동 포맷 변환
+                    if((i == 2 || i == 3) && ImGui::IsItemDeactivatedAfterEdit())
+                        fmt_time_field(info_modal.fields[i]);
                 }
             }
+
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
-            if(ImGui::Button("Save", ImVec2(80,0))){
+
+            // ── 버튼 중앙정렬 (Save/Add + Cancel) ────────────────────
+            const char* primary_label = info_modal.save_and_write ? "Add" : "Save";
+            float bw = 80.f*2 + ImGui::GetStyle().ItemSpacing.x;
+            ImGui::SetCursorPosX((ImGui::GetWindowWidth() - bw) * 0.5f);
+            bool pressed = ImGui::Button(primary_label, ImVec2(80,0));
+            ImGui::SameLine();
+            bool cancelled = ImGui::Button("Cancel", ImVec2(80,0));
+
+            if(pressed || submit){
+                // 0) Up/Down Time 필드 마지막 자동 포맷 (포커스 놓치지 않은 경우 대비)
+                fmt_time_field(info_modal.fields[2]);
+                fmt_time_field(info_modal.fields[3]);
+
+                // 1) Rename 수행 (fields[0] stem이 바뀌었으면)
+                std::string new_path = info_modal.filepath;
+                {
+                    size_t slash = info_modal.filepath.rfind('/');
+                    std::string dir = (slash==std::string::npos) ? "."
+                                     : info_modal.filepath.substr(0, slash);
+                    std::string old_base = (slash==std::string::npos)
+                                     ? info_modal.filepath
+                                     : info_modal.filepath.substr(slash+1);
+                    size_t dot = old_base.rfind('.');
+                    std::string old_stem = (dot==std::string::npos) ? old_base
+                                           : old_base.substr(0, dot);
+                    std::string new_stem_s = info_modal.fields[0];
+                    if(new_stem_s.empty()) new_stem_s = old_stem;
+                    if(new_stem_s != old_stem){
+                        auto p_exists = [](const std::string& p){
+                            struct stat st; return ::stat(p.c_str(), &st) == 0;
+                        };
+                        std::string cand = dir + "/" + new_stem_s + info_modal.ext_buf;
+                        for(int n=2; p_exists(cand); n++){
+                            cand = dir + "/" + new_stem_s + "_" + std::to_string(n)
+                                 + info_modal.ext_buf;
+                            if(n>9999) break;
+                        }
+                        new_path = cand;
+                    }
+                }
+
+                // 2) EID Save File 플로우
+                if(info_modal.save_and_write && info_modal.save_file_fn){
+                    std::string written = info_modal.save_file_fn(new_path);
+                    if(!written.empty()) new_path = written;
+                    info_modal.filepath = new_path;
+                    info_modal.info_path = new_path + ".info";
+                    // 실제 저장 후 File Name 필드도 최종 stem으로 맞춤
+                    {
+                        size_t s = new_path.rfind('/');
+                        std::string bn = (s==std::string::npos) ? new_path : new_path.substr(s+1);
+                        size_t d = bn.rfind('.');
+                        std::string fs = (d==std::string::npos) ? bn : bn.substr(0, d);
+                        strncpy(info_modal.fields[0], fs.c_str(), 255);
+                    }
+                } else if(new_path != info_modal.filepath){
+                    if(rename(info_modal.filepath.c_str(), new_path.c_str()) == 0){
+                        remove(info_modal.info_path.c_str());
+                        info_modal.filepath = new_path;
+                        info_modal.info_path = new_path + ".info";
+                    }
+                }
+
+                // 3) .info 저장
                 info_modal.save();
                 info_modal.open = false;
-                // 툴팁 캐시 무효화 (draw_arch_file에서 재로드됨)
                 g_arch_cache_dirty = true;
             }
-            ImGui::SameLine();
-            if(ImGui::Button("Cancel", ImVec2(80,0))){
+            if(cancelled){
                 info_modal.open = false;
             }
             ImGui::End();
@@ -9040,6 +9244,10 @@ void run_streaming_viewer(){
                 bool is_pending=false; // true=임시 영역 메뉴, false=확정 태그 메뉴
             } eid_tag_ctx;
 
+            // Spectrogram 빈 영역 우클릭 > Save File 메뉴
+            static struct { bool open=false; float x=0,y=0; } eid_save_ctx;
+            static std::atomic<bool> eid_save_busy{false};
+
             // ── Ctrl+Z: Undo / Ctrl+Shift+Z: Redo ──────────────────────
             if(v.eid_data_ready.load() && !io.WantTextInput){
                 if(io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Z, false)){
@@ -9344,8 +9552,10 @@ void run_streaming_viewer(){
                                         eid_tag_ctx.is_pending=false;
                                         strncpy(eid_tag_ctx.rename_buf,v.eid_tags[hit_tag].label,31);
                                     } else {
-                                        // 단순 클릭 빈 영역: 아무 동작 없음 (Ctrl+Z로 undo)
+                                        // 빈 영역 단순 클릭: Save File 메뉴
                                         v.eid_pending_active=false;
+                                        eid_save_ctx.open=true;
+                                        eid_save_ctx.x=mp.x; eid_save_ctx.y=mp.y;
                                     }
                                 }
                             } else {
@@ -11394,6 +11604,74 @@ void run_streaming_viewer(){
                    !ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
                    (ImGui::IsMouseClicked(ImGuiMouseButton_Left)||ImGui::IsMouseClicked(ImGuiMouseButton_Right))){
                     eid_tag_ctx.open=false;
+                }
+                ImGui::End();
+                ImGui::PopStyleColor();
+                ImGui::PopStyleVar(2);
+            }
+
+            // ── Spectrogram 빈 영역 우클릭 Save File 메뉴 ─────────────────
+            if(eid_save_ctx.open){
+                ImGui::SetNextWindowPos(ImVec2(eid_save_ctx.x, eid_save_ctx.y));
+                ImGui::SetNextWindowSize(ImVec2(180.f, 0.f));
+                ImGui::SetNextWindowBgAlpha(0.95f);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.f,6.f));
+                ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f,0.12f,0.18f,1.f));
+                ImGui::Begin("##eid_save_ctx", nullptr,
+                    ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
+                    ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar|
+                    ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoDecoration);
+
+                // Save File: 중앙정렬 텍스트 셀렉터블
+                const char* lbl = "Save File";
+                float avail_w = ImGui::GetContentRegionAvail().x;
+                ImVec2 ts = ImGui::CalcTextSize(lbl);
+                float row_h = ts.y + ImGui::GetStyle().FramePadding.y * 2.f;
+                ImVec2 cp = ImGui::GetCursorScreenPos();
+                bool clicked = ImGui::Selectable("##eid_save_sel", false, 0, ImVec2(avail_w, row_h));
+                ImGui::GetWindowDrawList()->AddText(
+                    ImVec2(cp.x + (avail_w - ts.x) * 0.5f,
+                           cp.y + (row_h  - ts.y) * 0.5f),
+                    ImGui::GetColorU32(ImGuiCol_Text), lbl);
+
+                if(clicked){
+                    // InfoModal을 EID Save File 플로우로 열기
+                    std::string default_path = v.eid_default_filtered_path();
+                    if(!default_path.empty()){
+                        info_modal.open = true;
+                        info_modal.save_and_write = true;
+                        info_modal.src_filepath = v.sa_temp_path;
+                        info_modal.filepath = default_path;
+                        info_modal.info_path = default_path + ".info";
+                        info_modal.exists = false;
+                        info_modal.utc_off_override = v.utc_offset_hours();
+                        // pre-fill: 원본 .info 있으면 그 내용으로, 없으면 autofill
+                        std::string src_info = v.sa_temp_path + ".info";
+                        if(access(src_info.c_str(), F_OK) == 0){
+                            std::string dst_ip = info_modal.info_path;
+                            info_modal.info_path = src_info;
+                            memset(info_modal.fields, 0, sizeof(info_modal.fields));
+                            info_modal.load();
+                            info_modal.info_path = dst_ip;
+                        } else {
+                            const char* bn = strrchr(default_path.c_str(), '/');
+                            bn = bn ? bn+1 : default_path.c_str();
+                            info_modal.autofill(std::string(bn));
+                        }
+                        info_modal.init_ext();
+                        // 저장 콜백: InfoModal Add > new_path에 WAV 생성
+                        info_modal.save_file_fn = [&v](const std::string& out_path) -> std::string {
+                            return v.eid_save_filtered_to(out_path);
+                        };
+                    }
+                    eid_save_ctx.open=false;
+                }
+
+                // 메뉴 바깥 클릭 시 닫기
+                if(!ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+                   (ImGui::IsMouseClicked(ImGuiMouseButton_Left)||ImGui::IsMouseClicked(ImGuiMouseButton_Right))){
+                    eid_save_ctx.open=false;
                 }
                 ImGui::End();
                 ImGui::PopStyleColor();

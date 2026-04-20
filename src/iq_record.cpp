@@ -5,8 +5,24 @@
 #include <chrono>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <cmath>
+
+// 로컬 시스템 UTC 오프셋 (시간 단위). localtime_r의 tm_gmtoff 사용 (GNU 확장).
+static int calc_local_utc_offset_hours(){
+    time_t now = time(nullptr);
+    struct tm lt; localtime_r(&now, &lt);
+    return (int)(lt.tm_gmtoff / 3600);
+}
+// HH:MM:SS (UTC+N) 형식으로 시간 문자열 생성
+static void fmt_time_with_utc(char* out, size_t sz, const struct tm& tm_loc, int utc_off_hr){
+    char base[16]; strftime(base, sizeof(base), "%H:%M:%S", &tm_loc);
+    if(utc_off_hr >= 0) snprintf(out, sz, "%s (UTC+%d)", base, utc_off_hr);
+    else                snprintf(out, sz, "%s (UTC%d)",  base, utc_off_hr);
+}
 
 // ── 녹음 .info 자동 생성 ─────────────────────────────────────────────────
+// source_type 파라미터는 Recorder 필드(장비 이름)로 사용됨
+// utc_offset_hours = INT_MIN이면 시스템 TZ 사용
 void write_default_info_file(const std::string& wav_path,
                              const char* source_type,
                              double freq_mhz,
@@ -15,7 +31,8 @@ void write_default_info_file(const std::string& wav_path,
                              const char* modulation,
                              const char* operator_name,
                              const char* station_name,
-                             time_t start_wall_time)
+                             time_t start_wall_time,
+                             int utc_offset_hours)
 {
     std::string info_path = wav_path + ".info";
     if(access(info_path.c_str(), F_OK) == 0) return; // 이미 있으면 보존
@@ -24,14 +41,34 @@ void write_default_info_file(const std::string& wav_path,
 
     if(start_wall_time <= 0) start_wall_time = time(nullptr);
     struct tm tm2; localtime_r(&start_wall_time, &tm2);
-    char day_buf[64], time_buf[64];
-    strftime(day_buf,  sizeof(day_buf),  "%b %d, %Y", &tm2);
-    strftime(time_buf, sizeof(time_buf), "%H:%M:%S",  &tm2);
+    int utc_off = (utc_offset_hours == INT_MIN)
+                  ? calc_local_utc_offset_hours() : utc_offset_hours;
+    char day_buf[64], up_buf[64];
+    strftime(day_buf, sizeof(day_buf), "%b %d, %Y", &tm2);
+    fmt_time_with_utc(up_buf, sizeof(up_buf), tm2, utc_off);
 
+    // 파일명 (stem, 확장자 제외)
+    size_t slash = wav_path.find_last_of('/');
+    std::string base = (slash==std::string::npos) ? wav_path : wav_path.substr(slash+1);
+    size_t dot = base.find_last_of('.');
+    std::string stem = (dot==std::string::npos) ? base : base.substr(0, dot);
+
+    fprintf(f, "File Name: %s\n", stem.c_str());
     fprintf(f, "Day: %s\n", day_buf);
-    fprintf(f, "Time: %s\n", time_buf);
-    if(freq_mhz > 0) fprintf(f, "Freq: %.4f MHz\n", freq_mhz);
-    else             fprintf(f, "Freq: \n");
+    fprintf(f, "Up Time: %s\n", up_buf);
+    // Down Time
+    if(duration_sec > 0){
+        time_t end_wt = start_wall_time + (time_t)(duration_sec + 0.5);
+        struct tm tm_end; localtime_r(&end_wt, &tm_end);
+        char down_buf[64]; fmt_time_with_utc(down_buf, sizeof(down_buf), tm_end, utc_off);
+        fprintf(f, "Down Time: %s\n", down_buf);
+        fprintf(f, "Duration: %.1f s\n", duration_sec);
+    } else {
+        fprintf(f, "Down Time: \n");
+        fprintf(f, "Duration: \n");
+    }
+    if(freq_mhz > 0) fprintf(f, "Frequency: %.4f MHz\n", freq_mhz);
+    else             fprintf(f, "Frequency: \n");
     fprintf(f, "Target: \n");
     fprintf(f, "Location: %s\n", station_name ? station_name : "");
     fprintf(f, "Modulation: %s\n", modulation ? modulation : "");
@@ -39,9 +76,7 @@ void write_default_info_file(const std::string& wav_path,
     else           fprintf(f, "Bandwidth: \n");
     fprintf(f, "Signal Strength: \n");
     fprintf(f, "Protocol: \n");
-    fprintf(f, "Source Type: %s\n", source_type ? source_type : "");
-    if(duration_sec > 0) fprintf(f, "Content: Duration %.1f s\n", duration_sec);
-    else                 fprintf(f, "Content: \n");
+    fprintf(f, "Recorder: %s\n", source_type ? source_type : "");
     fprintf(f, "Notes: \n");
     fprintf(f, "Tags: \n");
     fprintf(f, "Priority: \n");
@@ -50,7 +85,8 @@ void write_default_info_file(const std::string& wav_path,
     fclose(f);
 }
 
-// .info 파일의 Content 라인에 Duration 값 갱신 (다른 필드 보존)
+// .info 파일의 Duration 및 Down Time 갱신 (다른 필드 보존)
+// 녹음 종료 시 호출 > Up Time은 이미 생성 시점에 기록됨
 static void update_info_file_duration(const std::string& wav_path, double duration_sec){
     std::string info_path = wav_path + ".info";
     FILE* f = fopen(info_path.c_str(), "r");
@@ -60,28 +96,56 @@ static void update_info_file_duration(const std::string& wav_path, double durati
     while(fgets(buf, sizeof(buf), f)) lines.emplace_back(buf);
     fclose(f);
 
-    bool updated = false;
+    int utc_off = calc_local_utc_offset_hours();
+
+    // Up Time 파싱 > Down Time 계산에 사용
+    int up_hh=-1, up_mm=-1, up_ss=-1;
     for(auto& l : lines){
-        if(l.rfind("Content:", 0) == 0){
-            // 사용자가 직접 작성한 내용이 있으면 보존
-            std::string body = l.substr(8);
-            // trim leading space
-            size_t lead = body.find_first_not_of(" \t");
-            std::string trimmed = (lead == std::string::npos) ? "" : body.substr(lead);
-            // trim trailing newline
-            while(!trimmed.empty() && (trimmed.back()=='\n' || trimmed.back()=='\r'))
-                trimmed.pop_back();
-            // 빈 칸이거나 "Duration "으로 시작하면 갱신
-            if(trimmed.empty() || trimmed.rfind("Duration ", 0) == 0){
-                char nl[128];
-                snprintf(nl, sizeof(nl), "Content: Duration %.1f s\n", duration_sec);
-                l = nl;
-                updated = true;
-            }
+        if(l.rfind("Up Time:", 0) == 0){
+            sscanf(l.c_str(), "Up Time: %d:%d:%d", &up_hh, &up_mm, &up_ss);
             break;
         }
     }
-    if(!updated) return;
+
+    bool dur_updated = false, down_updated = false;
+    for(auto& l : lines){
+        if(!dur_updated && l.rfind("Duration:", 0) == 0){
+            std::string body = l.substr(9);
+            size_t lead = body.find_first_not_of(" \t");
+            std::string trimmed = (lead == std::string::npos) ? "" : body.substr(lead);
+            while(!trimmed.empty() && (trimmed.back()=='\n' || trimmed.back()=='\r'))
+                trimmed.pop_back();
+            if(trimmed.empty()){
+                char nl[64];
+                snprintf(nl, sizeof(nl), "Duration: %.1f s\n", duration_sec);
+                l = nl;
+                dur_updated = true;
+            }
+        } else if(!down_updated && l.rfind("Down Time:", 0) == 0){
+            std::string body = l.substr(10);
+            size_t lead = body.find_first_not_of(" \t");
+            std::string trimmed = (lead == std::string::npos) ? "" : body.substr(lead);
+            while(!trimmed.empty() && (trimmed.back()=='\n' || trimmed.back()=='\r'))
+                trimmed.pop_back();
+            if(trimmed.empty() && up_hh >= 0){
+                long total_sec = (long)up_hh*3600 + (long)up_mm*60 + (long)up_ss
+                                 + (long)(duration_sec + 0.5);
+                int dh = (int)((total_sec / 3600) % 24);
+                int dm = (int)((total_sec / 60) % 60);
+                int ds = (int)(total_sec % 60);
+                char nl[64];
+                if(utc_off >= 0)
+                    snprintf(nl, sizeof(nl), "Down Time: %02d:%02d:%02d (UTC+%d)\n",
+                             dh, dm, ds, utc_off);
+                else
+                    snprintf(nl, sizeof(nl), "Down Time: %02d:%02d:%02d (UTC%d)\n",
+                             dh, dm, ds, utc_off);
+                l = nl;
+                down_updated = true;
+            }
+        }
+    }
+    if(!dur_updated && !down_updated) return;
     f = fopen(info_path.c_str(), "w");
     if(!f) return;
     for(auto& l : lines) fputs(l.c_str(), f);
@@ -188,10 +252,10 @@ void FFTViewer::start_rec(){
     rec_thr=std::thread(&FFTViewer::rec_worker,this);
     bewe_log("REC start ch%d → %s  SR=%u\n",fi,fn,rec_sr);
 
-    write_default_info_file(rec_filename, "Region IQ Recording",
+    write_default_info_file(rec_filename, recorder_name(),
                             (double)rec_cf_mhz, (se-ss)*1000.0, 0.0,
                             "", login_get_id(), station_name.c_str(),
-                            time(nullptr));
+                            time(nullptr), utc_offset_hours());
 }
 
 void FFTViewer::stop_rec(){
@@ -252,10 +316,11 @@ void FFTViewer::start_audio_rec(int ch_idx){
     bewe_log("Audio REC start ch%d → %s  SR=%u\n",ch_idx,fn,asr);
 
     float bw_khz = fabsf(ch.e - ch.s) * 1000.f;
-    write_default_info_file(fn, "Audio Recording",
+    write_default_info_file(fn, recorder_name(),
                             (double)cf_mhz, (double)bw_khz, 0.0,
                             dem_mode_name(ch.mode), login_get_id(),
-                            station_name.c_str(), time(nullptr));
+                            station_name.c_str(), time(nullptr),
+                            utc_offset_hours());
 }
 
 void FFTViewer::stop_audio_rec(int ch_idx){
@@ -353,10 +418,11 @@ void FFTViewer::start_iq_rec(int ch_idx){
     bewe_log("IQ REC start ch%d > %s  SR=%u\n",ch_idx,fn,actual_inter);
 
     float bw_khz_iq = fabsf(ch.e - ch.s) * 1000.f;
-    write_default_info_file(fn, "IQ Recording (per-channel)",
+    write_default_info_file(fn, recorder_name(),
                             (double)cf_mhz, (double)bw_khz_iq, 0.0,
                             dem_mode_name(ch.mode), login_get_id(),
-                            station_name.c_str(), time(nullptr));
+                            station_name.c_str(), time(nullptr),
+                            utc_offset_hours());
 }
 
 void FFTViewer::stop_iq_rec(int ch_idx){
@@ -439,10 +505,11 @@ void FFTViewer::start_join_audio_rec(int ch_idx){
     bewe_log("JOIN Audio REC start ch%d → %s  SR=%u\n",ch_idx,fn,asr);
 
     float bw_khz_jaud = fabsf(ch.e - ch.s) * 1000.f;
-    write_default_info_file(fn, "Audio Recording (JOIN)",
+    write_default_info_file(fn, recorder_name(),
                             (double)cf_mhz, (double)bw_khz_jaud, 0.0,
                             dem_mode_name(ch.mode), login_get_id(),
-                            station_name.c_str(), time(nullptr));
+                            station_name.c_str(), time(nullptr),
+                            utc_offset_hours());
 }
 
 void FFTViewer::stop_join_audio_rec(int ch_idx){

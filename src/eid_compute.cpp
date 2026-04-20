@@ -4,6 +4,7 @@
 #include <cstring>
 #include <algorithm>
 #include <vector>
+#include <sys/stat.h>
 
 // ── EID envelope 추출 (비동기 스레드) ────────────────────────────────────────
 void FFTViewer::eid_start(const std::string& wav_path){
@@ -176,6 +177,7 @@ void FFTViewer::eid_start(const std::string& wav_path){
         eid_y_max[3]       = freq_hi;
         eid_noise_level    = noise_lvl;
         eid_center_freq_hz = meta_cf_hz;
+        eid_start_time_meta = meta_time;
         eid_view_mode      = 0; // reset to Signal on new load
         eid_phase_detrend_hz = 0.0f;
         eid_data_ready.store(true);
@@ -344,6 +346,131 @@ void FFTViewer::eid_undo_bpf(){
     eid_bpf_active = false;
     eid_recompute_derived();
     sa_recompute_from_iq();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Save File: 현재 EID 상태(필터·샘플 수정 반영)를 원본 폴더에 새 WAV로 저장
+// stereo int16 (L=I, R=Q), bewe 메타 청크 보존, 원본 .info 있으면 복사
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+inline void eid_write_wav_header(FILE* f, uint32_t sample_rate, uint32_t n_frames,
+                                  uint64_t center_freq_hz, int64_t start_time){
+    uint32_t data_bytes  = n_frames * 2 * 2; // frames * channels(2) * bytes(2)
+    const uint32_t BEWE_SIZE = 20;
+    uint32_t chunk_size  = 36 + data_bytes + 4 + 4 + BEWE_SIZE;
+    uint16_t audio_fmt   = 1;
+    uint16_t channels    = 2;
+    uint32_t byte_rate   = sample_rate * 4;
+    uint16_t block_align = 4;
+    uint16_t bits        = 16;
+    uint32_t subchunk2   = data_bytes;
+
+    fwrite("RIFF",1,4,f); fwrite(&chunk_size,4,1,f);
+    fwrite("WAVE",1,4,f);
+    fwrite("fmt ",1,4,f);
+    uint32_t sc1=16; fwrite(&sc1,4,1,f);
+    fwrite(&audio_fmt,2,1,f); fwrite(&channels,2,1,f);
+    fwrite(&sample_rate,4,1,f); fwrite(&byte_rate,4,1,f);
+    fwrite(&block_align,2,1,f); fwrite(&bits,2,1,f);
+    fwrite("bewe",1,4,f);
+    uint32_t bewe_sz = BEWE_SIZE; fwrite(&bewe_sz,4,1,f);
+    fwrite(&center_freq_hz,8,1,f);
+    fwrite(&start_time,    8,1,f);
+    fwrite(&sample_rate,   4,1,f);
+    fwrite("data",1,4,f); fwrite(&subchunk2,4,1,f);
+}
+inline bool eid_path_exists(const std::string& p){
+    struct stat st; return ::stat(p.c_str(), &st) == 0;
+}
+}
+
+// 기본 저장 경로 계산: 원본 경로 기반 "IQ_Filtered_..." / "Audio_Filtered_..." 규칙
+std::string FFTViewer::eid_default_filtered_path(){
+    std::string src = sa_temp_path;
+    if(src.empty()) return "";
+
+    size_t slash = src.find_last_of('/');
+    std::string dir  = (slash == std::string::npos) ? "." : src.substr(0, slash);
+    std::string base = (slash == std::string::npos) ? src : src.substr(slash+1);
+
+    size_t dot = base.find_last_of('.');
+    std::string stem = (dot == std::string::npos) ? base : base.substr(0, dot);
+    std::string ext  = (dot == std::string::npos) ? ""   : base.substr(dot);
+
+    auto starts_with = [](const std::string& s, const char* p){
+        size_t n = strlen(p); return s.size() >= n && s.compare(0,n,p) == 0;
+    };
+    std::string new_stem;
+    if(starts_with(stem, "IQ_Filtered_") ||
+       starts_with(stem, "Audio_Filtered_") ||
+       starts_with(stem, "Filtered_"))           new_stem = stem;
+    else if(starts_with(stem, "IQ_"))            new_stem = "IQ_Filtered_"    + stem.substr(3);
+    else if(starts_with(stem, "Audio_"))         new_stem = "Audio_Filtered_" + stem.substr(6);
+    else                                         new_stem = "Filtered_"       + stem;
+
+    std::string out_path = dir + "/" + new_stem + ext;
+    for(int n=2; eid_path_exists(out_path); n++){
+        out_path = dir + "/" + new_stem + "_" + std::to_string(n) + ext;
+        if(n > 9999) return "";
+    }
+    return out_path;
+}
+
+// 지정 경로에 WAV 저장 (.info는 호출자 책임)
+std::string FFTViewer::eid_save_filtered_to(const std::string& out_path){
+    if(out_path.empty()) return "";
+    FILE* f = fopen(out_path.c_str(), "wb");
+    if(!f){
+        bewe_log_push(0, "[EID] Save File: fopen failed: %s\n", out_path.c_str());
+        return "";
+    }
+    {
+        std::lock_guard<std::mutex> lk(eid_data_mtx);
+        uint32_t n_frames = (uint32_t)std::min(eid_ch_i.size(), eid_ch_q.size());
+        eid_write_wav_header(f, eid_sample_rate, n_frames,
+                             eid_center_freq_hz, eid_start_time_meta);
+        constexpr size_t CHUNK = 4096;
+        std::vector<int16_t> buf(CHUNK * 2);
+        for(size_t i = 0; i < n_frames; i += CHUNK){
+            size_t n = std::min(CHUNK, (size_t)n_frames - i);
+            for(size_t j = 0; j < n; j++){
+                float fi = std::max(-1.0f, std::min(1.0f, eid_ch_i[i+j]));
+                float fq = std::max(-1.0f, std::min(1.0f, eid_ch_q[i+j]));
+                buf[j*2  ] = (int16_t)(fi * 32767.0f);
+                buf[j*2+1] = (int16_t)(fq * 32767.0f);
+            }
+            fwrite(buf.data(), sizeof(int16_t), n*2, f);
+        }
+    }
+    fclose(f);
+    bewe_log_push(0, "[EID] Save File: %s\n", out_path.c_str());
+    return out_path;
+}
+
+// 원본 폴더에 기본 파일명으로 저장 + 원본 .info 있으면 복사 (하위 호환)
+std::string FFTViewer::eid_save_filtered(){
+    std::string out_path = eid_default_filtered_path();
+    if(out_path.empty()){
+        bewe_log_push(0, "[EID] Save File: no source path\n");
+        return "";
+    }
+    if(eid_save_filtered_to(out_path).empty()) return "";
+
+    // 원본 .info 있으면 새 이름으로 복사
+    std::string src_info = sa_temp_path + ".info";
+    if(eid_path_exists(src_info)){
+        std::string dst_info = out_path + ".info";
+        FILE* fi = fopen(src_info.c_str(), "rb");
+        FILE* fo = fopen(dst_info.c_str(), "wb");
+        if(fi && fo){
+            char cbuf[4096]; size_t r;
+            while((r = fread(cbuf, 1, sizeof(cbuf), fi)) > 0)
+                fwrite(cbuf, 1, r, fo);
+        }
+        if(fi) fclose(fi);
+        if(fo) fclose(fo);
+    }
+    return out_path;
 }
 
 void FFTViewer::eid_remove_samples(double s0, double s1){
