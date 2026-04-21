@@ -547,45 +547,28 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
     // 타임머신 모드: tm_display_fft_idx 기준, 아니면 current_fft_idx
     int sp_idx=tm_active.load() ? tm_display_fft_idx : current_fft_idx;
 
-    // ── Max Hold / Max16: cf 또는 fft_size 변경 시 리셋 ──────────────────
+    // ── Max Decay: cf/fft_size 변경 시 리셋, 5 dB/s 감쇠 ──────────────────
     if(max_hold_mode != 0){
         bool need_reset = (header.center_frequency != last_maxhold_cf ||
                            fft_size != last_maxhold_fft_size ||
                            (int)max_hold_spectrum.size() != fft_size);
         if(need_reset){
             max_hold_spectrum.assign(fft_size, -200.0f);
-            if(max_hold_mode == 2){
-                max_hold_window_ring.assign((size_t)MAX_HOLD_WINDOW_FRAMES * fft_size, -200.0f);
-                max_hold_window_wp = 0;
-                max_hold_window_count = 0;
-            }
             last_maxhold_sp_idx = -1;
             last_maxhold_cf = header.center_frequency;
             last_maxhold_fft_size = fft_size;
         }
-        // 새 FFT row가 들어왔을 때만 업데이트 (같은 sp_idx 중복 방지)
+        // 새 FFT row가 들어왔을 때만 업데이트
         if(total_ffts > 0 && fft_size > 0 && sp_idx != last_maxhold_sp_idx){
             std::lock_guard<std::mutex> lk_mh(data_mtx);
             int mi = sp_idx % MAX_FFTS_MEMORY;
             const float* rp = fft_data.data() + mi * fft_size;
-            if(max_hold_mode == 1){
-                // 전체 누적 max
-                for(int b = 0; b < fft_size; b++)
-                    if(rp[b] > max_hold_spectrum[b]) max_hold_spectrum[b] = rp[b];
-            } else if(max_hold_mode == 2){
-                // Max 3s: ring에 최신 row 덮어쓰기 후 per-bin 재계산
-                float* slot = max_hold_window_ring.data() + (size_t)max_hold_window_wp * fft_size;
-                memcpy(slot, rp, fft_size * sizeof(float));
-                max_hold_window_wp = (max_hold_window_wp + 1) % MAX_HOLD_WINDOW_FRAMES;
-                if(max_hold_window_count < MAX_HOLD_WINDOW_FRAMES) max_hold_window_count++;
-                for(int b = 0; b < fft_size; b++){
-                    float mx = -200.0f;
-                    for(int s = 0; s < max_hold_window_count; s++){
-                        float v = max_hold_window_ring[(size_t)s * fft_size + b];
-                        if(v > mx) mx = v;
-                    }
-                    max_hold_spectrum[b] = mx;
-                }
+            // 5 dB/s @ ~37.5 rows/s → 약 0.133 dB/frame
+            constexpr float DECAY_PER_FRAME = 5.0f / 37.5f;
+            for(int b = 0; b < fft_size; b++){
+                float v = rp[b];
+                float p = max_hold_spectrum[b] - DECAY_PER_FRAME;
+                max_hold_spectrum[b] = (v > p) ? v : p;
             }
             last_maxhold_sp_idx = sp_idx;
         }
@@ -636,7 +619,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         }
         dl->AddPolyline(sp_pts.data(), np, IM_COL32(0,255,0,255), ImDrawFlags_None, 1.5f);
 
-        // ── Max Hold / Max16 노란 선 ────────────────────────────────────
+        // ── Max Decay 노란 선 ───────────────────────────────────────────
         if(max_hold_mode != 0 && (int)max_hold_spectrum.size() == fft_size && fft_size > 0){
             static thread_local std::vector<ImVec2> mh_pts;
             mh_pts.resize(np);
@@ -661,99 +644,33 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
             }
             dl->AddPolyline(mh_pts.data(), np, IM_COL32(255,220,0,255),
                             ImDrawFlags_None, 1.5f);
-            // 모드 라벨 (좌상단)
-            const char* mh_lbl = (max_hold_mode == 1) ? "MAX HOLD" : "MAX 3s";
             dl->AddText(ImVec2(gx + 4, gy + 2),
-                        IM_COL32(255,220,0,255), mh_lbl);
+                        IM_COL32(255,220,0,255), "MAX DECAY");
         }
     }
-    // 파워 축 그리드 라인 + 레이블 (실제 dB 값 표시, 10단계 균등 분할)
-    // i=0(max), i=10(min): 레이블 숨김
-    // i=1: max 편집용 (흰색), i=9: min 편집용 (흰색), i=2~8: 일반 회색
-    // 편집 상태: 0=없음, 1=max 편집(i=1 위치), 2=min 편집(i=9 위치)
-    static int  pax_edit      = 0;
-    static char pax_buf[16]   = {};
-    static bool pax_had_focus = false;
-
+    // 파워 축 그리드 라인 + 레이블 (모든 값 읽기 전용 — 클릭/편집 없음)
+    // 드래그는 여전히 가능 (아래 pax InvisibleButton에서 처리)
     for(int i=0;i<=10;i++){
         float y  = gy + (float)i/10.0f * gh;
         float db = display_power_max - (display_power_max - display_power_min) * (float)i / 10.0f;
-        // 그리드 선: i=1~9
         if(i > 0 && i < 10)
             dl->AddLine(ImVec2(gx,y),ImVec2(gx+gw,y),IM_COL32(60,60,60,100),1);
-        // 눈금 짧은 선: 모든 i
         dl->AddLine(ImVec2(gx-5,y),ImVec2(gx,y),IM_COL32(100,100,100,200),1);
 
-        // i=0: 상단 max 값은 별도 최상단 라벨로 표시되므로 숨김
-        if(i == 0) continue;
-        // i=10: 최소값 텍스트만 그리고 편집 버튼은 생략
-        if(i == 10){
+        // i=0: 최상단 max 값 (상단 바 겹침 방지 위해 아래로 살짝 이동)
+        if(i == 0){
             char lb[16]; snprintf(lb, sizeof(lb), "%.0f", db);
             ImVec2 ts = ImGui::CalcTextSize(lb);
             float lx = gx - 10 - ts.x;
-            float ly = y - ts.y * 0.5f;
+            float ly = y + 4;  // 짤림 방지 오프셋
             dl->AddText(ImVec2(lx, ly), IM_COL32(200,200,200,255), lb);
             continue;
         }
-
-        // i=1: max 편집 칸, i=9: min 편집 칸
-        bool is_edit_row = (i == 1 || i == 9);
-        bool editing_this = (pax_edit == 1 && i == 1) || (pax_edit == 2 && i == 9);
-
-        if(editing_this){
-            // 해당 눈금 위치에 InputText 인라인
-            float input_w = AXIS_LABEL_WIDTH - 4;
-            float text_h  = ImGui::GetTextLineHeight();
-            float iy      = y - text_h * 0.5f;
-            if(iy < full_y) iy = full_y;
-            ImGui::SetCursorScreenPos(ImVec2(full_x + 2, iy));
-            ImGui::SetNextItemWidth(input_w);
-            if(!pax_had_focus) ImGui::SetKeyboardFocusHere();
-            ImGuiInputTextFlags fl = ImGuiInputTextFlags_CharsDecimal
-                                   | ImGuiInputTextFlags_EnterReturnsTrue;
-            bool confirmed = ImGui::InputText("##pax_inp", pax_buf, sizeof(pax_buf), fl);
-            bool is_active = ImGui::IsItemActive();
-            if(!pax_had_focus && is_active) pax_had_focus = true;
-            if(confirmed || (pax_had_focus && !is_active)){
-                float val = (float)atof(pax_buf);
-                if(pax_edit == 1){ // max
-                    display_power_max = val;
-                    if(display_power_max - display_power_min < 5.f)
-                        display_power_min = display_power_max - 5.f;
-                } else { // min
-                    display_power_min = val;
-                    if(display_power_max - display_power_min < 5.f)
-                        display_power_max = display_power_min + 5.f;
-                }
-                cached_sp_idx = -1;
-                join_manual_scale = true; // JOIN 모드: 수동 입력 > HOST 값 덮어쓰기 차단
-                pax_edit = 0; pax_had_focus = false;
-            }
-            if(ImGui::IsKeyPressed(ImGuiKey_Escape)){ pax_edit = 0; pax_had_focus = false; }
-        } else {
-            char lb[16]; snprintf(lb, 16, "%.0f", db);
-            ImVec2 ts = ImGui::CalcTextSize(lb);
-            float lx  = gx - 10 - ts.x;
-            float ly  = y - ts.y * 0.5f;
-            // i=1/9: 흰색 (클릭 가능), i=2~8: 회색
-            uint32_t col = is_edit_row ? IM_COL32(255,255,255,255) : IM_COL32(200,200,200,255);
-            dl->AddText(ImVec2(lx, ly), col, lb);
-
-            // i=1/9 클릭 감지
-            if(is_edit_row && pax_edit == 0){
-                ImGui::SetCursorScreenPos(ImVec2(full_x, ly - 2));
-                const char* btn_id = (i == 1) ? "##pax_top_btn" : "##pax_bot_btn";
-                ImGui::InvisibleButton(btn_id, ImVec2(AXIS_LABEL_WIDTH, ts.y + 6));
-                if(ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_TextInput);
-                if(ImGui::IsItemClicked()){
-                    // 편집값은 실제 max 또는 min
-                    float edit_val = (i == 1) ? display_power_max : display_power_min;
-                    snprintf(pax_buf, sizeof(pax_buf), "%.0f", edit_val);
-                    pax_edit = (i == 1) ? 1 : 2;
-                    pax_had_focus = false;
-                }
-            }
-        }
+        char lb[16]; snprintf(lb, sizeof(lb), "%.0f", db);
+        ImVec2 ts = ImGui::CalcTextSize(lb);
+        float lx = gx - 10 - ts.x;
+        float ly = y - ts.y * 0.5f;
+        dl->AddText(ImVec2(lx, ly), IM_COL32(200,200,200,255), lb);
     }
 
     draw_freq_axis(dl,gx,gw,gy,gh,false);
@@ -787,15 +704,10 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         for(int i = 0; i < MAX_CHANNELS && !any_drag; i++)
             if(channels[i].resize_drag || channels[i].move_drag) any_drag = true;
         if(!on_channel && !sel_changed && !any_drag){
-            // Off(0) > Max Hold(1) > Max16(2) > Off(0)
-            max_hold_mode = (max_hold_mode + 1) % 3;
+            // Off(0) <> Max Decay(1)
+            max_hold_mode = max_hold_mode ? 0 : 1;
             if(max_hold_mode != 0){
                 max_hold_spectrum.assign(fft_size, -200.0f);
-                if(max_hold_mode == 2){
-                    max_hold_window_ring.assign((size_t)MAX_HOLD_WINDOW_FRAMES * fft_size, -200.0f);
-                    max_hold_window_wp = 0;
-                    max_hold_window_count = 0;
-                }
                 last_maxhold_sp_idx = -1;
                 last_maxhold_cf = header.center_frequency;
                 last_maxhold_fft_size = fft_size;
@@ -813,11 +725,10 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         dl->AddText(ImVec2(tx,ty+2),IM_COL32(0,255,0,255),info);
         if(!eid_panel_open) handle_zoom_scroll(gx,gw,mm.x);
     }
-    // 파워 축 드래그 (편집 중이 아닐 때만)
+    // 파워 축 드래그 (클릭 편집 제거됨; 드래그만 유지)
     // 드래그 방향: 위로 > 값 증가, 아래로 > 값 감소
     // 상반부 드래그 > max 조절, 하반부 > min 조절
-    // 1픽셀 이동 = (range/gh) dB 선형 변화 (시작 시점 값 기준)
-    if(pax_edit == 0){
+    {
         ImGui::SetCursorScreenPos(ImVec2(full_x,gy));
         ImGui::InvisibleButton("pax",ImVec2(AXIS_LABEL_WIDTH,gh));
         static float drag_start_y=0, drag_start_val=0;
@@ -826,14 +737,13 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
             if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
                 ImVec2 m2=ImGui::GetMousePos();
                 float mid_y=gy+gh*0.5f;
-                drag_is_max = (m2.y <= mid_y); // 상반부=max, 하반부=min
+                drag_is_max = (m2.y <= mid_y);
                 drag_start_y   = m2.y;
                 drag_start_val = drag_is_max ? display_power_max : display_power_min;
             }
             if(ImGui::IsMouseDragging(ImGuiMouseButton_Left,0)){
                 float dy   = ImGui::GetMousePos().y - drag_start_y;
                 float range= display_power_max - display_power_min;
-                // 1픽셀 = range/gh dB, 위로 드래그(-dy)=값 증가
                 float delta= -dy * (range / std::max(1.0f, gh));
                 if(drag_is_max){
                     display_power_max = drag_start_val + delta;
@@ -844,7 +754,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
                     if(display_power_max - display_power_min < 5.f)
                         display_power_min = display_power_max - 5.f;
                 }
-                join_manual_scale = true; // JOIN 모드: 수동 조절 > HOST 값 덮어쓰기 차단
+                join_manual_scale = true;
                 cached_sp_idx=-1;
             }
         }

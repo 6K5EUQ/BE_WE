@@ -246,6 +246,8 @@ void FFTViewer::capture_and_process(){
             rx_pos=0; rx_avail=0;
             pacc.assign(fft_size,0.0f); fcnt=0; warmup_cnt=0;
             texture_needs_recreate=true;
+            // SR 변경 > 신호 크기 스케일이 달라질 수 있어 오토스케일 재트리거
+            autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
             // TM IQ: SC8 모드(122.88M)에서는 롤링 IQ 비활성화
             if(tm_was_on && !sc8_mode){
                 tm_iq_open();

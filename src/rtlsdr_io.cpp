@@ -216,6 +216,8 @@ void FFTViewer::capture_and_process_rtl(){
 
             pacc.assign(fft_size,0.0f); fcnt=0; warmup_cnt=0;
             texture_needs_recreate=true;
+            // SR 변경 > 신호 크기 스케일이 달라질 수 있어 오토스케일 재트리거
+            autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
             // TM IQ가 켜져 있었으면 새 SR로 롤링 파일 재시작
             if(tm_was_on){
                 tm_iq_open();

@@ -255,6 +255,8 @@ void FFTViewer::capture_and_process_pluto(){
             pacc.assign(fft_size,0.0f); fcnt=0; warmup_cnt=0;
             rx_pos=0; rx_avail=0;
             texture_needs_recreate=true;
+            // SR 변경 > 신호 크기 스케일이 달라질 수 있어 오토스케일 재트리거
+            autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
             // TM IQ가 켜져 있었고 새 SR이 Pluto 허용 범위면 재시작. 61.44 MSPS면 차단.
             if(tm_was_on){
                 if(new_sr > PLUTO_IQ_REC_MAX_SR){
