@@ -91,6 +91,19 @@ public:
     float right_panel_ratio=0.0f;
     std::atomic<bool> render_visible{true}; // false=좌측 패널 완전 숨김 → FFT/WF 연산 중단
 
+    // ── 파워 스펙트럼 Max Hold / Max 3s (스펙트럼 빈 영역 좌클릭 순환 토글) ─
+    // 0=Off, 1=Max Hold(전체 누적), 2=Max 3s(최근 ~3초 슬라이딩; 50 rows/s × 3s = 150)
+    // per-bin 저장 > pan/zoom 변경에도 유지, cf/fft_size 변경 시만 리셋
+    static constexpr int MAX_HOLD_WINDOW_FRAMES = 150;
+    int  max_hold_mode = 0;
+    std::vector<float> max_hold_spectrum;     // 현재 표시할 per-bin 최대값
+    std::vector<float> max_hold_window_ring;  // MAX_HOLD_WINDOW_FRAMES * fft_size
+    int  max_hold_window_wp = 0;
+    int  max_hold_window_count = 0;
+    int  last_maxhold_sp_idx = -1;            // 중복 업데이트 방지 (FFT row 변경 감지)
+    uint64_t last_maxhold_cf = 0;
+    int      last_maxhold_fft_size = 0;
+
     // ── System monitor (bottom bar) ───────────────────────────────────────
     float sysmon_cpu=0, sysmon_ghz=0, sysmon_ram=0, sysmon_io=0;
     std::atomic<int> sysmon_cpu_temp_c{0};  // CPU 온도 (정수 °C, heartbeat 전송용)

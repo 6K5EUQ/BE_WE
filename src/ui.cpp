@@ -546,6 +546,51 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
     float sr_mhz=header.sample_rate/1e6f; int np=(int)gw;
     // 타임머신 모드: tm_display_fft_idx 기준, 아니면 current_fft_idx
     int sp_idx=tm_active.load() ? tm_display_fft_idx : current_fft_idx;
+
+    // ── Max Hold / Max16: cf 또는 fft_size 변경 시 리셋 ──────────────────
+    if(max_hold_mode != 0){
+        bool need_reset = (header.center_frequency != last_maxhold_cf ||
+                           fft_size != last_maxhold_fft_size ||
+                           (int)max_hold_spectrum.size() != fft_size);
+        if(need_reset){
+            max_hold_spectrum.assign(fft_size, -200.0f);
+            if(max_hold_mode == 2){
+                max_hold_window_ring.assign((size_t)MAX_HOLD_WINDOW_FRAMES * fft_size, -200.0f);
+                max_hold_window_wp = 0;
+                max_hold_window_count = 0;
+            }
+            last_maxhold_sp_idx = -1;
+            last_maxhold_cf = header.center_frequency;
+            last_maxhold_fft_size = fft_size;
+        }
+        // 새 FFT row가 들어왔을 때만 업데이트 (같은 sp_idx 중복 방지)
+        if(total_ffts > 0 && fft_size > 0 && sp_idx != last_maxhold_sp_idx){
+            std::lock_guard<std::mutex> lk_mh(data_mtx);
+            int mi = sp_idx % MAX_FFTS_MEMORY;
+            const float* rp = fft_data.data() + mi * fft_size;
+            if(max_hold_mode == 1){
+                // 전체 누적 max
+                for(int b = 0; b < fft_size; b++)
+                    if(rp[b] > max_hold_spectrum[b]) max_hold_spectrum[b] = rp[b];
+            } else if(max_hold_mode == 2){
+                // Max 3s: ring에 최신 row 덮어쓰기 후 per-bin 재계산
+                float* slot = max_hold_window_ring.data() + (size_t)max_hold_window_wp * fft_size;
+                memcpy(slot, rp, fft_size * sizeof(float));
+                max_hold_window_wp = (max_hold_window_wp + 1) % MAX_HOLD_WINDOW_FRAMES;
+                if(max_hold_window_count < MAX_HOLD_WINDOW_FRAMES) max_hold_window_count++;
+                for(int b = 0; b < fft_size; b++){
+                    float mx = -200.0f;
+                    for(int s = 0; s < max_hold_window_count; s++){
+                        float v = max_hold_window_ring[(size_t)s * fft_size + b];
+                        if(v > mx) mx = v;
+                    }
+                    max_hold_spectrum[b] = mx;
+                }
+            }
+            last_maxhold_sp_idx = sp_idx;
+        }
+    }
+
     bool cv=(cached_sp_idx==sp_idx&&cached_pan==freq_pan&&cached_zoom==freq_zoom&&
              cached_px==np&&cached_pmin==display_power_min&&cached_pmax==display_power_max);
     if(!cv){
@@ -590,6 +635,37 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
             sp_cached_gx=gx; sp_cached_gy=gy; sp_cached_gh=gh;
         }
         dl->AddPolyline(sp_pts.data(), np, IM_COL32(0,255,0,255), ImDrawFlags_None, 1.5f);
+
+        // ── Max Hold / Max16 노란 선 ────────────────────────────────────
+        if(max_hold_mode != 0 && (int)max_hold_spectrum.size() == fft_size && fft_size > 0){
+            static thread_local std::vector<ImVec2> mh_pts;
+            mh_pts.resize(np);
+            float nyq2 = sr_mhz / 2.0f;
+            int hf2 = fft_size / 2;
+            auto freq_to_bin2 = [&](float fd) -> int {
+                int b = (fd >= 0) ? (int)((fd/nyq2)*hf2 + 0.5f)
+                                  : fft_size + (int)((fd/nyq2)*hf2 - 0.5f);
+                return std::max(0, std::min(fft_size-1, b));
+            };
+            for(int px = 0; px < np; px++){
+                float fd0 = ds + (float)px    / np * (de-ds);
+                float fd1 = ds + (float)(px+1)/ np * (de-ds);
+                int b0 = freq_to_bin2(fd0), b1 = freq_to_bin2(fd1);
+                if(b0 > b1) std::swap(b0, b1);
+                float mx = -200.0f;
+                for(int b = b0; b <= b1; b++)
+                    if(max_hold_spectrum[b] > mx) mx = max_hold_spectrum[b];
+                float t = (mx - display_power_min) * pr_inv;
+                t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+                mh_pts[px] = ImVec2(gx + (float)px, gy + (1.0f - t) * gh);
+            }
+            dl->AddPolyline(mh_pts.data(), np, IM_COL32(255,220,0,255),
+                            ImDrawFlags_None, 1.5f);
+            // 모드 라벨 (좌상단)
+            const char* mh_lbl = (max_hold_mode == 1) ? "MAX HOLD" : "MAX 3s";
+            dl->AddText(ImVec2(gx + 4, gy + 2),
+                        IM_COL32(255,220,0,255), mh_lbl);
+        }
     }
     // 파워 축 그리드 라인 + 레이블 (실제 dB 값 표시, 10단계 균등 분할)
     // i=0(max), i=10(min): 레이블 숨김
@@ -687,7 +763,45 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
     ImGui::InvisibleButton("sp_graph",ImVec2(gw,gh));
     bool hov=ImGui::IsItemHovered();
     if(!eid_panel_open && !log_panel_open) handle_new_channel_drag(gx,gw);
+    int sel_before = selected_ch;
     if(!region.active && !eid_panel_open && !log_panel_open) handle_channel_interactions(gx,gw,gy,gh);
+
+    // ── 좌클릭 토글 > Max Hold (채널 위가 아닌 빈 영역 클릭에서만) ──────
+    if(hov && !eid_panel_open && !log_panel_open
+       && ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+       && !ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyShift){
+        ImVec2 m = ImGui::GetIO().MousePos;
+        float af = x_to_abs(m.x, gx, gw);
+        float mhz_per_px = (de - ds) / std::max(1.0f, gw);
+        float edge_mhz = 6.0f * mhz_per_px;
+        bool on_channel = false;
+        for(int i = 0; i < MAX_CHANNELS; i++){
+            if(!channels[i].filter_active) continue;
+            float cs = std::min(channels[i].s, channels[i].e);
+            float ce = std::max(channels[i].s, channels[i].e);
+            if(af >= cs - edge_mhz && af <= ce + edge_mhz){ on_channel = true; break; }
+        }
+        // handle_channel_interactions에서 채널을 선택했다면 빈 영역 아님
+        bool sel_changed = (selected_ch != sel_before);
+        bool any_drag = new_drag.active;
+        for(int i = 0; i < MAX_CHANNELS && !any_drag; i++)
+            if(channels[i].resize_drag || channels[i].move_drag) any_drag = true;
+        if(!on_channel && !sel_changed && !any_drag){
+            // Off(0) > Max Hold(1) > Max16(2) > Off(0)
+            max_hold_mode = (max_hold_mode + 1) % 3;
+            if(max_hold_mode != 0){
+                max_hold_spectrum.assign(fft_size, -200.0f);
+                if(max_hold_mode == 2){
+                    max_hold_window_ring.assign((size_t)MAX_HOLD_WINDOW_FRAMES * fft_size, -200.0f);
+                    max_hold_window_wp = 0;
+                    max_hold_window_count = 0;
+                }
+                last_maxhold_sp_idx = -1;
+                last_maxhold_cf = header.center_frequency;
+                last_maxhold_fft_size = fft_size;
+            }
+        }
+    }
     if(hov && !eid_panel_open && !log_panel_open){
         ImVec2 mm=ImGui::GetIO().MousePos;
         float af=x_to_abs(mm.x,gx,gw);
