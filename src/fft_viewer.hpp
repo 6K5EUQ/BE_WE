@@ -100,6 +100,21 @@ public:
     uint64_t last_maxhold_cf = 0;
     int      last_maxhold_fft_size = 0;
 
+    // ── 노치필터 (파워스펙트럼 Ctrl+우클릭 드래그로 생성, 세션 한정) ───────
+    // fft_data는 pristine 유지 - 렌더/워터폴 매핑 시점에만 영역을 주변 노이즈
+    // 플로어(±32 bin 평균)로 치환하고 빨간색으로 표시
+    struct NotchFilter {
+        float freq_lo_mhz;
+        float freq_hi_mhz;
+    };
+    std::vector<NotchFilter> notches;
+    std::mutex               notches_mtx;
+    static constexpr int     NOTCH_NF_NEIGHBOR_BINS = 32;
+    struct NotchDrag {
+        bool  selecting = false;
+        float drag_x0 = 0, drag_x1 = 0;
+    } notch_drag;
+
     // ── System monitor (bottom bar) ───────────────────────────────────────
     float sysmon_cpu=0, sysmon_ghz=0, sysmon_ram=0, sysmon_io=0;
     std::atomic<int> sysmon_cpu_temp_c{0};  // CPU 온도 (정수 °C, heartbeat 전송용)

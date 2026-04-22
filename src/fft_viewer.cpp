@@ -158,11 +158,47 @@ void FFTViewer::update_wf_row(int fi){
 
     float ratio = (float)fft_half / (float)tex_half;
 
+    // ── 노치필터: 전체 FFT의 하위 절반(중앙값 이하) bin을 노이즈 플로어 풀로 사용
+    // 강한 신호 배제 + DC 가로지르는 노치도 MHz 기반 매칭으로 안전
+    std::vector<NotchFilter> nlocal;
+    {
+        std::lock_guard<std::mutex> nlk(notches_mtx);
+        nlocal = notches;
+    }
+    std::vector<float> noise_floor_pool;
+    if(!nlocal.empty()){
+        std::vector<float> tmp(row, row+fft_size);
+        size_t half = tmp.size()/2;
+        std::nth_element(tmp.begin(), tmp.begin()+half, tmp.end());
+        noise_floor_pool.assign(tmp.begin(), tmp.begin()+half);
+    }
+    float nyq_mhz_wf = (float)(header.sample_rate)/2.0f / 1e6f;
+    float cf_mhz_wf = (float)(header.center_frequency/1e6);
+    int hf_wf = fft_size/2;
+    auto bin_to_mhz_wf = [&](int b) -> float {
+        float fd = (b < hf_wf) ? (float)b/hf_wf*nyq_mhz_wf : (float)(b-fft_size)/hf_wf*nyq_mhz_wf;
+        return cf_mhz_wf + fd;
+    };
+    auto bin_in_notch = [&](int b) -> bool {
+        if(nlocal.empty()) return false;
+        float mhz = bin_to_mhz_wf(b);
+        for(auto& n : nlocal) if(mhz >= n.freq_lo_mhz && mhz <= n.freq_hi_mhz) return true;
+        return false;
+    };
+    auto sample_at_wf = [&](int b) -> float {
+        if(noise_floor_pool.empty()) return -80.0f;
+        uint32_t h = (uint32_t)(b * 2654435761u) ^ (uint32_t)fi;
+        return noise_floor_pool[h % noise_floor_pool.size()];
+    };
+
     auto map_peak=[&](float bin_start_f, float bin_end_f)->uint32_t{
         int bs=std::max(0, (int)bin_start_f);
         int be=std::min(fft_size-1, (int)bin_end_f);
         float mx=-200.0f;
-        for(int b=bs;b<=be;b++) if(row[b]>mx) mx=row[b];
+        for(int b=bs;b<=be;b++){
+            float v = bin_in_notch(b) ? sample_at_wf(b) : row[b];
+            if(v > mx) mx = v;
+        }
         float t=(mx-wmin)*wrng_inv;
         int idx=(int)(t*(COLORMAP_LUT_SIZE-1));
         idx=idx<0?0:idx>=(COLORMAP_LUT_SIZE)?COLORMAP_LUT_SIZE-1:idx;

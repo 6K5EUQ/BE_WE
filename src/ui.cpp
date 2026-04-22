@@ -600,6 +600,77 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         cached_sp_idx=sp_idx; cached_pan=freq_pan; cached_zoom=freq_zoom;
         cached_px=np; cached_pmin=display_power_min; cached_pmax=display_power_max;
     }
+    // ── 노치필터 오버라이드: fft_data는 pristine 유지, 렌더용으로만 치환 ──
+    // 샘플풀 = 전체 FFT bin의 하위 절반(중앙값 이하) → 강한 신호 배제, 진짜 노이즈
+    // 플로어 레벨로 치환. 노치 판정은 MHz 기반 > DC(센터 주파수) 가로지름 안전.
+    std::vector<NotchFilter> nlocal;
+    {
+        std::lock_guard<std::mutex> lk(notches_mtx);
+        nlocal = notches;
+    }
+    std::vector<int>   px_notch(np, -1);         // 각 픽셀의 노치 인덱스 (-1=바깥)
+    std::vector<float> noise_floor_pool;          // 전역 하위 50% FFT bin 값 (녹색 선용)
+    std::vector<float> mh_noise_floor_pool;       // 전역 하위 50% max_hold 값 (Max Decay용)
+    float sr_mhz_loc = sr_mhz;                    // 람다 캡처용
+    float cf_mhz_loc = (float)(header.center_frequency/1e6);
+    // bin > MHz 환산 (IQ FFT: 양수 주파수=[0, hf-1], 음수=[hf, fft_size-1])
+    auto bin_to_mhz_sp = [&](int b) -> float {
+        int hf = fft_size/2;
+        float nyq = sr_mhz_loc/2.0f;
+        float fd = (b < hf) ? (float)b/hf*nyq : (float)(b-fft_size)/hf*nyq;
+        return cf_mhz_loc + fd;
+    };
+    // MHz > bin (DC 가로지름 대응: 양수 fd → 작은 bin, 음수 fd → 큰 bin)
+    float nyq_sp_cap = sr_mhz_loc/2.0f; int hf_sp_cap = fft_size/2;
+    auto freq_to_bin_sp = [&](float fd)->int{
+        int b=(fd>=0)?(int)((fd/nyq_sp_cap)*hf_sp_cap+0.5f):fft_size+(int)((fd/nyq_sp_cap)*hf_sp_cap-0.5f);
+        return std::max(0,std::min(fft_size-1,b));
+    };
+    // bin이 어느 노치에 속하는지(MHz 기반)
+    auto bin_notch_idx = [&](int b) -> int {
+        float mhz = bin_to_mhz_sp(b);
+        for(size_t ni=0; ni<nlocal.size(); ni++){
+            if(mhz >= nlocal[ni].freq_lo_mhz && mhz <= nlocal[ni].freq_hi_mhz) return (int)ni;
+        }
+        return -1;
+    };
+    // bin 인덱스 기반 해싱 > 같은 bin은 같은 샘플 > 여러 픽셀이 공유 > FFT bin 해상도 출렁임
+    auto sample_at = [&](const std::vector<float>& pool, int b, int seed) -> float {
+        if(pool.empty()) return -80.0f;
+        uint32_t h = (uint32_t)(b * 2654435761u) ^ (uint32_t)seed;
+        return pool[h % pool.size()];
+    };
+    if(!nlocal.empty()){
+        {
+            std::lock_guard<std::mutex> lk(data_mtx);
+            int mi=sp_idx%MAX_FFTS_MEMORY;
+            const float* rowp=fft_data.data()+mi*fft_size;
+            // nth_element로 중앙값 기준 하위 절반 분할(정렬은 불필요)
+            std::vector<float> tmp(rowp, rowp+fft_size);
+            size_t half = tmp.size()/2;
+            std::nth_element(tmp.begin(), tmp.begin()+half, tmp.end());
+            noise_floor_pool.assign(tmp.begin(), tmp.begin()+half);
+            bool mh_valid = (max_hold_mode != 0 && (int)max_hold_spectrum.size() == fft_size && fft_size > 0);
+            if(mh_valid){
+                std::vector<float> mtmp(max_hold_spectrum.begin(), max_hold_spectrum.end());
+                std::nth_element(mtmp.begin(), mtmp.begin()+half, mtmp.end());
+                mh_noise_floor_pool.assign(mtmp.begin(), mtmp.begin()+half);
+            }
+        }
+        // px_notch 세팅을 bin 기반으로 > 각 px의 bin range에 실제 노치 bin이 있을 때만 마크
+        // (abs_to_x + floor/ceil 방식은 경계 픽셀에서 bin range가 노치 밖이라 v=-80 추락 발생)
+        for(int px=0; px<np; px++){
+            float fd0 = ds + (float)px    /np * (de-ds);
+            float fd1 = ds + (float)(px+1)/np * (de-ds);
+            int b0 = freq_to_bin_sp(fd0), b1 = freq_to_bin_sp(fd1);
+            if(b0>b1) std::swap(b0,b1);
+            for(int b=b0; b<=b1; b++){
+                int ni = bin_notch_idx(b);
+                if(ni >= 0){ px_notch[px] = ni; break; }
+            }
+        }
+    }
+
     // AddPolyline 1회 호출 - cache 히트 시 ImVec2 재계산 스킵
     {
         float pr_inv=1.0f/std::max(1.0f,display_power_max-display_power_min);
@@ -607,17 +678,54 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         // cache miss 이거나 gx/gy/gh가 바뀐 경우에만 재계산
         static thread_local float sp_cached_gx=0,sp_cached_gy=0,sp_cached_gh=0;
         bool pts_dirty = !cv || (int)sp_pts.size()!=np
-                      || sp_cached_gx!=gx || sp_cached_gy!=gy || sp_cached_gh!=gh;
+                      || sp_cached_gx!=gx || sp_cached_gy!=gy || sp_cached_gh!=gh
+                      || !nlocal.empty();  // 노치 활성 시 매 프레임 재계산
         if(pts_dirty){
             sp_pts.resize(np);
             for(int px=0;px<np;px++){
-                float t=(current_spectrum[px]-display_power_min)*pr_inv;
+                int ni = px_notch[px];
+                float v;
+                if(ni < 0){
+                    v = current_spectrum[px];  // 노치 밖: 기존 캐시 그대로
+                } else {
+                    // 노치 안: px의 bin range 중 노치 안 bin(MHz 기반)만 전역 노이즈 풀에서 샘플링
+                    float fd0 = ds + (float)px    /np * (de-ds);
+                    float fd1 = ds + (float)(px+1)/np * (de-ds);
+                    int b0 = freq_to_bin_sp(fd0), b1 = freq_to_bin_sp(fd1);
+                    if(b0>b1) std::swap(b0,b1);
+                    float mx = -200.0f; bool any = false;
+                    for(int b = b0; b <= b1; b++){
+                        if(bin_notch_idx(b) < 0) continue;  // 노치 바깥 bin은 스킵
+                        float s = sample_at(noise_floor_pool, b, sp_idx);
+                        if(s > mx) mx = s;
+                        any = true;
+                    }
+                    v = any ? mx : -80.0f;
+                }
+                float t=(v-display_power_min)*pr_inv;
                 t=t<0.0f?0.0f:t>1.0f?1.0f:t;
                 sp_pts[px]=ImVec2(gx+(float)px, gy+(1.0f-t)*gh);
             }
             sp_cached_gx=gx; sp_cached_gy=gy; sp_cached_gh=gh;
         }
-        dl->AddPolyline(sp_pts.data(), np, IM_COL32(0,255,0,255), ImDrawFlags_None, 1.5f);
+        // 노치 없으면 단일 폴리라인, 있으면 녹색/빨간 세그먼트 분할 그리기
+        // 세그먼트 경계에서 gap 방지 위해 다음 세그먼트의 첫 점 1개를 포함해서 연결
+        if(nlocal.empty()){
+            dl->AddPolyline(sp_pts.data(), np, IM_COL32(0,255,0,255), ImDrawFlags_None, 1.5f);
+        } else {
+            int i=0;
+            while(i<np){
+                int cur = px_notch[i];
+                int j=i+1;
+                while(j<np && px_notch[j]==cur) j++;
+                int end = std::min(np, j+1);  // 다음 세그먼트 첫 점까지 포함해 gap 방지
+                if(end-i >= 2){
+                    ImU32 col = (cur>=0) ? IM_COL32(255,60,60,255) : IM_COL32(0,255,0,255);
+                    dl->AddPolyline(&sp_pts[i], end-i, col, ImDrawFlags_None, 1.5f);
+                }
+                i=j;
+            }
+        }
 
         // ── Max Decay 노란 선 ───────────────────────────────────────────
         if(max_hold_mode != 0 && (int)max_hold_spectrum.size() == fft_size && fft_size > 0){
@@ -636,14 +744,39 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
                 int b0 = freq_to_bin2(fd0), b1 = freq_to_bin2(fd1);
                 if(b0 > b1) std::swap(b0, b1);
                 float mx = -200.0f;
-                for(int b = b0; b <= b1; b++)
-                    if(max_hold_spectrum[b] > mx) mx = max_hold_spectrum[b];
+                for(int b = b0; b <= b1; b++){
+                    float v;
+                    if(bin_notch_idx(b) >= 0){
+                        // 노치 안 bin > 전역 하위 50% max_hold 풀에서 bin 단위 샘플링
+                        v = sample_at(mh_noise_floor_pool, b, sp_idx);
+                    } else {
+                        v = max_hold_spectrum[b];
+                    }
+                    if(v > mx) mx = v;
+                }
                 float t = (mx - display_power_min) * pr_inv;
                 t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
                 mh_pts[px] = ImVec2(gx + (float)px, gy + (1.0f - t) * gh);
             }
-            dl->AddPolyline(mh_pts.data(), np, IM_COL32(255,220,0,255),
-                            ImDrawFlags_None, 1.5f);
+            // 노치 없으면 단일 노란 폴리라인, 있으면 노란/빨간 세그먼트 분할 (1 px 오버랩)
+            if(nlocal.empty()){
+                dl->AddPolyline(mh_pts.data(), np, IM_COL32(255,220,0,255),
+                                ImDrawFlags_None, 1.5f);
+            } else {
+                int i=0;
+                while(i<np){
+                    int cur = px_notch[i];
+                    int j=i+1;
+                    while(j<np && px_notch[j]==cur) j++;
+                    int end = std::min(np, j+1);
+                    if(end-i >= 2){
+                        ImU32 col = (cur>=0) ? IM_COL32(255,60,60,255)
+                                             : IM_COL32(255,220,0,255);
+                        dl->AddPolyline(&mh_pts[i], end-i, col, ImDrawFlags_None, 1.5f);
+                    }
+                    i=j;
+                }
+            }
             dl->AddText(ImVec2(gx + 4, gy + 2),
                         IM_COL32(255,220,0,255), "MAX DECAY");
         }
@@ -679,16 +812,71 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
     ImGui::SetCursorScreenPos(ImVec2(gx,gy));
     ImGui::InvisibleButton("sp_graph",ImVec2(gw,gh));
     bool hov=ImGui::IsItemHovered();
+
+    // ── Ctrl+우클릭 드래그: 노치필터 생성 (파워스펙트럼 전용, 채널 생성보다 우선) ─
+    {
+        ImVec2 mp = ImGui::GetIO().MousePos;
+        bool ctrl = ImGui::GetIO().KeyCtrl;
+        bool in_sp = (mp.x>=gx && mp.x<=gx+gw && mp.y>=gy && mp.y<=gy+gh);
+        if(!eid_panel_open && !log_panel_open && ctrl && in_sp &&
+           ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+            notch_drag.selecting = true;
+            notch_drag.drag_x0 = notch_drag.drag_x1 = mp.x;
+        }
+        if(notch_drag.selecting && ImGui::IsMouseDown(ImGuiMouseButton_Right)){
+            notch_drag.drag_x1 = mp.x;
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            float x0 = std::min(notch_drag.drag_x0, notch_drag.drag_x1);
+            float x1 = std::max(notch_drag.drag_x0, notch_drag.drag_x1);
+            dl->AddRectFilled(ImVec2(x0,gy), ImVec2(x1,gy+gh), IM_COL32(220,60,60,60));
+            dl->AddRect(ImVec2(x0,gy), ImVec2(x1,gy+gh), IM_COL32(220,60,60,200));
+        }
+        if(notch_drag.selecting && ImGui::IsMouseReleased(ImGuiMouseButton_Right)){
+            notch_drag.selecting = false;
+            float x0 = std::min(notch_drag.drag_x0, notch_drag.drag_x1);
+            float x1 = std::max(notch_drag.drag_x0, notch_drag.drag_x1);
+            if(x1-x0 > 4.0f){
+                NotchFilter n;
+                n.freq_lo_mhz = x_to_abs(x0, gx, gw);
+                n.freq_hi_mhz = x_to_abs(x1, gx, gw);
+                if(n.freq_hi_mhz < n.freq_lo_mhz) std::swap(n.freq_lo_mhz, n.freq_hi_mhz);
+                std::lock_guard<std::mutex> lk(notches_mtx);
+                // 겹치는 기존 노치들과 합집합으로 병합 (체인 병합을 위해 반복)
+                bool merged = true;
+                while(merged){
+                    merged = false;
+                    for(auto it = notches.begin(); it != notches.end(); ){
+                        if(n.freq_hi_mhz >= it->freq_lo_mhz && n.freq_lo_mhz <= it->freq_hi_mhz){
+                            n.freq_lo_mhz = std::min(n.freq_lo_mhz, it->freq_lo_mhz);
+                            n.freq_hi_mhz = std::max(n.freq_hi_mhz, it->freq_hi_mhz);
+                            it = notches.erase(it);
+                            merged = true;
+                        } else ++it;
+                    }
+                }
+                notches.push_back(n);
+            }
+        }
+    }
+
     if(!eid_panel_open && !log_panel_open) handle_new_channel_drag(gx,gw);
     int sel_before = selected_ch;
     if(!region.active && !eid_panel_open && !log_panel_open) handle_channel_interactions(gx,gw,gy,gh);
 
     // ── 좌클릭 토글 > Max Hold (채널 위가 아닌 빈 영역 클릭에서만) ──────
+    // NOTE: 더블클릭 제거보다 먼저 실행해야 함 - 더블클릭 두 번째 클릭에서
+    //       노치가 먼저 제거되면 in_notch 가드가 풀려 Max Hold가 잘못 토글됨
     if(hov && !eid_panel_open && !log_panel_open
        && ImGui::IsMouseClicked(ImGuiMouseButton_Left)
        && !ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyShift){
         ImVec2 m = ImGui::GetIO().MousePos;
         float af = x_to_abs(m.x, gx, gw);
+        // 노치 영역 안에서 좌클릭 > Max Hold 토글 스킵 (더블클릭 제거 UX와 간섭 방지)
+        bool in_notch = false;
+        {
+            std::lock_guard<std::mutex> lk(notches_mtx);
+            for(auto& n : notches) if(af>=n.freq_lo_mhz && af<=n.freq_hi_mhz){ in_notch=true; break; }
+        }
         float mhz_per_px = (de - ds) / std::max(1.0f, gw);
         float edge_mhz = 6.0f * mhz_per_px;
         bool on_channel = false;
@@ -703,7 +891,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         bool any_drag = new_drag.active;
         for(int i = 0; i < MAX_CHANNELS && !any_drag; i++)
             if(channels[i].resize_drag || channels[i].move_drag) any_drag = true;
-        if(!on_channel && !sel_changed && !any_drag){
+        if(!on_channel && !sel_changed && !any_drag && !in_notch){
             // Off(0) <> Max Decay(1)
             max_hold_mode = max_hold_mode ? 0 : 1;
             if(max_hold_mode != 0){
@@ -711,6 +899,20 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
                 last_maxhold_sp_idx = -1;
                 last_maxhold_cf = header.center_frequency;
                 last_maxhold_fft_size = fft_size;
+            }
+        }
+    }
+
+    // ── 좌클릭 더블클릭 > 노치필터 제거 (Max Hold 블록 뒤에 배치) ─────────
+    if(hov && !eid_panel_open && !log_panel_open
+       && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)
+       && !ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyShift){
+        float af = x_to_abs(ImGui::GetIO().MousePos.x, gx, gw);
+        std::lock_guard<std::mutex> lk(notches_mtx);
+        for(auto it=notches.begin(); it!=notches.end(); ++it){
+            if(af>=it->freq_lo_mhz && af<=it->freq_hi_mhz){
+                notches.erase(it);
+                break;
             }
         }
     }
