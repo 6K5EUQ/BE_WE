@@ -8026,10 +8026,15 @@ void run_streaming_viewer(){
             }
 
             // ── 좌측: 타임머신 오프셋 (TM 모드 + 오프셋 있을 때만 표시) ─
+            // 좌측 서브프로그램 인디케이터(EID/LOG/DIGI) 뒤에 배치
             if(v.tm_active.load() && v.tm_offset > 0.0f){
                 char tm_txt[48];
                 snprintf(tm_txt,sizeof(tm_txt),"-%.1f sec",v.tm_offset);
-                dl->AddText(ImVec2(8,ty_b),IM_COL32(255,200,50,255),tm_txt);
+                ImVec2 eid_sz  = ImGui::CalcTextSize("EID");
+                ImVec2 log_sz  = ImGui::CalcTextSize("LOG");
+                ImVec2 digi_sz = ImGui::CalcTextSize("DIGI");
+                float tm_x = 8.0f + eid_sz.x + 14.0f + log_sz.x + 14.0f + digi_sz.x + 14.0f;
+                dl->AddText(ImVec2(tm_x,ty_b),IM_COL32(255,200,50,255),tm_txt);
             }
 
             // ── 우측: 상태 인디케이터 (오른쪽>왼쪽) ─────────────────────
@@ -8206,6 +8211,42 @@ void run_streaming_viewer(){
                 rx2=x-14.0f;
                 return clicked;
             };
+
+            // ── 왼쪽>오른쪽: 서브프로그램 상태 인디케이터 (EID LOG DIGI) ─
+            // 3-state: 0=닫힘(red), 1=열림+최상단(green), 2=열림+백그라운드(yellow)
+            auto ov_st = [&](bool is_open, int ov_id) -> int {
+                if(!is_open) return 0;
+                return (top_ov() == ov_id) ? 1 : 2;
+            };
+            // 왼쪽>오른쪽 방향 인디케이터 헬퍼 (색상/shadow는 draw_ind와 동일)
+            auto click_ind_left = [&](float& lx, const char* txt, int state) -> bool {
+                ImVec2 sz=ImGui::CalcTextSize(txt);
+                ImU32 col = (state==1) ? IM_COL32(80,220,80,255)
+                          : (state==2) ? IM_COL32(255,200,0,255)
+                          :              IM_COL32(220,60,60,255);
+                if(state>0) dl->AddText(ImVec2(lx+1,ty_b),col,txt);
+                dl->AddText(ImVec2(lx,ty_b),col,txt);
+                bool clicked=ImGui::IsMouseClicked(ImGuiMouseButton_Left)&&
+                    io.MousePos.x>=lx&&io.MousePos.x<=lx+sz.x&&
+                    io.MousePos.y>=ty_b&&io.MousePos.y<=ty_b+sz.y;
+                lx += sz.x + 14.0f;
+                return clicked;
+            };
+            float lx = 8.0f;
+            if(click_ind_left(lx, "EID", ov_st(v.eid_panel_open, 1))){
+                v.eid_panel_open = !v.eid_panel_open;
+                if(v.eid_panel_open){
+                    if(!v.sa_temp_path.empty() &&
+                       !v.eid_computing.load() && !v.eid_data_ready.load())
+                        v.eid_start(v.sa_temp_path);
+                }
+            }
+            if(click_ind_left(lx, "LOG", ov_st(v.log_panel_open, 2))){
+                v.log_panel_open = !v.log_panel_open;
+            }
+            if(click_ind_left(lx, "DIGI", ov_st(v.digi_decode_panel_open, 3))){
+                v.digi_decode_panel_open = !v.digi_decode_panel_open;
+            }
 
             // 오른쪽>왼쪽: TM IQ AUD WF FFT LINK SDR
             float rx=disp_w-8.0f;
@@ -9058,7 +9099,7 @@ void run_streaming_viewer(){
             // SA 텍스처 업로드 (right panel 없이 EID 오버레이만 열려있을 때도 동작)
             if(v.sa_pixel_ready.load()){ v.sa_upload_texture(); v.sa_anim_timer=0.0f; }
             ImGui::SetNextWindowPos(ImVec2(0,0));
-            ImGui::SetNextWindowSize(ImVec2(disp_w, disp_h));
+            ImGui::SetNextWindowSize(ImVec2(disp_w, disp_h - TOPBAR_H));
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
             ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.047f,0.047f,0.07f,0.98f));
             ImGui::Begin("##sig_analysis", nullptr,
@@ -9067,7 +9108,7 @@ void run_streaming_viewer(){
             ImDrawList* fg = ImGui::GetWindowDrawList();
             const float SB_H = 22.f;  // 서브바 높이
             float ov_x0 = 0.f, ov_y0 = 0.f;
-            float ov_x1 = disp_w, ov_y1 = disp_h;
+            float ov_x1 = disp_w, ov_y1 = disp_h - TOPBAR_H;
             float ov_w = ov_x1 - ov_x0, ov_h = ov_y1 - ov_y0;
 
             // ── 서브바 ──────────────────────────────────────────────────
@@ -11712,7 +11753,7 @@ void run_streaming_viewer(){
         // ╚══════════════════════════════════════════════════════════════════╝
         if(v.digi_decode_panel_open){
             ImGui::SetNextWindowPos(ImVec2(0,0));
-            ImGui::SetNextWindowSize(ImVec2(disp_w, disp_h));
+            ImGui::SetNextWindowSize(ImVec2(disp_w, disp_h - TOPBAR_H));
             if(top_ov() == 3) ImGui::SetNextWindowFocus();
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
             ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.03f,0.03f,0.05f,0.97f));
@@ -11763,7 +11804,7 @@ void run_streaming_viewer(){
 
             // 콘텐츠 영역
             float content_y = tab_y + 26;
-            float content_h = disp_h - content_y;
+            float content_h = (disp_h - TOPBAR_H) - content_y;
 
             ImGui::SetCursorScreenPos(ImVec2(0, content_y));
             ImGui::BeginChild("##digi_content", ImVec2(disp_w, content_h), false);
@@ -11804,7 +11845,7 @@ void run_streaming_viewer(){
         // ╚══════════════════════════════════════════════════════════════════╝
         if(v.log_panel_open){
             ImGui::SetNextWindowPos(ImVec2(0,0));
-            ImGui::SetNextWindowSize(ImVec2(disp_w, disp_h));
+            ImGui::SetNextWindowSize(ImVec2(disp_w, disp_h - TOPBAR_H));
             if(top_ov() == 2) ImGui::SetNextWindowFocus();
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
             ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.03f,0.03f,0.05f,0.97f));
@@ -11814,6 +11855,7 @@ void run_streaming_viewer(){
 
             ImDrawList* lfg = ImGui::GetWindowDrawList();
             const float LB_H = 22.f;
+            const float ov_h = disp_h - TOPBAR_H;  // 하단바 제외한 오버레이 높이
             float lb_y0 = 0, lb_y1 = LB_H;
 
             // 서브바 배경
@@ -11827,7 +11869,7 @@ void run_streaming_viewer(){
             // 3칸 영역 계산
             float col_w = disp_w / 2.0f;
             float ca_y0 = lb_y1;
-            float ca_h = disp_h - lb_y1;
+            float ca_h = ov_h - lb_y1;
             static const char* col_names[] = {"HOST", "SERVER"};
             static const ImU32 col_colors[] = {
                 IM_COL32(80,255,160,255),  // HOST: 녹색
@@ -11864,7 +11906,7 @@ void run_streaming_viewer(){
 
                 // 칸 구분선
                 if(c > 0)
-                    lfg->AddLine(ImVec2(cx0, ca_y0), ImVec2(cx0, disp_h), IM_COL32(50,50,65,255));
+                    lfg->AddLine(ImVec2(cx0, ca_y0), ImVec2(cx0, ov_h), IM_COL32(50,50,65,255));
 
                 // 칸 헤더
                 lfg->AddRectFilled(ImVec2(cx0, ca_y0), ImVec2(cx1, ca_y0+20), IM_COL32(20,20,30,255));
@@ -11872,8 +11914,8 @@ void run_streaming_viewer(){
                 lfg->AddText(ImVec2(cx0 + (col_w-nsz.x)/2, ca_y0+2), col_colors[c], col_names[c]);
 
                 // 네트워크 속도 (하단)
-                float bot_y = disp_h - 20.f;
-                lfg->AddRectFilled(ImVec2(cx0, bot_y), ImVec2(cx1, disp_h), IM_COL32(15,15,22,255));
+                float bot_y = ov_h - 20.f;
+                lfg->AddRectFilled(ImVec2(cx0, bot_y), ImVec2(cx1, ov_h), IM_COL32(15,15,22,255));
                 lfg->AddLine(ImVec2(cx0, bot_y), ImVec2(cx1, bot_y), IM_COL32(50,50,65,255));
                 auto fmt_speed = [](float bps) -> std::string {
                     char b[32];
