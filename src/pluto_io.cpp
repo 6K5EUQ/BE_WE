@@ -115,7 +115,7 @@ bool FFTViewer::initialize_pluto(float cf_mhz, float sr_msps){
     fft_data.resize(MAX_FFTS_MEMORY*fft_size);
     current_spectrum.resize(fft_size,-100.0f);
 
-    char title[256]; snprintf(title,256,"BEWE Pluto - %.2f MHz",cf_mhz);
+    char title[256]; snprintf(title,256,"BEWE (" BEWE_VERSION ") Pluto - %.2f MHz",cf_mhz);
     window_title=title; display_power_min=-100; display_power_max=0;
     fft_in =fftwf_alloc_complex(fft_size);
     fft_out=fftwf_alloc_complex(fft_size);
@@ -367,10 +367,9 @@ void FFTViewer::capture_and_process_pluto(){
                 int fi=total_ffts%MAX_FFTS_MEMORY;
                 float* rowp=fft_data.data()+fi*fft_size;
                 {std::lock_guard<std::mutex> lk(data_mtx);
+                 // current_spectrum은 UI 스레드 전용 > 캡처 쓰기 금지 (race 유발)
                  for(int i=0;i<fft_size;i++){
-                     float avg=10.0f*log10f(pacc[i]/fcnt);
-                     rowp[i]=avg;
-                     current_spectrum[i]=avg;
+                     rowp[i]=10.0f*log10f(pacc[i]/fcnt);
                  }
                  if(autoscale_active){
                      if(!autoscale_init){
@@ -382,7 +381,7 @@ void FFTViewer::capture_and_process_pluto(){
                      }
                      size_t cap=autoscale_accum.size();
                      for(int i=1;i<fft_size;i++){
-                         autoscale_accum[autoscale_wp]=current_spectrum[i];
+                         autoscale_accum[autoscale_wp]=rowp[i];
                          if(++autoscale_wp>=cap){ autoscale_wp=0; autoscale_buf_full=true; }
                      }
                      float el=std::chrono::duration<float>(std::chrono::steady_clock::now()-autoscale_last).count();

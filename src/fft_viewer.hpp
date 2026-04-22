@@ -106,6 +106,24 @@ public:
     struct NotchFilter {
         float freq_lo_mhz;
         float freq_hi_mhz;
+        // 프레임 간 안정화용 EMA 상태 (렌더 경로에서 매 프레임 블렌딩 업데이트)
+        float lo_lvl    = -80.0f;  // 좌측 인접 median EMA (녹색 선용)
+        float hi_lvl    = -80.0f;  // 우측 인접 median EMA
+        float lo_spread = 2.0f;    // 좌측 인접 변동 폭 EMA
+        float hi_spread = 2.0f;    // 우측 인접 변동 폭 EMA
+        float mh_lo_lvl    = -200.0f; // Max Decay용 동일
+        float mh_hi_lvl    = -200.0f;
+        float mh_lo_spread = 2.0f;
+        float mh_hi_spread = 2.0f;
+        // 경계 anchor EMA (edge 인접 픽셀의 median을 EMA 블렌딩) > 1프레임 transient 방지
+        float edge_lvl_L    = -80.0f;
+        float edge_lvl_R    = -80.0f;
+        float mh_edge_lvl_L = -200.0f;
+        float mh_edge_lvl_R = -200.0f;
+        bool  inited    = false;
+        bool  mh_inited = false;
+        bool  edge_inited    = false;
+        bool  mh_edge_inited = false;
     };
     std::vector<NotchFilter> notches;
     std::mutex               notches_mtx;

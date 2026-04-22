@@ -601,74 +601,197 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         cached_px=np; cached_pmin=display_power_min; cached_pmax=display_power_max;
     }
     // ── 노치필터 오버라이드: fft_data는 pristine 유지, 렌더용으로만 치환 ──
-    // 샘플풀 = 전체 FFT bin의 하위 절반(중앙값 이하) → 강한 신호 배제, 진짜 노이즈
-    // 플로어 레벨로 치환. 노치 판정은 MHz 기반 > DC(센터 주파수) 가로지름 안전.
+    // 각 노치의 좌/우 인접 bin median + spread를 EMA로 블렌딩 > 프레임 간 안정.
+    // 렌더에서 직선 보간 + 노치 폭·FFT bin 비례 sine 변동으로 자연스럽게 부드럽게.
+    // 노치 픽셀 판정은 MHz 구간 overlap > DC(센터) 걸치는 bin wrap 오탐 차단.
     std::vector<NotchFilter> nlocal;
     {
         std::lock_guard<std::mutex> lk(notches_mtx);
         nlocal = notches;
     }
-    std::vector<int>   px_notch(np, -1);         // 각 픽셀의 노치 인덱스 (-1=바깥)
-    std::vector<float> noise_floor_pool;          // 전역 하위 50% FFT bin 값 (녹색 선용)
-    std::vector<float> mh_noise_floor_pool;       // 전역 하위 50% max_hold 값 (Max Decay용)
-    float sr_mhz_loc = sr_mhz;                    // 람다 캡처용
+    std::vector<int> px_notch(np, -1);
     float cf_mhz_loc = (float)(header.center_frequency/1e6);
-    // bin > MHz 환산 (IQ FFT: 양수 주파수=[0, hf-1], 음수=[hf, fft_size-1])
+    float sr_mhz_loc = sr_mhz;
+    // bin > 절대 MHz (IQ FFT: 양수 주파수=[0, hf-1], 음수=[hf, fft_size-1])
     auto bin_to_mhz_sp = [&](int b) -> float {
         int hf = fft_size/2;
         float nyq = sr_mhz_loc/2.0f;
         float fd = (b < hf) ? (float)b/hf*nyq : (float)(b-fft_size)/hf*nyq;
         return cf_mhz_loc + fd;
     };
-    // MHz > bin (DC 가로지름 대응: 양수 fd → 작은 bin, 음수 fd → 큰 bin)
-    float nyq_sp_cap = sr_mhz_loc/2.0f; int hf_sp_cap = fft_size/2;
-    auto freq_to_bin_sp = [&](float fd)->int{
-        int b=(fd>=0)?(int)((fd/nyq_sp_cap)*hf_sp_cap+0.5f):fft_size+(int)((fd/nyq_sp_cap)*hf_sp_cap-0.5f);
-        return std::max(0,std::min(fft_size-1,b));
+    // median (정렬 없이 O(N))
+    auto median_of = [](std::vector<float>& v) -> float {
+        if(v.empty()) return -80.0f;
+        if(v.size() == 1) return v[0];
+        size_t k = v.size()/2;
+        std::nth_element(v.begin(), v.begin()+k, v.end());
+        return v[k];
     };
-    // bin이 어느 노치에 속하는지(MHz 기반)
-    auto bin_notch_idx = [&](int b) -> int {
-        float mhz = bin_to_mhz_sp(b);
-        for(size_t ni=0; ni<nlocal.size(); ni++){
-            if(mhz >= nlocal[ni].freq_lo_mhz && mhz <= nlocal[ni].freq_hi_mhz) return (int)ni;
-        }
-        return -1;
-    };
-    // bin 인덱스 기반 해싱 > 같은 bin은 같은 샘플 > 여러 픽셀이 공유 > FFT bin 해상도 출렁임
-    auto sample_at = [&](const std::vector<float>& pool, int b, int seed) -> float {
-        if(pool.empty()) return -80.0f;
-        uint32_t h = (uint32_t)(b * 2654435761u) ^ (uint32_t)seed;
-        return pool[h % pool.size()];
+    // spread (15~85 percentile 폭의 절반, 강한 outlier 배제된 변동 폭)
+    auto spread_of = [](std::vector<float>& v) -> float {
+        if(v.size() < 4) return 2.0f;
+        std::sort(v.begin(), v.end());
+        size_t q15 = v.size() * 15 / 100;
+        size_t q85 = v.size() * 85 / 100;
+        if(q85 <= q15) return 2.0f;
+        return std::max(0.5f, (v[q85] - v[q15]) * 0.5f);
     };
     if(!nlocal.empty()){
-        {
-            std::lock_guard<std::mutex> lk(data_mtx);
-            int mi=sp_idx%MAX_FFTS_MEMORY;
-            const float* rowp=fft_data.data()+mi*fft_size;
-            // nth_element로 중앙값 기준 하위 절반 분할(정렬은 불필요)
-            std::vector<float> tmp(rowp, rowp+fft_size);
-            size_t half = tmp.size()/2;
-            std::nth_element(tmp.begin(), tmp.begin()+half, tmp.end());
-            noise_floor_pool.assign(tmp.begin(), tmp.begin()+half);
-            bool mh_valid = (max_hold_mode != 0 && (int)max_hold_spectrum.size() == fft_size && fft_size > 0);
+        std::lock_guard<std::mutex> lk(data_mtx);
+        int mi = sp_idx % MAX_FFTS_MEMORY;
+        const float* rowp = fft_data.data() + mi*fft_size;
+        bool mh_valid = (max_hold_mode != 0 && (int)max_hold_spectrum.size() == fft_size && fft_size > 0);
+        float bin_width_mhz = (sr_mhz_loc > 0 && fft_size > 0) ? (sr_mhz_loc / (float)fft_size) : 1e-6f;
+        constexpr float EMA_ALPHA = 0.15f;  // 새 값 반영 비율 (1-α는 이전 값 유지)
+        bool tm_on = tm_active.load();
+        for(size_t ni=0; ni<nlocal.size(); ni++){
+            float lo = nlocal[ni].freq_lo_mhz;
+            float hi = nlocal[ni].freq_hi_mhz;
+            float nbr_mhz = std::max((hi - lo) * 2.0f, bin_width_mhz * 64.0f);
+            std::vector<float> left_bins, right_bins, left_mh, right_mh;
+            for(int b=0; b<fft_size; b++){
+                float mhz = bin_to_mhz_sp(b);
+                if(mhz >= lo - nbr_mhz && mhz < lo){
+                    left_bins.push_back(rowp[b]);
+                    if(mh_valid) left_mh.push_back(max_hold_spectrum[b]);
+                } else if(mhz > hi && mhz <= hi + nbr_mhz){
+                    right_bins.push_back(rowp[b]);
+                    if(mh_valid) right_mh.push_back(max_hold_spectrum[b]);
+                }
+            }
+            // 즉시값 계산 (median + spread)
+            float ll = median_of(left_bins), lr = median_of(right_bins);
+            float ls = spread_of(left_bins), rs = spread_of(right_bins);
+            if(left_bins.empty()  && !right_bins.empty()){ ll = lr; ls = rs; }
+            if(right_bins.empty() && !left_bins.empty()){  lr = ll; rs = ls; }
+            // EMA 블렌딩: 첫 프레임은 즉시값으로 초기화, 이후는 누적. TM 모드에서는 업데이트 스킵(freeze).
+            if(!nlocal[ni].inited){
+                nlocal[ni].lo_lvl = ll; nlocal[ni].hi_lvl = lr;
+                nlocal[ni].lo_spread = ls; nlocal[ni].hi_spread = rs;
+                nlocal[ni].inited = true;
+            } else if(!tm_on){
+                nlocal[ni].lo_lvl    = (1-EMA_ALPHA)*nlocal[ni].lo_lvl    + EMA_ALPHA*ll;
+                nlocal[ni].hi_lvl    = (1-EMA_ALPHA)*nlocal[ni].hi_lvl    + EMA_ALPHA*lr;
+                nlocal[ni].lo_spread = (1-EMA_ALPHA)*nlocal[ni].lo_spread + EMA_ALPHA*ls;
+                nlocal[ni].hi_spread = (1-EMA_ALPHA)*nlocal[ni].hi_spread + EMA_ALPHA*rs;
+            }
             if(mh_valid){
-                std::vector<float> mtmp(max_hold_spectrum.begin(), max_hold_spectrum.end());
-                std::nth_element(mtmp.begin(), mtmp.begin()+half, mtmp.end());
-                mh_noise_floor_pool.assign(mtmp.begin(), mtmp.begin()+half);
+                float mll = median_of(left_mh), mlr = median_of(right_mh);
+                float mls = spread_of(left_mh), mrs = spread_of(right_mh);
+                if(left_mh.empty()  && !right_mh.empty()){ mll = mlr; mls = mrs; }
+                if(right_mh.empty() && !left_mh.empty()){  mlr = mll; mrs = mls; }
+                if(!nlocal[ni].mh_inited){
+                    nlocal[ni].mh_lo_lvl = mll; nlocal[ni].mh_hi_lvl = mlr;
+                    nlocal[ni].mh_lo_spread = mls; nlocal[ni].mh_hi_spread = mrs;
+                    nlocal[ni].mh_inited = true;
+                } else if(!tm_on){
+                    nlocal[ni].mh_lo_lvl    = (1-EMA_ALPHA)*nlocal[ni].mh_lo_lvl    + EMA_ALPHA*mll;
+                    nlocal[ni].mh_hi_lvl    = (1-EMA_ALPHA)*nlocal[ni].mh_hi_lvl    + EMA_ALPHA*mlr;
+                    nlocal[ni].mh_lo_spread = (1-EMA_ALPHA)*nlocal[ni].mh_lo_spread + EMA_ALPHA*mls;
+                    nlocal[ni].mh_hi_spread = (1-EMA_ALPHA)*nlocal[ni].mh_hi_spread + EMA_ALPHA*mrs;
+                }
             }
         }
-        // px_notch 세팅을 bin 기반으로 > 각 px의 bin range에 실제 노치 bin이 있을 때만 마크
-        // (abs_to_x + floor/ceil 방식은 경계 픽셀에서 bin range가 노치 밖이라 v=-80 추락 발생)
+    }
+    // EMA 결과를 원본 notches에 write-back
+    if(!nlocal.empty()){
+        std::lock_guard<std::mutex> lk(notches_mtx);
+        if(notches.size() == nlocal.size()){
+            for(size_t ni=0; ni<nlocal.size(); ni++){
+                notches[ni].lo_lvl    = nlocal[ni].lo_lvl;
+                notches[ni].hi_lvl    = nlocal[ni].hi_lvl;
+                notches[ni].lo_spread = nlocal[ni].lo_spread;
+                notches[ni].hi_spread = nlocal[ni].hi_spread;
+                notches[ni].inited    = nlocal[ni].inited;
+                notches[ni].mh_lo_lvl    = nlocal[ni].mh_lo_lvl;
+                notches[ni].mh_hi_lvl    = nlocal[ni].mh_hi_lvl;
+                notches[ni].mh_lo_spread = nlocal[ni].mh_lo_spread;
+                notches[ni].mh_hi_spread = nlocal[ni].mh_hi_spread;
+                notches[ni].mh_inited    = nlocal[ni].mh_inited;
+                notches[ni].edge_lvl_L   = nlocal[ni].edge_lvl_L;
+                notches[ni].edge_lvl_R   = nlocal[ni].edge_lvl_R;
+                notches[ni].edge_inited  = nlocal[ni].edge_inited;
+                notches[ni].mh_edge_lvl_L   = nlocal[ni].mh_edge_lvl_L;
+                notches[ni].mh_edge_lvl_R   = nlocal[ni].mh_edge_lvl_R;
+                notches[ni].mh_edge_inited  = nlocal[ni].mh_edge_inited;
+            }
+        }
+    }
+    // px_notch 세팅: 픽셀 주파수 구간 [fd0, fd1]이 노치 구간과 overlap하면 마크
+    // (bin 변환 거치지 않음 > DC 가로지름 오탐 차단)
+    // 동시에 노치별 픽셀 범위 [p_start, p_end] 추적 > 경계 anchor 탐색에 사용
+    std::vector<std::pair<int,int>> notch_px_range(nlocal.size(), {np, -1});  // {first_px, last_px}
+    if(!nlocal.empty()){
         for(int px=0; px<np; px++){
             float fd0 = ds + (float)px    /np * (de-ds);
             float fd1 = ds + (float)(px+1)/np * (de-ds);
-            int b0 = freq_to_bin_sp(fd0), b1 = freq_to_bin_sp(fd1);
-            if(b0>b1) std::swap(b0,b1);
-            for(int b=b0; b<=b1; b++){
-                int ni = bin_notch_idx(b);
-                if(ni >= 0){ px_notch[px] = ni; break; }
+            for(size_t ni=0; ni<nlocal.size(); ni++){
+                float n_lo_rel = nlocal[ni].freq_lo_mhz - cf_mhz_loc;
+                float n_hi_rel = nlocal[ni].freq_hi_mhz - cf_mhz_loc;
+                if(fd1 >= n_lo_rel && fd0 <= n_hi_rel){
+                    px_notch[px] = (int)ni;
+                    auto& r = notch_px_range[ni];
+                    if(px < r.first) r.first = px;
+                    if(px > r.second) r.second = px;
+                    break;
+                }
             }
         }
+    }
+    // 경계 anchor 값: 노치 바로 옆 non-notch 인접 5 픽셀의 median + EMA 블렌딩
+    // (단일 픽셀은 1프레임 transient에 취약 > median으로 robust, EMA로 추가 안정)
+    // 인접이 또 다른 노치이면 바깥으로 탐색, 끝까지 없으면 EMA median fallback.
+    std::vector<float> edge_val_L(nlocal.size(), -80.0f);
+    std::vector<float> edge_val_R(nlocal.size(), -80.0f);
+    constexpr int EDGE_WINDOW = 5;
+    constexpr float EDGE_EMA_ALPHA = 0.2f;
+    bool tm_on_edge = tm_active.load();
+    auto collect_median_outward = [&](int start_px, int dir) -> float {
+        // start_px에서 시작해 dir(-1=왼쪽, +1=오른쪽)으로 non-notch 픽셀 EDGE_WINDOW개 수집 후 median
+        std::vector<float> samples;
+        int p = start_px;
+        while(p >= 0 && p < np && (int)samples.size() < EDGE_WINDOW){
+            if(px_notch[p] < 0 && p < (int)current_spectrum.size()){
+                samples.push_back(current_spectrum[p]);
+            } else if(px_notch[p] >= 0){
+                // 노치 영역 만나면 건너뛰지 말고 바깥 계속 탐색
+            }
+            p += dir;
+        }
+        if(samples.empty()) return std::numeric_limits<float>::quiet_NaN();
+        size_t k = samples.size()/2;
+        std::nth_element(samples.begin(), samples.begin()+k, samples.end());
+        return samples[k];
+    };
+    for(size_t ni=0; ni<nlocal.size(); ni++){
+        auto& r = notch_px_range[ni];
+        float raw_L, raw_R;
+        if(r.second < r.first){
+            raw_L = nlocal[ni].lo_lvl;
+            raw_R = nlocal[ni].hi_lvl;
+        } else {
+            // 좌측: p_start-1부터 왼쪽으로 탐색해서 5개 non-notch 픽셀 median
+            int pl = r.first - 1;
+            while(pl >= 0 && px_notch[pl] >= 0) pl--;
+            raw_L = std::isnan(collect_median_outward(pl, -1)) ? nlocal[ni].lo_lvl
+                                                                : collect_median_outward(pl, -1);
+            // 우측: p_end+1부터 오른쪽으로 탐색해서 5개 non-notch 픽셀 median
+            int pr = r.second + 1;
+            while(pr < np && px_notch[pr] >= 0) pr++;
+            raw_R = std::isnan(collect_median_outward(pr, +1)) ? nlocal[ni].hi_lvl
+                                                                : collect_median_outward(pr, +1);
+        }
+        // EMA 블렌딩 (첫 프레임 초기화, TM 모드에서는 업데이트 스킵)
+        if(!nlocal[ni].edge_inited){
+            nlocal[ni].edge_lvl_L = raw_L;
+            nlocal[ni].edge_lvl_R = raw_R;
+            nlocal[ni].edge_inited = true;
+        } else if(!tm_on_edge){
+            nlocal[ni].edge_lvl_L = (1-EDGE_EMA_ALPHA)*nlocal[ni].edge_lvl_L + EDGE_EMA_ALPHA*raw_L;
+            nlocal[ni].edge_lvl_R = (1-EDGE_EMA_ALPHA)*nlocal[ni].edge_lvl_R + EDGE_EMA_ALPHA*raw_R;
+        }
+        edge_val_L[ni] = nlocal[ni].edge_lvl_L;
+        edge_val_R[ni] = nlocal[ni].edge_lvl_R;
     }
 
     // AddPolyline 1회 호출 - cache 히트 시 ImVec2 재계산 스킵
@@ -679,28 +802,44 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         static thread_local float sp_cached_gx=0,sp_cached_gy=0,sp_cached_gh=0;
         bool pts_dirty = !cv || (int)sp_pts.size()!=np
                       || sp_cached_gx!=gx || sp_cached_gy!=gy || sp_cached_gh!=gh
-                      || !nlocal.empty();  // 노치 활성 시 매 프레임 재계산
+                      || (!nlocal.empty() && !tm_active.load());  // 노치 활성 시 매 프레임 재계산 (TM 모드에서는 freeze 유지 위해 제외)
         if(pts_dirty){
             sp_pts.resize(np);
+            constexpr float TWO_PI = 6.28318530718f;
+            constexpr float PI_CONST = 3.14159265359f;
+            constexpr float AMP_SCALE = 0.3f;           // 진폭 배수 (sin taper로 경계는 자동 0)
+            constexpr float WAVE_BIN_PER_CYCLE = 40.0f; // 40 bin당 1 파장 (더 완만, 덜 오밀조밀)
+            float bin_width_mhz = (sr_mhz_loc > 0 && fft_size > 0) ? (sr_mhz_loc / (float)fft_size) : 1e-6f;
             for(int px=0;px<np;px++){
                 int ni = px_notch[px];
                 float v;
                 if(ni < 0){
-                    v = current_spectrum[px];  // 노치 밖: 기존 캐시 그대로
+                    v = current_spectrum[px];
                 } else {
-                    // 노치 안: px의 bin range 중 노치 안 bin(MHz 기반)만 전역 노이즈 풀에서 샘플링
-                    float fd0 = ds + (float)px    /np * (de-ds);
-                    float fd1 = ds + (float)(px+1)/np * (de-ds);
-                    int b0 = freq_to_bin_sp(fd0), b1 = freq_to_bin_sp(fd1);
-                    if(b0>b1) std::swap(b0,b1);
-                    float mx = -200.0f; bool any = false;
-                    for(int b = b0; b <= b1; b++){
-                        if(bin_notch_idx(b) < 0) continue;  // 노치 바깥 bin은 스킵
-                        float s = sample_at(noise_floor_pool, b, sp_idx);
-                        if(s > mx) mx = s;
-                        any = true;
-                    }
-                    v = any ? mx : -80.0f;
+                    // ─ Layer 1: 경계 정확 매칭 ─ edge 픽셀 실값을 anchor로
+                    float v_L = edge_val_L[ni];
+                    float v_R = edge_val_R[ni];
+                    // ─ Layer 2: cubic smoothstep base (S자 곡선, 양 끝 접선 0) ─
+                    int p_start = notch_px_range[ni].first;
+                    int p_end   = notch_px_range[ni].second;
+                    float span = (float)std::max(1, p_end - p_start);
+                    float tt = (float)(px - p_start) / span;
+                    tt = std::max(0.0f, std::min(1.0f, tt));
+                    float h = tt*tt*(3.0f - 2.0f*tt);  // smoothstep
+                    float base = v_L + h * (v_R - v_L);
+                    // ─ Layer 3: sin(πt) 테이퍼 × 3-sine 합성 변동 ─
+                    float bw = nlocal[ni].freq_hi_mhz - nlocal[ni].freq_lo_mhz;
+                    float notch_bin_cnt = std::max(1.0f, bw / bin_width_mhz);
+                    float cycles = std::max(0.5f, notch_bin_cnt / WAVE_BIN_PER_CYCLE);
+                    float ph1 = std::fmod(nlocal[ni].freq_lo_mhz * 1234.567f, TWO_PI);
+                    float ph2 = std::fmod(nlocal[ni].freq_lo_mhz * 2345.678f + 1.3f, TWO_PI);
+                    float ph3 = std::fmod(nlocal[ni].freq_lo_mhz * 3456.789f + 2.7f, TWO_PI);
+                    float wave = 0.55f * std::sin(tt * cycles * TWO_PI       + ph1)
+                               + 0.30f * std::sin(tt * cycles * TWO_PI * 1.7f + ph2)
+                               + 0.15f * std::sin(tt * cycles * TWO_PI * 2.3f + ph3);
+                    float taper = std::sin(tt * PI_CONST);  // 0 at t=0,1; 1 at t=0.5
+                    float amp = (nlocal[ni].lo_spread + (nlocal[ni].hi_spread - nlocal[ni].lo_spread) * tt) * AMP_SCALE;
+                    v = base + wave * amp * taper;
                 }
                 float t=(v-display_power_min)*pr_inv;
                 t=t<0.0f?0.0f:t>1.0f?1.0f:t;
@@ -730,7 +869,9 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         // ── Max Decay 노란 선 ───────────────────────────────────────────
         if(max_hold_mode != 0 && (int)max_hold_spectrum.size() == fft_size && fft_size > 0){
             static thread_local std::vector<ImVec2> mh_pts;
+            static thread_local std::vector<float>  mh_vals;  // dB 값 (2-pass용)
             mh_pts.resize(np);
+            mh_vals.resize(np);
             float nyq2 = sr_mhz / 2.0f;
             int hf2 = fft_size / 2;
             auto freq_to_bin2 = [&](float fd) -> int {
@@ -738,23 +879,97 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
                                   : fft_size + (int)((fd/nyq2)*hf2 - 0.5f);
                 return std::max(0, std::min(fft_size-1, b));
             };
+            // ─ Pass 1: 모든 픽셀을 기존 peak-detection으로 계산 (노치 영역 포함)
+            // > 노치 밖 값 확정 + 노치 영역의 "edge 인접 픽셀 값"도 이 결과에서 조회
             for(int px = 0; px < np; px++){
                 float fd0 = ds + (float)px    / np * (de-ds);
                 float fd1 = ds + (float)(px+1)/ np * (de-ds);
                 int b0 = freq_to_bin2(fd0), b1 = freq_to_bin2(fd1);
                 if(b0 > b1) std::swap(b0, b1);
                 float mx = -200.0f;
-                for(int b = b0; b <= b1; b++){
-                    float v;
-                    if(bin_notch_idx(b) >= 0){
-                        // 노치 안 bin > 전역 하위 50% max_hold 풀에서 bin 단위 샘플링
-                        v = sample_at(mh_noise_floor_pool, b, sp_idx);
-                    } else {
-                        v = max_hold_spectrum[b];
+                for(int b = b0; b <= b1; b++)
+                    if(max_hold_spectrum[b] > mx) mx = max_hold_spectrum[b];
+                mh_vals[px] = mx;
+            }
+            // ─ Pass 2: 노치 영역을 edge anchor + smoothstep + 테이퍼 노이즈로 덮어쓰기
+            if(!nlocal.empty()){
+                constexpr float TWO_PI_MH  = 6.28318530718f;
+                constexpr float PI_CONST_M = 3.14159265359f;
+                constexpr float AMP_SCALE  = 0.3f;
+                constexpr float WAVE_BIN_PER_CYCLE = 40.0f;
+                constexpr int   MH_EDGE_WINDOW = 5;
+                constexpr float MH_EDGE_EMA_ALPHA = 0.2f;
+                float bin_width_mhz_mh = (sr_mhz_loc > 0 && fft_size > 0) ? (sr_mhz_loc / (float)fft_size) : 1e-6f;
+                bool tm_on_mh = tm_active.load();
+                auto mh_median_outward = [&](int start_px, int dir) -> float {
+                    std::vector<float> samples;
+                    int p = start_px;
+                    while(p >= 0 && p < np && (int)samples.size() < MH_EDGE_WINDOW){
+                        if(px_notch[p] < 0) samples.push_back(mh_vals[p]);
+                        p += dir;
                     }
-                    if(v > mx) mx = v;
+                    if(samples.empty()) return std::numeric_limits<float>::quiet_NaN();
+                    size_t k = samples.size()/2;
+                    std::nth_element(samples.begin(), samples.begin()+k, samples.end());
+                    return samples[k];
+                };
+                // 노치별 max_hold edge anchor: 인접 5px median + EMA 블렌딩
+                for(size_t ni = 0; ni < nlocal.size(); ni++){
+                    auto& r = notch_px_range[ni];
+                    if(r.second < r.first) continue;
+                    int pl = r.first - 1;
+                    while(pl >= 0 && px_notch[pl] >= 0) pl--;
+                    float raw_mL = mh_median_outward(pl, -1);
+                    if(std::isnan(raw_mL)) raw_mL = nlocal[ni].mh_lo_lvl;
+                    int pr = r.second + 1;
+                    while(pr < np && px_notch[pr] >= 0) pr++;
+                    float raw_mR = mh_median_outward(pr, +1);
+                    if(std::isnan(raw_mR)) raw_mR = nlocal[ni].mh_hi_lvl;
+                    if(!nlocal[ni].mh_edge_inited){
+                        nlocal[ni].mh_edge_lvl_L = raw_mL;
+                        nlocal[ni].mh_edge_lvl_R = raw_mR;
+                        nlocal[ni].mh_edge_inited = true;
+                    } else if(!tm_on_mh){
+                        nlocal[ni].mh_edge_lvl_L = (1-MH_EDGE_EMA_ALPHA)*nlocal[ni].mh_edge_lvl_L + MH_EDGE_EMA_ALPHA*raw_mL;
+                        nlocal[ni].mh_edge_lvl_R = (1-MH_EDGE_EMA_ALPHA)*nlocal[ni].mh_edge_lvl_R + MH_EDGE_EMA_ALPHA*raw_mR;
+                    }
+                    float mhv_L = nlocal[ni].mh_edge_lvl_L;
+                    float mhv_R = nlocal[ni].mh_edge_lvl_R;
+                    float bw = nlocal[ni].freq_hi_mhz - nlocal[ni].freq_lo_mhz;
+                    float notch_bin_cnt = std::max(1.0f, bw / bin_width_mhz_mh);
+                    float cycles = std::max(0.5f, notch_bin_cnt / WAVE_BIN_PER_CYCLE);
+                    float ph1 = std::fmod(nlocal[ni].freq_lo_mhz * 1234.567f, TWO_PI_MH);
+                    float ph2 = std::fmod(nlocal[ni].freq_lo_mhz * 2345.678f + 1.3f, TWO_PI_MH);
+                    float ph3 = std::fmod(nlocal[ni].freq_lo_mhz * 3456.789f + 2.7f, TWO_PI_MH);
+                    float span = (float)std::max(1, r.second - r.first);
+                    for(int px = r.first; px <= r.second; px++){
+                        float tt = (float)(px - r.first) / span;
+                        tt = std::max(0.0f, std::min(1.0f, tt));
+                        float h = tt*tt*(3.0f - 2.0f*tt);  // smoothstep
+                        float base = mhv_L + h * (mhv_R - mhv_L);
+                        float wave = 0.55f * std::sin(tt * cycles * TWO_PI_MH       + ph1)
+                                   + 0.30f * std::sin(tt * cycles * TWO_PI_MH * 1.7f + ph2)
+                                   + 0.15f * std::sin(tt * cycles * TWO_PI_MH * 2.3f + ph3);
+                        float taper = std::sin(tt * PI_CONST_M);
+                        float amp = (nlocal[ni].mh_lo_spread + (nlocal[ni].mh_hi_spread - nlocal[ni].mh_lo_spread) * tt) * AMP_SCALE;
+                        mh_vals[px] = base + wave * amp * taper;
+                    }
                 }
-                float t = (mx - display_power_min) * pr_inv;
+                // Max Decay edge EMA 결과를 원본 notches에 write-back (다음 프레임에서 사용)
+                {
+                    std::lock_guard<std::mutex> lk(notches_mtx);
+                    if(notches.size() == nlocal.size()){
+                        for(size_t ni = 0; ni < nlocal.size(); ni++){
+                            notches[ni].mh_edge_lvl_L  = nlocal[ni].mh_edge_lvl_L;
+                            notches[ni].mh_edge_lvl_R  = nlocal[ni].mh_edge_lvl_R;
+                            notches[ni].mh_edge_inited = nlocal[ni].mh_edge_inited;
+                        }
+                    }
+                }
+            }
+            // ─ mh_vals > mh_pts (화면 좌표 변환)
+            for(int px = 0; px < np; px++){
+                float t = (mh_vals[px] - display_power_min) * pr_inv;
                 t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
                 mh_pts[px] = ImVec2(gx + (float)px, gy + (1.0f - t) * gh);
             }
@@ -855,6 +1070,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
                     }
                 }
                 notches.push_back(n);
+                cached_sp_idx = -1;  // TM 모드에서도 다음 프레임에 1회 재계산 유발
             }
         }
     }
@@ -912,6 +1128,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         for(auto it=notches.begin(); it!=notches.end(); ++it){
             if(af>=it->freq_lo_mhz && af<=it->freq_hi_mhz){
                 notches.erase(it);
+                cached_sp_idx = -1;  // TM 모드에서도 다음 프레임에 1회 재계산 유발
                 break;
             }
         }
@@ -3722,7 +3939,7 @@ void run_streaming_viewer(){
                 v.sysmon_ghz=read_ghz();
                 v.sysmon_ram=read_ram();
                 v.sysmon_io =io_pct;
-                glfwSetWindowTitle(win,"BEWE");
+                glfwSetWindowTitle(win,"BEWE (" BEWE_VERSION ")");
             }
         }
 
