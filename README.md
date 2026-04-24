@@ -48,21 +48,29 @@ Most SDR applications are designed for a single operator on a single machine. BE
 
 ## Screenshots
 
-| Login | Globe (Station Discovery) |
+| Login | 3D Globe (Station Discovery) |
 |:---:|:---:|
 | ![Login](assets/Login.png) | ![Globe](assets/Main_Page.png) |
 
-| Spectrum + Waterfall | Wideband Overview |
+| Spectrum + Waterfall | Max Decay (Peak Hold + Fade) |
 |:---:|:---:|
-| ![Monitor](assets/Monitor.png) | ![Screen](assets/Screen.png) |
+| ![Spectrum](assets/spectrum.png) | ![Max Decay](assets/max_decay.png) |
 
-| Time Machine + Region Export |
+| Active + Holding Channels with Notch Filters |
 |:---:|
-| ![Screen2](assets/Screen2.png) |
+| ![Channels](assets/channels_holding.png) |
 
-| Amplitude Domain | Frequency Domain | I/Q View |
+| Wideband Overview | Time Machine + Region Export |
+|:---:|:---:|
+| ![Screen](assets/Screen.png) | ![Screen2](assets/Screen2.png) |
+
+| Signal Analyzer — Spectrogram | Freq + PRI/PRF Measurement | Bits + Protocol Decoders |
 |:---:|:---:|:---:|
-| ![Amp](assets/Amp_Domain.png) | ![Freq](assets/Freq_Domain.png) | ![IQ](assets/IQ_Analy.png) |
+| ![Analyzer Spec](assets/analyzer_spectrogram.png) | ![Analyzer Freq](assets/analyzer_freq_pri.png) | ![Analyzer Bits](assets/analyzer_bits.png) |
+
+| Auto-Populated File Info (Recording Metadata) |
+|:---:|
+| ![File Info](assets/file_info.png) |
 
 ---
 
@@ -74,11 +82,14 @@ Most SDR applications are designed for a single operator on a single machine. BE
 - Frequency zoom / pan / drag-scroll
 - Auto-scale and manual power range control
 - Time-stamped event tags on waterfall (5 s interval)
+- **Max Hold with configurable decay** — left-click the power axis to cycle through Normal → Max Hold → Max N → Max Decay
+- **Notch filter pool** — MHz-based matching with auto-merge of adjacent notches; filters persist across sample-rate changes
 
 ### Demodulation
 - **Analog** — AM, FM, MAGIC (auto-detect AM/FM/DSB/SSB/CW)
 - **Digital** — AIS (marine vessel tracking), LoRa
 - Up to 10 simultaneous channels with independent mode selection
+- **Holding Channels** — filters outside the current tuner range move to a dedicated list with squelch timers preserved; auto-restored when the tuner returns to the band
 
 ### Audio
 - 48 kHz stereo output via ALSA
@@ -97,6 +108,7 @@ Most SDR applications are designed for a single operator on a single machine. BE
 - **Per-Channel IQ Recording** — Press `I` on an active channel to start squelch-gated IQ capture at the channel's intermediate sample rate; stops automatically when squelch closes or `I` pressed again
 - **Scheduled Recording** — Configure time-based automatic IQ recording (frequency, bandwidth, duration, start time); status tracks WAITING → RECORDING → COMPLETED
 - **Live Analysis During Recording** — WAV headers updated every 65,536 samples; right-click any active recording in the Recording panel to open it in Signal Analyzer without stopping the capture
+- **Auto-Populated File Info Modal** — save recording metadata (frequency, bandwidth, modulation, duration, target, protocol, recorder, tags, priority) as a sidecar `.info` file for provenance and later search
 
 ### LOG Panel
 - Press `L` to toggle a full-screen real-time log overlay
@@ -141,18 +153,44 @@ Open exported WAV/IQ files for offline multi-domain analysis. Switch between vie
 
 | View | Description |
 |------|-------------|
-| **Spectrogram** | Full FFT spectrogram with Hann window, Jet colormap, zoom/pan, and region selection |
-| **Amplitude** | Time-domain envelope waveform — visualize signal bursts, keying patterns, and pulse timing |
-| **Frequency** | Instantaneous frequency plot — identify FSK deviation, modulation index, and symbol timing |
-| **I/Q** | Raw In-phase / Quadrature sample view — inspect baseband signal structure and DC offset |
+| **Spectrogram** | Full FFT spectrogram (Hann / Blackman-Harris window), Jet colormap, zoom/pan, region selection |
+| **Amp** | Time-domain envelope — visualize bursts, keying patterns, and pulse timing |
+| **Freq** | Instantaneous frequency — identify FSK deviation, auto preamble detection, PRI / PRF / PD / Baud readout |
+| **Phase** | Instantaneous phase with manual carrier offset sweep (±1 / ±10 Hz via arrow keys) |
+| **I/Q** | Raw in-phase / quadrature baseband samples |
+| **Const** | I/Q constellation with automatic carrier recovery |
+| **Audio** | Demodulated audio playback (integrated WAV player) |
+| **Power** | M-th power spectrum (M = 1 / 2 / 4 / 8) for cyclostationary analysis |
+| **Bits** | Bit / byte viewer — **BIN / HEX / BITMAP** modes with built-in **AIS / ADS-B / UAV** protocol decoders |
 
 - Demodulate and play back selected regions directly in the analyzer
 - Auto-scale with percentile-based range (1st–99th)
 - Sample-accurate cursor with time, amplitude, and sample index readout
 
-| Amplitude Domain | Frequency Domain | I/Q View |
-|:---:|:---:|:---:|
-| ![Amp](assets/Amp_Domain.png) | ![Freq](assets/Freq_Domain.png) | ![IQ](assets/IQ_Analy.png) |
+![Spectrogram view](assets/analyzer_spectrogram.png)
+
+### Preamble & PRI Measurement (Freq View)
+
+The Freq view auto-detects a repeating preamble and displays:
+
+- **PRI** — Pulse Repetition Interval (µs)
+- **PRF** — Pulse Repetition Frequency (Hz)
+- **PD** — Pulse Duration (µs)
+- **Baud** — estimated symbol rate
+
+Useful for blind signal characterization, radar pulse analysis, and protocol identification.
+
+![Freq + PRI measurement](assets/analyzer_freq_pri.png)
+
+### Bits View & Protocol Decoders
+
+View the demodulated bit stream as **BIN / HEX / BITMAP** — the bitmap view renders bits as a 2D raster so frame-sync patterns, scramblers, and periodic structure jump out visually. One-click decoders built in:
+
+- **AIS** — marine vessel identification / position
+- **ADS-B** — aircraft ICAO / position / velocity
+- **UAV** — common drone downlink frames
+
+![Bits view with decoders](assets/analyzer_bits.png)
 
 ---
 
@@ -660,12 +698,20 @@ BE_WE/
 ├── libs/
 │   └── imgui/                # Dear ImGui (embedded)
 ├── assets/
-│   ├── BEWE.png              # Logo / main screenshot
-│   ├── earth.jpg             # Blue Marble texture
-│   ├── Amp_Domain.png        # Signal Analyzer: amplitude domain
-│   ├── Freq_Domain.png       # Signal Analyzer: frequency domain
-│   ├── IQ_Analy.png          # Signal Analyzer: I/Q view
-│   └── *.png                 # UI screenshots & login backgrounds
+│   ├── BEWE.png                   # Logo / main header
+│   ├── earth.jpg                  # Blue Marble texture
+│   ├── Login.png                  # Login screen
+│   ├── Main_Page.png              # 3D globe station discovery
+│   ├── spectrum.png               # Spectrum + waterfall
+│   ├── max_decay.png              # Max Decay mode
+│   ├── channels_holding.png       # Active + Holding channels with notch filters
+│   ├── Screen.png                 # Wideband overview
+│   ├── Screen2.png                # Time Machine + region export
+│   ├── analyzer_spectrogram.png   # Signal Analyzer: Spectrogram
+│   ├── analyzer_freq_pri.png      # Signal Analyzer: Freq + PRI/PRF
+│   ├── analyzer_bits.png          # Signal Analyzer: Bits + protocol decoders
+│   ├── file_info.png              # File Info modal
+│   └── login_bg_Tier_*.png        # Tier-specific login backgrounds
 ├── setup_pi_performance.sh   # Raspberry Pi 5 performance tuning script
 └── CMakeLists.txt
 ```
