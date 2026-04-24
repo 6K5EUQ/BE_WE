@@ -4368,6 +4368,16 @@ void run_streaming_viewer(){
                 v.join_manual_scale = false;
             }
             last_cf_mhz = cur_cf;
+            // SR 변화 감지 > 오토스케일 트리거 (join_manual_scale 리셋 포함)
+            static uint32_t last_sr_join = 0;
+            uint32_t cur_sr_join = v.net_cli->remote_sr.load();
+            if(cur_sr_join > 0 && cur_sr_join != last_sr_join && last_sr_join != 0){
+                v.autoscale_active  = true;
+                v.autoscale_init    = false;
+                v.autoscale_accum.clear();
+                v.join_manual_scale = false;
+            }
+            last_sr_join = cur_sr_join;
         }
 
         // ── CONNECT 모드: 수신 FFT > waterfall 업데이트 (1초 버퍼) ─────────

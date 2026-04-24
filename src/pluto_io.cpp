@@ -38,6 +38,14 @@ static bool pluto_cfg_attr_s(struct iio_channel* ch, const char* k, const char* 
     return iio_channel_attr_write(ch, k, v) >= 0;
 }
 
+// AD9361: ~2.56 MSPS 미만은 내부 FIR 필터 활성화 필요
+// FIR OFF 상태에서 낮은 SR 요청 시 드라이버가 -EINVAL 반환
+static constexpr uint32_t PLUTO_FIR_THRESHOLD = 2560000;
+static void pluto_set_fir(struct iio_device* phy, uint32_t sr){
+    const char* en = (sr < PLUTO_FIR_THRESHOLD) ? "1" : "0";
+    iio_device_attr_write(phy, "in_voltage_filter_fir_en", en);
+}
+
 // ── 초기화 ────────────────────────────────────────────────────────────────
 bool FFTViewer::initialize_pluto(float cf_mhz, float sr_msps){
     struct iio_context* ctx = pluto_open_ctx();
@@ -64,6 +72,7 @@ bool FFTViewer::initialize_pluto(float cf_mhz, float sr_msps){
     if(sr > PLUTO_MAX_SR) sr = PLUTO_MAX_SR;  // 61.44 MSPS AD9361 최대 (USB2 드롭 감수)
 
     pluto_cfg_attr_s (v0, "rf_port_select",      "A_BALANCED");
+    pluto_set_fir(phy, sr);                                       // FIR: 2.56M 미만 필수
     pluto_cfg_attr_ll(v0, "sampling_frequency",  (long long)sr);
     pluto_cfg_attr_ll(v0, "rf_bandwidth",        (long long)sr);
     pluto_cfg_attr_s (v0, "gain_control_mode",   "manual");
@@ -229,8 +238,11 @@ void FFTViewer::capture_and_process_pluto(){
 
             // 버퍼 재생성
             iio_buffer_destroy(buf);
-            pluto_cfg_attr_ll(v0p, "sampling_frequency", (long long)new_sr);
-            pluto_cfg_attr_ll(v0p, "rf_bandwidth",       (long long)new_sr);
+            pluto_set_fir(phy, new_sr);                           // FIR: sampling_frequency 쓰기 전 설정
+            if(!pluto_cfg_attr_ll(v0p, "sampling_frequency", (long long)new_sr))
+                bewe_log_push(0,"[Pluto] sampling_frequency write failed for %u Hz\n", new_sr);
+            if(!pluto_cfg_attr_ll(v0p, "rf_bandwidth", (long long)new_sr))
+                bewe_log_push(0,"[Pluto] rf_bandwidth write failed for %u Hz\n", new_sr);
             buf = iio_device_create_buffer(rxd, PLUTO_BUF_SAMPS, false);
             pluto_rx_buf = buf;
             if(!buf){ sdr_stream_error.store(true); break; }
@@ -238,6 +250,9 @@ void FFTViewer::capture_and_process_pluto(){
             long long actual_sr_ll = new_sr;
             iio_channel_attr_read_longlong(v0p, "sampling_frequency", &actual_sr_ll);
             uint32_t actual_sr = (uint32_t)actual_sr_ll;
+            if(actual_sr != new_sr)
+                bewe_log_push(0,"[Pluto] SR mismatch: requested %u Hz, hardware=%u Hz\n",
+                              new_sr, actual_sr);
 
             hw = make_pluto_config(actual_sr);
             iq_scale  = hw.iq_scale;
