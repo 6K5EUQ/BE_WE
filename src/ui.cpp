@@ -1549,7 +1549,7 @@ void run_streaming_viewer(){
     glfwWindowHint(GLFW_GREEN_BITS,vmode->greenBits);
     glfwWindowHint(GLFW_BLUE_BITS, vmode->blueBits);
     glfwWindowHint(GLFW_REFRESH_RATE,vmode->refreshRate);
-    GLFWwindow* win=glfwCreateWindow(1400,900,"BEWE",nullptr,nullptr);
+    GLFWwindow* win=glfwCreateWindow(1400,900,"BEWE (" BEWE_VERSION ")",nullptr,nullptr);
     glfwMakeContextCurrent(win); glfwSwapInterval(0);
     glewExperimental=GL_TRUE; glewInit();
     glEnable(GL_MULTISAMPLE);
@@ -7326,25 +7326,82 @@ void run_streaming_viewer(){
                 if(g_arch_cache_dirty){ arch_info_cache.clear(); arch_info_tip_cache.clear(); g_arch_cache_dirty=false; }
                 auto draw_arch_file = [&](const std::string& dir, const std::string& fn){
                     std::string fp = dir + "/" + fn;
-                    // 캐시된 정보 (크기+시간)
+                    // 캐시된 정보 (크기+시간) — Duration 우선순위:
+                    //   1) .info의 Duration 필드 (DB와 동일한 값 보장)
+                    //   2) WAV 헤더의 'data' 청크 정확 파싱 (bewe 커스텀 청크 무시)
+                    //   3) (filesize-44)/SR 추정 (legacy fallback)
                     auto& cached = arch_info_cache[fp];
                     if(cached.empty()){
                         struct stat st{}; char info[64]="";
                         if(stat(fp.c_str(),&st)==0){
                             double mb = st.st_size / 1048576.0;
-                            // WAV 시간 추정: (filesize - 44) / (sr * 2ch * 2bytes)
-                            // sr은 WAV 헤더에서 읽어야 하지만, 빠른 추정용
                             double sec = 0;
-                            FILE* wf = fopen(fp.c_str(), "rb");
-                            if(wf){
-                                uint8_t hdr[44]; if(fread(hdr,1,44,wf)==44){
-                                    uint32_t wsr = *(uint32_t*)(hdr+24);
-                                    uint16_t wch = *(uint16_t*)(hdr+22);
-                                    uint16_t wbps= *(uint16_t*)(hdr+34);
-                                    if(wsr>0 && wch>0 && wbps>0)
-                                        sec = (double)(st.st_size-44) / (wsr * wch * (wbps/8));
+                            // 1순위: .info Duration
+                            {
+                                std::string ipath = fp + ".info";
+                                FILE* fi = fopen(ipath.c_str(), "r");
+                                if(fi){
+                                    char line[256];
+                                    while(fgets(line,sizeof(line),fi)){
+                                        char k[64]={}; double dval=0;
+                                        if(sscanf(line,"%63[^:]: %lf",k,&dval)==2 && strcmp(k,"Duration")==0){
+                                            if(dval > 0){ sec = dval; }
+                                            break;
+                                        }
+                                    }
+                                    fclose(fi);
                                 }
-                                fclose(wf);
+                            }
+                            // 2순위: WAV 헤더 정확 파싱 (RIFF 청크 순회로 'data' 찾기)
+                            if(sec == 0){
+                                FILE* wf = fopen(fp.c_str(), "rb");
+                                if(wf){
+                                    uint8_t riff[12];
+                                    if(fread(riff,1,12,wf)==12 && memcmp(riff,"RIFF",4)==0
+                                       && memcmp(riff+8,"WAVE",4)==0){
+                                        uint32_t wsr=0; uint16_t wch=0, wbps=0;
+                                        bool have_fmt=false; uint32_t data_sz=0;
+                                        // 청크 순회
+                                        for(int i=0;i<16;i++){
+                                            uint8_t ck[8];
+                                            if(fread(ck,1,8,wf)!=8) break;
+                                            uint32_t csz = *(uint32_t*)(ck+4);
+                                            if(memcmp(ck,"fmt ",4)==0){
+                                                uint8_t fbuf[40] = {};
+                                                uint32_t take = csz < sizeof(fbuf) ? csz : sizeof(fbuf);
+                                                if(fread(fbuf,1,take,wf)!=take) break;
+                                                wch  = *(uint16_t*)(fbuf+2);
+                                                wsr  = *(uint32_t*)(fbuf+4);
+                                                wbps = *(uint16_t*)(fbuf+14);
+                                                if(csz > take) fseek(wf, csz-take, SEEK_CUR);
+                                                if(csz & 1) fseek(wf, 1, SEEK_CUR);
+                                                have_fmt=true;
+                                            } else if(memcmp(ck,"data",4)==0){
+                                                data_sz = csz;
+                                                break;
+                                            } else {
+                                                fseek(wf, csz + (csz & 1), SEEK_CUR);
+                                            }
+                                        }
+                                        if(have_fmt && wsr>0 && wch>0 && wbps>0 && data_sz>0)
+                                            sec = (double)data_sz / (wsr * wch * (wbps/8));
+                                    }
+                                    fclose(wf);
+                                }
+                            }
+                            // 3순위: 단순 추정 (헤더 44B 가정)
+                            if(sec == 0){
+                                FILE* wf = fopen(fp.c_str(), "rb");
+                                if(wf){
+                                    uint8_t hdr[44]; if(fread(hdr,1,44,wf)==44){
+                                        uint32_t wsr = *(uint32_t*)(hdr+24);
+                                        uint16_t wch = *(uint16_t*)(hdr+22);
+                                        uint16_t wbps= *(uint16_t*)(hdr+34);
+                                        if(wsr>0 && wch>0 && wbps>0)
+                                            sec = (double)(st.st_size-44) / (wsr * wch * (wbps/8));
+                                    }
+                                    fclose(wf);
+                                }
                             }
                             if(sec > 0) snprintf(info,sizeof(info),"%4.0fs %6.1fM",sec,mb);
                             else        snprintf(info,sizeof(info),"     %6.1fM",mb);
@@ -7361,32 +7418,17 @@ void run_streaming_viewer(){
                         ImGui::TextDisabled("%s", cached.c_str());
                     }
                     if(item_hov){
-                        // .info 파일이 있으면 툴팁 표시 (핵심 필드만)
+                        // .info 전체 Key:Value 줄을 그대로 표시 (DB hover와 동일)
                         std::string ipath = fp + ".info";
                         auto& tip = arch_info_tip_cache[fp];
                         if(tip.empty()){
                             FILE* fi = fopen(ipath.c_str(), "r");
                             if(fi){
-                                // 핵심 필드만: Day, Up Time, Down Time, Frequency, Modulation
-                                // 레거시 "Time"/"Freq" 매핑 포함
-                                static const char* key_fields[] = {
-                                    "Day", "Up Time", "Down Time", "Time",
-                                    "Frequency", "Freq", "Modulation"
-                                };
-                                constexpr int KEY_N = sizeof(key_fields)/sizeof(key_fields[0]);
                                 char line[256]; std::string acc;
                                 while(fgets(line,sizeof(line),fi)){
                                     char k[64]={},val[256]={};
-                                    if(sscanf(line,"%63[^:]: %255[^\n]",k,val)!=2 || !val[0])
-                                        continue;
-                                    for(int ki=0; ki<KEY_N; ki++){
-                                        if(strcmp(k, key_fields[ki]) == 0){
-                                            const char* disp_k = k;
-                                            if(strcmp(k, "Time")==0) disp_k = "Up Time";
-                                            else if(strcmp(k, "Freq")==0) disp_k = "Frequency";
-                                            acc += disp_k; acc += ": "; acc += val; acc += "\n";
-                                            break;
-                                        }
+                                    if(sscanf(line,"%63[^:]: %255[^\n]",k,val)==2 && val[0]){
+                                        acc += k; acc += ": "; acc += val; acc += "\n";
                                     }
                                 }
                                 fclose(fi);

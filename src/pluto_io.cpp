@@ -122,7 +122,8 @@ bool FFTViewer::initialize_pluto(float cf_mhz, float sr_msps){
     fft_data.resize(MAX_FFTS_MEMORY*fft_size);
     current_spectrum.resize(fft_size,-100.0f);
 
-    char title[256]; snprintf(title,256,"BEWE (" BEWE_VERSION ") Pluto - %.2f MHz",cf_mhz);
+    char title[256]; snprintf(title,256,"BEWE (" BEWE_VERSION ")");
+    (void)cf_mhz; // 타이틀에는 더 이상 표시하지 않음 (모드 통일)
     window_title=title; display_power_min=-100; display_power_max=0;
     fft_in =fftwf_alloc_complex(fft_size);
     fft_out=fftwf_alloc_complex(fft_size);

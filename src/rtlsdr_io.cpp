@@ -66,7 +66,8 @@ bool FFTViewer::initialize_rtlsdr(float cf_mhz){
     fft_data.resize(MAX_FFTS_MEMORY*fft_size);
     current_spectrum.resize(fft_size,-100.0f);
 
-    char title[256]; snprintf(title,256,"BEWE (" BEWE_VERSION ") RTL-SDR - %.2f MHz",cf_mhz);
+    char title[256]; snprintf(title,256,"BEWE (" BEWE_VERSION ")");
+    (void)cf_mhz;
     window_title=title; display_power_min=-100; display_power_max=0;
     fft_in =fftwf_alloc_complex(fft_size);
     fft_out=fftwf_alloc_complex(fft_size);
