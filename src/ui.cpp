@@ -1175,10 +1175,14 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
             ImGui::Spacing();
             // OK / Cancel
             bool valid = (bm.freq_hi > bm.freq_lo) && bm.label[0];
+            // Enter 키로 OK (모달 안에서 입력 중 Enter 누르면 OK 누른 효과)
+            bool enter_submit = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+                                ImGui::IsKeyPressed(ImGuiKey_Enter, false) &&
+                                !ImGui::IsKeyDown(ImGuiMod_Shift);
             float bw = 80.f*2 + ImGui::GetStyle().ItemSpacing.x;
             ImGui::SetCursorPosX((ImGui::GetWindowWidth() - bw) * 0.5f);
             if(!valid) ImGui::BeginDisabled();
-            if(ImGui::Button("OK", ImVec2(80,0))){
+            if(ImGui::Button("OK", ImVec2(80,0)) || (valid && enter_submit)){
                 if(bm.is_edit){
                     // freq_lo/hi 식별자 변경됐을 수 있어 remove + add 조합 사용
                     if(net_cli){
@@ -1306,7 +1310,12 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         }
     }
 
-    if(!eid_panel_open && !log_panel_open) handle_new_channel_drag(gx,gw);
+    {
+        ImVec2 _mp = ImGui::GetIO().MousePos;
+        bool in_band_bar = band_bar_active &&
+                           _mp.y >= band_bar_y && _mp.y <= band_bar_y + BAND_BAR_H;
+        if(!eid_panel_open && !log_panel_open && !in_band_bar) handle_new_channel_drag(gx,gw);
+    }
     int sel_before = selected_ch;
     if(!region.active && !eid_panel_open && !log_panel_open) handle_channel_interactions(gx,gw,gy,gh);
 
@@ -9092,14 +9101,12 @@ void run_streaming_viewer(){
             if(click_ind_left(lx, "DIGI", ov_st(v.digi_decode_panel_open, 3))){
                 v.digi_decode_panel_open = !v.digi_decode_panel_open;
             }
-
-            // 오른쪽>왼쪽: BAND TM IQ AUD WF FFT LINK SDR
-            float rx=disp_w-8.0f;
-
-            // BAND (클릭 토글 — 띠 가시성)
-            if(click_ind(rx,"BAND", v.band_show ? 1 : 0)){
+            if(click_ind_left(lx, "BAND", v.band_show ? 1 : 0)){
                 v.band_show = !v.band_show;
             }
+
+            // 오른쪽>왼쪽: TM IQ AUD WF FFT LINK SDR
+            float rx=disp_w-8.0f;
 
             // TM
             rx=draw_ind(rx,"TM", tm_on ? 1 : 0);
