@@ -38,13 +38,10 @@ static bool pluto_cfg_attr_s(struct iio_channel* ch, const char* k, const char* 
     return iio_channel_attr_write(ch, k, v) >= 0;
 }
 
-// AD9361: ~2.56 MSPS 미만은 내부 FIR 필터 활성화 필요
-// FIR OFF 상태에서 낮은 SR 요청 시 드라이버가 -EINVAL 반환
-static constexpr uint32_t PLUTO_FIR_THRESHOLD = 2560000;
-static void pluto_set_fir(struct iio_device* phy, uint32_t sr){
-    const char* en = (sr < PLUTO_FIR_THRESHOLD) ? "1" : "0";
-    iio_device_attr_write(phy, "in_voltage_filter_fir_en", en);
-}
+// AD9361 baseband rate는 ad9361_set_bb_rate(phy, sr)로 적용한다.
+// libad9361이 임의 rate에 대해 FIR 계수를 자동 설계/로드하고 BBPLL·HB 필터까지
+// 함께 설정하므로 sub-2.56 MSPS에서도 동작. 직접 sampling_frequency 쓰기는
+// FIR 계수가 없으면 드라이버에서 -EINVAL이 떨어진다.
 
 // ── 초기화 ────────────────────────────────────────────────────────────────
 bool FFTViewer::initialize_pluto(float cf_mhz, float sr_msps){
@@ -72,8 +69,9 @@ bool FFTViewer::initialize_pluto(float cf_mhz, float sr_msps){
     if(sr > PLUTO_MAX_SR) sr = PLUTO_MAX_SR;  // 61.44 MSPS AD9361 최대 (USB2 드롭 감수)
 
     pluto_cfg_attr_s (v0, "rf_port_select",      "A_BALANCED");
-    pluto_set_fir(phy, sr);                                       // FIR: 2.56M 미만 필수
-    pluto_cfg_attr_ll(v0, "sampling_frequency",  (long long)sr);
+    // baseband rate + FIR 계수: libad9361이 임의 rate에 대해 알아서 처리
+    if(int rc = ad9361_set_bb_rate(phy, (unsigned long)sr); rc < 0)
+        fprintf(stderr,"Pluto: ad9361_set_bb_rate(%u) failed rc=%d\n", sr, rc);
     pluto_cfg_attr_ll(v0, "rf_bandwidth",        (long long)sr);
     pluto_cfg_attr_s (v0, "gain_control_mode",   "manual");
     pluto_cfg_attr_ll(v0, "hardwaregain",        30);
@@ -238,11 +236,12 @@ void FFTViewer::capture_and_process_pluto(){
 
             // 버퍼 재생성
             iio_buffer_destroy(buf);
-            pluto_set_fir(phy, new_sr);                           // FIR: sampling_frequency 쓰기 전 설정
-            bool sr_write_ok = pluto_cfg_attr_ll(v0p, "sampling_frequency", (long long)new_sr);
-            bool bw_write_ok = pluto_cfg_attr_ll(v0p, "rf_bandwidth",       (long long)new_sr);
+            // libad9361: FIR 계수 + BBPLL + HB 필터를 임의 rate에 맞게 자동 적용
+            int bb_rc = ad9361_set_bb_rate(phy, (unsigned long)new_sr);
+            bool sr_write_ok = (bb_rc == 0);
+            bool bw_write_ok = pluto_cfg_attr_ll(v0p, "rf_bandwidth", (long long)new_sr);
             if(!sr_write_ok)
-                bewe_log_push(0,"[Pluto] sampling_frequency write FAILED for %u Hz (driver -EINVAL?)\n", new_sr);
+                bewe_log_push(0,"[Pluto] ad9361_set_bb_rate(%u) FAILED rc=%d\n", new_sr, bb_rc);
             if(!bw_write_ok)
                 bewe_log_push(0,"[Pluto] rf_bandwidth write FAILED for %u Hz\n", new_sr);
             buf = iio_device_create_buffer(rxd, PLUTO_BUF_SAMPS, false);
