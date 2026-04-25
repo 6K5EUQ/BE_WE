@@ -2,9 +2,23 @@
 #include <cstdio>
 #include <cstring>
 #include <csignal>
+#include <atomic>
+#include <cstdlib>
+#include <chrono>
+#include <thread>
 
-static CentralServer* g_central = nullptr;
-static void sig_handler(int){ if(g_central) g_central->stop(); }
+// async-signal-safe 정책: sig handler는 atomic flag만 set. mutex/IO/join 금지.
+// 두번째 Ctrl+C는 강제 종료 (정상 stop()이 어딘가 stuck인 경우의 비상 탈출).
+static std::atomic<int>  g_sigint_count{0};
+static std::atomic<bool> g_should_stop{false};
+static void sig_handler(int){
+    int n = g_sigint_count.fetch_add(1) + 1;
+    if(n >= 2){
+        // 두번째 신호: 즉시 _exit (stdio flush 안 함 — async-signal-safe)
+        _exit(130);
+    }
+    g_should_stop.store(true);
+}
 
 int main(int argc, char** argv){
     setbuf(stdout, nullptr);  // stdout 라인 버퍼링 해제 → 즉시 출력
@@ -16,10 +30,9 @@ int main(int argc, char** argv){
 
     printf("=== BEWE Central Server ===\n");
     printf("  Port: %d (HOST/JOIN/LIST 통합)\n", port);
-    printf("Press Ctrl+C to stop.\n\n");
+    printf("Press Ctrl+C to stop. (Twice for force quit.)\n\n");
 
     CentralServer central_srv;
-    g_central = &central_srv;
     signal(SIGINT,  sig_handler);
     signal(SIGTERM, sig_handler);
     signal(SIGPIPE, SIG_IGN);
@@ -28,7 +41,12 @@ int main(int argc, char** argv){
         fprintf(stderr,"[Central] start failed\n");
         return 1;
     }
-    central_srv.run();
+    // sig handler는 flag만 set. 메인 루프가 polling으로 stop() 호출 — 재진입/락 데드락 방지.
+    while(!g_should_stop.load()){
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    printf("[Central] received shutdown signal, stopping...\n");
+    central_srv.stop();
     printf("[Central] shutdown complete\n");
     return 0;
 }
