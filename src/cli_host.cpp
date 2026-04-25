@@ -789,7 +789,8 @@ void run_cli_host(){
     // ── 예약 녹음 (JOIN → HOST) ───────────────────────────────────────────
     srv->cb.on_add_sched = [&](uint8_t op_idx, const char* op_name,
                                 int64_t start_time, float duration_sec,
-                                float freq_mhz, float bw_khz){
+                                float freq_mhz, float bw_khz,
+                                const char* target){
         if(duration_sec <= 0 || freq_mhz <= 0 || bw_khz <= 0){
             bewe_log_push(0,"[CMD:%s] SCHED add denied: invalid params\n", op_name);
             return;
@@ -817,9 +818,10 @@ void run_cli_host(){
             e.status       = FFTViewer::SchedEntry::WAITING;
             e.op_index     = op_idx;
             strncpy(e.operator_name, op_name?op_name:"", sizeof(e.operator_name)-1);
+            strncpy(e.target,        target ?target :"", sizeof(e.target)-1);
             v.sched_entries.push_back(e);
-            bewe_log_push(0,"[CMD:%s] SCHED added: %.3fMHz %.0fkHz dur=%.0fs at %lld\n",
-                          op_name, freq_mhz, bw_khz, duration_sec, (long long)start_time);
+            bewe_log_push(0,"[CMD:%s] SCHED added: %.3fMHz %.0fkHz dur=%.0fs target='%s' at %lld\n",
+                          op_name, freq_mhz, bw_khz, duration_sec, e.target, (long long)start_time);
         }
         v.broadcast_sched_list();
     };
@@ -1167,6 +1169,7 @@ void run_cli_host(){
                         ne.bw_khz       = se.bw_khz;
                         ne.op_index     = se.op_index;
                         strncpy(ne.operator_name, se.operator_name, sizeof(ne.operator_name)-1);
+                        strncpy(ne.target,        se.target,        sizeof(ne.target)-1);
                         // 활성 엔트리는 로컬 상태/타임스탬프/채널 유지
                         if(active_st == se.start_time && fabsf(active_freq - se.freq_mhz) < 1e-4f){
                             ne.status      = v.sched_entries[v.sched_active_idx].status;
@@ -1845,7 +1848,7 @@ void run_cli_host(){
     v.eid_cleanup();
     v.ais_pipe_stop();
 
-    // record/ > private/ 이동
+    // record/ > private/ 이동: .wav + 동명의 .info 동반 이동
     auto move_dir = [](const std::string& src_dir, const std::string& dst_dir){
         DIR* d = opendir(src_dir.c_str());
         if(!d) return;
@@ -1857,6 +1860,11 @@ void run_cli_host(){
                 std::string src = src_dir+"/"+n;
                 std::string dst = dst_dir+"/"+n;
                 rename(src.c_str(), dst.c_str());
+                // .info 동반 이동 (있을 때만)
+                std::string isrc = src + ".info";
+                std::string idst = dst + ".info";
+                if(access(isrc.c_str(), F_OK)==0)
+                    rename(isrc.c_str(), idst.c_str());
             }
         }
         closedir(d);

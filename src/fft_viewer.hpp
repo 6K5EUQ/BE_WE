@@ -300,6 +300,7 @@ public:
         std::chrono::steady_clock::time_point rec_started;
         char    operator_name[32] = {};  // 예약자 (HOST면 login_get_id(), JOIN이면 op_name)
         uint8_t op_index          = 0;   // 0=HOST, 1..N=JOIN op_index
+        char    target[32]        = {};  // free-form 식별 라벨 (UI에서 운용자 입력)
     };
     static constexpr float SCHED_PRE_ARM_SEC = 5.0f;
     std::vector<SchedEntry> sched_entries;

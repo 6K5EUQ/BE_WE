@@ -165,9 +165,10 @@ struct __attribute__((packed)) PktCmd {
         struct { uint8_t idx; uint8_t mode; uint8_t demod_type; uint8_t pad; float baud_rate; } start_digi;
         struct { uint8_t idx; }                            stop_digi;
         struct { char    antenna[32]; }                    set_antenna;
-        struct { int64_t start_time; float duration_sec; float freq_mhz; float bw_khz; } add_sched;
-        struct { int64_t start_time; float freq_mhz; }     remove_sched;
-        uint8_t raw[48];
+        struct { int64_t start_time; float duration_sec; float freq_mhz; float bw_khz;
+                 char target[32]; }                                add_sched;
+        struct { int64_t start_time; float freq_mhz; }             remove_sched;
+        uint8_t raw[64];
     };
 };
 
@@ -265,8 +266,9 @@ struct __attribute__((packed)) SchedSyncEntry {
     float    freq_mhz;
     float    bw_khz;
     char     operator_name[32];
-}; // 56 bytes
-static_assert(sizeof(SchedSyncEntry) == 56, "SchedSyncEntry size");
+    char     target[32];       // free-form 식별 라벨
+}; // 88 bytes
+static_assert(sizeof(SchedSyncEntry) == 88, "SchedSyncEntry size");
 struct __attribute__((packed)) PktSchedSync {
     uint8_t        count;
     uint8_t        _pad[3];

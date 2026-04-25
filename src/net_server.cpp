@@ -310,7 +310,8 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
             case CmdType::ADD_SCHED:
                 if(cb.on_add_sched) cb.on_add_sched(c->op_index, c->name,
                     cmd->add_sched.start_time, cmd->add_sched.duration_sec,
-                    cmd->add_sched.freq_mhz, cmd->add_sched.bw_khz);
+                    cmd->add_sched.freq_mhz, cmd->add_sched.bw_khz,
+                    cmd->add_sched.target);
                 break;
             case CmdType::REMOVE_SCHED:
                 if(cb.on_remove_sched) cb.on_remove_sched(c->op_index, c->name,

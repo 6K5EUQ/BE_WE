@@ -628,12 +628,14 @@ bool NetClient::cmd_set_antenna(const char* antenna){
     strncpy(c.set_antenna.antenna, antenna ? antenna : "", sizeof(c.set_antenna.antenna)-1);
     return send_cmd(c);
 }
-bool NetClient::cmd_add_sched(int64_t start_time, float duration_sec, float freq_mhz, float bw_khz){
+bool NetClient::cmd_add_sched(int64_t start_time, float duration_sec, float freq_mhz, float bw_khz,
+                              const char* target){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::ADD_SCHED;
     c.add_sched.start_time   = start_time;
     c.add_sched.duration_sec = duration_sec;
     c.add_sched.freq_mhz     = freq_mhz;
     c.add_sched.bw_khz       = bw_khz;
+    strncpy(c.add_sched.target, target ? target : "", sizeof(c.add_sched.target)-1);
     return send_cmd(c);
 }
 bool NetClient::cmd_remove_sched(int64_t start_time, float freq_mhz){
@@ -723,6 +725,7 @@ bool NetClient::cmd_db_save(const char* filepath, const char* operator_name){
     fseek(fp, 0, SEEK_END); uint64_t fsz = (uint64_t)ftell(fp); fseek(fp, 0, SEEK_SET);
     const char* fn = strrchr(filepath, '/');
     fn = fn ? fn+1 : filepath;
+    std::string fname_str = fn;
     // read .info if exists
     std::string info_path = std::string(filepath) + ".info";
     char info_data[512] = {};
@@ -737,9 +740,11 @@ bool NetClient::cmd_db_save(const char* filepath, const char* operator_name){
     strncpy(meta.info_data, info_data, 511);
     raw_send(PacketType::DB_SAVE_META, &meta, sizeof(meta));
     stat_tx_db_bytes.fetch_add(PKT_HDR_SIZE + sizeof(meta), std::memory_order_relaxed);
+    if(on_db_upload_progress) on_db_upload_progress(fname_str, 0, fsz);
     // send data chunks
     const size_t CHUNK = 64 * 1024;
     std::vector<uint8_t> buf(sizeof(PktDbSaveData) + CHUNK);
+    uint64_t sent = 0;
     while(true){
         size_t n = fread(buf.data() + sizeof(PktDbSaveData), 1, CHUNK, fp);
         if(n == 0) break;
@@ -750,8 +755,11 @@ bool NetClient::cmd_db_save(const char* filepath, const char* operator_name){
         size_t pkt_total = sizeof(PktDbSaveData) + n;
         raw_send(PacketType::DB_SAVE_DATA, buf.data(), (uint32_t)pkt_total);
         stat_tx_db_bytes.fetch_add(PKT_HDR_SIZE + pkt_total, std::memory_order_relaxed);
+        sent += n;
+        if(on_db_upload_progress) on_db_upload_progress(fname_str, sent, fsz);
     }
     fclose(fp);
+    if(on_db_upload_done) on_db_upload_done(fname_str);
     return true;
 }
 bool NetClient::cmd_toggle_recv(int ch_idx, bool enable){

@@ -1509,6 +1509,9 @@ void CentralServer::save_schedules_to_json(){
             out += buf;
             char nm[33]={}; memcpy(nm, e->operator_name, 32);
             json_escape(out, nm);
+            out += "\",\"target\":\"";
+            char tg[33]={}; memcpy(tg, e->target, 32);
+            json_escape(out, tg);
             out += "\"}";
         }
         out += "]}";
@@ -1625,6 +1628,9 @@ void CentralServer::load_schedules_from_json(){
                             } else if(k3 == "operator_name"){
                                 std::string s; js.read_string(s);
                                 strncpy(e.operator_name, s.c_str(), sizeof(e.operator_name)-1);
+                            } else if(k3 == "target"){
+                                std::string s; js.read_string(s);
+                                strncpy(e.target, s.c_str(), sizeof(e.target)-1);
                             } else {
                                 // unknown key: skip value
                                 if(js.peek('"')){ std::string tmp; js.read_string(tmp); }

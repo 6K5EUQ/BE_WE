@@ -25,6 +25,7 @@ static PktSchedSync build_sched_sync_pkt(const std::vector<FFTViewer::SchedEntry
         se.freq_mhz     = e.freq_mhz;
         se.bw_khz       = e.bw_khz;
         strncpy(se.operator_name, e.operator_name, sizeof(se.operator_name)-1);
+        strncpy(se.target,        e.target,        sizeof(se.target)-1);
     }
     return pkt;
 }

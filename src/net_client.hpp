@@ -162,6 +162,9 @@ public:
     std::function<void(const std::string& name, uint64_t done, uint64_t total)> on_file_progress;
     std::function<void(const std::string& path,
                        const std::string& name)> on_file_done;
+    // DB 업로드(JOIN→HOST→Central) 진행률
+    std::function<void(const std::string& name, uint64_t done, uint64_t total)> on_db_upload_progress;
+    std::function<void(const std::string& name)> on_db_upload_done;
     // Optional: override save directory for incoming file (return "" to use default)
     std::function<std::string(const std::string& filename)> on_get_save_dir;
     std::function<void(bool allowed)> on_region_response;
@@ -267,7 +270,8 @@ public:
     bool cmd_set_fft_size(uint32_t size); // JOIN → HOST: FFT 크기 변경
     bool cmd_set_sr(float msps);          // JOIN → HOST: SR 변경
     bool cmd_set_antenna(const char* antenna);  // bidirectional: antenna text
-    bool cmd_add_sched(int64_t start_time, float duration_sec, float freq_mhz, float bw_khz);
+    bool cmd_add_sched(int64_t start_time, float duration_sec, float freq_mhz, float bw_khz,
+                       const char* target);
     bool cmd_remove_sched(int64_t start_time, float freq_mhz);
     bool cmd_db_delete(const char* filename, const char* operator_name);
     bool cmd_db_download(const char* filename, const char* operator_name);

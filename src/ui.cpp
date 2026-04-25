@@ -2417,6 +2417,28 @@ void run_streaming_viewer(){
                     }
             }
         };
+        // DB 업로드 진행률: 8907 근처 detached 스레드의 cmd_db_save에서 fire됨.
+        // file_xfers의 기존 엔트리(있으면) 갱신, 없으면 새로 추가.
+        cli->on_db_upload_progress = [&](const std::string& name, uint64_t done, uint64_t total){
+            std::lock_guard<std::mutex> lk(v.file_xfer_mtx);
+            bool found=false;
+            for(auto& x : v.file_xfers)
+                if(x.filename==name && !x.finished){
+                    x.done_bytes=done; x.total_bytes=total; found=true; break;
+                }
+            if(!found){
+                FFTViewer::FileXfer xf{};
+                xf.filename=name; xf.done_bytes=done; xf.total_bytes=total;
+                v.file_xfers.push_back(xf);
+            }
+        };
+        cli->on_db_upload_done = [&](const std::string& name){
+            std::lock_guard<std::mutex> lk(v.file_xfer_mtx);
+            for(auto& x : v.file_xfers)
+                if(x.filename==name && !x.finished){
+                    x.finished=true; x.done_bytes=x.total_bytes; break;
+                }
+        };
         cli->on_file_done = [&](const std::string& path, const std::string& name){
             {
                 std::lock_guard<std::mutex> lk(v.file_xfer_mtx);
@@ -2434,17 +2456,30 @@ void run_streaming_viewer(){
             }
             // JOIN: REQ_TRANSFERRING > done (영역 IQ 요청 결과)
             bool is_region_iq = false;
+            double  rgn_cf_mhz = 0, rgn_bw_khz = 0, rgn_dur_sec = 0;
+            time_t  rgn_start_wt = 0;
             {
                 std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                 for(auto& e : v.rec_entries)
                     if(e.is_region && !e.finished && e.req_state==FFTViewer::RecEntry::REQ_TRANSFERRING && e.filename==name){
                         e.req_state=FFTViewer::RecEntry::REQ_NONE;
                         e.finished=true; e.path=path;
+                        // .info 생성용 메타 캡처
+                        rgn_cf_mhz   = (double)(e.req_freq_lo + e.req_freq_hi) * 0.5;
+                        rgn_bw_khz   = (double)(e.req_freq_hi - e.req_freq_lo) * 1000.0;
+                        rgn_dur_sec  = (double)(e.req_time_end - e.req_time_start);
+                        if(rgn_dur_sec < 0) rgn_dur_sec = 0;
+                        rgn_start_wt = (time_t)e.req_time_start;
                         is_region_iq = true; break;
                     }
             }
-            // 영역 IQ 요청 결과 > record/iq에 저장됨, rec_iq_files에 추가
+            // 영역 IQ 요청 결과 > record/iq에 저장됨, rec_iq_files에 추가 + .info 생성
             if(is_region_iq){
+                // .info 자동 생성 (HOST가 region_save에서 만드는 것과 동일 정책)
+                write_default_info_file(path, "Region IQ",
+                    rgn_cf_mhz, rgn_bw_khz, rgn_dur_sec, "",
+                    login_get_id(), v.station_name.c_str(),
+                    rgn_start_wt, v.utc_offset_hours());
                 bool f2=false; for(auto& s:rec_iq_files) if(s==name){f2=true;break;}
                 if(!f2) rec_iq_files.push_back(name);
             } else {
@@ -3363,7 +3398,8 @@ void run_streaming_viewer(){
             // ── 예약 녹음 (JOIN → HOST) ──────────────────────────────────
             srv->cb.on_add_sched = [&](uint8_t op_idx, const char* op_name,
                                         int64_t start_time, float duration_sec,
-                                        float freq_mhz, float bw_khz){
+                                        float freq_mhz, float bw_khz,
+                                        const char* target){
                 if(duration_sec <= 0 || freq_mhz <= 0 || bw_khz <= 0) return;
                 time_t now = time(nullptr);
                 if((time_t)start_time + (time_t)duration_sec < now) return;
@@ -3382,9 +3418,10 @@ void run_streaming_viewer(){
                     e.status       = FFTViewer::SchedEntry::WAITING;
                     e.op_index     = op_idx;
                     strncpy(e.operator_name, op_name?op_name:"", sizeof(e.operator_name)-1);
+                    strncpy(e.target,        target ?target :"", sizeof(e.target)-1);
                     v.sched_entries.push_back(e);
-                    bewe_log_push(0,"[CMD:%s] SCHED added: %.3fMHz %.0fkHz dur=%.0fs\n",
-                                  op_name, freq_mhz, bw_khz, duration_sec);
+                    bewe_log_push(0,"[CMD:%s] SCHED added: %.3fMHz %.0fkHz dur=%.0fs target='%s'\n",
+                                  op_name, freq_mhz, bw_khz, duration_sec, e.target);
                 }
                 v.broadcast_sched_list();
             };
@@ -6884,79 +6921,90 @@ void run_streaming_viewer(){
                 }
                 ImGui::PopStyleColor(3);
 
-                ImGui::TextColored(ImVec4(1.f,0.4f,0.4f,1.f), "Scheduled IQ Recording");
                 ImGui::Separator();
 
-                // ── 현재 시각 (상단 표시) ─────────────────────────────────
-                {
-                    time_t now_t = time(nullptr);
-                    struct tm tmn; localtime_r(&now_t, &tmn);
-                    char nbuf[32]; strftime(nbuf, sizeof(nbuf), "%H:%M:%S", &tmn);
-                    ImGui::TextDisabled("Now  %s", nbuf);
+                // ── Input form ───────────────────────────────────────────
+                // Time만 3분할 (HH:MM:SS) + 화살표 키 step. 나머지는 단일 입력.
+                static int sh=0, sm=0, ss=0;
+                static float sdur     = 60.f;     // seconds
+                static float sfreq    = 100.0f;   // MHz
+                static float sbw_mhz  = 0.025f;   // MHz (= 25 kHz)
+                static char  starget[32] = "";
+
+                // 첫 진입 시 Time을 현재 시각으로 자동 채움
+                static bool sched_time_inited = false;
+                if(!sched_time_inited){
+                    time_t now0 = time(nullptr);
+                    struct tm tm0; localtime_r(&now0, &tm0);
+                    sh = tm0.tm_hour; sm = tm0.tm_min; ss = tm0.tm_sec;
+                    sched_time_inited = true;
                 }
 
-                // ── Input form ────────────────────────────────────────────
-                static int sh=0,sm=0,ss=0;
-                static float sdur=60, sfreq=100.0f, sbw=25.0f;
+                const float LBL_W = 88.f;
+                const float TIME_BOX_W = 36.f;
+                const float INP_W      = 140.f;
 
-                // 라벨을 일정 폭으로 정렬해 가독성 향상
-                const float LBL_W = 56.f;
-
-                // ── When 행 ──────────────────────────────────────────────
-                ImGui::AlignTextToFramePadding();
-                ImGui::Text("When"); ImGui::SameLine(LBL_W);
-                ImGui::SetNextItemWidth(56); ImGui::InputInt("##sh",&sh,0,0); ImGui::SameLine(0,3);
-                ImGui::Text(":"); ImGui::SameLine(0,3);
-                ImGui::SetNextItemWidth(56); ImGui::InputInt("##sm",&sm,0,0); ImGui::SameLine(0,3);
-                ImGui::Text(":"); ImGui::SameLine(0,3);
-                ImGui::SetNextItemWidth(56); ImGui::InputInt("##ss",&ss,0,0); ImGui::SameLine(0,8);
-                auto set_time_offset = [&](int delta_sec){
-                    time_t now2 = time(nullptr) + delta_sec;
-                    struct tm t3; localtime_r(&now2, &t3);
-                    sh = t3.tm_hour; sm = t3.tm_min; ss = t3.tm_sec;
+                // Time 박스: 가운데 정렬 + ↑/↓ 화살표 키로 step ±1 (포커스 시)
+                auto step_int = [&](const char* id, int* val, int min_v, int max_v){
+                    char preview[16];
+                    snprintf(preview, sizeof(preview), "%d", *val);
+                    float text_w = ImGui::CalcTextSize(preview).x;
+                    float pad_x = std::max(2.f, (TIME_BOX_W - text_w) * 0.5f - 4.f);
+                    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                                        ImVec2(pad_x, ImGui::GetStyle().FramePadding.y));
+                    ImGui::SetNextItemWidth(TIME_BOX_W);
+                    ImGui::InputInt(id, val, 0, 0);
+                    bool focused = ImGui::IsItemFocused();
+                    ImGui::PopStyleVar();
+                    if(*val < min_v) *val = min_v;
+                    if(*val > max_v) *val = max_v;
+                    if(focused){
+                        if(ImGui::IsKeyPressed(ImGuiKey_UpArrow))
+                            *val = std::min(max_v, *val + 1);
+                        if(ImGui::IsKeyPressed(ImGuiKey_DownArrow))
+                            *val = std::max(min_v, *val - 1);
+                    }
                 };
-                if(ImGui::SmallButton("Now"))    set_time_offset(0);    ImGui::SameLine(0,3);
-                if(ImGui::SmallButton("+10s"))   set_time_offset(10);   ImGui::SameLine(0,3);
-                if(ImGui::SmallButton("+1m"))    set_time_offset(60);   ImGui::SameLine(0,3);
-                if(ImGui::SmallButton("+5m"))    set_time_offset(300);  ImGui::SameLine(0,3);
-                if(ImGui::SmallButton("+30m"))   set_time_offset(1800);
 
-                // ── Duration 행 ──────────────────────────────────────────
+                // ── Time (HH:MM:SS) ─────────────────────────────────────
                 ImGui::AlignTextToFramePadding();
-                ImGui::Text("Dur"); ImGui::SameLine(LBL_W);
-                ImGui::SetNextItemWidth(140); ImGui::InputFloat("##dur",&sdur,1,10,"%.0f s");
-                ImGui::SameLine(0,8);
-                if(ImGui::SmallButton("10s"))  sdur = 10;   ImGui::SameLine(0,3);
-                if(ImGui::SmallButton("30s"))  sdur = 30;   ImGui::SameLine(0,3);
-                if(ImGui::SmallButton("1m"))   sdur = 60;   ImGui::SameLine(0,3);
-                if(ImGui::SmallButton("5m"))   sdur = 300;  ImGui::SameLine(0,3);
-                if(ImGui::SmallButton("10m"))  sdur = 600;
+                ImGui::Text("Time"); ImGui::SameLine(LBL_W);
+                step_int("##sh", &sh, 0, 23); ImGui::SameLine(0,3);
+                ImGui::Text(":"); ImGui::SameLine(0,3);
+                step_int("##sm", &sm, 0, 59); ImGui::SameLine(0,3);
+                ImGui::Text(":"); ImGui::SameLine(0,3);
+                step_int("##ss", &ss, 0, 59);
+
+                // ── Duration (s) ────────────────────────────────────────
+                ImGui::AlignTextToFramePadding();
+                ImGui::Text("Duration"); ImGui::SameLine(LBL_W);
+                ImGui::SetNextItemWidth(INP_W);
+                ImGui::InputFloat("##dur", &sdur, 0.f, 0.f, "%.0f s");
                 if(sdur < 1.f) sdur = 1.f;
 
-                // ── Freq 행 ──────────────────────────────────────────────
+                // ── Frequency (MHz) ─────────────────────────────────────
                 ImGui::AlignTextToFramePadding();
-                ImGui::Text("Freq"); ImGui::SameLine(LBL_W);
-                ImGui::SetNextItemWidth(140); ImGui::InputFloat("##freq",&sfreq,0.1f,1.0f,"%.4f MHz");
-                ImGui::SameLine(0,8);
-                if(ImGui::SmallButton("Use current")){
-                    double cur_cf = v.remote_mode
-                        ? (v.net_cli ? (double)v.net_cli->remote_cf_mhz.load() : 0.0)
-                        : (double)(v.header.center_frequency / 1e6);
-                    if(cur_cf > 0.0) sfreq = (float)cur_cf;
-                }
+                ImGui::Text("Frequency"); ImGui::SameLine(LBL_W);
+                ImGui::SetNextItemWidth(INP_W);
+                ImGui::InputFloat("##freq", &sfreq, 0.f, 0.f, "%.4f MHz");
 
-                // ── BW 행 ────────────────────────────────────────────────
+                // ── Bandwidth (MHz) ─────────────────────────────────────
                 ImGui::AlignTextToFramePadding();
-                ImGui::Text("BW"); ImGui::SameLine(LBL_W);
-                ImGui::SetNextItemWidth(140); ImGui::InputFloat("##bw",&sbw,1,10,"%.1f kHz");
-                ImGui::SameLine(0,8);
-                if(ImGui::SmallButton("12.5"))  sbw = 12.5f;  ImGui::SameLine(0,3);
-                if(ImGui::SmallButton("25"))    sbw = 25;     ImGui::SameLine(0,3);
-                if(ImGui::SmallButton("100"))   sbw = 100;    ImGui::SameLine(0,3);
-                if(ImGui::SmallButton("1MHz"))  sbw = 1000;
-                if(sbw < 1.f) sbw = 1.f;
+                ImGui::Text("Bandwidth"); ImGui::SameLine(LBL_W);
+                ImGui::SetNextItemWidth(INP_W);
+                ImGui::InputFloat("##bw", &sbw_mhz, 0.f, 0.f, "%.3f MHz");
+                if(sbw_mhz < 0.001f) sbw_mhz = 0.001f;
 
-                // 입력 시각을 절대시간으로 환산해 미리 표시 + overlap 프리뷰
+                // ── Target ───────────────────────────────────────────────
+                ImGui::AlignTextToFramePadding();
+                ImGui::Text("Target"); ImGui::SameLine(LBL_W);
+                ImGui::SetNextItemWidth(220);
+                ImGui::InputText("##target", starget, sizeof(starget));
+
+                // wire/저장 포맷은 kHz 기준
+                float sbw = sbw_mhz * 1000.f;
+
+                // 입력 시각을 절대시간으로 환산 (overlap 검사용; UI 표시 없음)
                 time_t preview_st = 0;
                 {
                     time_t now3 = time(nullptr);
@@ -6964,20 +7012,12 @@ void run_streaming_viewer(){
                     t4.tm_hour=sh; t4.tm_min=sm; t4.tm_sec=ss;
                     preview_st = mktime(&t4);
                     if(preview_st <= now3) preview_st += 86400;
-                    int delta = (int)(preview_st - now3);
-                    int dh   = delta / 3600;
-                    int dmin = (delta % 3600) / 60;
-                    int dsec = delta % 60;
-                    ImGui::TextDisabled("Starts in %02d:%02d:%02d  (duration %.0fs)",
-                                        dh, dmin, dsec, sdur);
                 }
                 bool preview_overlap = false;
                 {
                     std::lock_guard<std::mutex> lk(v.sched_mtx);
                     preview_overlap = v.sched_has_overlap(preview_st, sdur);
                 }
-                if(preview_overlap)
-                    ImGui::TextColored(ImVec4(1,0.4f,0.4f,1), "! overlaps existing entry");
 
                 // LOCAL/HOST: SDR 필수 (BladeRF/RTL-SDR/Pluto), JOIN: net_cli 연결 필수
                 bool can_add = v.remote_mode
@@ -6995,9 +7035,10 @@ void run_streaming_viewer(){
                     time_t st=mktime(&tm2);
                     if(st <= now) st += 86400;
                     if(v.remote_mode && v.net_cli){
-                        v.net_cli->cmd_add_sched((int64_t)st, sdur, sfreq, sbw);
-                        bewe_log_push(0,"[SCHED] Request sent: %02d:%02d:%02d dur=%.0fs freq=%.3fMHz bw=%.0fkHz\n",
-                                      sh,sm,ss,sdur,sfreq,sbw);
+                        v.net_cli->cmd_add_sched((int64_t)st, sdur, sfreq, sbw, starget);
+                        bewe_log_push(0,"[SCHED] Request sent: %02d:%02d:%02d dur=%.0fs freq=%.3fMHz bw=%.0fkHz target='%s'\n",
+                                      sh,sm,ss,sdur,sfreq,sbw,starget);
+                        starget[0] = '\0';  // 입력 클리어
                     } else {
                         bool added = false;
                         {
@@ -7010,13 +7051,17 @@ void run_streaming_viewer(){
                                 e.freq_mhz=sfreq; e.bw_khz=sbw;
                                 e.op_index = 0;
                                 strncpy(e.operator_name, login_get_id(), sizeof(e.operator_name)-1);
+                                strncpy(e.target,        starget,        sizeof(e.target)-1);
                                 v.sched_entries.push_back(e);
                                 added = true;
-                                bewe_log_push(0,"[SCHED] Added: %02d:%02d:%02d dur=%.0fs freq=%.3fMHz bw=%.0fkHz\n",
-                                              sh,sm,ss,sdur,sfreq,sbw);
+                                bewe_log_push(0,"[SCHED] Added: %02d:%02d:%02d dur=%.0fs freq=%.3fMHz bw=%.0fkHz target='%s'\n",
+                                              sh,sm,ss,sdur,sfreq,sbw,starget);
                             }
                         }
-                        if(added) v.broadcast_sched_list();  // Central 영속화 반영
+                        if(added){
+                            v.broadcast_sched_list();  // Central 영속화 반영
+                            starget[0] = '\0';
+                        }
                     }
                 }
                 ImGui::PopStyleColor(2);
@@ -7042,6 +7087,7 @@ void run_streaming_viewer(){
 
                     const ImU32 col_border_rec = IM_COL32(220,60,60,255);
                     const ImU32 col_bg_rec     = IM_COL32(120,20,20,120);
+                    int seq_no = 0;  // WAITING/ARMED 정렬 순서 카운터
 
                     for(int oi=0; oi<(int)order.size(); oi++){
                         int i = order[oi];
@@ -7070,7 +7116,17 @@ void run_streaming_viewer(){
                                 col_border_rec, 3.f, 0, 1.5f);
                         }
 
-                        ImGui::TextColored(st_cols[e.status],"%s", st_icons[e.status]);
+                        // WAITING/ARMED 는 정렬 순서대로 [1] [2] [3]…, 그 외는 상태 아이콘
+                        char num_lbl[8];
+                        const char* icon;
+                        if(e.status == FFTViewer::SchedEntry::WAITING
+                        || e.status == FFTViewer::SchedEntry::ARMED){
+                            snprintf(num_lbl, sizeof(num_lbl), "[%d]", ++seq_no);
+                            icon = num_lbl;
+                        } else {
+                            icon = st_icons[e.status];
+                        }
+                        ImGui::TextColored(st_cols[e.status], "%s", icon);
                         ImGui::SameLine();
                         struct tm t2; localtime_r(&e.start_time,&t2);
                         char tb[16]; strftime(tb,sizeof(tb),"%H:%M:%S",&t2);
@@ -7098,8 +7154,11 @@ void run_streaming_viewer(){
                             snprintf(tail, sizeof(tail), "  REC %d/%ds", cur, tot);
                         }
 
-                        ImGui::Text("%s  %.3fMHz  BW=%.0fkHz  %.0fs  by %s%s",
-                                    tb,e.freq_mhz,e.bw_khz,e.duration_sec, opn, tail);
+                        char tgt_part[64] = "";
+                        if(e.target[0])
+                            snprintf(tgt_part, sizeof(tgt_part), "  Target: %s", e.target);
+                        ImGui::Text("%s  %.3fMHz  BW=%.0fkHz%s  %.0fs  by %s%s",
+                                    tb, e.freq_mhz, e.bw_khz, tgt_part, e.duration_sec, opn, tail);
                         ImGui::SameLine();
 
                         // Remove 권한: 누구나 (타 계정 엔트리 포함). RECORDING/ARMED만 불가
@@ -7282,31 +7341,10 @@ void run_streaming_viewer(){
                     }
                 };
 
-                // ── Record (Private와 동일 형식) ─────────────────────────
+                // ── Record (완료 파일만 표시; 진행중은 STATUS Record 탭에서) ─
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                 if(ImGui::CollapsingHeader("Record##arch")){
                     ImGui::Indent(8.f);
-                    // 진행중 항목 (rec_entries에서 !finished)
-                    {
-                        std::lock_guard<std::mutex> rlk(v.rec_entries_mtx);
-                        for(auto& re : v.rec_entries){
-                            if(re.finished) continue;
-                            ImGui::PushID(&re);
-                            float t2a=(float)ImGui::GetTime();
-                            bool blink=(fmodf(t2a,0.8f)<0.4f);
-                            ImGui::PushStyleColor(ImGuiCol_Text,
-                                blink?IM_COL32(255,80,80,255):IM_COL32(200,60,60,255));
-                            float el=std::chrono::duration<float>(std::chrono::steady_clock::now()-re.t_start).count();
-                            int secs=(int)el;
-                            if(re.is_region && re.req_state==FFTViewer::RecEntry::REQ_TRANSFERRING)
-                                ImGui::Text("[Transferring]  %s  (%.1f/%.1fM)",
-                                    re.filename.c_str(), re.xfer_done/1048576.0, re.xfer_total/1048576.0);
-                            else
-                                ImGui::Text("[REC]  %s  [%ds]", re.filename.c_str(), secs);
-                            ImGui::PopStyleColor();
-                            ImGui::PopID();
-                        }
-                    }
                     // 완료된 파일 (IQ/Audio) — Private와 동일 형식
                     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                     if(ImGui::TreeNode("IQ##rec")){
@@ -8207,24 +8245,10 @@ void run_streaming_viewer(){
                 }
                 ImGui::Spacing();
 
-                // ── 4. Recordings ─────────────────────────────────────────
+                // ── 4. Recordings (완료 파일 카운트만; 진행중은 STATUS Record) ─
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                 if(ImGui::CollapsingHeader("Recordings")){
                     ImGui::Indent(6.f);
-                    // 진행 중
-                    bool any_rec = false;
-                    {
-                        std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
-                        for(auto& re : v.rec_entries){
-                            if(re.finished) continue;
-                            any_rec = true;
-                            float elapsed = std::chrono::duration<float>(
-                                std::chrono::steady_clock::now()-re.t_start).count();
-                            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,100,100,255));
-                            ImGui::Text("[REC]  %s  %.0fs", re.filename.c_str(), (double)elapsed);
-                            ImGui::PopStyleColor();
-                        }
-                    }
                     // Record 폴더 파일 수
                     int rec_iq_cnt   = (int)rec_iq_files.size();
                     int rec_aud_cnt  = (int)rec_audio_files.size();
@@ -8237,8 +8261,8 @@ void run_streaming_viewer(){
                     ImGui::TextDisabled("  Private  IQ:%d  Audio:%d", priv_iq_cnt, priv_aud_cnt);
                     ImGui::TextDisabled("  Public   %d",  pub_cnt2);
                     ImGui::TextDisabled("  Share    %d",  shr_cnt);
-                    if(!any_rec && rec_iq_cnt+rec_aud_cnt==0)
-                        ImGui::TextDisabled("  (no active recordings)");
+                    if(rec_iq_cnt+rec_aud_cnt==0)
+                        ImGui::TextDisabled("  (no recordings)");
                     ImGui::Unindent(6.f);
                 }
                 ImGui::Spacing();
@@ -12464,6 +12488,11 @@ void run_streaming_viewer(){
                     std::string src = src_dir+"/"+n;
                     std::string dst = dst_dir+"/"+n;
                     rename(src.c_str(), dst.c_str());
+                    // .info 동반 이동 (있을 때만)
+                    std::string isrc = src + ".info";
+                    std::string idst = dst + ".info";
+                    if(access(isrc.c_str(), F_OK)==0)
+                        rename(isrc.c_str(), idst.c_str());
                 }
             }
             closedir(d);
