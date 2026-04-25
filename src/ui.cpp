@@ -1814,6 +1814,7 @@ void run_streaming_viewer(){
     do_chassis_reset = false;
     NetServer* srv = nullptr;
     NetClient* cli = nullptr;
+    bool g_arch_cache_dirty = false;  // arch_info_cache / arch_info_tip_cache 무효화 (전 구간 가시성 필요)
 
     // ── Globe-based station discovery ─────────────────────────────────────
     GlobeRenderer globe;
@@ -2818,6 +2819,9 @@ void run_streaming_viewer(){
                     if(!dup) rec_audio_files.push_back(fn2);
                 }
                 db_dl_path.clear();
+                // 캐시 무효화: 다운로드 진행중 stat()으로 캐싱된 작은 size 폐기
+                g_arch_cache_dirty = true;
+                g_arch_rescan.store(true);
             }
         };
 
@@ -3757,16 +3761,7 @@ void run_streaming_viewer(){
     // DB 전용 우클릭 상태 + 좌클릭 selected
     static struct { bool open=false; float x=0,y=0; std::string filename, operator_name; bool is_iq=false; bool selected=false; } db_ctx;
 
-    // ── Rename 모달 ──────────────────────────────────────────────────────
-    struct RenameModal {
-        bool open = false;
-        std::string dir;       // 디렉토리 경로
-        std::string old_name;  // 원래 파일명
-        char new_name[256]={};
-        bool focus_set = false;
-    } rename_modal;
-
-    bool g_arch_cache_dirty = false;  // arch_info_cache / arch_info_tip_cache 무효화 플래그
+    // (g_arch_cache_dirty는 위쪽 함수 진입부에서 선언됨)
 
     // ── .info 메타데이터 모달 ────────────────────────────────────────────
     // 인덱스: 0=File Name, 1=Day, 2=Up Time, 3=Down Time, 4=Duration,
@@ -8940,17 +8935,7 @@ void run_streaming_viewer(){
                 file_ctx.filename = "";
             }
 
-            // ── Rename ─────────────────────────────────────────────────
-            if(ImGui::Selectable("  Rename")){
-                // 디렉토리와 파일명 분리
-                size_t slash = file_ctx.filepath.rfind('/');
-                rename_modal.dir = (slash != std::string::npos) ? file_ctx.filepath.substr(0,slash) : ".";
-                rename_modal.old_name = file_ctx.filename;
-                strncpy(rename_modal.new_name, file_ctx.filename.c_str(), 255);
-                rename_modal.open = true;
-                rename_modal.focus_set = false;
-                file_ctx.open = false;
-            }
+            // (Rename 메뉴 옵션 제거 — Info 모달 내 File Name 필드로 통일)
 
             // ── Info / Add Info ────────────────────────────────────────
             {
@@ -9293,16 +9278,20 @@ void run_streaming_viewer(){
                     }
                 } else if(new_path != info_modal.filepath){
                     if(rename(info_modal.filepath.c_str(), new_path.c_str()) == 0){
-                        remove(info_modal.info_path.c_str());
+                        // .info도 함께 이동: 새 wav 옆에 동반 (한 쌍 보장)
+                        std::string new_info = new_path + ".info";
+                        if(access(info_modal.info_path.c_str(), F_OK) == 0)
+                            ::rename(info_modal.info_path.c_str(), new_info.c_str());
                         info_modal.filepath = new_path;
-                        info_modal.info_path = new_path + ".info";
+                        info_modal.info_path = new_info;
                     }
                 }
 
-                // 3) .info 저장
+                // 3) .info 저장 (위 rename 후 새 경로에 작성)
                 info_modal.save();
                 info_modal.open = false;
                 g_arch_cache_dirty = true;
+                g_arch_rescan.store(true);  // 파일 목록도 재스캔: 옛 이름이 사라진 듯 보이는 현상 방지
             }
             if(cancelled){
                 info_modal.open = false;
@@ -9311,50 +9300,7 @@ void run_streaming_viewer(){
             ImGui::PopStyleColor();
         }
 
-        // ── Rename 모달 ──────────────────────────────────────────────────
-        if(rename_modal.open){
-            ImGui::SetNextWindowSize(ImVec2(420.f, 0.f));
-            ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x*0.5f-210.f, io.DisplaySize.y*0.35f), ImGuiCond_Appearing);
-            ImGui::SetNextWindowBgAlpha(0.97f);
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.f);
-            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f,0.10f,0.16f,1.f));
-            ImGui::Begin("Rename##rename_modal", &rename_modal.open,
-                ImGuiWindowFlags_NoResize|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoCollapse);
-            if(!rename_modal.focus_set){ ImGui::SetKeyboardFocusHere(); rename_modal.focus_set=true; }
-            ImGui::SetNextItemWidth(-FLT_MIN);
-            bool enter = ImGui::InputText("##rename_input", rename_modal.new_name, 256,
-                                          ImGuiInputTextFlags_EnterReturnsTrue);
-            ImGui::Spacing();
-            std::string nn(rename_modal.new_name);
-            bool valid = !nn.empty() && nn != rename_modal.old_name && nn.find('/')==std::string::npos;
-            float bw = 80.f*2 + ImGui::GetStyle().ItemSpacing.x;
-            ImGui::SetCursorPosX((ImGui::GetWindowWidth() - bw) * 0.5f);
-            if(!valid) ImGui::BeginDisabled();
-            if(ImGui::Button("OK", ImVec2(80,0)) || (enter && valid)){
-                std::string src = rename_modal.dir + "/" + rename_modal.old_name;
-                std::string dst = rename_modal.dir + "/" + nn;
-                if(::rename(src.c_str(), dst.c_str()) == 0){
-                    std::string src_info = src + ".info";
-                    std::string dst_info = dst + ".info";
-                    ::rename(src_info.c_str(), dst_info.c_str());
-                    g_arch_cache_dirty = true;
-                    g_arch_rescan.store(true);
-                    if(file_ctx.filepath == src){
-                        file_ctx.filepath = dst;
-                        file_ctx.filename = nn;
-                    }
-                }
-                rename_modal.open = false;
-            }
-            if(!valid) ImGui::EndDisabled();
-            ImGui::SameLine();
-            if(ImGui::Button("Cancel", ImVec2(80,0)) || ImGui::IsKeyPressed(ImGuiKey_Escape,false)){
-                rename_modal.open = false;
-            }
-            ImGui::End();
-            ImGui::PopStyleColor();
-            ImGui::PopStyleVar();
-        }
+        // (Rename 모달 제거 — 파일명 변경은 Info 모달의 File Name 필드로만)
 
         if(chat_open){
             const float CW=360.f, CH=320.f;
