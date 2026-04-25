@@ -1046,41 +1046,195 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
                     hit->freq_lo_mhz, hit->freq_hi_mhz,
                     hit->description[0]?hit->description:"");
             }
-            // 좌클릭 → 세부 popup (현재는 tooltip로 대체; 추가 모달은 v1.3.x에서)
-            // 우클릭 → 컨텍스트 (Add/Delete) — 현재는 Delete만
-            if(hit && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                // 클릭한 segment의 freq_lo/hi 저장 후 popup
-                static char ctx_action_label[128];
-                snprintf(ctx_action_label, sizeof(ctx_action_label),
-                         "Delete: %s (%.3f-%.3f)",
-                         hit->label[0]?hit->label:"unnamed",
-                         hit->freq_lo_mhz, hit->freq_hi_mhz);
+            // 우클릭 → 컨텍스트 메뉴 (Add/Info/Delete, 위치별 분기)
+            if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                static char s_band_ctx_hit;  // 세션용 — popup 열 때 hit 여부 캡처
+                s_band_ctx_hit = hit ? 1 : 0;
                 ImGui::OpenPopup("##band_ctx");
-                // 임시 캡처를 위해 정적 변수 사용
-                static float s_lo, s_hi;
-                s_lo = hit->freq_lo_mhz; s_hi = hit->freq_hi_mhz;
             }
         }
-        // 컨텍스트 메뉴 (Delete)
+
+        // ── Add/Edit 모달 상태 (band_bar 영역 안에서 OpenPopup, 모달 자체는 항상 렌더) ─
+        struct BandModalState {
+            bool open = false;
+            bool is_edit = false;       // false=Add, true=Info(Edit)
+            float orig_lo = 0, orig_hi = 0;  // update key (편집 전 원본)
+            float freq_lo = 0, freq_hi = 0;
+            int   category = 10;
+            char  label[24] = {};
+            char  description[128] = {};
+            bool  focus_set = false;
+        };
+        static BandModalState bm;
+
+        // 컨텍스트 메뉴
         if(ImGui::BeginPopup("##band_ctx")){
-            // hit 정보 다시 추출
             ImVec2 mp = ImGui::GetIO().MousePos;
             float mhz_at = vis_lo + (mp.x - gx) / gw * (vis_hi - vis_lo);
-            const BandSegment* hit = nullptr;
+            const BandSegment* hit2 = nullptr;
             for(auto& b : bands)
-                if(mhz_at >= b.freq_lo_mhz && mhz_at <= b.freq_hi_mhz){ hit = &b; break; }
-            if(hit){
+                if(mhz_at >= b.freq_lo_mhz && mhz_at <= b.freq_hi_mhz){ hit2 = &b; break; }
+
+            bool has_hit = (hit2 != nullptr);
+
+            // [빈 위치] Add 활성, Info/Delete 비활성
+            // [있는 위치] Add 없음, Info/Delete 활성
+            if(!has_hit){
+                if(ImGui::MenuItem("Add")){
+                    bm = BandModalState{};
+                    bm.open = true; bm.is_edit = false;
+                    bm.freq_lo = mhz_at;
+                    bm.freq_hi = mhz_at + 0.025f;  // 기본 25 kHz
+                    bm.category = 10;
+                    bm.focus_set = false;
+                }
+                ImGui::BeginDisabled();
+                ImGui::MenuItem("Info");
+                ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));
+                ImGui::MenuItem("Delete");
+                ImGui::PopStyleColor();
+                ImGui::EndDisabled();
+            } else {
+                if(ImGui::MenuItem("Info")){
+                    bm = BandModalState{};
+                    bm.open = true; bm.is_edit = true;
+                    bm.orig_lo = hit2->freq_lo_mhz;
+                    bm.orig_hi = hit2->freq_hi_mhz;
+                    bm.freq_lo = hit2->freq_lo_mhz;
+                    bm.freq_hi = hit2->freq_hi_mhz;
+                    bm.category = (int)hit2->category;
+                    strncpy(bm.label,       hit2->label,       sizeof(bm.label)-1);
+                    strncpy(bm.description, hit2->description, sizeof(bm.description)-1);
+                    bm.focus_set = false;
+                }
+                ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));
                 if(ImGui::MenuItem("Delete")){
                     if(net_cli){
-                        net_cli->cmd_band_remove(hit->freq_lo_mhz, hit->freq_hi_mhz);
+                        net_cli->cmd_band_remove(hit2->freq_lo_mhz, hit2->freq_hi_mhz);
                     } else if(net_srv && net_srv->cb.on_relay_broadcast){
-                        PktBandRemove rm{}; rm.freq_lo_mhz = hit->freq_lo_mhz; rm.freq_hi_mhz = hit->freq_hi_mhz;
+                        PktBandRemove rm{}; rm.freq_lo_mhz = hit2->freq_lo_mhz; rm.freq_hi_mhz = hit2->freq_hi_mhz;
                         auto pkt = make_packet(PacketType::BAND_REMOVE, &rm, sizeof(rm));
                         net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
                     }
                 }
+                ImGui::PopStyleColor();
             }
             ImGui::EndPopup();
+        }
+
+        // ── Add/Edit 모달 본체 (info_modal 양식 차용, 5필드로 축소) ──────
+        if(bm.open){
+            ImGui::SetNextWindowSize(ImVec2(420.f, 0.f));
+            ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x*0.5f - 210.f,
+                                           ImGui::GetIO().DisplaySize.y*0.30f),
+                                    ImGuiCond_Appearing);
+            ImGui::SetNextWindowBgAlpha(0.97f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.f);
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f,0.10f,0.16f,1.f));
+            const char* title = bm.is_edit ? "Band Info / Edit##band_modal" : "Add Band##band_modal";
+            ImGui::Begin(title, &bm.open,
+                ImGuiWindowFlags_NoResize|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoCollapse);
+
+            const float LBL_W = 96.f;
+            // Label
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("Label");      ImGui::SameLine(LBL_W);
+            ImGui::SetNextItemWidth(280);
+            if(!bm.focus_set){ ImGui::SetKeyboardFocusHere(); bm.focus_set = true; }
+            ImGui::InputText("##bm_label", bm.label, sizeof(bm.label));
+
+            // Frequency Lo
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("Freq Lo");    ImGui::SameLine(LBL_W);
+            ImGui::SetNextItemWidth(140);
+            ImGui::InputFloat("##bm_lo", &bm.freq_lo, 0.f, 0.f, "%.4f MHz");
+
+            // Frequency Hi
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("Freq Hi");    ImGui::SameLine(LBL_W);
+            ImGui::SetNextItemWidth(140);
+            ImGui::InputFloat("##bm_hi", &bm.freq_hi, 0.f, 0.f, "%.4f MHz");
+
+            // Category combo
+            static const char* CAT_NAMES[] = {
+                "Broadcast","Aero","Marine","Amateur","Cell",
+                "ISM","WiFi-BT","Mil","Public-Safety","Government","Other"
+            };
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("Category");   ImGui::SameLine(LBL_W);
+            ImGui::SetNextItemWidth(180);
+            if(bm.category < 0 || bm.category > 10) bm.category = 10;
+            ImGui::Combo("##bm_cat", &bm.category, CAT_NAMES, 11);
+
+            // Description (multi-line)
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("Description");ImGui::SameLine(LBL_W);
+            ImGui::SetNextItemWidth(280);
+            ImGui::InputText("##bm_desc", bm.description, sizeof(bm.description));
+
+            ImGui::Spacing();
+            // OK / Cancel
+            bool valid = (bm.freq_hi > bm.freq_lo) && bm.label[0];
+            float bw = 80.f*2 + ImGui::GetStyle().ItemSpacing.x;
+            ImGui::SetCursorPosX((ImGui::GetWindowWidth() - bw) * 0.5f);
+            if(!valid) ImGui::BeginDisabled();
+            if(ImGui::Button("OK", ImVec2(80,0))){
+                if(bm.is_edit){
+                    // freq_lo/hi 식별자 변경됐을 수 있어 remove + add 조합 사용
+                    if(net_cli){
+                        if(fabsf(bm.orig_lo - bm.freq_lo) > 1e-4f
+                        || fabsf(bm.orig_hi - bm.freq_hi) > 1e-4f){
+                            net_cli->cmd_band_remove(bm.orig_lo, bm.orig_hi);
+                            net_cli->cmd_band_add(bm.freq_lo, bm.freq_hi,
+                                                  (uint8_t)bm.category, bm.label, bm.description);
+                        } else {
+                            net_cli->cmd_band_update(bm.freq_lo, bm.freq_hi,
+                                                     (uint8_t)bm.category, bm.label, bm.description);
+                        }
+                    } else if(net_srv && net_srv->cb.on_relay_broadcast){
+                        if(fabsf(bm.orig_lo - bm.freq_lo) > 1e-4f
+                        || fabsf(bm.orig_hi - bm.freq_hi) > 1e-4f){
+                            PktBandRemove rm{}; rm.freq_lo_mhz = bm.orig_lo; rm.freq_hi_mhz = bm.orig_hi;
+                            auto p1 = make_packet(PacketType::BAND_REMOVE, &rm, sizeof(rm));
+                            net_srv->cb.on_relay_broadcast(p1.data(), p1.size(), true);
+                            PktBandEntry e{}; e.valid=1; e.category=(uint8_t)bm.category;
+                            e.freq_lo_mhz=bm.freq_lo; e.freq_hi_mhz=bm.freq_hi;
+                            strncpy(e.label, bm.label, sizeof(e.label)-1);
+                            strncpy(e.description, bm.description, sizeof(e.description)-1);
+                            auto p2 = make_packet(PacketType::BAND_ADD, &e, sizeof(e));
+                            net_srv->cb.on_relay_broadcast(p2.data(), p2.size(), true);
+                        } else {
+                            PktBandEntry e{}; e.valid=1; e.category=(uint8_t)bm.category;
+                            e.freq_lo_mhz=bm.freq_lo; e.freq_hi_mhz=bm.freq_hi;
+                            strncpy(e.label, bm.label, sizeof(e.label)-1);
+                            strncpy(e.description, bm.description, sizeof(e.description)-1);
+                            auto p = make_packet(PacketType::BAND_UPDATE, &e, sizeof(e));
+                            net_srv->cb.on_relay_broadcast(p.data(), p.size(), true);
+                        }
+                    }
+                } else {
+                    if(net_cli){
+                        net_cli->cmd_band_add(bm.freq_lo, bm.freq_hi,
+                                              (uint8_t)bm.category, bm.label, bm.description);
+                    } else if(net_srv && net_srv->cb.on_relay_broadcast){
+                        PktBandEntry e{}; e.valid=1; e.category=(uint8_t)bm.category;
+                        e.freq_lo_mhz=bm.freq_lo; e.freq_hi_mhz=bm.freq_hi;
+                        strncpy(e.label, bm.label, sizeof(e.label)-1);
+                        strncpy(e.description, bm.description, sizeof(e.description)-1);
+                        auto p = make_packet(PacketType::BAND_ADD, &e, sizeof(e));
+                        net_srv->cb.on_relay_broadcast(p.data(), p.size(), true);
+                    }
+                }
+                bm.open = false;
+            }
+            if(!valid) ImGui::EndDisabled();
+            ImGui::SameLine();
+            if(ImGui::Button("Cancel", ImVec2(80,0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)){
+                bm.open = false;
+            }
+            ImGui::End();
+            ImGui::PopStyleColor();
+            ImGui::PopStyleVar();
         }
     }
 
