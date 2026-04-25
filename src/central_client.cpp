@@ -453,6 +453,11 @@ void CentralClient::mux_loop(int central_fd,
                         on_central_sched_sync_(buf.data(), mux.len);
                     continue;
                 }
+                if(btype == 0x31){  // BAND_PLAN_SYNC: 주파수 할당 오버레이 데이터
+                    if(on_central_band_plan_)
+                        on_central_band_plan_(buf.data(), mux.len);
+                    continue;
+                }
             }
 
             // 중앙서버→HOST CHAT: relay 루프 방지를 위해 socketpair 전달 않음

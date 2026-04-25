@@ -53,6 +53,10 @@ enum class PacketType : uint8_t {
     DB_LIST_REQ        = 0x2E,  // client → central: request DB list refresh
     REPORT_LIST_REQ    = 0x2F,  // client → central: request Report list refresh
     SCHED_SYNC         = 0x30,  // server → all clients: scheduled recording list snapshot
+    BAND_PLAN_SYNC     = 0x31,  // central → all clients: band plan (frequency allocation overlay)
+    BAND_ADD           = 0x32,  // any → central: add band segment
+    BAND_REMOVE        = 0x33,  // any → central: remove band segment (by freq_lo+hi)
+    BAND_UPDATE        = 0x34,  // any → central: update band segment
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────
@@ -273,6 +277,28 @@ struct __attribute__((packed)) PktSchedSync {
     uint8_t        count;
     uint8_t        _pad[3];
     SchedSyncEntry entries[MAX_SCHED_ENTRIES];
+};
+
+// ── BAND_PLAN: 주파수 할당 오버레이 (central → all) ──────────────────────
+static constexpr int MAX_BAND_SEGMENTS = 128;
+struct __attribute__((packed)) PktBandEntry {
+    uint8_t  valid;            // 1=유효, 0=빈
+    uint8_t  category;         // 0..10 (FFTViewer::BandSegment 카테고리)
+    uint8_t  _pad[2];
+    float    freq_lo_mhz;
+    float    freq_hi_mhz;
+    char     label[24];
+    char     description[128];
+}; // 164 bytes
+static_assert(sizeof(PktBandEntry) == 164, "PktBandEntry size");
+struct __attribute__((packed)) PktBandPlan {
+    uint16_t     count;
+    uint8_t      _pad[2];
+    PktBandEntry entries[MAX_BAND_SEGMENTS];
+};
+struct __attribute__((packed)) PktBandRemove {
+    float freq_lo_mhz;
+    float freq_hi_mhz;
 };
 
 // ── DIGI_LOG ─────────────────────────────────────────────────────────────

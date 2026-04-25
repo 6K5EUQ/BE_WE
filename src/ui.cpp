@@ -538,6 +538,11 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
     if(total_w < AXIS_LABEL_WIDTH + 2.0f || total_h < 4.0f) return;
     float gx=full_x+AXIS_LABEL_WIDTH, gy=full_y;
     float gw=total_w-AXIS_LABEL_WIDTH, gh=total_h-BOTTOM_LABEL_HEIGHT;
+    // Band plan 14px 띠를 위에서 떼어내기 (band_show가 true일 때만)
+    constexpr float BAND_BAR_H = 14.f;
+    bool band_bar_active = band_show && !band_segments.empty();
+    float band_bar_y = gy;
+    if(band_bar_active){ gy += BAND_BAR_H; gh -= BAND_BAR_H; }
     dl->AddRectFilled(ImVec2(full_x,full_y),ImVec2(full_x+total_w,full_y+total_h),IM_COL32(10,10,10,255));
     // /rx stop 시 검은 화면만 표시
     if(rx_stopped.load()) { draw_freq_axis(dl,gx,gw,gy,gh,false); return; }
@@ -976,6 +981,108 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
 
     draw_freq_axis(dl,gx,gw,gy,gh,false);
     draw_all_channels(dl,gx,gw,gy,gh,true);
+
+    // ── Band Plan 14px 라벨 띠 (스펙트럼 상단) ───────────────────────────
+    if(band_bar_active){
+        static const ImU32 BAND_COLORS[] = {
+            IM_COL32(255,180, 80, 110),  // 0 Broadcast
+            IM_COL32( 80,180,255, 110),  // 1 Aero
+            IM_COL32( 80,255,180, 110),  // 2 Marine
+            IM_COL32(255,255, 80, 110),  // 3 Amateur
+            IM_COL32(180, 80,255, 110),  // 4 Cell
+            IM_COL32(255, 80,180, 110),  // 5 ISM
+            IM_COL32(120,200,255, 110),  // 6 WiFi-BT
+            IM_COL32(200,100,100, 110),  // 7 Mil
+            IM_COL32(150,180,200, 110),  // 8 Public-Safety
+            IM_COL32(180,150,200, 110),  // 9 Government
+            IM_COL32(160,160,160, 110),  // 10 Other
+        };
+        // 뒤배경 (어두운 회색)
+        dl->AddRectFilled(ImVec2(gx, band_bar_y),
+                          ImVec2(gx+gw, band_bar_y+BAND_BAR_H),
+                          IM_COL32(25,25,30,255));
+        std::vector<BandSegment> bands;
+        {
+            std::lock_guard<std::mutex> lk(band_mtx);
+            bands = band_segments;
+        }
+        float cf_mhz_b = (float)(header.center_frequency/1e6);
+        float vis_lo = cf_mhz_b + ds, vis_hi = cf_mhz_b + de;
+        for(auto& b : bands){
+            float lo = std::max(b.freq_lo_mhz, vis_lo);
+            float hi = std::min(b.freq_hi_mhz, vis_hi);
+            if(hi <= lo) continue;
+            float x0 = gx + (lo - vis_lo) / (vis_hi - vis_lo) * gw;
+            float x1 = gx + (hi - vis_lo) / (vis_hi - vis_lo) * gw;
+            uint8_t c = b.category;
+            if(c > 10) c = 10;
+            ImU32 col = BAND_COLORS[c];
+            dl->AddRectFilled(ImVec2(x0, band_bar_y+1),
+                              ImVec2(x1, band_bar_y+BAND_BAR_H-1), col);
+            // 라벨이 폭 안에 들어갈 때만 그리기
+            if(b.label[0]){
+                ImVec2 ts = ImGui::CalcTextSize(b.label);
+                if(x1 - x0 >= ts.x + 6){
+                    float lx = x0 + ((x1 - x0) - ts.x) * 0.5f;
+                    float ly = band_bar_y + (BAND_BAR_H - ts.y) * 0.5f;
+                    dl->AddText(ImVec2(lx, ly), IM_COL32(245,245,245,255), b.label);
+                }
+            }
+        }
+        // 띠 위 hover/click — 별도 InvisibleButton
+        ImGui::SetCursorScreenPos(ImVec2(gx, band_bar_y));
+        ImGui::InvisibleButton("##band_bar", ImVec2(gw, BAND_BAR_H));
+        bool bar_hov = ImGui::IsItemHovered();
+        if(bar_hov){
+            ImVec2 mp = ImGui::GetIO().MousePos;
+            float mhz_at = vis_lo + (mp.x - gx) / gw * (vis_hi - vis_lo);
+            // 마우스 위치 segment 찾기
+            const BandSegment* hit = nullptr;
+            for(auto& b : bands)
+                if(mhz_at >= b.freq_lo_mhz && mhz_at <= b.freq_hi_mhz){ hit = &b; break; }
+            if(hit){
+                ImGui::SetTooltip("%s\n%.4f - %.4f MHz\n%s",
+                    hit->label[0]?hit->label:"(unnamed)",
+                    hit->freq_lo_mhz, hit->freq_hi_mhz,
+                    hit->description[0]?hit->description:"");
+            }
+            // 좌클릭 → 세부 popup (현재는 tooltip로 대체; 추가 모달은 v1.3.x에서)
+            // 우클릭 → 컨텍스트 (Add/Delete) — 현재는 Delete만
+            if(hit && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                // 클릭한 segment의 freq_lo/hi 저장 후 popup
+                static char ctx_action_label[128];
+                snprintf(ctx_action_label, sizeof(ctx_action_label),
+                         "Delete: %s (%.3f-%.3f)",
+                         hit->label[0]?hit->label:"unnamed",
+                         hit->freq_lo_mhz, hit->freq_hi_mhz);
+                ImGui::OpenPopup("##band_ctx");
+                // 임시 캡처를 위해 정적 변수 사용
+                static float s_lo, s_hi;
+                s_lo = hit->freq_lo_mhz; s_hi = hit->freq_hi_mhz;
+            }
+        }
+        // 컨텍스트 메뉴 (Delete)
+        if(ImGui::BeginPopup("##band_ctx")){
+            // hit 정보 다시 추출
+            ImVec2 mp = ImGui::GetIO().MousePos;
+            float mhz_at = vis_lo + (mp.x - gx) / gw * (vis_hi - vis_lo);
+            const BandSegment* hit = nullptr;
+            for(auto& b : bands)
+                if(mhz_at >= b.freq_lo_mhz && mhz_at <= b.freq_hi_mhz){ hit = &b; break; }
+            if(hit){
+                if(ImGui::MenuItem("Delete")){
+                    if(net_cli){
+                        net_cli->cmd_band_remove(hit->freq_lo_mhz, hit->freq_hi_mhz);
+                    } else if(net_srv && net_srv->cb.on_relay_broadcast){
+                        PktBandRemove rm{}; rm.freq_lo_mhz = hit->freq_lo_mhz; rm.freq_hi_mhz = hit->freq_hi_mhz;
+                        auto pkt = make_packet(PacketType::BAND_REMOVE, &rm, sizeof(rm));
+                        net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
+                    }
+                }
+            }
+            ImGui::EndPopup();
+        }
+    }
 
     ImGui::SetCursorScreenPos(ImVec2(gx,gy));
     ImGui::InvisibleButton("sp_graph",ImVec2(gw,gh));
@@ -2334,6 +2441,24 @@ void run_streaming_viewer(){
                 e.op_index     = se.op_index;
                 strncpy(e.operator_name, se.operator_name, sizeof(e.operator_name)-1);
                 v.sched_entries.push_back(e);
+            }
+        };
+
+        // Band plan 수신 → v.band_segments 재구성 (Central 공유)
+        cli->on_band_plan = [&](const PktBandPlan& bp){
+            std::lock_guard<std::mutex> lk(v.band_mtx);
+            v.band_segments.clear();
+            int n = std::min<int>((int)bp.count, MAX_BAND_SEGMENTS);
+            for(int i=0; i<n; i++){
+                const auto& be = bp.entries[i];
+                if(!be.valid) continue;
+                FFTViewer::BandSegment s;
+                s.freq_lo_mhz = be.freq_lo_mhz;
+                s.freq_hi_mhz = be.freq_hi_mhz;
+                s.category    = be.category;
+                strncpy(s.label,       be.label,       sizeof(s.label)-1);
+                strncpy(s.description, be.description, sizeof(s.description)-1);
+                v.band_segments.push_back(s);
             }
         };
 
@@ -8811,8 +8936,13 @@ void run_streaming_viewer(){
                 v.digi_decode_panel_open = !v.digi_decode_panel_open;
             }
 
-            // 오른쪽>왼쪽: TM IQ AUD WF FFT LINK SDR
+            // 오른쪽>왼쪽: BAND TM IQ AUD WF FFT LINK SDR
             float rx=disp_w-8.0f;
+
+            // BAND (클릭 토글 — 띠 가시성)
+            if(click_ind(rx,"BAND", v.band_show ? 1 : 0)){
+                v.band_show = !v.band_show;
+            }
 
             // TM
             rx=draw_ind(rx,"TM", tm_on ? 1 : 0);

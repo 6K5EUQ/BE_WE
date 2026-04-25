@@ -107,6 +107,9 @@ bool CentralServer::start(int port){
         mkdir(base.c_str(), 0755);
         schedules_json_path_ = base + "/schedules.json";
         load_schedules_from_json();
+        band_plan_json_path_ = base + "/band_plan.json";
+        load_band_plan_from_json();
+        rebuild_band_plan_cache();
     }
     listen_fd_ = make_listen_sock(port);
     if(listen_fd_ < 0) return false;
@@ -225,6 +228,20 @@ void CentralServer::handshake(int fd){
                                   saved.data(), (uint32_t)saved.size());
                 printf("[Central] replayed SCHED_SYNC to HOST '%s' (%zu bytes)\n",
                        room->station_id.c_str(), saved.size());
+            }
+        }
+        // Band plan 푸시 (전역)
+        {
+            std::vector<uint8_t> bp;
+            {
+                std::lock_guard<std::mutex> blk(band_mtx_);
+                bp = cached_band_plan_pkt_;
+            }
+            if(!bp.empty()){
+                enqueue_host_send(room, 0xFFFF, CentralMuxType::DATA,
+                                  bp.data(), (uint32_t)bp.size());
+                printf("[Central] replayed BAND_PLAN to HOST '%s' (%zu bytes)\n",
+                       room->station_id.c_str(), bp.size());
             }
         }
 
@@ -574,12 +591,18 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                     std::lock_guard<std::mutex> clk(room->cache_mtx);
                     c_sched = room->cached_sched_sync;
                 }
+                std::vector<uint8_t> c_band;
+                {
+                    std::lock_guard<std::mutex> blk(band_mtx_);
+                    c_band = cached_band_plan_pkt_;
+                }
                 int cache_count = 0;
                 if(!c_hb.empty()){ target->enqueue_ctrl(c_hb.data(), c_hb.size()); cache_count++; }
                 if(!c_st.empty()){ target->enqueue_ctrl(c_st.data(), c_st.size()); cache_count++; }
                 if(!c_ch.empty()){ target->enqueue_ctrl(c_ch.data(), c_ch.size()); cache_count++; }
                 if(!c_op.empty()){ target->enqueue_ctrl(c_op.data(), c_op.size()); cache_count++; }
                 if(!c_sched.empty()){ target->enqueue_ctrl(c_sched.data(), c_sched.size()); cache_count++; }
+                if(!c_band.empty()){  target->enqueue_ctrl(c_band.data(), c_band.size()); cache_count++; }
                 printf("[Central] sent %d cached packets to conn_id=%u\n", cache_count, conn_id);
                 // OPERATOR_LIST 갱신 (새 유저 반영)
                 build_and_broadcast_op_list(room);
@@ -598,6 +621,53 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         auto& cache = (bewe_type == BEWE_TYPE_HEARTBEAT) ? room->cached_heartbeat
                                                          : room->cached_status;
         cache.assign(bewe_pkt, bewe_pkt + bewe_len);
+    }
+
+    // ── BAND_ADD/REMOVE/UPDATE 인터셉트 (HOST → Central 방향)
+    if(bewe_type == 0x32 /*BAND_ADD*/ || bewe_type == 0x33 /*BAND_REMOVE*/ || bewe_type == 0x34 /*BAND_UPDATE*/){
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        bool changed = false;
+        {
+            std::lock_guard<std::mutex> blk(band_mtx_);
+            if(bewe_type == 0x32 && plen >= sizeof(PktBandEntry)){
+                const PktBandEntry* in = reinterpret_cast<const PktBandEntry*>(payload);
+                bool dup = false;
+                for(auto& e : band_segments_){
+                    if(fabsf(e.freq_lo_mhz - in->freq_lo_mhz) < 1e-4f
+                    && fabsf(e.freq_hi_mhz - in->freq_hi_mhz) < 1e-4f){ dup=true; break; }
+                }
+                if(!dup && (int)band_segments_.size() < MAX_BAND_SEGMENTS){
+                    band_segments_.push_back(*in);
+                    changed = true;
+                }
+            } else if(bewe_type == 0x33 && plen >= sizeof(PktBandRemove)){
+                const PktBandRemove* rm = reinterpret_cast<const PktBandRemove*>(payload);
+                for(auto it = band_segments_.begin(); it != band_segments_.end(); ){
+                    if(fabsf(it->freq_lo_mhz - rm->freq_lo_mhz) < 1e-4f
+                    && fabsf(it->freq_hi_mhz - rm->freq_hi_mhz) < 1e-4f){
+                        it = band_segments_.erase(it);
+                        changed = true;
+                    } else ++it;
+                }
+            } else if(bewe_type == 0x34 && plen >= sizeof(PktBandEntry)){
+                const PktBandEntry* in = reinterpret_cast<const PktBandEntry*>(payload);
+                for(auto& e : band_segments_){
+                    if(fabsf(e.freq_lo_mhz - in->freq_lo_mhz) < 1e-4f
+                    && fabsf(e.freq_hi_mhz - in->freq_hi_mhz) < 1e-4f){
+                        e = *in;
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if(changed){
+            save_band_plan_to_json();
+            rebuild_band_plan_cache();
+            broadcast_band_plan_to_all();
+        }
+        return;  // ADD/REMOVE/UPDATE는 fan-out 안 함
     }
 
     // ── SCHED_SYNC 인터셉트: 최신 스냅샷 캐시 + JSON 영속화 후 그대로 브로드캐스트
@@ -833,6 +903,51 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
     if(bewe_type == BEWE_TYPE_REPORT_LIST_REQ){
         broadcast_report_list_central(room);
         return true;
+    }
+
+    // ── BAND_ADD/REMOVE/UPDATE (JOIN → Central) ──────────────────────────
+    if(bewe_type == 0x32 || bewe_type == 0x33 || bewe_type == 0x34){
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        bool changed = false;
+        {
+            std::lock_guard<std::mutex> blk(band_mtx_);
+            if(bewe_type == 0x32 && plen >= sizeof(PktBandEntry)){
+                const PktBandEntry* in = reinterpret_cast<const PktBandEntry*>(payload);
+                bool dup=false;
+                for(auto& e : band_segments_){
+                    if(fabsf(e.freq_lo_mhz - in->freq_lo_mhz) < 1e-4f
+                    && fabsf(e.freq_hi_mhz - in->freq_hi_mhz) < 1e-4f){ dup=true; break; }
+                }
+                if(!dup && (int)band_segments_.size() < MAX_BAND_SEGMENTS){
+                    band_segments_.push_back(*in);
+                    changed = true;
+                }
+            } else if(bewe_type == 0x33 && plen >= sizeof(PktBandRemove)){
+                const PktBandRemove* rm = reinterpret_cast<const PktBandRemove*>(payload);
+                for(auto it = band_segments_.begin(); it != band_segments_.end(); ){
+                    if(fabsf(it->freq_lo_mhz - rm->freq_lo_mhz) < 1e-4f
+                    && fabsf(it->freq_hi_mhz - rm->freq_hi_mhz) < 1e-4f){
+                        it = band_segments_.erase(it);
+                        changed = true;
+                    } else ++it;
+                }
+            } else if(bewe_type == 0x34 && plen >= sizeof(PktBandEntry)){
+                const PktBandEntry* in = reinterpret_cast<const PktBandEntry*>(payload);
+                for(auto& e : band_segments_){
+                    if(fabsf(e.freq_lo_mhz - in->freq_lo_mhz) < 1e-4f
+                    && fabsf(e.freq_hi_mhz - in->freq_hi_mhz) < 1e-4f){
+                        e = *in; changed = true; break;
+                    }
+                }
+            }
+        }
+        if(changed){
+            save_band_plan_to_json();
+            rebuild_band_plan_cache();
+            broadcast_band_plan_to_all();
+        }
+        return true;  // HOST에 포워드 안 함
     }
 
     // ── AUTH_REQ: HOST에 포워드 (HOST가 처리), 릴레이는 이름만 캐시 ──
@@ -1664,4 +1779,146 @@ void CentralServer::load_schedules_from_json(){
     }
     printf("[Central] schedules.json: total %zu entries across %zu stations\n",
            total_loaded, sched_by_station_.size());
+}
+
+// ── Band Plan persistence ────────────────────────────────────────────────
+void CentralServer::save_band_plan_to_json(){
+    std::lock_guard<std::mutex> lk(band_mtx_);
+    std::string out = "{\n  \"bands\": [\n";
+    bool first = true;
+    for(auto& e : band_segments_){
+        if(!e.valid) continue;
+        if(!first) out += ",\n";
+        first = false;
+        char buf[512];
+        char lbl[33]={}; memcpy(lbl, e.label, 24);
+        char dsc[200]={}; memcpy(dsc, e.description, 128);
+        snprintf(buf, sizeof(buf),
+            "    {\"freq_lo\":%.4f,\"freq_hi\":%.4f,\"category\":%u,\"label\":\"",
+            e.freq_lo_mhz, e.freq_hi_mhz, (unsigned)e.category);
+        out += buf;
+        json_escape(out, lbl);
+        out += "\",\"description\":\"";
+        json_escape(out, dsc);
+        out += "\"}";
+    }
+    out += "\n  ]\n}\n";
+    FILE* fp = fopen(band_plan_json_path_.c_str(), "w");
+    if(fp){ fwrite(out.data(), 1, out.size(), fp); fclose(fp); }
+    else printf("[Central] save_band_plan_to_json: cannot open %s errno=%d\n",
+                band_plan_json_path_.c_str(), errno);
+}
+
+void CentralServer::load_band_plan_from_json(){
+    std::unique_lock<std::mutex> lk(band_mtx_);
+    band_segments_.clear();
+    auto try_load = [this](const std::string& path) -> int {
+        FILE* fp = fopen(path.c_str(), "r");
+        if(!fp) return 0;
+        fseek(fp,0,SEEK_END); long sz = ftell(fp); fseek(fp,0,SEEK_SET);
+        if(sz <= 0){ fclose(fp); return 0; }
+        std::string body(sz, 0);
+        if(fread(&body[0], 1, sz, fp) != (size_t)sz){ fclose(fp); return 0; }
+        fclose(fp);
+        JScan js{body.data(), body.data()+body.size()};
+        if(!js.consume('{')) return 0;
+        std::string key;
+        int loaded = 0;
+        while(js.read_key(key)){
+            if(key != "bands"){
+                if(js.peek('"')){ std::string tmp; js.read_string(tmp); }
+                else if(js.consume('[') || js.consume('{')){
+                    int depth = 1;
+                    while(js.p<js.end && depth>0){
+                        if(*js.p=='['||*js.p=='{') depth++;
+                        else if(*js.p==']'||*js.p=='}') depth--;
+                        js.p++;
+                    }
+                }
+                continue;
+            }
+            if(!js.consume('[')) return loaded;
+            while(!js.peek(']')){
+                if(!js.consume('{')) break;
+                PktBandEntry e{};
+                e.valid = 1;
+                std::string k;
+                while(js.read_key(k)){
+                    if(k=="freq_lo"){ double v=0; js.read_number(v); e.freq_lo_mhz=(float)v; }
+                    else if(k=="freq_hi"){ double v=0; js.read_number(v); e.freq_hi_mhz=(float)v; }
+                    else if(k=="category"){ double v=0; js.read_number(v); e.category=(uint8_t)v; }
+                    else if(k=="label"){ std::string s; js.read_string(s);
+                        strncpy(e.label, s.c_str(), sizeof(e.label)-1); }
+                    else if(k=="description"){ std::string s; js.read_string(s);
+                        strncpy(e.description, s.c_str(), sizeof(e.description)-1); }
+                    else { if(js.peek('"')){ std::string t; js.read_string(t); } else { double v; js.read_number(v); } }
+                    if(js.peek('}')) break;
+                }
+                js.consume('}');
+                if((int)band_segments_.size() < MAX_BAND_SEGMENTS && e.freq_hi_mhz > e.freq_lo_mhz){
+                    band_segments_.push_back(e);
+                    loaded++;
+                }
+            }
+            js.consume(']');
+            break;
+        }
+        return loaded;
+    };
+    int n = try_load(band_plan_json_path_);
+    if(n == 0){
+        // Default fallback (assets/band_plan_default.json) — 첫 부팅 또는 비어있을 때
+        const char* candidates[] = {
+            "assets/band_plan_default.json",
+            "../assets/band_plan_default.json",
+            "/home/dsa/BE_WE/assets/band_plan_default.json",
+        };
+        for(const char* p : candidates){
+            n = try_load(p);
+            if(n > 0){ printf("[Central] band_plan: loaded default from %s (%d)\n", p, n); break; }
+        }
+        if(n > 0){
+            // 즉시 영속화
+            lk.unlock();  // save_band_plan_to_json이 lock 다시 잡음
+            save_band_plan_to_json();
+            lk.lock();
+        }
+    } else {
+        printf("[Central] band_plan: loaded %d segments from %s\n", n, band_plan_json_path_.c_str());
+    }
+}
+
+void CentralServer::rebuild_band_plan_cache(){
+    std::lock_guard<std::mutex> lk(band_mtx_);
+    PktBandPlan pkt{};
+    int n = (int)std::min<size_t>(band_segments_.size(), MAX_BAND_SEGMENTS);
+    pkt.count = (uint16_t)n;
+    for(int i=0; i<n; i++) pkt.entries[i] = band_segments_[i];
+    cached_band_plan_pkt_.assign(BEWE_HDR_SIZE + sizeof(PktBandPlan), 0);
+    memcpy(cached_band_plan_pkt_.data(), "BEWE", 4);
+    cached_band_plan_pkt_[4] = 0x31;  // BAND_PLAN_SYNC
+    uint32_t plen = sizeof(PktBandPlan);
+    memcpy(cached_band_plan_pkt_.data()+5, &plen, 4);
+    memcpy(cached_band_plan_pkt_.data()+BEWE_HDR_SIZE, &pkt, sizeof(PktBandPlan));
+}
+
+void CentralServer::broadcast_band_plan_to_all(){
+    std::vector<uint8_t> pkt;
+    {
+        std::lock_guard<std::mutex> lk(band_mtx_);
+        pkt = cached_band_plan_pkt_;
+    }
+    if(pkt.empty()) return;
+    std::lock_guard<std::mutex> rlk(rooms_mtx_);
+    for(auto& room : rooms_){
+        if(!room->alive.load()) continue;
+        // HOST
+        enqueue_host_send(room, 0xFFFF, CentralMuxType::DATA, pkt.data(), (uint32_t)pkt.size());
+        // 모든 JOIN
+        std::lock_guard<std::mutex> jlk(room->joins_mtx);
+        for(auto& je : room->joins){
+            if(je->alive.load() && je->fd >= 0)
+                je->enqueue_ctrl(pkt.data(), pkt.size());
+        }
+    }
 }

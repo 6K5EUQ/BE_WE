@@ -156,6 +156,7 @@ public:
     // Applied directly to a FFTViewer's channels array via callback
     std::function<void(const PktChannelSync&)> on_channel_sync;
     std::function<void(const PktSchedSync&)>   on_sched_sync;
+    std::function<void(const PktBandPlan&)>    on_band_plan;
     std::function<void(const PktWfEvent&)>     on_wf_event;
     std::function<void(uint8_t tab, uint8_t ch_idx, const char* msg)> on_digi_log;
     std::function<void(const std::string& name, uint64_t total)> on_file_meta;
@@ -273,6 +274,11 @@ public:
     bool cmd_add_sched(int64_t start_time, float duration_sec, float freq_mhz, float bw_khz,
                        const char* target);
     bool cmd_remove_sched(int64_t start_time, float freq_mhz);
+    bool cmd_band_add(float freq_lo_mhz, float freq_hi_mhz, uint8_t category,
+                      const char* label, const char* description);
+    bool cmd_band_remove(float freq_lo_mhz, float freq_hi_mhz);
+    bool cmd_band_update(float freq_lo_mhz, float freq_hi_mhz, uint8_t category,
+                         const char* label, const char* description);
     bool cmd_db_delete(const char* filename, const char* operator_name);
     bool cmd_db_download(const char* filename, const char* operator_name);
     bool cmd_report_delete(const char* filename);

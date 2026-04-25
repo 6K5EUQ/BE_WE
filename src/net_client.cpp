@@ -305,6 +305,13 @@ void NetClient::handle_packet(PacketType type,
         break;
     }
 
+    case PacketType::BAND_PLAN_SYNC: {
+        if(len < sizeof(PktBandPlan)) break;
+        auto* bp = reinterpret_cast<const PktBandPlan*>(payload);
+        if(on_band_plan) on_band_plan(*bp);
+        break;
+    }
+
     case PacketType::WF_EVENT: {
         if(len < sizeof(PktWfEvent)) break;
         auto* ev = reinterpret_cast<const PktWfEvent*>(payload);
@@ -643,6 +650,32 @@ bool NetClient::cmd_remove_sched(int64_t start_time, float freq_mhz){
     c.remove_sched.start_time = start_time;
     c.remove_sched.freq_mhz   = freq_mhz;
     return send_cmd(c);
+}
+bool NetClient::cmd_band_add(float freq_lo_mhz, float freq_hi_mhz, uint8_t category,
+                             const char* label, const char* description){
+    PktBandEntry e{};
+    e.valid = 1;
+    e.category = category;
+    e.freq_lo_mhz = freq_lo_mhz;
+    e.freq_hi_mhz = freq_hi_mhz;
+    strncpy(e.label,       label       ? label       : "", sizeof(e.label)-1);
+    strncpy(e.description, description ? description : "", sizeof(e.description)-1);
+    return raw_send(PacketType::BAND_ADD, &e, sizeof(e));
+}
+bool NetClient::cmd_band_remove(float freq_lo_mhz, float freq_hi_mhz){
+    PktBandRemove r{}; r.freq_lo_mhz = freq_lo_mhz; r.freq_hi_mhz = freq_hi_mhz;
+    return raw_send(PacketType::BAND_REMOVE, &r, sizeof(r));
+}
+bool NetClient::cmd_band_update(float freq_lo_mhz, float freq_hi_mhz, uint8_t category,
+                                const char* label, const char* description){
+    PktBandEntry e{};
+    e.valid = 1;
+    e.category = category;
+    e.freq_lo_mhz = freq_lo_mhz;
+    e.freq_hi_mhz = freq_hi_mhz;
+    strncpy(e.label,       label       ? label       : "", sizeof(e.label)-1);
+    strncpy(e.description, description ? description : "", sizeof(e.description)-1);
+    return raw_send(PacketType::BAND_UPDATE, &e, sizeof(e));
 }
 bool NetClient::cmd_delete_pub_file(const char* filename){
     PktPubDeleteReq req{};

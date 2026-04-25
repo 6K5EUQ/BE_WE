@@ -133,6 +133,20 @@ public:
         float drag_x0 = 0, drag_x1 = 0;
     } notch_drag;
 
+    // ── Frequency Band Plan (Central 공유 — 라벨 띠) ─────────────────────
+    struct BandSegment {
+        float   freq_lo_mhz = 0;
+        float   freq_hi_mhz = 0;
+        char    label[24]   = {};
+        uint8_t category    = 10;       // 0=Broadcast 1=Aero 2=Marine 3=Amateur
+                                        // 4=Cell 5=ISM 6=WiFi-BT 7=Mil
+                                        // 8=Public-Safety 9=Government 10=Other
+        char    description[128] = {};
+    };
+    std::vector<BandSegment> band_segments;
+    std::mutex               band_mtx;
+    bool                     band_show = true;  // 토글 (세션 한정)
+
     // ── System monitor (bottom bar) ───────────────────────────────────────
     float sysmon_cpu=0, sysmon_ghz=0, sysmon_ram=0, sysmon_io=0;
     std::atomic<int> sysmon_cpu_temp_c{0};  // CPU 온도 (정수 °C, heartbeat 전송용)
