@@ -1207,8 +1207,7 @@ void run_cli_host(){
                             v.band_segments.push_back(s);
                         }
                     }
-                    // HOST에 직접 접속한 LAN JOIN들에게도 forward — Central 미경유 경로 보강
-                    if(v.net_srv) v.net_srv->broadcast_band_plan(*bp);
+                    // (LAN 직접 접속 경로 없음 — 모든 JOIN은 Central 경유. forward 호출 제거)
                     bewe_log_push(0, "[Central] band plan: %d segments\n", (int)v.band_segments.size());
                 });
 
