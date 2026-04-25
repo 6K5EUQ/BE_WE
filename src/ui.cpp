@@ -4896,7 +4896,8 @@ void run_streaming_viewer(){
                             else
                                 v.net_cli->cmd_start_iq_rec(ci);
                         }
-                    } else if(v.channels[ci].dem_run.load()){
+                    } else {
+                        // LOCAL/HOST: demod 활성화와 무관하게 IQ 녹음 (start_iq_rec 안에서 IQ-only path 자동 선택)
                         if(v.channels[ci].iq_rec_on.load())
                             v.stop_iq_rec(ci);
                         else

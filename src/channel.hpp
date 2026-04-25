@@ -239,27 +239,41 @@ struct Channel {
         if(!iq_rec_on.load(std::memory_order_relaxed)) return;
         if(!iq_rec_fp) return;
         if(dem_paused.load(std::memory_order_relaxed)) return; // Holding 중 쓰기 정지
-        // 예약 녹음(force_all): squelch 무시하고 전 구간 녹음
+        // 예약 녹음(force_all): squelch 무시하고 전 구간 실신호 녹음
         bool force = iq_rec_force_all.load(std::memory_order_relaxed);
-        uint32_t tail_samples = iq_rec_sr; // 1 second tail
+        uint32_t tail_samples = iq_rec_sr; // 1 second silence tail (신호 분리용)
+        bool write_silence = false;
         if(!force){
             switch(iq_sqr_state){
             case SQR_IDLE:
-                if(!gate_open) return;
-                iq_sqr_state = SQR_RECORDING;
+                if(!gate_open) return;          // 신호 없으면 아무것도 안 씀
+                iq_sqr_state = SQR_RECORDING;   // 신호 시작 → 실신호 녹음 시작
                 break;
             case SQR_RECORDING:
-                if(!gate_open){ iq_sqr_state = SQR_TAIL; iq_sqr_tail_remain = tail_samples; }
+                if(!gate_open){
+                    // 신호 끝 → silence tail 1초 시작 (이번 sample부터 0으로 채움)
+                    iq_sqr_state = SQR_TAIL;
+                    iq_sqr_tail_remain = tail_samples;
+                    write_silence = true;
+                }
                 break;
             case SQR_TAIL:
-                if(gate_open) iq_sqr_state = SQR_RECORDING;
-                else if(iq_sqr_tail_remain == 0){ iq_sqr_state = SQR_IDLE; return; }
-                else iq_sqr_tail_remain--;
+                if(gate_open){
+                    // 1초 안에 새 신호 → tail 중단, 다시 실신호
+                    iq_sqr_state = SQR_RECORDING;
+                } else if(iq_sqr_tail_remain == 0){
+                    iq_sqr_state = SQR_IDLE;    // 1초 silence 완료
+                    return;
+                } else {
+                    iq_sqr_tail_remain--;
+                    write_silence = true;       // tail 동안 silence(0) write
+                }
                 break;
             }
         }
         auto c16=[](float v)->int16_t{ return (int16_t)(v<-1.f?-32767:v>1.f?32767:(int)(v*32767.f)); };
-        int16_t si=c16(fi), sq=c16(fq);
+        int16_t si = write_silence ? 0 : c16(fi);
+        int16_t sq = write_silence ? 0 : c16(fq);
         fwrite(&si,2,1,iq_rec_fp);
         fwrite(&sq,2,1,iq_rec_fp);
         iq_rec_frames++;

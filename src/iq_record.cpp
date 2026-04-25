@@ -378,10 +378,10 @@ void FFTViewer::iq_only_worker(int ch_idx){
     float bw_hz = fabsf(ch.e - ch.s) * 1e6f;
     float off_hz = (ch_cf_mhz - (float)(init_cf / 1e6f)) * 1e6f;
 
-    // 적극 decim: target sr ≈ BW × 1.25 (Nyquist + 25% margin)
+    // 적극 decim: target sr ≈ BW × 1.25 (Nyquist + 25% margin), ceil로 BW에 가깝게
     float target_sr = bw_hz * 1.25f;
     if(target_sr < 8000.f) target_sr = 8000.f;
-    uint32_t decim = (uint32_t)((float)msr / target_sr);
+    uint32_t decim = (uint32_t)ceilf((float)msr / target_sr);
     if(decim < 1) decim = 1;
     uint32_t actual_sr = msr / decim;
     ch.iq_rec_sr = actual_sr;
@@ -434,7 +434,8 @@ void FFTViewer::iq_only_worker(int ch_idx){
             float fi = (float)(acc_i / acc_cnt);
             float fq = (float)(acc_q / acc_cnt);
             acc_i = acc_q = 0; acc_cnt = 0;
-            ch.maybe_rec_iq(fi, fq, true);  // gate 항상 open (force_all 또는 squelch 캘리는 maybe_rec_iq 내부)
+            bool gate_open = ch.sq_gate.load(std::memory_order_relaxed);
+            ch.maybe_rec_iq(fi, fq, gate_open);
         }
         ch.iq_only_rp.store((rp + avail) & IQ_RING_MASK, std::memory_order_release);
     }
@@ -460,7 +461,7 @@ void FFTViewer::start_iq_rec(int ch_idx){
         // wav 헤더 작성을 위해 동일 식으로 미리 계산.
         float target_sr = bw_hz * 1.25f;
         if(target_sr < 8000.f) target_sr = 8000.f;
-        uint32_t decim = (uint32_t)((float)header.sample_rate / target_sr);
+        uint32_t decim = (uint32_t)ceilf((float)header.sample_rate / target_sr);
         if(decim < 1) decim = 1;
         actual_inter = header.sample_rate / decim;
     } else {
