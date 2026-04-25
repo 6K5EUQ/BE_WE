@@ -831,15 +831,13 @@ void run_cli_host(){
             for(auto it = v.sched_entries.begin(); it != v.sched_entries.end(); ++it){
                 if((time_t)start_time != it->start_time) continue;
                 if(fabsf(freq_mhz - it->freq_mhz) > 0.0001f) continue;
-                // 권한: 본인(op_idx 일치) 또는 HOST 자체(op_idx=0)
-                if(it->op_index != op_idx && op_idx != 0){
-                    bewe_log_push(0,"[CMD:%s] SCHED remove denied: not owner\n", op_name);
+                // RECORDING/ARMED는 불가 (권한 검사는 누구나 가능하도록 제거)
+                if(it->status == FFTViewer::SchedEntry::RECORDING ||
+                   it->status == FFTViewer::SchedEntry::ARMED){
+                    bewe_log_push(0,"[CMD:%s] SCHED remove denied: in progress\n", op_name);
                     return;
                 }
-                if(it->status == FFTViewer::SchedEntry::RECORDING){
-                    bewe_log_push(0,"[CMD:%s] SCHED remove denied: recording in progress\n", op_name);
-                    return;
-                }
+                (void)op_idx;
                 v.sched_entries.erase(it);
                 removed = true;
                 break;
@@ -1143,6 +1141,48 @@ void run_cli_host(){
                 // Central Report 목록 수신
                 extern std::vector<ReportFileEntry> g_report_list;
                 extern std::mutex g_report_list_mtx;
+                // Central에 저장된 예약 리스트를 HOST가 받아 v.sched_entries 복원
+                central_cli.set_on_central_sched_sync([&v](const uint8_t* pkt, size_t len){
+                    if(len < 9 + sizeof(PktSchedSync)) return;
+                    auto* ss = reinterpret_cast<const PktSchedSync*>(pkt + 9);
+                    int n = std::min<int>(ss->count, MAX_SCHED_ENTRIES);
+                    std::lock_guard<std::mutex> lk(v.sched_mtx);
+                    // 현재 활성(ARM/REC) 엔트리가 있으면 그 식별자를 기억
+                    int64_t active_st   = -1;
+                    float   active_freq = 0.f;
+                    if(v.sched_active_idx >= 0 && v.sched_active_idx < (int)v.sched_entries.size()){
+                        active_st   = (int64_t)v.sched_entries[v.sched_active_idx].start_time;
+                        active_freq = v.sched_entries[v.sched_active_idx].freq_mhz;
+                    }
+                    std::vector<FFTViewer::SchedEntry> next;
+                    next.reserve(n);
+                    int new_active = -1;
+                    for(int i=0; i<n; i++){
+                        const auto& se = ss->entries[i];
+                        if(!se.valid) continue;
+                        FFTViewer::SchedEntry ne;
+                        ne.start_time   = (time_t)se.start_time;
+                        ne.duration_sec = se.duration_sec;
+                        ne.freq_mhz     = se.freq_mhz;
+                        ne.bw_khz       = se.bw_khz;
+                        ne.op_index     = se.op_index;
+                        strncpy(ne.operator_name, se.operator_name, sizeof(ne.operator_name)-1);
+                        // 활성 엔트리는 로컬 상태/타임스탬프/채널 유지
+                        if(active_st == se.start_time && fabsf(active_freq - se.freq_mhz) < 1e-4f){
+                            ne.status      = v.sched_entries[v.sched_active_idx].status;
+                            ne.temp_ch_idx = v.sched_entries[v.sched_active_idx].temp_ch_idx;
+                            ne.rec_started = v.sched_entries[v.sched_active_idx].rec_started;
+                            new_active     = (int)next.size();
+                        } else {
+                            ne.status = (FFTViewer::SchedEntry::Status)se.status;
+                        }
+                        next.push_back(ne);
+                    }
+                    v.sched_entries = std::move(next);
+                    v.sched_active_idx = new_active;
+                    bewe_log_push(0, "[Central] restored %d scheduled entries\n", (int)v.sched_entries.size());
+                });
+
                 central_cli.set_on_central_report_list([](const uint8_t* pkt, size_t len){
                     extern std::vector<ReportFileEntry> g_report_list;
                     extern std::mutex g_report_list_mtx;

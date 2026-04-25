@@ -6965,8 +6965,11 @@ void run_streaming_viewer(){
                     preview_st = mktime(&t4);
                     if(preview_st <= now3) preview_st += 86400;
                     int delta = (int)(preview_st - now3);
-                    int dmin = delta/60, dsec = delta%60;
-                    ImGui::TextDisabled("Starts in %d:%02d  (duration %.0fs)", dmin, dsec, sdur);
+                    int dh   = delta / 3600;
+                    int dmin = (delta % 3600) / 60;
+                    int dsec = delta % 60;
+                    ImGui::TextDisabled("Starts in %02d:%02d:%02d  (duration %.0fs)",
+                                        dh, dmin, dsec, sdur);
                 }
                 bool preview_overlap = false;
                 {
@@ -6996,19 +6999,24 @@ void run_streaming_viewer(){
                         bewe_log_push(0,"[SCHED] Request sent: %02d:%02d:%02d dur=%.0fs freq=%.3fMHz bw=%.0fkHz\n",
                                       sh,sm,ss,sdur,sfreq,sbw);
                     } else {
-                        std::lock_guard<std::mutex> lk(v.sched_mtx);
-                        if(v.sched_has_overlap(st, sdur)){
-                            bewe_log_push(0,"[SCHED] Denied: overlap with existing entry\n");
-                        } else {
-                            FFTViewer::SchedEntry e;
-                            e.start_time=st; e.duration_sec=sdur;
-                            e.freq_mhz=sfreq; e.bw_khz=sbw;
-                            e.op_index = 0;
-                            strncpy(e.operator_name, login_get_id(), sizeof(e.operator_name)-1);
-                            v.sched_entries.push_back(e);
-                            bewe_log_push(0,"[SCHED] Added: %02d:%02d:%02d dur=%.0fs freq=%.3fMHz bw=%.0fkHz\n",
-                                          sh,sm,ss,sdur,sfreq,sbw);
+                        bool added = false;
+                        {
+                            std::lock_guard<std::mutex> lk(v.sched_mtx);
+                            if(v.sched_has_overlap(st, sdur)){
+                                bewe_log_push(0,"[SCHED] Denied: overlap with existing entry\n");
+                            } else {
+                                FFTViewer::SchedEntry e;
+                                e.start_time=st; e.duration_sec=sdur;
+                                e.freq_mhz=sfreq; e.bw_khz=sbw;
+                                e.op_index = 0;
+                                strncpy(e.operator_name, login_get_id(), sizeof(e.operator_name)-1);
+                                v.sched_entries.push_back(e);
+                                added = true;
+                                bewe_log_push(0,"[SCHED] Added: %02d:%02d:%02d dur=%.0fs freq=%.3fMHz bw=%.0fkHz\n",
+                                              sh,sm,ss,sdur,sfreq,sbw);
+                            }
                         }
+                        if(added) v.broadcast_sched_list();  // Central 영속화 반영
                     }
                 }
                 ImGui::PopStyleColor(2);
@@ -7039,14 +7047,16 @@ void run_streaming_viewer(){
                         int i = order[oi];
                         auto& e=v.sched_entries[i];
                         ImGui::PushID(i);
-                        // 상태별 색상/아이콘
-                        static const char* st_names[]={"WAIT","REC","DONE","FAIL"};
-                        static const char* st_icons[]={"[ ]","[R]","[\xE2\x9C\x93]","[X]"}; // [ ] [R] [✓] [X]
+                        // 상태별 색상/아이콘 (enum: WAITING, ARMED, RECORDING, DONE, FAILED)
+                        static const char* st_names[]={"WAIT","ARM","REC","DONE","FAIL"};
+                        static const char* st_icons[]={"[ ]","[A]","[R]","[\xE2\x9C\x93]","[X]"};
                         static const ImVec4 st_cols[]={
-                            {0.7f,0.7f,0.8f,1},{1,0.3f,0.3f,1},{0.3f,0.9f,0.3f,1},{0.9f,0.2f,0.2f,1}};
+                            {0.7f,0.7f,0.8f,1},{1.0f,0.85f,0.2f,1},{1,0.3f,0.3f,1},
+                            {0.3f,0.9f,0.3f,1},{0.9f,0.2f,0.2f,1}};
 
-                        // RECORDING 엔트리는 깜빡이는 배경 + 테두리
-                        if(e.status == FFTViewer::SchedEntry::RECORDING){
+                        // RECORDING/ARMED 엔트리는 깜빡이는 배경 + 테두리
+                        if(e.status == FFTViewer::SchedEntry::RECORDING
+                        || e.status == FFTViewer::SchedEntry::ARMED){
                             float t2=(float)ImGui::GetTime();
                             float a = 0.5f + 0.5f*sinf(t2*4.f);
                             ImVec2 cp = ImGui::GetCursorScreenPos();
@@ -7071,10 +7081,16 @@ void run_streaming_viewer(){
                         if(e.status == FFTViewer::SchedEntry::WAITING){
                             int d = (int)(e.start_time - now_t);
                             if(d > 0){
-                                int m=d/60, s=d%60;
-                                if(m >= 60){ int h=m/60; m%=60; snprintf(tail, sizeof(tail), "  in %dh%02dm", h,m); }
-                                else snprintf(tail, sizeof(tail), "  in %d:%02d", m,s);
+                                int h = d / 3600;
+                                int m = (d % 3600) / 60;
+                                int s = d % 60;
+                                if(h > 0) snprintf(tail, sizeof(tail), "  in %dh%02dm%02ds", h, m, s);
+                                else      snprintf(tail, sizeof(tail), "  in %d:%02d", m, s);
                             }
+                        } else if(e.status == FFTViewer::SchedEntry::ARMED){
+                            int d = (int)(e.start_time - now_t);
+                            if(d < 0) d = 0;
+                            snprintf(tail, sizeof(tail), "  ARMED in %ds", d);
                         } else if(e.status == FFTViewer::SchedEntry::RECORDING){
                             float el = std::chrono::duration<float>(
                                 std::chrono::steady_clock::now() - e.rec_started).count();
@@ -7086,18 +7102,16 @@ void run_streaming_viewer(){
                                     tb,e.freq_mhz,e.bw_khz,e.duration_sec, opn, tail);
                         ImGui::SameLine();
 
-                        // Remove 권한: HOST(local)이면 항상, JOIN이면 본인 entry만, RECORDING은 불가
-                        bool can_remove = (e.status != FFTViewer::SchedEntry::RECORDING);
-                        if(can_remove && v.remote_mode){
-                            const char* me = login_get_id();
-                            can_remove = (strncmp(opn, me, 31) == 0);
-                        }
+                        // Remove 권한: 누구나 (타 계정 엔트리 포함). RECORDING/ARMED만 불가
+                        bool can_remove = (e.status != FFTViewer::SchedEntry::RECORDING
+                                        && e.status != FFTViewer::SchedEntry::ARMED);
                         if(!can_remove) ImGui::BeginDisabled();
                         if(ImGui::SmallButton("X")){
                             if(v.remote_mode && v.net_cli){
                                 v.net_cli->cmd_remove_sched((int64_t)e.start_time, e.freq_mhz);
                             } else {
                                 v.sched_entries.erase(v.sched_entries.begin()+i);
+                                v.broadcast_sched_list_locked();  // Central 반영 (mtx 잡은 상태)
                                 ImGui::PopID();
                                 if(!can_remove) ImGui::EndDisabled();
                                 break;

@@ -100,6 +100,14 @@ int CentralServer::make_listen_sock(int port){
 }
 
 bool CentralServer::start(int port){
+    // 스케줄 영속화 파일 경로 결정 및 로드
+    {
+        const char* home = getenv("HOME");
+        std::string base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
+        mkdir(base.c_str(), 0755);
+        schedules_json_path_ = base + "/schedules.json";
+        load_schedules_from_json();
+    }
     listen_fd_ = make_listen_sock(port);
     if(listen_fd_ < 0) return false;
     running_.store(true);
@@ -199,6 +207,26 @@ void CentralServer::handshake(int fd){
         }
         printf("[Central] HOST room '%s' (%s) opened  fd=%d\n",
                room->station_id.c_str(), room->info.station_name, fd);
+
+        // 저장된 예약 리스트가 있으면 HOST에 복원 전송
+        {
+            std::vector<uint8_t> saved;
+            {
+                std::lock_guard<std::mutex> jlk(sched_json_mtx_);
+                auto it = sched_by_station_.find(room->station_id);
+                if(it != sched_by_station_.end()) saved = it->second;
+            }
+            if(!saved.empty()){
+                {
+                    std::lock_guard<std::mutex> clk(room->cache_mtx);
+                    room->cached_sched_sync = saved;
+                }
+                enqueue_host_send(room, 0xFFFF, CentralMuxType::DATA,
+                                  saved.data(), (uint32_t)saved.size());
+                printf("[Central] replayed SCHED_SYNC to HOST '%s' (%zu bytes)\n",
+                       room->station_id.c_str(), saved.size());
+            }
+        }
 
         // HOST 연결 직후 첫 OP_LIST(HOST만) 전송 → HOST UI 초기화
         build_and_broadcast_op_list(room);
@@ -541,11 +569,17 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                     c_ch = room->cached_ch_sync;
                     c_op = room->cached_op_list;
                 }
+                std::vector<uint8_t> c_sched;
+                {
+                    std::lock_guard<std::mutex> clk(room->cache_mtx);
+                    c_sched = room->cached_sched_sync;
+                }
                 int cache_count = 0;
                 if(!c_hb.empty()){ target->enqueue_ctrl(c_hb.data(), c_hb.size()); cache_count++; }
                 if(!c_st.empty()){ target->enqueue_ctrl(c_st.data(), c_st.size()); cache_count++; }
                 if(!c_ch.empty()){ target->enqueue_ctrl(c_ch.data(), c_ch.size()); cache_count++; }
                 if(!c_op.empty()){ target->enqueue_ctrl(c_op.data(), c_op.size()); cache_count++; }
+                if(!c_sched.empty()){ target->enqueue_ctrl(c_sched.data(), c_sched.size()); cache_count++; }
                 printf("[Central] sent %d cached packets to conn_id=%u\n", cache_count, conn_id);
                 // OPERATOR_LIST 갱신 (새 유저 반영)
                 build_and_broadcast_op_list(room);
@@ -564,6 +598,20 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         auto& cache = (bewe_type == BEWE_TYPE_HEARTBEAT) ? room->cached_heartbeat
                                                          : room->cached_status;
         cache.assign(bewe_pkt, bewe_pkt + bewe_len);
+    }
+
+    // ── SCHED_SYNC 인터셉트: 최신 스냅샷 캐시 + JSON 영속화 후 그대로 브로드캐스트
+    if(bewe_type == BEWE_TYPE_SCHED_SYNC){
+        {
+            std::lock_guard<std::mutex> clk(room->cache_mtx);
+            room->cached_sched_sync.assign(bewe_pkt, bewe_pkt + bewe_len);
+        }
+        {
+            std::lock_guard<std::mutex> jlk(sched_json_mtx_);
+            sched_by_station_[room->station_id].assign(bewe_pkt, bewe_pkt + bewe_len);
+        }
+        save_schedules_to_json();
+        // JOIN들에게 그대로 전달 (아래 공통 경로로 fall-through)
     }
 
     // ── CHANNEL_SYNC 인터셉트: 캐시 저장 → audio_mask 재작성 후 broadcast
@@ -1383,4 +1431,231 @@ void CentralServer::broadcast_global_chat(const uint8_t* bewe_pkt, size_t bewe_l
         for(auto& je : t.joins)
             je->enqueue_data(bewe_pkt, bewe_len);
     }
+}
+
+// ── Scheduled recording persistence ───────────────────────────────────────
+// 간단한 수작업 JSON 직렬화 (외부 라이브러리 없음). PktSchedSync 스키마만 처리.
+// 형식:
+//   {"stations":[
+//     {"station_id":"...","entries":[
+//       {"start_time":N,"duration_sec":F,"freq_mhz":F,"bw_khz":F,
+//        "status":N,"op_index":N,"operator_name":"..."},
+//       ...
+//     ]}
+//   ]}
+
+static void json_escape(std::string& out, const char* s){
+    for(; *s; s++){
+        char c = *s;
+        if(c == '"' || c == '\\'){ out += '\\'; out += c; }
+        else if(c == '\n') out += "\\n";
+        else if(c == '\r') out += "\\r";
+        else if((unsigned char)c < 0x20) {} // skip control
+        else out += c;
+    }
+}
+
+static std::vector<uint8_t> pkt_sched_sync_from_entries(
+        const std::vector<SchedSyncEntry>& entries){
+    PktSchedSync pkt{};
+    int n = (int)std::min<size_t>(entries.size(), MAX_SCHED_ENTRIES);
+    pkt.count = (uint8_t)n;
+    for(int i=0; i<n; i++) pkt.entries[i] = entries[i];
+    // BEWE 헤더 래핑
+    std::vector<uint8_t> bewe(BEWE_HDR_SIZE + sizeof(PktSchedSync));
+    memcpy(bewe.data(), "BEWE", 4);
+    bewe[4] = BEWE_TYPE_SCHED_SYNC;
+    uint32_t plen = sizeof(PktSchedSync);
+    memcpy(bewe.data()+5, &plen, 4);
+    memcpy(bewe.data()+BEWE_HDR_SIZE, &pkt, sizeof(PktSchedSync));
+    return bewe;
+}
+
+void CentralServer::save_schedules_to_json(){
+    std::lock_guard<std::mutex> lk(sched_json_mtx_);
+    std::string out = "{\n  \"stations\": [\n";
+    bool first_st = true;
+    for(auto& kv : sched_by_station_){
+        const auto& sid = kv.first;
+        const auto& bewe = kv.second;
+        if(bewe.size() < BEWE_HDR_SIZE + sizeof(PktSchedSync)) continue;
+        const PktSchedSync* pkt = reinterpret_cast<const PktSchedSync*>(bewe.data()+BEWE_HDR_SIZE);
+        int cnt = std::min<int>(pkt->count, MAX_SCHED_ENTRIES);
+        // WAITING만 영속화 (DONE/FAILED/RECORDING/ARMED은 세션 값)
+        std::vector<const SchedSyncEntry*> keep;
+        for(int i=0; i<cnt; i++){
+            const auto& e = pkt->entries[i];
+            if(!e.valid) continue;
+            // WAITING=0 만 저장 — 재기동 시 "앞으로 실행될 것"만 남김
+            if(e.status != 0) continue;
+            keep.push_back(&e);
+        }
+        if(keep.empty()) continue;
+        if(!first_st) out += ",\n";
+        first_st = false;
+        out += "    {\"station_id\":\"";
+        json_escape(out, sid.c_str());
+        out += "\",\"entries\":[";
+        bool first_e = true;
+        for(auto* e : keep){
+            if(!first_e) out += ",";
+            first_e = false;
+            char buf[512];
+            snprintf(buf, sizeof(buf),
+                "{\"start_time\":%lld,\"duration_sec\":%.3f,\"freq_mhz\":%.6f,"
+                "\"bw_khz\":%.3f,\"status\":%u,\"op_index\":%u,\"operator_name\":\"",
+                (long long)e->start_time, e->duration_sec, e->freq_mhz,
+                e->bw_khz, (unsigned)e->status, (unsigned)e->op_index);
+            out += buf;
+            char nm[33]={}; memcpy(nm, e->operator_name, 32);
+            json_escape(out, nm);
+            out += "\"}";
+        }
+        out += "]}";
+    }
+    out += "\n  ]\n}\n";
+    FILE* fp = fopen(schedules_json_path_.c_str(), "w");
+    if(fp){ fwrite(out.data(), 1, out.size(), fp); fclose(fp); }
+    else printf("[Central] save_schedules_to_json: cannot open %s errno=%d\n",
+                schedules_json_path_.c_str(), errno);
+}
+
+// 매우 간단한 JSON scanner (고정 스키마용). 공백/개행만 스킵, 문법 검증 최소.
+namespace {
+struct JScan {
+    const char* p;
+    const char* end;
+    void skip_ws(){ while(p<end && (*p==' '||*p=='\n'||*p=='\r'||*p=='\t'||*p==',')) p++; }
+    bool consume(char c){ skip_ws(); if(p<end && *p==c){ p++; return true; } return false; }
+    bool peek(char c){ skip_ws(); return p<end && *p==c; }
+    bool read_string(std::string& out){
+        skip_ws();
+        if(p>=end || *p != '"') return false;
+        p++; out.clear();
+        while(p<end && *p != '"'){
+            if(*p == '\\' && p+1<end){ p++;
+                if(*p=='n') out+='\n';
+                else if(*p=='r') out+='\r';
+                else out += *p;
+                p++;
+            } else { out += *p++; }
+        }
+        if(p<end && *p=='"') p++;
+        return true;
+    }
+    bool read_number(double& v){
+        skip_ws();
+        const char* s = p;
+        while(p<end && (*p=='-'||*p=='+'||*p=='.'||(*p>='0'&&*p<='9')||*p=='e'||*p=='E')) p++;
+        if(s==p) return false;
+        std::string tmp(s, p-s);
+        v = atof(tmp.c_str());
+        return true;
+    }
+    bool read_key(std::string& k){
+        if(!read_string(k)) return false;
+        skip_ws();
+        if(p<end && *p==':'){ p++; return true; }
+        return false;
+    }
+};
+}
+
+void CentralServer::load_schedules_from_json(){
+    std::lock_guard<std::mutex> lk(sched_json_mtx_);
+    FILE* fp = fopen(schedules_json_path_.c_str(), "r");
+    if(!fp){
+        printf("[Central] schedules.json not found at %s (fresh start)\n",
+               schedules_json_path_.c_str());
+        return;
+    }
+    fseek(fp,0,SEEK_END); long sz = ftell(fp); fseek(fp,0,SEEK_SET);
+    if(sz <= 0){ fclose(fp); return; }
+    std::string body(sz, 0);
+    if(fread(&body[0], 1, sz, fp) != (size_t)sz){ fclose(fp); return; }
+    fclose(fp);
+
+    JScan js{body.data(), body.data()+body.size()};
+    sched_by_station_.clear();
+    time_t now = time(nullptr);
+    size_t total_loaded = 0;
+
+    if(!js.consume('{')) return;
+    std::string key;
+    while(js.read_key(key)){
+        if(key != "stations"){ // 무시: 값을 어림으로 스킵
+            if(!js.consume('[') && !js.consume('{')) return;
+            int depth = 1;
+            while(js.p<js.end && depth>0){
+                if(*js.p=='[' || *js.p=='{') depth++;
+                else if(*js.p==']' || *js.p=='}') depth--;
+                js.p++;
+            }
+            continue;
+        }
+        if(!js.consume('[')) return;
+        while(!js.peek(']')){
+            if(!js.consume('{')) break;
+            std::string sid;
+            std::vector<SchedSyncEntry> entries;
+            std::string k2;
+            while(js.read_key(k2)){
+                if(k2 == "station_id"){
+                    js.read_string(sid);
+                } else if(k2 == "entries"){
+                    if(!js.consume('[')) break;
+                    while(!js.peek(']')){
+                        if(!js.consume('{')) break;
+                        SchedSyncEntry e{};
+                        e.valid = 1;
+                        std::string k3;
+                        while(js.read_key(k3)){
+                            if(k3 == "start_time"){
+                                double v=0; js.read_number(v); e.start_time=(int64_t)v;
+                            } else if(k3 == "duration_sec"){
+                                double v=0; js.read_number(v); e.duration_sec=(float)v;
+                            } else if(k3 == "freq_mhz"){
+                                double v=0; js.read_number(v); e.freq_mhz=(float)v;
+                            } else if(k3 == "bw_khz"){
+                                double v=0; js.read_number(v); e.bw_khz=(float)v;
+                            } else if(k3 == "status"){
+                                double v=0; js.read_number(v); e.status=(uint8_t)v;
+                            } else if(k3 == "op_index"){
+                                double v=0; js.read_number(v); e.op_index=(uint8_t)v;
+                            } else if(k3 == "operator_name"){
+                                std::string s; js.read_string(s);
+                                strncpy(e.operator_name, s.c_str(), sizeof(e.operator_name)-1);
+                            } else {
+                                // unknown key: skip value
+                                if(js.peek('"')){ std::string tmp; js.read_string(tmp); }
+                                else { double v; js.read_number(v); }
+                            }
+                            if(js.peek('}')){ break; }
+                        }
+                        js.consume('}');
+                        // 과거 엔트리 제외
+                        if((time_t)e.start_time + (time_t)e.duration_sec < now) continue;
+                        entries.push_back(e);
+                    }
+                    js.consume(']');
+                } else {
+                    if(js.peek('"')){ std::string tmp; js.read_string(tmp); }
+                    else { double v; js.read_number(v); }
+                }
+                if(js.peek('}')){ break; }
+            }
+            js.consume('}');
+            if(!sid.empty() && !entries.empty()){
+                auto bewe = pkt_sched_sync_from_entries(entries);
+                sched_by_station_[sid] = std::move(bewe);
+                total_loaded += entries.size();
+                printf("[Central] loaded %zu schedule(s) for station '%s'\n",
+                       entries.size(), sid.c_str());
+            }
+        }
+        js.consume(']');
+        break;
+    }
+    printf("[Central] schedules.json: total %zu entries across %zu stations\n",
+           total_loaded, sched_by_station_.size());
 }

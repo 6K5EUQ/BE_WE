@@ -9,6 +9,7 @@
 #include <memory>
 #include <chrono>
 #include <condition_variable>
+#include <unordered_map>
 
 struct JoinEntry {
     uint16_t          conn_id = 0;
@@ -188,6 +189,7 @@ struct HostRoom {
     std::vector<uint8_t>      cached_status;
     std::vector<uint8_t>      cached_ch_sync;
     std::vector<uint8_t>      cached_op_list;     // 릴레이가 빌드
+    std::vector<uint8_t>      cached_sched_sync;  // 예약 리스트 (JSON에 영속화)
 
     // 인증/오퍼레이터 관리 (릴레이가 중앙 관리)
     uint8_t                   next_op_idx = 1;
@@ -249,6 +251,15 @@ private:
 
     // BEWE 패킷 빌드 헬퍼 (magic + type + len + payload)
     static std::vector<uint8_t> make_bewe_packet(uint8_t type, const void* payload, uint32_t plen);
+
+    // ── Scheduled recording persistence ─────────────────────────────────
+    // ~/BE_WE/DataBase/schedules.json 에 station_id 별 SCHED_SYNC 스냅샷 저장
+    std::mutex              sched_json_mtx_;
+    std::string             schedules_json_path_;
+    // station_id → cached SCHED_SYNC payload (BEWE 헤더 포함)
+    std::unordered_map<std::string, std::vector<uint8_t>> sched_by_station_;
+    void load_schedules_from_json();
+    void save_schedules_to_json();   // 모든 station 스냅샷을 JSON으로 덤프
 
     // 전역 채팅: 중앙서버에 접속한 모든 JOIN + 다른 방의 HOST에게 CHAT BEWE 패킷 전달
     // skip_host_room: 소스 방의 HOST는 제외 (이미 알고 있음)

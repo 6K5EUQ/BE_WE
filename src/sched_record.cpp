@@ -41,14 +41,14 @@ void FFTViewer::broadcast_sched_list(){
     net_srv->broadcast_sched_sync(pkt);
 }
 
-// Overlap 검사 — [start, start+dur) 구간이 기존 WAITING/RECORDING entry와 겹치는지
+// Overlap 검사 — pre-arm 윈도우 포함 [start - PRE_ARM, start+dur) 가 기존 active entry와 겹치는지
 bool FFTViewer::sched_has_overlap(time_t start, float dur) const {
-    time_t a0 = start;
+    time_t a0 = start - (time_t)SCHED_PRE_ARM_SEC;
     time_t a1 = start + (time_t)dur;
     for(const auto& e : sched_entries){
         if(e.status == SchedEntry::DONE || e.status == SchedEntry::FAILED) continue;
-        time_t b0 = e.start_time;
-        time_t b1 = b0 + (time_t)e.duration_sec;
+        time_t b0 = e.start_time - (time_t)SCHED_PRE_ARM_SEC;
+        time_t b1 = e.start_time + (time_t)e.duration_sec;
         if(a0 < b1 && b0 < a1) return true;
     }
     return false;
@@ -58,10 +58,13 @@ void FFTViewer::sched_tick(){
     std::lock_guard<std::mutex> lk(sched_mtx);
     time_t now = time(nullptr);
 
-    // Active recording: check if duration expired
+    // Active slot (ARMED or RECORDING)
     if(sched_active_idx >= 0 && sched_active_idx < (int)sched_entries.size()){
         auto& e = sched_entries[sched_active_idx];
-        if(e.status == SchedEntry::RECORDING){
+        if(e.status == SchedEntry::ARMED){
+            if(now >= e.start_time)
+                sched_begin_rec(sched_active_idx);
+        } else if(e.status == SchedEntry::RECORDING){
             float elapsed = std::chrono::duration<float>(
                 std::chrono::steady_clock::now() - e.rec_started).count();
             if(elapsed >= e.duration_sec)
@@ -69,7 +72,7 @@ void FFTViewer::sched_tick(){
         }
     }
 
-    // No active recording: find next WAITING entry
+    // No active slot: find next WAITING entry eligible for pre-arm
     if(sched_active_idx < 0){
         for(int i = 0; i < (int)sched_entries.size(); i++){
             auto& e = sched_entries[i];
@@ -77,37 +80,52 @@ void FFTViewer::sched_tick(){
             // Entirely missed?
             if(now > e.start_time + (time_t)e.duration_sec){
                 e.status = SchedEntry::FAILED;
+                broadcast_sched_list_locked();
                 bewe_log_push(0, "[SCHED] Entry %d missed (time passed)\n", i);
                 continue;
             }
-            // Time to start?
-            if(now >= e.start_time){
-                sched_start_entry(i);
+            // Pre-arm window reached?
+            if(now >= e.start_time - (time_t)SCHED_PRE_ARM_SEC){
+                sched_arm_entry(i);
                 break;
             }
         }
     }
 }
 
-void FFTViewer::sched_start_entry(int idx){
+// Pre-arm: start_time - SCHED_PRE_ARM_SEC 시점에 호출됨.
+// SDR 튠(DC 오프셋 적용), 채널 할당, demod 시작만 수행. IQ 기록은 아직.
+// 이 구간 동안 PLL lock / IIR 과도응답 / squelch 보정이 안정화됨.
+void FFTViewer::sched_arm_entry(int idx){
     auto& e = sched_entries[idx];
 
-    // Validate
-    if(remote_mode){ e.status=SchedEntry::FAILED; bewe_log_push(0,"[SCHED] Failed: JOIN mode\n"); return; }
-    // SDR 활성 여부: BladeRF/RTL-SDR/Pluto 어느 하나라도 잡혀 있어야 함
+    if(remote_mode){ e.status=SchedEntry::FAILED; broadcast_sched_list_locked(); bewe_log_push(0,"[SCHED] Failed: JOIN mode\n"); return; }
     bool sdr_ok = (dev_blade != nullptr)
                || (dev_rtl   != nullptr)
                || (hw.type == HWType::PLUTO && pluto_ctx != nullptr);
-    if(!sdr_ok){ e.status=SchedEntry::FAILED; bewe_log_push(0,"[SCHED] Failed: no SDR\n"); return; }
+    if(!sdr_ok){ e.status=SchedEntry::FAILED; broadcast_sched_list_locked(); bewe_log_push(0,"[SCHED] Failed: no SDR\n"); return; }
 
-    // Save current frequency
     sched_saved_cf = (float)(header.center_frequency / 1e6);
 
-    // Change frequency
-    set_frequency(e.freq_mhz);
-    bewe_log_push(0, "[SCHED] Freq > %.3f MHz\n", e.freq_mhz);
+    // DC 오프셋: SDR CF를 target + offset 로 이동 → DC 스파이크가 채널 베이스밴드에서 -offset 위치로
+    // 밀려 채널 LPF 바깥이 되어 제거됨.
+    float bw_mhz     = e.bw_khz / 1000.0f;
+    float sdr_sr_mhz = (float)(header.sample_rate) / 1e6f;
+    float min_off    = bw_mhz;                                    // 채널 필터 바깥으로 밀어냄
+    float max_off    = sdr_sr_mhz * 0.45f - bw_mhz * 0.5f;        // SDR 유효 대역 헤드룸
+    float offset;
+    if(max_off <= 0.f){
+        offset = 0.f;
+        bewe_log_push(0,"[SCHED] Warn: BW exceeds SDR headroom; DC may intrude\n");
+    } else {
+        offset = (max_off < min_off) ? max_off : min_off;
+    }
+    float sdr_cf = e.freq_mhz + offset;
 
-    // Find free channel slot
+    set_frequency(sdr_cf);
+    bewe_log_push(0, "[SCHED] ARM: SDR CF %.3f MHz (target %.3f + DC offset %.3f)\n",
+                  sdr_cf, e.freq_mhz, offset);
+
     int slot = -1;
     for(int i = 0; i < MAX_CHANNELS; i++){
         if(!channels[i].filter_active){ slot = i; break; }
@@ -115,11 +133,12 @@ void FFTViewer::sched_start_entry(int idx){
     if(slot < 0){
         e.status = SchedEntry::FAILED;
         set_frequency(sched_saved_cf);
+        broadcast_sched_list_locked();
         bewe_log_push(0, "[SCHED] Failed: no free channel slot\n");
         return;
     }
 
-    // Create temporary channel — owner = 예약자 이름
+    // 채널 [s, e]는 target 기준 (demod 오실레이터가 SDR CF에서 target까지 믹싱)
     float half_bw = e.bw_khz / 2000.0f;
     channels[slot].reset_slot();
     channels[slot].s = e.freq_mhz - half_bw;
@@ -130,24 +149,54 @@ void FFTViewer::sched_start_entry(int idx){
     channels[slot].audio_mask.store(0x1);
     e.temp_ch_idx = slot;
 
-    // Start demodulation (FM by default for squelch gate to work)
+    // 기록되는 I/Q는 discriminator 전의 채널 베이스밴드. demod 스레드는 샘플 공급자로서 필수.
     start_dem(slot, Channel::DM_FM);
-
-    // Wait briefly for demod thread to initialize and squelch to calibrate
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-    // 예약 녹음: squelch 무관하게 전 구간 녹음
     channels[slot].iq_rec_force_all.store(true);
-    // Start IQ recording
-    start_iq_rec(slot);
 
-    e.status = SchedEntry::RECORDING;
-    e.rec_started = std::chrono::steady_clock::now();
+    e.status = SchedEntry::ARMED;
     sched_active_idx = idx;
 
     if(net_srv) net_srv->broadcast_channel_sync(channels, MAX_CHANNELS);
-    bewe_log_push(0, "[SCHED] Recording started: CH%d %.3f MHz BW=%.0f kHz dur=%.0fs\n",
-                  slot, e.freq_mhz, e.bw_khz, e.duration_sec);
+    broadcast_sched_list_locked();
+    bewe_log_push(0, "[SCHED] ARMED: CH%d %.3f MHz BW=%.0f kHz dur=%.0fs (T-%.1fs)\n",
+                  slot, e.freq_mhz, e.bw_khz, e.duration_sec, SCHED_PRE_ARM_SEC);
+}
+
+// sched_mtx를 이미 잡은 상태에서 호출 가능한 브로드캐스트 (내부 잠금 없음)
+void FFTViewer::broadcast_sched_list_locked(){
+    if(!net_srv) return;
+    PktSchedSync pkt = build_sched_sync_pkt(sched_entries);
+    net_srv->broadcast_sched_sync(pkt);
+}
+
+// start_time 도달 시 호출 — ARM된 엔트리의 IQ 기록만 실제로 시작.
+void FFTViewer::sched_begin_rec(int idx){
+    auto& e = sched_entries[idx];
+    int slot = e.temp_ch_idx;
+    if(slot < 0 || slot >= MAX_CHANNELS){
+        e.status = SchedEntry::FAILED;
+        sched_active_idx = -1;
+        broadcast_sched_list_locked();
+        return;
+    }
+    start_iq_rec(slot);
+    if(!channels[slot].iq_rec_on.load()){
+        bewe_log_push(0, "[SCHED] REC start failed: CH%d\n", slot);
+        stop_dem(slot);
+        channels[slot].reset_slot();
+        set_frequency(sched_saved_cf);
+        e.status = SchedEntry::FAILED;
+        sched_active_idx = -1;
+        if(net_srv) net_srv->broadcast_channel_sync(channels, MAX_CHANNELS);
+        broadcast_sched_list_locked();
+        return;
+    }
+    e.status      = SchedEntry::RECORDING;
+    e.rec_started = std::chrono::steady_clock::now();
+    if(net_srv) net_srv->broadcast_channel_sync(channels, MAX_CHANNELS);
+    broadcast_sched_list_locked();
+    bewe_log_push(0, "[SCHED] REC start: CH%d %.3f MHz dur=%.0fs\n",
+                  slot, e.freq_mhz, e.duration_sec);
 }
 
 void FFTViewer::sched_stop_entry(int idx){
@@ -186,14 +235,14 @@ void FFTViewer::sched_stop_entry(int idx){
     sched_active_idx = -1;
 
     if(net_srv) net_srv->broadcast_channel_sync(channels, MAX_CHANNELS);
+    broadcast_sched_list_locked();
     bewe_log_push(0, "[SCHED] Recording complete: entry %d\n", idx);
 
     // 자동 DB 업로드 (별도 스레드) — 파일 finalize 대기 후 전송
     if(!iq_path.empty() && sched_db_upload_fn){
         auto upload_fn = sched_db_upload_fn;
         std::thread([upload_fn, iq_path, entry_op, entry_start, entry_dur, entry_freq, entry_bw](){
-            // 파일 flush/close + .info 갱신 마무리 대기 (디스크 sync 안전 마진)
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            // stop_iq_rec()가 동기로 fclose+.info Duration 갱신까지 끝냈으므로 sleep 불필요.
 
             // stop_iq_rec()가 이미 표준 Key:Value 형식 .info를 생성/갱신했음.
             // 그 내용을 그대로 read해서 업로드 (free-form 텍스트 대신 표준 포맷 보장)

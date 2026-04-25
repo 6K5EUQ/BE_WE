@@ -448,6 +448,11 @@ void CentralClient::mux_loop(int central_fd,
                         on_central_db_dl_info_(buf.data(), mux.len);
                     continue;
                 }
+                if(btype == 0x30){  // SCHED_SYNC: Central이 저장해 둔 예약 리스트를 HOST에 복원
+                    if(on_central_sched_sync_)
+                        on_central_sched_sync_(buf.data(), mux.len);
+                    continue;
+                }
             }
 
             // 중앙서버→HOST CHAT: relay 루프 방지를 위해 socketpair 전달 않음
