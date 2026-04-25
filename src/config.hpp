@@ -2,8 +2,8 @@
 #include <cstdint>
 
 // ── BEWE version (창 제목 및 About 표시용) ──────────────────────────────────
-// 업데이트 규칙: major(앞자리) = 대규모/구조 변경, minor(뒷자리) = 소규모 개선
-#define BEWE_VERSION "v1.0"
+// SemVer: vMAJOR.MINOR.PATCH — 자세한 정책은 CLAUDE.md 참조
+#define BEWE_VERSION "v1.1.0"
 
 #ifdef BEWE_HEADLESS
   typedef uint32_t ImU32;

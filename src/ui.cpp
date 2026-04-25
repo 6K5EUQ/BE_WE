@@ -2384,11 +2384,14 @@ void run_streaming_viewer(){
                 bool found=false;
                 for(auto& x : v.file_xfers){
                     if(!x.finished && x.total_bytes==0){
-                        x.filename=name; x.total_bytes=total; found=true; break;
+                        x.filename=name; x.total_bytes=total;
+                        x.dir=FFTViewer::FileXfer::DIR_DOWNLOAD;
+                        found=true; break;
                     }
                 }
                 if(!found){
                     FFTViewer::FileXfer xf{}; xf.filename=name; xf.total_bytes=total;
+                    xf.dir=FFTViewer::FileXfer::DIR_DOWNLOAD;
                     v.file_xfers.push_back(xf);
                 }
             }
@@ -2424,11 +2427,14 @@ void run_streaming_viewer(){
             bool found=false;
             for(auto& x : v.file_xfers)
                 if(x.filename==name && !x.finished){
-                    x.done_bytes=done; x.total_bytes=total; found=true; break;
+                    x.done_bytes=done; x.total_bytes=total;
+                    x.dir=FFTViewer::FileXfer::DIR_UPLOAD;
+                    found=true; break;
                 }
             if(!found){
                 FFTViewer::FileXfer xf{};
                 xf.filename=name; xf.done_bytes=done; xf.total_bytes=total;
+                xf.dir=FFTViewer::FileXfer::DIR_UPLOAD;
                 v.file_xfers.push_back(xf);
             }
         };
@@ -2451,6 +2457,7 @@ void run_streaming_viewer(){
                 if(!found){
                     FFTViewer::FileXfer xf{}; xf.filename=name; xf.finished=true;
                     xf.local_path=path; xf.is_sa=true;
+                    xf.dir=FFTViewer::FileXfer::DIR_DOWNLOAD;
                     v.file_xfers.push_back(xf);
                 }
             }
@@ -2632,7 +2639,10 @@ void run_streaming_viewer(){
                             v.rec_entries.end());
                         return;
                     }
-                    // rec_entries: finished 마크 (삭제 X → Record 탭에 [Done] 표시)
+                    // rec_entries: finished 마크 + .info 메타 캡처
+                    double  rgn_cf_mhz = 0, rgn_bw_khz = 0, rgn_dur_sec = 0;
+                    time_t  rgn_start_wt = 0;
+                    bool    have_meta = false;
                     {
                         std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                         for(auto& e : v.rec_entries){
@@ -2642,9 +2652,22 @@ void run_streaming_viewer(){
                                 if(e.xfer_total == 0) e.xfer_total = written;
                                 e.xfer_done = written;
                                 e.path = save_path;
+                                rgn_cf_mhz   = (double)(e.req_freq_lo + e.req_freq_hi) * 0.5;
+                                rgn_bw_khz   = (double)(e.req_freq_hi - e.req_freq_lo) * 1000.0;
+                                rgn_dur_sec  = (double)(e.req_time_end - e.req_time_start);
+                                if(rgn_dur_sec < 0) rgn_dur_sec = 0;
+                                rgn_start_wt = (time_t)e.req_time_start;
+                                have_meta    = (e.req_freq_hi > e.req_freq_lo);
                                 break;
                             }
                         }
+                    }
+                    // .info 자동 생성 (HOST region_save와 동일 정책)
+                    if(have_meta){
+                        write_default_info_file(save_path, "Region IQ",
+                            rgn_cf_mhz, rgn_bw_khz, rgn_dur_sec, "",
+                            login_get_id(), v.station_name.c_str(),
+                            rgn_start_wt, v.utc_offset_hours());
                     }
                     // Archive 강제 재스캔 → 다음 프레임에 디스크 기준으로 rec_iq_files 재구성
                     // (수동 push_back 대신 scan_dir에 일임하여 경쟁 조건 회피)
@@ -2754,6 +2777,7 @@ void run_streaming_viewer(){
                 xf.filename = d->filename;
                 xf.total_bytes = d->total_bytes;
                 xf.done_bytes = 0;
+                xf.dir = FFTViewer::FileXfer::DIR_DOWNLOAD;
                 v.file_xfers.push_back(xf);
             }
             if(db_dl_fp && data_len > 0){
@@ -3725,10 +3749,13 @@ void run_streaming_viewer(){
         std::string filepath, filename;
         bool is_public=false; // Public 탭 파일 (소유자만 삭제)
         bool selected=false;  // 좌클릭 선택 상태
+        // Del 키 처리 분기용 (좌클릭 시 셋팅)
+        enum Type : uint8_t { FT_LOCAL=0, FT_DB=1, FT_REPORT=2 } type = FT_LOCAL;
+        std::string operator_name; // FT_DB 권한 검사용
     } file_ctx;
 
-    // DB 전용 우클릭 상태
-    static struct { bool open=false; float x=0,y=0; std::string filename, operator_name; bool is_iq=false; } db_ctx;
+    // DB 전용 우클릭 상태 + 좌클릭 selected
+    static struct { bool open=false; float x=0,y=0; std::string filename, operator_name; bool is_iq=false; bool selected=false; } db_ctx;
 
     // ── Rename 모달 ──────────────────────────────────────────────────────
     struct RenameModal {
@@ -4556,6 +4583,11 @@ void run_streaming_viewer(){
                             e.filename = fn;
                             e.is_region = true;
                             e.req_state = FFTViewer::RecEntry::REQ_CONFIRMED;
+                            // .info 자동 생성용 요청 메타
+                            e.req_freq_lo    = v.region.freq_lo;
+                            e.req_freq_hi    = v.region.freq_hi;
+                            e.req_time_start = (int32_t)(v.region.time_start_ms / 1000);
+                            e.req_time_end   = (int32_t)(v.region.time_end_ms   / 1000);
                             e.t_start = std::chrono::steady_clock::now();
                             v.rec_entries.push_back(e);
                         }
@@ -4771,8 +4803,34 @@ void run_streaming_viewer(){
                         if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
                     }
                     v.selected_ch=-1;
+                } else if(file_ctx.selected && file_ctx.type == FileCtxMenu::FT_DB){
+                    // DB 파일: cmd_db_delete (Central에서 처리)
+                    if(v.net_cli){
+                        v.net_cli->cmd_db_delete(file_ctx.filename.c_str(),
+                                                 file_ctx.operator_name.c_str());
+                    } else if(v.net_srv && v.net_srv->cb.on_relay_broadcast){
+                        PktDbDeleteReq req{};
+                        strncpy(req.filename, file_ctx.filename.c_str(), 127);
+                        strncpy(req.operator_name, file_ctx.operator_name.c_str(), 31);
+                        auto pkt = make_packet(PacketType::DB_DELETE_REQ, &req, sizeof(req));
+                        v.net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
+                    }
+                    bewe_log_push(0,"[UI] DEL: DB '%s'\n", file_ctx.filename.c_str());
+                    file_ctx.selected=false;
+                } else if(file_ctx.selected && file_ctx.type == FileCtxMenu::FT_REPORT){
+                    // Report 파일: cmd_report_delete
+                    if(v.net_cli){
+                        v.net_cli->cmd_report_delete(file_ctx.filename.c_str());
+                    } else if(v.net_srv && v.net_srv->cb.on_relay_broadcast){
+                        PktReportDelete rd{};
+                        strncpy(rd.filename, file_ctx.filename.c_str(), 127);
+                        auto pkt = make_packet(PacketType::REPORT_DELETE, &rd, sizeof(rd));
+                        v.net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
+                    }
+                    bewe_log_push(0,"[UI] DEL: Report '%s'\n", file_ctx.filename.c_str());
+                    file_ctx.selected=false;
                 } else if(file_ctx.selected && !file_ctx.filepath.empty()){
-                    // 선택된 파일 DEL 키로 삭제
+                    // 선택된 로컬 파일 DEL 키로 삭제
                     bool can_delete = true;
                     if(file_ctx.is_public){
                         auto it = pub_owners.find(file_ctx.filename);
@@ -7214,11 +7272,18 @@ void run_streaming_viewer(){
                     bool any_active = false;
                     for(auto& x : v.file_xfers) if(!x.finished){ any_active = true; break; }
                     if(any_active){
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f,0.95f,1.0f,1.f));
-                        ImGui::Text("Transferring");
-                        ImGui::PopStyleColor();
                         for(auto& x : v.file_xfers){
                             if(x.finished) continue;
+                            const char* dir_label =
+                                (x.dir == FFTViewer::FileXfer::DIR_UPLOAD)   ? "Upload" :
+                                (x.dir == FFTViewer::FileXfer::DIR_DOWNLOAD) ? "Download" :
+                                                                                "Transfer";
+                            ImVec4 col = (x.dir == FFTViewer::FileXfer::DIR_UPLOAD)
+                                ? ImVec4(1.0f, 0.85f, 0.4f, 1.f)    // 노란색 계열 = Upload
+                                : ImVec4(0.5f, 0.95f, 1.0f, 1.f);   // 청록색 계열 = Download
+                            ImGui::PushStyleColor(ImGuiCol_Text, col);
+                            ImGui::Text("%s", dir_label);
+                            ImGui::PopStyleColor();
                             float frac = (x.total_bytes > 0)
                                 ? (float)((double)x.done_bytes / (double)x.total_bytes) : 0.f;
                             if(frac < 0.f) frac = 0.f;
@@ -7334,6 +7399,7 @@ void run_streaming_viewer(){
 
                         if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
                             file_ctx.selected=true; file_ctx.filepath=fp; file_ctx.filename=fn; file_ctx.is_public=false;
+                            file_ctx.type=FileCtxMenu::FT_LOCAL;
                         }
                         if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
                             file_ctx={true,io.MousePos.x,io.MousePos.y,fp,fn}; file_ctx.selected=true;
@@ -7422,7 +7488,9 @@ void run_streaming_viewer(){
                         for(auto& re : rpt_snap){
                             float pw_r = ImGui::GetContentRegionAvail().x;
                             float fn_wr = pw_r * 0.66f;
-                            ImGui::Selectable(re.filename, false, 0, ImVec2(fn_wr, 0));
+                            bool is_sel_rpt = (file_ctx.type == FileCtxMenu::FT_REPORT &&
+                                               file_ctx.selected && file_ctx.filename == re.filename);
+                            ImGui::Selectable(re.filename, is_sel_rpt, 0, ImVec2(fn_wr, 0));
                             bool rh = ImGui::IsItemHovered();
                             if(re.reporter[0]){
                                 ImGui::SameLine(fn_wr + 8.f);
@@ -7430,6 +7498,14 @@ void run_streaming_viewer(){
                             }
                             if(rh){
                                 if(re.info_summary[0]) ImGui::SetTooltip("%s", re.info_summary);
+                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                                    file_ctx.selected = true;
+                                    file_ctx.open     = false;
+                                    file_ctx.filepath = "";
+                                    file_ctx.filename = re.filename;
+                                    file_ctx.type     = FileCtxMenu::FT_REPORT;
+                                    file_ctx.is_public = false;
+                                }
                                 if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
                                     rpt_ctx = {true, io.MousePos.x, io.MousePos.y, std::string(re.filename)};
                                 }
@@ -7509,7 +7585,9 @@ void run_streaming_viewer(){
                         char info2[32];
                         if(dur_sec > 0) snprintf(info2,sizeof(info2),"%4ds %6.1fM",dur_sec,mb);
                         else            snprintf(info2,sizeof(info2),"     %6.1fM",mb);
-                        ImGui::Selectable(e.filename, false, ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw2, 0));
+                        bool is_sel_db = (file_ctx.type == FileCtxMenu::FT_DB &&
+                                          file_ctx.selected && file_ctx.filename == e.filename);
+                        ImGui::Selectable(e.filename, is_sel_db, ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw2, 0));
                         if(ImGui::IsItemHovered()){
                             // info_data 파싱하여 Key: Value 줄 단위로 툴팁 표시 (Archive와 동일)
                             std::string tip;
@@ -7525,10 +7603,21 @@ void run_streaming_viewer(){
                             }
                             if(!tip.empty()) ImGui::SetTooltip("%s", tip.c_str());
                             else ImGui::SetTooltip("by %s", e.operator_name);
+                            if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                                // 좌클릭: Del 키로 삭제 가능하게 file_ctx 활성화
+                                file_ctx.selected      = true;
+                                file_ctx.open          = false;
+                                file_ctx.filepath      = "";
+                                file_ctx.filename      = e.filename;
+                                file_ctx.operator_name = e.operator_name;
+                                file_ctx.type          = FileCtxMenu::FT_DB;
+                                file_ctx.is_public     = false;
+                            }
                             if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
                                 db_ctx = {true, io.MousePos.x, io.MousePos.y,
                                           std::string(e.filename), std::string(e.operator_name),
-                                          (strncmp(e.filename,"IQ_",3)==0||strncmp(e.filename,"sa_",3)==0)};
+                                          (strncmp(e.filename,"IQ_",3)==0||strncmp(e.filename,"sa_",3)==0),
+                                          true};
                                 bewe_log_push(0,"[UI] DB right-click: '%s'\n", e.filename);
                             }
                         }
@@ -8901,6 +8990,7 @@ void run_streaming_viewer(){
                     xf.filename = fn_cap;
                     xf.total_bytes = file_total;
                     xf.done_bytes = 0;
+                    xf.dir = FFTViewer::FileXfer::DIR_UPLOAD;
                     v.file_xfers.push_back(xf);
                 }
                 if(v.net_cli){

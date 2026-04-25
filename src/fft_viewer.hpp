@@ -613,6 +613,7 @@ public:
         bool        finished    = false;
         bool        is_sa       = false;   // SA로 열 수 있는 파일
         std::string local_path;
+        enum Dir : uint8_t { DIR_UNKNOWN=0, DIR_DOWNLOAD=1, DIR_UPLOAD=2 } dir = DIR_UNKNOWN;
     };
     std::vector<FileXfer> file_xfers;
     std::mutex            file_xfer_mtx;
