@@ -239,10 +239,12 @@ void FFTViewer::capture_and_process_pluto(){
             // 버퍼 재생성
             iio_buffer_destroy(buf);
             pluto_set_fir(phy, new_sr);                           // FIR: sampling_frequency 쓰기 전 설정
-            if(!pluto_cfg_attr_ll(v0p, "sampling_frequency", (long long)new_sr))
-                bewe_log_push(0,"[Pluto] sampling_frequency write failed for %u Hz\n", new_sr);
-            if(!pluto_cfg_attr_ll(v0p, "rf_bandwidth", (long long)new_sr))
-                bewe_log_push(0,"[Pluto] rf_bandwidth write failed for %u Hz\n", new_sr);
+            bool sr_write_ok = pluto_cfg_attr_ll(v0p, "sampling_frequency", (long long)new_sr);
+            bool bw_write_ok = pluto_cfg_attr_ll(v0p, "rf_bandwidth",       (long long)new_sr);
+            if(!sr_write_ok)
+                bewe_log_push(0,"[Pluto] sampling_frequency write FAILED for %u Hz (driver -EINVAL?)\n", new_sr);
+            if(!bw_write_ok)
+                bewe_log_push(0,"[Pluto] rf_bandwidth write FAILED for %u Hz\n", new_sr);
             buf = iio_device_create_buffer(rxd, PLUTO_BUF_SAMPS, false);
             pluto_rx_buf = buf;
             if(!buf){ sdr_stream_error.store(true); break; }
@@ -250,9 +252,18 @@ void FFTViewer::capture_and_process_pluto(){
             long long actual_sr_ll = new_sr;
             iio_channel_attr_read_longlong(v0p, "sampling_frequency", &actual_sr_ll);
             uint32_t actual_sr = (uint32_t)actual_sr_ll;
-            if(actual_sr != new_sr)
-                bewe_log_push(0,"[Pluto] SR mismatch: requested %u Hz, hardware=%u Hz\n",
+            // 5% 이상 어긋나면 변경 거절로 간주 (write -EINVAL 또는 하드웨어 라운딩 큰 경우)
+            uint32_t diff = (actual_sr > new_sr) ? (actual_sr - new_sr) : (new_sr - actual_sr);
+            bool sr_rejected = (!sr_write_ok) || (diff * 20u > new_sr);
+            if(sr_rejected){
+                bewe_log_push(0,
+                    "[Pluto] *** SR CHANGE REJECTED *** requested %.3f MSPS, hardware kept %.3f MSPS\n"
+                    "        > Likely cause: FIR coefficients not loaded for sub-2.56 MSPS rates.\n",
+                    new_sr/1e6f, actual_sr/1e6f);
+            } else if(actual_sr != new_sr){
+                bewe_log_push(0,"[Pluto] SR rounded: requested %u Hz, hardware=%u Hz (within 5%%)\n",
                               new_sr, actual_sr);
+            }
 
             hw = make_pluto_config(actual_sr);
             iq_scale  = hw.iq_scale;
@@ -286,6 +297,15 @@ void FFTViewer::capture_and_process_pluto(){
             bewe_log_push(0,"SR > %.3f MSPS\n", actual_sr/1e6f);
             // SR 변경으로 가시 대역폭이 달라짐 → 범위 재평가 (Holding/Active 전환)
             update_dem_by_freq(header.center_frequency/1e6f);
+            // (C) 즉시 STATUS 브로드캐스트 — JOIN UI/스탯이 1초 타이머를 안 기다리고
+            //     실제 하드웨어 SR(거절 시 옛 값)을 즉시 보게 해서 드롭다운 자동 복원
+            if(net_srv){
+                uint8_t hwt = (hw.type==HWType::RTLSDR) ? 1 :
+                              (hw.type==HWType::PLUTO)  ? 2 : 0;
+                net_srv->broadcast_status(
+                    (float)(header.center_frequency/1e6),
+                    gain_db, header.sample_rate, hwt);
+            }
             continue;
         }
 
