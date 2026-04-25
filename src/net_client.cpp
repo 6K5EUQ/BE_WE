@@ -308,6 +308,11 @@ void NetClient::handle_packet(PacketType type,
     case PacketType::BAND_PLAN_SYNC: {
         if(len < sizeof(PktBandPlan)) break;
         auto* bp = reinterpret_cast<const PktBandPlan*>(payload);
+        // 콜백 미등록 시점 대비: 항상 최신 패킷을 보관
+        {
+            std::lock_guard<std::mutex> lk(band_plan_pending_mtx);
+            band_plan_pending = std::make_unique<PktBandPlan>(*bp);
+        }
         if(on_band_plan) on_band_plan(*bp);
         break;
     }
@@ -650,6 +655,12 @@ bool NetClient::cmd_remove_sched(int64_t start_time, float freq_mhz){
     c.remove_sched.start_time = start_time;
     c.remove_sched.freq_mhz   = freq_mhz;
     return send_cmd(c);
+}
+void NetClient::flush_pending_band_plan(){
+    std::lock_guard<std::mutex> lk(band_plan_pending_mtx);
+    if(band_plan_pending && on_band_plan){
+        on_band_plan(*band_plan_pending);
+    }
 }
 bool NetClient::cmd_band_add(float freq_lo_mhz, float freq_hi_mhz, uint8_t category,
                              const char* label, const char* description){

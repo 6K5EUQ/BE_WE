@@ -157,6 +157,11 @@ public:
     std::function<void(const PktChannelSync&)> on_channel_sync;
     std::function<void(const PktSchedSync&)>   on_sched_sync;
     std::function<void(const PktBandPlan&)>    on_band_plan;
+
+    // 콜백 등록 전에 도착한 BAND_PLAN_SYNC 보관 (race 방지)
+    std::mutex                  band_plan_pending_mtx;
+    std::unique_ptr<PktBandPlan> band_plan_pending;
+    void flush_pending_band_plan();  // 콜백 등록 직후 호출
     std::function<void(const PktWfEvent&)>     on_wf_event;
     std::function<void(uint8_t tab, uint8_t ch_idx, const char* msg)> on_digi_log;
     std::function<void(const std::string& name, uint64_t total)> on_file_meta;

@@ -1186,25 +1186,29 @@ void run_cli_host(){
                     bewe_log_push(0, "[Central] restored %d scheduled entries\n", (int)v.sched_entries.size());
                 });
 
-                // Central에 저장된 band plan 수신 → v.band_segments 갱신
+                // Central에 저장된 band plan 수신 → v.band_segments 갱신 + 자기 JOIN들에 forward
                 central_cli.set_on_central_band_plan([&v](const uint8_t* pkt, size_t len){
                     if(len < 9 + sizeof(PktBandPlan)) return;
                     auto* bp = reinterpret_cast<const PktBandPlan*>(pkt + 9);
                     int n = std::min<int>((int)bp->count, MAX_BAND_SEGMENTS);
-                    std::lock_guard<std::mutex> lk(v.band_mtx);
-                    v.band_segments.clear();
-                    v.band_segments.reserve(n);
-                    for(int i=0; i<n; i++){
-                        const auto& be = bp->entries[i];
-                        if(!be.valid) continue;
-                        FFTViewer::BandSegment s;
-                        s.freq_lo_mhz = be.freq_lo_mhz;
-                        s.freq_hi_mhz = be.freq_hi_mhz;
-                        s.category    = be.category;
-                        strncpy(s.label,       be.label,       sizeof(s.label)-1);
-                        strncpy(s.description, be.description, sizeof(s.description)-1);
-                        v.band_segments.push_back(s);
+                    {
+                        std::lock_guard<std::mutex> lk(v.band_mtx);
+                        v.band_segments.clear();
+                        v.band_segments.reserve(n);
+                        for(int i=0; i<n; i++){
+                            const auto& be = bp->entries[i];
+                            if(!be.valid) continue;
+                            FFTViewer::BandSegment s;
+                            s.freq_lo_mhz = be.freq_lo_mhz;
+                            s.freq_hi_mhz = be.freq_hi_mhz;
+                            s.category    = be.category;
+                            strncpy(s.label,       be.label,       sizeof(s.label)-1);
+                            strncpy(s.description, be.description, sizeof(s.description)-1);
+                            v.band_segments.push_back(s);
+                        }
                     }
+                    // HOST에 직접 접속한 LAN JOIN들에게도 forward — Central 미경유 경로 보강
+                    if(v.net_srv) v.net_srv->broadcast_band_plan(*bp);
                     bewe_log_push(0, "[Central] band plan: %d segments\n", (int)v.band_segments.size());
                 });
 

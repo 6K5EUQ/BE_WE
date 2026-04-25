@@ -261,6 +261,7 @@ public:
 
     // Scheduled recording list snapshot → all clients
     void broadcast_sched_sync(const PktSchedSync& pkt);
+    void broadcast_band_plan(const PktBandPlan& pkt);
 
     // Digital decode log → clients with audio_mask bit set
     void broadcast_digi_log(uint8_t tab, uint8_t ch_idx, const char* msg, uint32_t audio_mask);

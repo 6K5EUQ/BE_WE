@@ -626,6 +626,18 @@ void NetServer::broadcast_sched_sync(const PktSchedSync& sync){
     }
 }
 
+// ── Broadcast band plan (HOST → all JOINs, including LAN-direct) ─────────
+// Central → HOST 푸시는 별도. 이건 HOST가 받은 후 자기 NetServer로 forward.
+void NetServer::broadcast_band_plan(const PktBandPlan& bp){
+    auto pkt = make_packet(PacketType::BAND_PLAN_SYNC, &bp, sizeof(bp));
+    // relay 측 JOIN은 Central이 직접 보내므로 on_relay_broadcast는 생략
+    std::lock_guard<std::mutex> lk(clients_mtx_);
+    for(auto& c : clients_){
+        if(c->is_relay || !c->authed || !c->alive.load()) continue;
+        c->enqueue(pkt, false);
+    }
+}
+
 // ── Broadcast digi log (to non-muted JOINs only) ─────────────────────────
 void NetServer::broadcast_digi_log(uint8_t tab, uint8_t ch_idx, const char* msg,
                                     uint32_t audio_mask){
