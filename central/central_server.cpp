@@ -1929,16 +1929,20 @@ void CentralServer::load_band_plan_from_json(){
 
 void CentralServer::rebuild_band_plan_cache(){
     std::lock_guard<std::mutex> lk(band_mtx_);
-    PktBandPlan pkt{};
     int n = (int)std::min<size_t>(band_segments_.size(), MAX_BAND_SEGMENTS);
-    pkt.count = (uint16_t)n;
-    for(int i=0; i<n; i++) pkt.entries[i] = band_segments_[i];
-    cached_band_plan_pkt_.assign(BEWE_HDR_SIZE + sizeof(PktBandPlan), 0);
+    // 가변 크기: count(2) + pad(2) + n * sizeof(PktBandEntry) — 빈 슬롯 안 보냄
+    uint32_t plen = 4 + (uint32_t)n * sizeof(PktBandEntry);
+    cached_band_plan_pkt_.assign(BEWE_HDR_SIZE + plen, 0);
     memcpy(cached_band_plan_pkt_.data(), "BEWE", 4);
     cached_band_plan_pkt_[4] = 0x31;  // BAND_PLAN_SYNC
-    uint32_t plen = sizeof(PktBandPlan);
     memcpy(cached_band_plan_pkt_.data()+5, &plen, 4);
-    memcpy(cached_band_plan_pkt_.data()+BEWE_HDR_SIZE, &pkt, sizeof(PktBandPlan));
+    uint16_t count16 = (uint16_t)n;
+    memcpy(cached_band_plan_pkt_.data()+BEWE_HDR_SIZE, &count16, 2);
+    // pad 2 bytes는 이미 0
+    if(n > 0){
+        memcpy(cached_band_plan_pkt_.data() + BEWE_HDR_SIZE + 4,
+               band_segments_.data(), (size_t)n * sizeof(PktBandEntry));
+    }
 }
 
 void CentralServer::broadcast_band_plan_to_all(){

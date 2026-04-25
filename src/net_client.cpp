@@ -306,14 +306,24 @@ void NetClient::handle_packet(PacketType type,
     }
 
     case PacketType::BAND_PLAN_SYNC: {
-        if(len < sizeof(PktBandPlan)) break;
-        auto* bp = reinterpret_cast<const PktBandPlan*>(payload);
+        // 가변 크기: 4(count+pad) + count * sizeof(PktBandEntry)
+        if(len < 4) break;
+        uint16_t count = 0;
+        memcpy(&count, payload, 2);
+        if(count > MAX_BAND_SEGMENTS) count = MAX_BAND_SEGMENTS;
+        size_t needed = 4 + (size_t)count * sizeof(PktBandEntry);
+        if(len < needed) break;
+        // PktBandPlan으로 안전하게 복사 (빈 슬롯은 0/valid=0)
+        PktBandPlan bp{};
+        bp.count = count;
+        if(count > 0)
+            memcpy(bp.entries, payload + 4, (size_t)count * sizeof(PktBandEntry));
         // 콜백 미등록 시점 대비: 항상 최신 패킷을 보관
         {
             std::lock_guard<std::mutex> lk(band_plan_pending_mtx);
-            band_plan_pending = std::make_unique<PktBandPlan>(*bp);
+            band_plan_pending = std::make_unique<PktBandPlan>(bp);
         }
-        if(on_band_plan) on_band_plan(*bp);
+        if(on_band_plan) on_band_plan(bp);
         break;
     }
 

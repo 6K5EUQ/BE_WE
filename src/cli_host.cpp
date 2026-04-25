@@ -1186,17 +1186,24 @@ void run_cli_host(){
                     bewe_log_push(0, "[Central] restored %d scheduled entries\n", (int)v.sched_entries.size());
                 });
 
-                // Central에 저장된 band plan 수신 → v.band_segments 갱신 + 자기 JOIN들에 forward
+                // Central에 저장된 band plan 수신 → v.band_segments 갱신
+                // 가변 크기: pkt = BEWE 헤더(9) + count(2) + pad(2) + count * sizeof(PktBandEntry)
                 central_cli.set_on_central_band_plan([&v](const uint8_t* pkt, size_t len){
-                    if(len < 9 + sizeof(PktBandPlan)) return;
-                    auto* bp = reinterpret_cast<const PktBandPlan*>(pkt + 9);
-                    int n = std::min<int>((int)bp->count, MAX_BAND_SEGMENTS);
+                    if(len < 9 + 4) return;
+                    const uint8_t* payload = pkt + 9;
+                    uint16_t count = 0;
+                    memcpy(&count, payload, 2);
+                    if(count > MAX_BAND_SEGMENTS) count = MAX_BAND_SEGMENTS;
+                    size_t need = 4 + (size_t)count * sizeof(PktBandEntry);
+                    if(len - 9 < need) return;
+                    const PktBandEntry* entries =
+                        reinterpret_cast<const PktBandEntry*>(payload + 4);
                     {
                         std::lock_guard<std::mutex> lk(v.band_mtx);
                         v.band_segments.clear();
-                        v.band_segments.reserve(n);
-                        for(int i=0; i<n; i++){
-                            const auto& be = bp->entries[i];
+                        v.band_segments.reserve(count);
+                        for(int i=0; i<(int)count; i++){
+                            const auto& be = entries[i];
                             if(!be.valid) continue;
                             FFTViewer::BandSegment s;
                             s.freq_lo_mhz = be.freq_lo_mhz;
@@ -1207,7 +1214,6 @@ void run_cli_host(){
                             v.band_segments.push_back(s);
                         }
                     }
-                    // (LAN 직접 접속 경로 없음 — 모든 JOIN은 Central 경유. forward 호출 제거)
                     bewe_log_push(0, "[Central] band plan: %d segments\n", (int)v.band_segments.size());
                 });
 
