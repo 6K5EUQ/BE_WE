@@ -602,7 +602,8 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                 if(!c_ch.empty()){ target->enqueue_ctrl(c_ch.data(), c_ch.size()); cache_count++; }
                 if(!c_op.empty()){ target->enqueue_ctrl(c_op.data(), c_op.size()); cache_count++; }
                 if(!c_sched.empty()){ target->enqueue_ctrl(c_sched.data(), c_sched.size()); cache_count++; }
-                if(!c_band.empty()){  target->enqueue_ctrl(c_band.data(), c_band.size()); cache_count++; }
+                // [DIAG] BAND_PLAN_SYNC initial-burst push disabled to test laptop-hotspot stuck hypothesis. Do not commit.
+                // if(!c_band.empty()){  target->enqueue_ctrl(c_band.data(), c_band.size()); cache_count++; }
                 printf("[Central] sent %d cached packets to conn_id=%u\n", cache_count, conn_id);
                 // OPERATOR_LIST 갱신 (새 유저 반영)
                 build_and_broadcast_op_list(room);
