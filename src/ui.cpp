@@ -7409,7 +7409,7 @@ void run_streaming_viewer(){
                         ImGui::PushID(i);
                         // 상태별 색상/아이콘 (enum: WAITING, ARMED, RECORDING, DONE, FAILED)
                         static const char* st_names[]={"WAIT","ARM","REC","DONE","FAIL"};
-                        static const char* st_icons[]={"[ ]","[A]","[R]","[\xE2\x9C\x93]","[X]"};
+                        static const char* st_icons[]={"[ ]","[A]","[R]","[V]","[X]"};
                         static const ImVec4 st_cols[]={
                             {0.7f,0.7f,0.8f,1},{1.0f,0.85f,0.2f,1},{1,0.3f,0.3f,1},
                             {0.3f,0.9f,0.3f,1},{0.9f,0.2f,0.2f,1}};
@@ -7462,9 +7462,11 @@ void run_streaming_viewer(){
                             if(d < 0) d = 0;
                             snprintf(tail, sizeof(tail), "  ARMED in %ds", d);
                         } else if(e.status == FFTViewer::SchedEntry::RECORDING){
-                            float el = std::chrono::duration<float>(
-                                std::chrono::steady_clock::now() - e.rec_started).count();
-                            int cur = (int)el, tot = (int)e.duration_sec;
+                            // unix time 기반 (HOST/JOIN 동일값 표시)
+                            int cur = (int)(now_t - e.start_time);
+                            int tot = (int)e.duration_sec;
+                            if(cur < 0) cur = 0;
+                            if(cur > tot) cur = tot;
                             snprintf(tail, sizeof(tail), "  REC %d/%ds", cur, tot);
                         }
 

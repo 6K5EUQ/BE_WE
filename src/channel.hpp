@@ -102,6 +102,12 @@ struct Channel {
     std::atomic<bool>   dem_paused{false};        // 주파수 범위 벗어나 자동 pause됨 (Holding)
     DemodMode           dem_paused_mode=DM_NONE;  // pause 직전 mode 보존
 
+    // IQ-only thread (demod 우회 — 채널 BW만큼 LPF + decim 후 wav)
+    std::atomic<bool>   iq_only_run{false};
+    std::atomic<bool>   iq_only_stop_req{false};
+    std::thread         iq_only_thr;
+    std::atomic<size_t> iq_only_rp{0};
+
     // Digital decode thread (AIS 등)
     std::atomic<bool>   digi_run{false};
     std::atomic<bool>   digi_stop_req{false};
@@ -308,6 +314,7 @@ struct Channel {
         dem_paused.store(false);
         dem_paused_mode=DM_NONE;
         digi_rp.store(0);
+        iq_only_rp.store(0);
         // audio ring
         ar_wp.store(0);
         ar_rp.store(0);

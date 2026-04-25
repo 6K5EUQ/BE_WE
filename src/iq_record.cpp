@@ -367,20 +367,107 @@ void FFTViewer::stop_audio_rec(int ch_idx){
     ch.audio_rec_path.clear();
 }
 
+// ── IQ-only worker (demod 우회 — 채널 BW에 정확히 맞춰 mixer + LPF cascade + decim) ─
+// ch.dem_run이 켜져 있으면 demod path가 maybe_rec_iq를 호출하므로 이 worker는 시작 안 함.
+// 채널 만들고 demod 없이 바로 IQ 녹음 시작 시 이 worker가 IQ ring을 직접 소비.
+void FFTViewer::iq_only_worker(int ch_idx){
+    Channel& ch = channels[ch_idx];
+    uint32_t msr = header.sample_rate;
+    uint64_t init_cf = live_cf_hz.load(std::memory_order_acquire);
+    float ch_cf_mhz = (ch.s + ch.e) * 0.5f;
+    float bw_hz = fabsf(ch.e - ch.s) * 1e6f;
+    float off_hz = (ch_cf_mhz - (float)(init_cf / 1e6f)) * 1e6f;
+
+    // 적극 decim: target sr ≈ BW × 1.25 (Nyquist + 25% margin)
+    float target_sr = bw_hz * 1.25f;
+    if(target_sr < 8000.f) target_sr = 8000.f;
+    uint32_t decim = (uint32_t)((float)msr / target_sr);
+    if(decim < 1) decim = 1;
+    uint32_t actual_sr = msr / decim;
+    ch.iq_rec_sr = actual_sr;
+
+    Oscillator osc; osc.set_freq((double)off_hz, (double)msr);
+    uint64_t prev_cf = init_cf;
+
+    // BW LPF cascade (4-stage IIR1) — pre-decim 단계에서 anti-alias
+    float cn = (bw_hz * 0.5f) / (float)msr;
+    if(cn > 0.45f) cn = 0.45f;
+    IIR1 lpi[4], lpq[4];
+    for(int k=0; k<4; k++){ lpi[k].set(cn); lpq[k].set(cn); }
+
+    double acc_i=0, acc_q=0; int acc_cnt=0;
+    const size_t MAX_LAG = (size_t)(msr * 0.08);
+    const size_t BATCH   = std::max((size_t)4096, (size_t)decim * 256);
+
+    while(!ch.iq_only_stop_req.load(std::memory_order_relaxed) && !sdr_stream_error.load()){
+        // CF 변경 감지
+        uint64_t cur_cf = live_cf_hz.load(std::memory_order_acquire);
+        if(cur_cf != prev_cf){
+            off_hz = (ch_cf_mhz - (float)(cur_cf / 1e6f)) * 1e6f;
+            osc.set_freq((double)off_hz, (double)msr);
+            prev_cf = cur_cf;
+        }
+        size_t wp = ring_wp.load(std::memory_order_acquire);
+        size_t rp = ch.iq_only_rp.load(std::memory_order_relaxed);
+        size_t lag = (wp - rp) & IQ_RING_MASK;
+        if(lag > MAX_LAG){
+            size_t keep = (size_t)(msr * 0.02);
+            rp = (wp - keep) & IQ_RING_MASK;
+            ch.iq_only_rp.store(rp, std::memory_order_release);
+            for(int k=0;k<4;k++){ lpi[k].s=lpq[k].s=0; }
+            acc_i=acc_q=0; acc_cnt=0;
+            lag = (wp - rp) & IQ_RING_MASK;
+        }
+        if(lag == 0){ std::this_thread::sleep_for(std::chrono::microseconds(50)); continue; }
+
+        size_t avail = std::min(lag, BATCH);
+        for(size_t s=0; s<avail; s++){
+            size_t pos = (rp + s) & IQ_RING_MASK;
+            float si = ring[pos*2]   / hw.iq_scale;
+            float sq = ring[pos*2+1] / hw.iq_scale;
+            float mi, mq; osc.mix(si, sq, mi, mq);
+            // 4-stage LPF cascade
+            mi = lpi[0].p(mi); mi = lpi[1].p(mi); mi = lpi[2].p(mi); mi = lpi[3].p(mi);
+            mq = lpq[0].p(mq); mq = lpq[1].p(mq); mq = lpq[2].p(mq); mq = lpq[3].p(mq);
+            acc_i += mi; acc_q += mq; acc_cnt++;
+            if(acc_cnt < (int)decim) continue;
+            float fi = (float)(acc_i / acc_cnt);
+            float fq = (float)(acc_q / acc_cnt);
+            acc_i = acc_q = 0; acc_cnt = 0;
+            ch.maybe_rec_iq(fi, fq, true);  // gate 항상 open (force_all 또는 squelch 캘리는 maybe_rec_iq 내부)
+        }
+        ch.iq_only_rp.store((rp + avail) & IQ_RING_MASK, std::memory_order_release);
+    }
+    ch.iq_only_run.store(false, std::memory_order_release);
+}
+
 // ── Per-channel IQ recording (squelch-gated, decimated baseband) ──────────
 void FFTViewer::start_iq_rec(int ch_idx){
     if(ch_idx<0||ch_idx>=MAX_CHANNELS) return;
     Channel& ch=channels[ch_idx];
-    if(!ch.filter_active||!ch.dem_run.load()){
-        bewe_log("IQ REC: ch%d not running demod\n",ch_idx); return;
+    if(!ch.filter_active){
+        bewe_log("IQ REC: ch%d not active\n",ch_idx); return;
     }
     if(ch.iq_rec_on.load()) return;
 
-    // IQ SR = intermediate SR (after decimation, before audio decimation)
+    // demod 켜져 있으면 demod path가 maybe_rec_iq 호출 (호환). 없으면 iq_only_worker 시작.
+    bool use_iq_only = !ch.dem_run.load();
+
     float bw_hz=fabsf(ch.e-ch.s)*1e6f;
-    uint32_t inter_sr,audio_decim,cap_decim;
-    demod_rates(header.sample_rate,bw_hz,inter_sr,audio_decim,cap_decim);
-    uint32_t actual_inter=header.sample_rate/cap_decim;
+    uint32_t actual_inter;
+    if(use_iq_only){
+        // iq_only_worker가 자체적으로 actual_sr 계산해서 ch.iq_rec_sr 설정.
+        // wav 헤더 작성을 위해 동일 식으로 미리 계산.
+        float target_sr = bw_hz * 1.25f;
+        if(target_sr < 8000.f) target_sr = 8000.f;
+        uint32_t decim = (uint32_t)((float)header.sample_rate / target_sr);
+        if(decim < 1) decim = 1;
+        actual_inter = header.sample_rate / decim;
+    } else {
+        uint32_t inter_sr,audio_decim,cap_decim;
+        demod_rates(header.sample_rate,bw_hz,inter_sr,audio_decim,cap_decim);
+        actual_inter=header.sample_rate/cap_decim;
+    }
     ch.iq_rec_sr=actual_inter;
 
     time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
@@ -404,6 +491,15 @@ void FFTViewer::start_iq_rec(int ch_idx){
     ch.iq_sqr_tail_remain=0;
     ch.iq_rec_on.store(true,std::memory_order_release);
 
+    // demod path 없으면 IQ-only worker 시작
+    if(use_iq_only){
+        if(ch.iq_only_thr.joinable()) ch.iq_only_thr.join();
+        ch.iq_only_stop_req.store(false, std::memory_order_release);
+        ch.iq_only_run.store(true, std::memory_order_release);
+        ch.iq_only_rp.store(ring_wp.load(std::memory_order_acquire), std::memory_order_release);
+        ch.iq_only_thr = std::thread(&FFTViewer::iq_only_worker, this, ch_idx);
+    }
+
     {
         std::lock_guard<std::mutex> lk(rec_entries_mtx);
         RecEntry e;
@@ -415,7 +511,8 @@ void FFTViewer::start_iq_rec(int ch_idx){
         e.t_start=std::chrono::steady_clock::now();
         rec_entries.push_back(e);
     }
-    bewe_log("IQ REC start ch%d > %s  SR=%u\n",ch_idx,fn,actual_inter);
+    bewe_log("IQ REC start ch%d > %s  SR=%u  (mode=%s)\n",
+             ch_idx,fn,actual_inter, use_iq_only ? "IQ-only" : "demod-piggyback");
 
     float bw_khz_iq = fabsf(ch.e - ch.s) * 1000.f;
     write_default_info_file(fn, recorder_name(),
@@ -431,6 +528,11 @@ void FFTViewer::stop_iq_rec(int ch_idx){
     if(!ch.iq_rec_on.load()) return;
 
     ch.iq_rec_on.store(false,std::memory_order_release);
+    // IQ-only worker stop & join (demod path 사용 중이면 no-op)
+    if(ch.iq_only_run.load()){
+        ch.iq_only_stop_req.store(true, std::memory_order_release);
+        if(ch.iq_only_thr.joinable()) ch.iq_only_thr.join();
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
 
     FILE* fp=ch.iq_rec_fp;

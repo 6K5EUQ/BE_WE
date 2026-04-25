@@ -766,6 +766,7 @@ public:
     void stop_audio_rec(int ch_idx);
     void start_iq_rec(int ch_idx);
     void stop_iq_rec(int ch_idx);
+    void iq_only_worker(int ch_idx);  // demod 우회 IQ-only 녹음 worker
     void start_join_audio_rec(int ch_idx); // JOIN 모드 로컬 오디오 녹음
     void stop_join_audio_rec(int ch_idx);
 

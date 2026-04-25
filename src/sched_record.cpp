@@ -139,7 +139,7 @@ void FFTViewer::sched_arm_entry(int idx){
         return;
     }
 
-    // 채널 [s, e]는 target 기준 (demod 오실레이터가 SDR CF에서 target까지 믹싱)
+    // 채널 [s, e]는 target 기준 — IQ-only worker가 SDR CF에서 target으로 mixer
     float half_bw = e.bw_khz / 2000.0f;
     channels[slot].reset_slot();
     channels[slot].s = e.freq_mhz - half_bw;
@@ -147,11 +147,11 @@ void FFTViewer::sched_arm_entry(int idx){
     channels[slot].filter_active = true;
     const char* owner_src = (e.operator_name[0]) ? e.operator_name : "SCHED";
     strncpy(channels[slot].owner, owner_src, 31);
-    channels[slot].audio_mask.store(0x1);
+    channels[slot].audio_mask.store(0x0);  // 스케줄 녹음은 audio 재생 안 함
     e.temp_ch_idx = slot;
 
-    // 기록되는 I/Q는 discriminator 전의 채널 베이스밴드. demod 스레드는 샘플 공급자로서 필수.
-    start_dem(slot, Channel::DM_FM);
+    // demod 안 시작 — start_iq_rec이 IQ-only worker로 직접 IQ ring 소비.
+    // squelch 무시하고 전 구간 녹음 (예약 녹음 의도).
     channels[slot].iq_rec_force_all.store(true);
 
     e.status = SchedEntry::ARMED;
@@ -215,13 +215,7 @@ void FFTViewer::sched_stop_entry(int idx){
     float  entry_freq  = e.freq_mhz;
     float  entry_bw    = e.bw_khz;
 
-    // 1) demod 스레드를 먼저 join → maybe_rec_iq() 호출이 더 이상 일어나지 않음
-    //    (이 순서가 아니면 stop_iq_rec와 fwrite 사이 race로 frame 카운트 어긋남)
-    if(slot >= 0 && slot < MAX_CHANNELS){
-        stop_dem(slot);
-        stop_digi(slot);
-    }
-    // 2) IQ 녹음 finalize (헤더 갱신 + .info Duration 갱신)
+    // IQ-only worker stop & wav finalize (stop_iq_rec 안에서 worker join)
     if(slot >= 0 && slot < MAX_CHANNELS)
         stop_iq_rec(slot);
 
