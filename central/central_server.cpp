@@ -1868,14 +1868,52 @@ void CentralServer::load_band_plan_from_json(){
     int n = try_load(band_plan_json_path_);
     if(n == 0){
         // Default fallback (assets/band_plan_default.json) — 첫 부팅 또는 비어있을 때
-        const char* candidates[] = {
+        std::vector<std::string> candidates = {
             "assets/band_plan_default.json",
             "../assets/band_plan_default.json",
+            "../../assets/band_plan_default.json",
             "/home/dsa/BE_WE/assets/band_plan_default.json",
         };
-        for(const char* p : candidates){
+        if(const char* home = getenv("HOME")){
+            candidates.push_back(std::string(home)+"/BE_WE/assets/band_plan_default.json");
+        }
+        for(const std::string& p : candidates){
             n = try_load(p);
-            if(n > 0){ printf("[Central] band_plan: loaded default from %s (%d)\n", p, n); break; }
+            if(n > 0){ printf("[Central] band_plan: loaded default from %s (%d)\n", p.c_str(), n); break; }
+        }
+        // 그래도 0이면 하드코딩 minimum set (어떤 환경이든 작동 보장)
+        if(n == 0){
+            struct B { float lo, hi; uint8_t cat; const char* lbl; const char* desc; };
+            static const B builtin[] = {
+                {  0.526f,   1.606f, 0, "AM",      "AM Broadcast (MW)"},
+                { 88.0f,   108.0f,   0, "FM",      "FM Broadcast"},
+                {108.0f,   137.0f,   1, "Aero",    "Aero Voice / NAV"},
+                {144.0f,   148.0f,   3, "2m",      "Amateur 2m"},
+                {156.0f,   162.025f, 2, "Marine",  "Marine VHF + AIS"},
+                {174.0f,   216.0f,   0, "TV/DAB",  "VHF TV / DAB"},
+                {380.0f,   400.0f,   8, "P-Safety","Public Safety / TETRA"},
+                {420.0f,   450.0f,   3, "70cm",    "Amateur 70cm"},
+                {470.0f,   698.0f,   0, "DTV",     "UHF Digital TV"},
+                {824.0f,   894.0f,   4, "Cell800", "Cellular 800/850"},
+                {902.0f,   928.0f,   5, "ISM915",  "ISM 915 / LoRa US"},
+                {1559.0f, 1610.0f,   9, "GNSS L1", "GPS/GLONASS/Galileo L1"},
+                {1710.0f, 1880.0f,   4, "DCS/LTE", "GSM1800 / LTE B3"},
+                {1920.0f, 2170.0f,   4, "UMTS",    "UMTS / LTE B1"},
+                {2400.0f, 2483.5f,   6, "WiFi/BT", "Wi-Fi 2.4 / Bluetooth"},
+                {3300.0f, 3800.0f,   4, "5G n78",  "5G NR n77/n78"},
+                {5150.0f, 5875.0f,   6, "WiFi5",   "Wi-Fi 5 GHz"},
+            };
+            for(const auto& b : builtin){
+                PktBandEntry e{};
+                e.valid = 1;
+                e.category = b.cat;
+                e.freq_lo_mhz = b.lo; e.freq_hi_mhz = b.hi;
+                strncpy(e.label, b.lbl, sizeof(e.label)-1);
+                strncpy(e.description, b.desc, sizeof(e.description)-1);
+                band_segments_.push_back(e);
+                n++;
+            }
+            printf("[Central] band_plan: no JSON found, seeded %d builtin defaults\n", n);
         }
         if(n > 0){
             // 즉시 영속화
