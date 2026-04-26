@@ -1478,9 +1478,10 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
         // 매 프레임 tm_update_display() 호출 → 60초 한계 follow 동작 반영
         if(tm_active.load()) tm_update_display();
         int disp_idx=tm_active.load() ? tm_display_fft_idx : current_fft_idx;
+        float half_texel_v=0.5f/MAX_FFTS_MEMORY;
         float vn=(float)(disp_idx%MAX_FFTS_MEMORY)/MAX_FFTS_MEMORY;
-        float vt=vn+1.0f/MAX_FFTS_MEMORY;
-        float vb=vt-dh/MAX_FFTS_MEMORY;
+        float vt=vn+1.0f/MAX_FFTS_MEMORY-half_texel_v;
+        float vb=vt-dh/MAX_FFTS_MEMORY+half_texel_v;
         ImTextureID tid=(ImTextureID)(intptr_t)waterfall_texture;
         dl->AddImage(tid,ImVec2(gx,gy),ImVec2(gx+gw,gy+dh),ImVec2(us,vt),ImVec2(ue,vb),IM_COL32(255,255,255,255));
         // IQ 가용 오버레이 제거됨 - 좌측 태그로 대체
