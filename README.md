@@ -139,6 +139,36 @@ sudo apt install -y build-essential cmake pkg-config \
   libglew-dev libglfw3-dev libgl-dev libpng-dev libstb-dev
 ```
 
+### USB Permissions (fresh Linux install)
+
+On a fresh install the SDR USB nodes are root-owned, so `bladerf_open` / `iio` / `rtl_*` will fail with *insufficient permissions*. Install udev rules and add yourself to `plugdev`:
+
+```bash
+# BladeRF (covers 2.0 micro PID 5250 and original PID 5246)
+sudo tee /etc/udev/rules.d/88-bladerf.rules >/dev/null <<'EOF'
+ATTR{idVendor}=="2cf0", ATTR{idProduct}=="5250", MODE="0660", GROUP="plugdev"
+ATTR{idVendor}=="2cf0", ATTR{idProduct}=="5246", MODE="0660", GROUP="plugdev"
+EOF
+
+# ADALM-Pluto
+sudo tee /etc/udev/rules.d/53-adalm-pluto.rules >/dev/null <<'EOF'
+SUBSYSTEM=="usb", ATTR{idVendor}=="0456", ATTR{idProduct}=="b673", MODE="0660", GROUP="plugdev"
+EOF
+
+# RTL-SDR — also blacklist the kernel DVB driver that grabs the dongle
+sudo tee /etc/udev/rules.d/20-rtlsdr.rules >/dev/null <<'EOF'
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", MODE="0660", GROUP="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2832", MODE="0660", GROUP="plugdev"
+EOF
+echo "blacklist dvb_usb_rtl28xxu" | sudo tee /etc/modprobe.d/blacklist-rtlsdr.conf
+
+# Reload + add user to plugdev
+sudo udevadm control --reload-rules && sudo udevadm trigger
+sudo usermod -aG plugdev $USER
+```
+
+Log out and back in (or reboot) for the group change to apply, then re-plug the SDR.
+
 ### Compile & Run
 
 ```bash
