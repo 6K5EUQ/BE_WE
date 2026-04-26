@@ -766,9 +766,26 @@ void draw_modal(FFTViewer& v, NetClient* cli){
 
         bool is_join_mode = (cli != nullptr);
 
-        auto fmt_size_mb = [](uint64_t b) -> std::string {
+        // ── 상단 HISTORY 블루 헤더 (메인페이지 STATUS 헤더 패턴) ────────
+        {
+            ImDrawList* dlf = ImGui::GetWindowDrawList();
+            ImVec2 hp = ImGui::GetCursorScreenPos();
+            float  hh = ImGui::GetFontSize() + 6.f;
+            float  hw = ImGui::GetContentRegionAvail().x;
+            dlf->AddRectFilled(hp, ImVec2(hp.x + hw, hp.y + hh),
+                IM_COL32(40,70,140,255));
+            dlf->AddText(ImVec2(hp.x + 8.f, hp.y + 3.f),
+                IM_COL32(220,230,255,255), "HISTORY");
+            ImGui::Dummy(ImVec2(0, hh + 4));
+        }
+
+        // size: 메인 archive와 동일 포맷 [###.#M] (B/K/M/G).
+        auto fmt_size_archive = [](uint64_t b) -> std::string {
             char buf[24];
-            snprintf(buf, sizeof(buf), "[%.1fMB]", b / 1048576.0);
+            if(b >= 1000000000ULL) snprintf(buf, sizeof(buf), "[%.1fG]", b/1e9);
+            else if(b >= 1000000)  snprintf(buf, sizeof(buf), "[%.1fM]", b/1e6);
+            else if(b >= 1000)     snprintf(buf, sizeof(buf), "[%.1fK]", b/1e3);
+            else                   snprintf(buf, sizeof(buf), "[%dB]", (int)b);
             return buf;
         };
         auto fmt_dur_short = [](uint32_t rows, float row_rate) -> std::string {
@@ -785,15 +802,15 @@ void draw_modal(FFTViewer& v, NetClient* cli){
         ImGui::SetNextItemOpen(true, ImGuiCond_Once);
         bool host_open = ImGui::CollapsingHeader("HOST##lwf_host_sec",
             ImGuiTreeNodeFlags_DefaultOpen);
-        // Reload 버튼 — 헤더 우측 (Report 패널 패턴 mimic)
-        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 50);
-        if(ImGui::SmallButton("Reload##lwf_host_reload")){
-            if(is_join_mode) cli->cmd_lwf_list_req();
-            else             g_host_list_dirty = true;
-        }
 
         if(host_open){
-            // Build HOST rows — local scan or remote list
+            // Reload — 섹션 안 첫 줄 (CollapsingHeader와 SameLine 결합 시 hit-test 문제 우회)
+            if(ImGui::Button("Reload##lwf_host_reload", ImVec2(-1, 0))){
+                if(is_join_mode) cli->cmd_lwf_list_req();
+                else             g_host_list_dirty = true;
+            }
+
+            // Build HOST rows
             struct Row { std::string id; std::string base; uint64_t size; uint32_t rows;
                           float row_rate; bool is_live; bool is_remote; };
             std::vector<Row> host_rows;
@@ -812,14 +829,16 @@ void draw_modal(FFTViewer& v, NetClient* cli){
             } else {
                 if(g_host_list_dirty){
                     g_host_files.clear();
-                    DIR* d = opendir(BEWEPaths::hist_host_dir().c_str());
-                    if(d){
+                    // Scan hist/host + legacy long_waterfall (옛 파일 호환)
+                    auto scan_one = [&](const std::string& dir){
+                        DIR* d = opendir(dir.c_str());
+                        if(!d) return;
                         struct dirent* de;
                         while((de = readdir(d)) != nullptr){
                             const char* n = de->d_name;
                             if(!n || n[0]=='.') continue;
                             if(!is_hist_filename(n)) continue;
-                            std::string full = BEWEPaths::hist_host_dir() + "/" + n;
+                            std::string full = dir + "/" + n;
                             LongWaterfall::FileHeader hh{}; uint64_t fsz=0;
                             if(!read_header_only(full, hh, fsz)) continue;
                             HistFileEntry e; e.path=full; e.base=n;
@@ -827,7 +846,9 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                             g_host_files.push_back(std::move(e));
                         }
                         closedir(d);
-                    }
+                    };
+                    scan_one(BEWEPaths::hist_host_dir());
+                    scan_one(BEWEPaths::recordings_dir() + "/long_waterfall");  // legacy
                     std::sort(g_host_files.begin(), g_host_files.end(),
                         [](const HistFileEntry& a, const HistFileEntry& b){ return a.start_utc > b.start_utc; });
                     g_host_list_dirty = false;
@@ -859,17 +880,17 @@ void draw_modal(FFTViewer& v, NetClient* cli){
             for(auto& r : host_rows){
                 bool sel = (g_sel_path == r.id);
                 ImGui::PushID(r.id.c_str());
-                std::string label = r.is_live ? ("[LIVE] " + r.base) : r.base;
+                // Archive 패턴: 단일 Selectable에 "  filename  duration  [size]" 합침.
+                std::string display = (r.is_live ? "[LIVE] " : "  ") + r.base
+                                     + "  " + fmt_dur_short(r.rows, r.row_rate)
+                                     + "  " + fmt_size_archive(r.size);
                 if(r.is_live)
                     ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(80,220,80,255));
-                if(ImGui::Selectable(label.c_str(), sel)){
+                if(ImGui::Selectable(display.c_str(), sel)){
                     g_sel_path = r.id;
                     if(!r.is_remote && g_open.path != r.id) open_file(r.id);
                 }
                 if(r.is_live) ImGui::PopStyleColor();
-                ImGui::SameLine();
-                ImGui::TextDisabled(" %s %s", fmt_dur_short(r.rows, r.row_rate).c_str(),
-                                              fmt_size_mb(r.size).c_str());
                 if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
                     g_ctx_path = r.id; g_sel_path = r.id;
                     ImGui::OpenPopup("##lwf_host_ctx");
@@ -957,13 +978,13 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                 LongWaterfall::FileHeader hh{}; uint64_t fsz=0;
                 read_header_only(e.path, hh, fsz);
                 uint32_t rows_ct = hh.fft_size > 0 ? (uint32_t)((fsz - sizeof(hh)) / hh.fft_size) : 0;
-                if(ImGui::Selectable(e.base.c_str(), sel)){
+                std::string display = "  " + e.base
+                                    + "  " + fmt_dur_short(rows_ct, hh.row_rate_hz)
+                                    + "  " + fmt_size_archive(e.size);
+                if(ImGui::Selectable(display.c_str(), sel)){
                     g_sel_path = e.path;
                     if(g_open.path != e.path) open_file(e.path);
                 }
-                ImGui::SameLine();
-                ImGui::TextDisabled(" %s %s", fmt_dur_short(rows_ct, hh.row_rate_hz).c_str(),
-                                              fmt_size_mb(e.size).c_str());
                 if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
                     g_ctx_path = e.path; g_sel_path = e.path;
                     ImGui::OpenPopup("##lwf_join_ctx");
