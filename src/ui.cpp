@@ -10610,16 +10610,37 @@ void run_streaming_viewer(){
 
                     if(in_sa && io.MouseWheel != 0.f){
                         float zf = (io.MouseWheel > 0) ? 0.8f : 1.25f;
-                        float frac = (mp.x - ea_x0) / ea_w;
-                        float mt = v.sa_view_y0 + frac * (v.sa_view_y1 - v.sa_view_y0);
-                        float new_range = (v.sa_view_y1 - v.sa_view_y0) * zf;
-                        v.sa_view_y0 = mt - frac * new_range;
-                        v.sa_view_y1 = mt + (1.0f - frac) * new_range;
-                        if(v.sa_view_y0 < 0.f){ v.sa_view_y1 -= v.sa_view_y0; v.sa_view_y0 = 0.f; }
-                        if(v.sa_view_y1 > 1.f){ v.sa_view_y0 -= (v.sa_view_y1 - 1.f); v.sa_view_y1 = 1.f; }
-                        v.sa_view_y0 = std::max(0.f, v.sa_view_y0);
-                        v.sa_view_y1 = std::min(1.f, v.sa_view_y1);
-                        sync_sa_to_eid();
+                        if(io.KeyCtrl){
+                            // Ctrl+wheel = Y(주파수)축 cursor-anchored zoom
+                            // Screen Y=0(top) → sa_view_x1, Y=ea_h(bottom) → sa_view_x0.
+                            float frac_y = (mp.y - ea_y0) / ea_h;
+                            if(frac_y < 0) frac_y = 0; else if(frac_y > 1) frac_y = 1;
+                            float old_span = v.sa_view_x1 - v.sa_view_x0;
+                            float mf = v.sa_view_x1 - frac_y * old_span;
+                            float new_span = old_span * zf;
+                            v.sa_view_x1 = mf + frac_y * new_span;
+                            v.sa_view_x0 = v.sa_view_x1 - new_span;
+                            if(v.sa_view_x0 < 0.f){ v.sa_view_x1 -= v.sa_view_x0; v.sa_view_x0 = 0.f; }
+                            if(v.sa_view_x1 > 1.f){ v.sa_view_x0 -= (v.sa_view_x1 - 1.f); v.sa_view_x1 = 1.f; }
+                            v.sa_view_x0 = std::max(0.f, v.sa_view_x0);
+                            v.sa_view_x1 = std::min(1.f, v.sa_view_x1);
+                            if(v.sa_view_x1 - v.sa_view_x0 < 0.001f){
+                                float mid = (v.sa_view_x0 + v.sa_view_x1) * 0.5f;
+                                v.sa_view_x0 = mid - 0.0005f; v.sa_view_x1 = mid + 0.0005f;
+                            }
+                        } else {
+                            // 일반 wheel = X(시간)축 cursor-anchored zoom (기존 동작)
+                            float frac = (mp.x - ea_x0) / ea_w;
+                            float mt = v.sa_view_y0 + frac * (v.sa_view_y1 - v.sa_view_y0);
+                            float new_range = (v.sa_view_y1 - v.sa_view_y0) * zf;
+                            v.sa_view_y0 = mt - frac * new_range;
+                            v.sa_view_y1 = mt + (1.0f - frac) * new_range;
+                            if(v.sa_view_y0 < 0.f){ v.sa_view_y1 -= v.sa_view_y0; v.sa_view_y0 = 0.f; }
+                            if(v.sa_view_y1 > 1.f){ v.sa_view_y0 -= (v.sa_view_y1 - 1.f); v.sa_view_y1 = 1.f; }
+                            v.sa_view_y0 = std::max(0.f, v.sa_view_y0);
+                            v.sa_view_y1 = std::min(1.f, v.sa_view_y1);
+                            sync_sa_to_eid();
+                        }
                     }
 
                     // Ctrl+좌클릭 드래그: Y축 (주파수) 줌 = BPF

@@ -77,6 +77,20 @@ bool      g_join_list_dirty  = true;
 time_t    g_join_dir_mtime   = 0;
 int       g_active_tab       = 0;       // 0=HOST, 1=JOIN
 
+// ── Measurement region overlay (Ctrl+우클릭 드래그로 생성, BW/시간 측정용) ─
+struct Meas {
+    bool   selecting = false;        // dragging out a new region
+    bool   active    = false;        // region exists
+    // Data coords. t in row indices, f in linear freq idx [0, fft_size].
+    double t0 = 0, t1 = 0;
+    double f0 = 0, f1 = 0;
+    // Edit state (for resize/move via left-click)
+    enum Edit { EDIT_NONE, EDIT_MOVE, EDIT_L, EDIT_R, EDIT_T, EDIT_B } edit = EDIT_NONE;
+    double sv_t0=0, sv_t1=0, sv_f0=0, sv_f1=0;   // saved on edit start
+    double mx0=0, my0=0;                          // mouse data coord on edit start
+};
+Meas g_meas;
+
 // File-list selection + context state
 std::string g_sel_path;             // currently selected file path (may equal g_open.path)
 std::string g_ctx_path;             // file targeted by current right-click context menu
@@ -398,6 +412,13 @@ void draw_info_modal(){
 namespace LongWaterfallView {
 
 void draw_modal(FFTViewer& v, NetClient* cli){
+    // HIST 모달 새로 열릴 때마다 file panel 기본 open + HOST 탭 활성.
+    static bool s_prev_open = false;
+    if(v.lwf_modal_open && !s_prev_open){
+        g_files_panel_open = true;
+        g_active_tab = 0;
+    }
+    s_prev_open = v.lwf_modal_open;
     if(!v.lwf_modal_open) return;
 
     register_dl_callbacks_once(cli);
@@ -421,6 +442,11 @@ void draw_modal(FFTViewer& v, NetClient* cli){
     bool modal_focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     if(modal_focused && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_S, false)){
         g_files_panel_open = !g_files_panel_open;
+    }
+    // 1/2 키: HOST / JOIN 탭 전환 (file panel 열려있을 때만).
+    if(modal_focused && !io.WantTextInput && g_files_panel_open){
+        if(ImGui::IsKeyPressed(ImGuiKey_1, false)) g_active_tab = 0;
+        if(ImGui::IsKeyPressed(ImGuiKey_2, false)) g_active_tab = 1;
     }
     // ESC로 모달 닫기 (titlebar X 없음 보완).
     if(modal_focused && ImGui::IsKeyPressed(ImGuiKey_Escape, false)){
@@ -536,6 +562,162 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                     g_tex_dirty = true;
                 }
             }
+
+            // ── Measurement region overlay ─────────────────────────────
+            // Ctrl+우클릭 드래그 = 새 영역 / 좌클릭으로 모서리 잡고 늘리기·이동
+            // 더블클릭 또는 Del 키 = 영역 제거
+            // 표시: 빨간 박스 + Bandwidth(MHz) + Duration(s)
+            {
+                ImVec2 mp = io.MousePos;
+                auto px_to_t = [&](float x){ return g_t0 + (double)(x - img_pos.x) / (double)img_sz.x * (g_t1 - g_t0); };
+                auto px_to_f = [&](float y){ return g_f1 - (double)(y - img_pos.y) / (double)img_sz.y * (g_f1 - g_f0); };
+                auto t_to_px = [&](double t){ return img_pos.x + (float)((t - g_t0) / (g_t1 - g_t0) * img_sz.x); };
+                auto f_to_py = [&](double f){ return img_pos.y + (float)((g_f1 - f) / (g_f1 - g_f0) * img_sz.y); };
+
+                bool ctrl  = io.KeyCtrl;
+                bool in_img = (mp.x>=img_pos.x && mp.x<=img_pos.x+img_sz.x &&
+                               mp.y>=img_pos.y && mp.y<=img_pos.y+img_sz.y);
+
+                // 시작: Ctrl+우클릭
+                if(in_img && ctrl && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                    g_meas.selecting = true; g_meas.active = false;
+                    g_meas.edit = Meas::EDIT_NONE;
+                    g_meas.t0 = g_meas.t1 = px_to_t(mp.x);
+                    g_meas.f0 = g_meas.f1 = px_to_f(mp.y);
+                }
+                if(g_meas.selecting && ImGui::IsMouseDown(ImGuiMouseButton_Right)){
+                    g_meas.t1 = px_to_t(mp.x);
+                    g_meas.f1 = px_to_f(mp.y);
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+                }
+                if(g_meas.selecting && ImGui::IsMouseReleased(ImGuiMouseButton_Right)){
+                    g_meas.selecting = false;
+                    // normalize so t0<t1, f0<f1
+                    if(g_meas.t0 > g_meas.t1) std::swap(g_meas.t0, g_meas.t1);
+                    if(g_meas.f0 > g_meas.f1) std::swap(g_meas.f0, g_meas.f1);
+                    if((g_meas.t1 - g_meas.t0) > 1.0 && (g_meas.f1 - g_meas.f0) > 1.0)
+                        g_meas.active = true;
+                }
+
+                // Render rectangle
+                if(g_meas.active || g_meas.selecting){
+                    float rx0 = t_to_px(g_meas.t0), rx1 = t_to_px(g_meas.t1);
+                    float ry_lo = f_to_py(g_meas.f0);          // f0 (low) → bottom in screen
+                    float ry_hi = f_to_py(g_meas.f1);          // f1 (high) → top
+                    if(rx1 < rx0) std::swap(rx0, rx1);
+                    if(ry_hi > ry_lo) std::swap(ry_hi, ry_lo);
+                    ImDrawList* dlf = ImGui::GetWindowDrawList();
+                    dlf->AddRectFilled(ImVec2(rx0, ry_hi), ImVec2(rx1, ry_lo),
+                                       IM_COL32(255,60,60,40));
+                    dlf->AddRect(ImVec2(rx0, ry_hi), ImVec2(rx1, ry_lo),
+                                 IM_COL32(255,80,80,220), 0.f, 0, 1.5f);
+
+                    // Info text: BW (MHz), Duration (s)
+                    if(g_meas.active || g_meas.selecting){
+                        double f_lo_idx = std::min(g_meas.f0, g_meas.f1);
+                        double f_hi_idx = std::max(g_meas.f0, g_meas.f1);
+                        double bw_mhz = (f_hi_idx - f_lo_idx) / (double)h.fft_size * (h.sample_rate_hz / 1e6);
+                        double t_lo = std::min(g_meas.t0, g_meas.t1);
+                        double t_hi = std::max(g_meas.t0, g_meas.t1);
+                        double dur_s = (t_hi - t_lo) / (double)std::max(1.f, h.row_rate_hz);
+                        char info[96];
+                        snprintf(info, sizeof(info), "BW : %.4f MHz   Duration : %.3f s",
+                                 bw_mhz, dur_s);
+                        ImVec2 ts = ImGui::CalcTextSize(info);
+                        float tx = rx0 + 4.f;
+                        float ty = ry_hi - ts.y - 4.f;
+                        if(ty < img_pos.y + 2) ty = ry_lo + 4.f;
+                        dlf->AddRectFilled(ImVec2(tx-3, ty-2), ImVec2(tx+ts.x+3, ty+ts.y+2),
+                                           IM_COL32(0,0,0,170));
+                        dlf->AddText(ImVec2(tx, ty), IM_COL32(255,200,200,255), info);
+                    }
+                }
+
+                // Edit (resize/move) via 좌클릭 — region active 일 때만
+                if(g_meas.active && !g_meas.selecting && !ctrl){
+                    float rx0 = t_to_px(std::min(g_meas.t0, g_meas.t1));
+                    float rx1 = t_to_px(std::max(g_meas.t0, g_meas.t1));
+                    float ry_hi = f_to_py(std::max(g_meas.f0, g_meas.f1)); // top
+                    float ry_lo = f_to_py(std::min(g_meas.f0, g_meas.f1)); // bottom
+                    const float EDGE = 6.f;
+                    bool on_l = std::fabs(mp.x - rx0) <= EDGE && mp.y >= ry_hi - EDGE && mp.y <= ry_lo + EDGE;
+                    bool on_r = std::fabs(mp.x - rx1) <= EDGE && mp.y >= ry_hi - EDGE && mp.y <= ry_lo + EDGE;
+                    bool on_t = std::fabs(mp.y - ry_hi) <= EDGE && mp.x >= rx0 - EDGE && mp.x <= rx1 + EDGE;
+                    bool on_b = std::fabs(mp.y - ry_lo) <= EDGE && mp.x >= rx0 - EDGE && mp.x <= rx1 + EDGE;
+                    bool inside = (mp.x>=rx0 && mp.x<=rx1 && mp.y>=ry_hi && mp.y<=ry_lo);
+                    if(g_meas.edit == Meas::EDIT_NONE){
+                        if(on_l)      ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+                        else if(on_r) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+                        else if(on_t) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+                        else if(on_b) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+                        else if(inside) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+                    }
+                    if(g_meas.edit == Meas::EDIT_NONE && (inside || on_l || on_r || on_t || on_b) &&
+                       ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                        g_meas.sv_t0 = g_meas.t0; g_meas.sv_t1 = g_meas.t1;
+                        g_meas.sv_f0 = g_meas.f0; g_meas.sv_f1 = g_meas.f1;
+                        g_meas.mx0 = px_to_t(mp.x);
+                        g_meas.my0 = px_to_f(mp.y);
+                        if(on_l)      g_meas.edit = Meas::EDIT_L;
+                        else if(on_r) g_meas.edit = Meas::EDIT_R;
+                        else if(on_t) g_meas.edit = Meas::EDIT_T;
+                        else if(on_b) g_meas.edit = Meas::EDIT_B;
+                        else          g_meas.edit = Meas::EDIT_MOVE;
+                    }
+                    if(g_meas.edit != Meas::EDIT_NONE){
+                        if(ImGui::IsMouseDown(ImGuiMouseButton_Left)){
+                            double dt = px_to_t(mp.x) - g_meas.mx0;
+                            double df = px_to_f(mp.y) - g_meas.my0;
+                            switch(g_meas.edit){
+                                case Meas::EDIT_MOVE:
+                                    g_meas.t0 = g_meas.sv_t0 + dt; g_meas.t1 = g_meas.sv_t1 + dt;
+                                    g_meas.f0 = g_meas.sv_f0 + df; g_meas.f1 = g_meas.sv_f1 + df;
+                                    break;
+                                case Meas::EDIT_L: {
+                                    double t_min = std::min(g_meas.sv_t0, g_meas.sv_t1) + dt;
+                                    double t_max = std::max(g_meas.sv_t0, g_meas.sv_t1);
+                                    g_meas.t0 = t_min; g_meas.t1 = t_max;
+                                } break;
+                                case Meas::EDIT_R: {
+                                    double t_min = std::min(g_meas.sv_t0, g_meas.sv_t1);
+                                    double t_max = std::max(g_meas.sv_t0, g_meas.sv_t1) + dt;
+                                    g_meas.t0 = t_min; g_meas.t1 = t_max;
+                                } break;
+                                case Meas::EDIT_T: {
+                                    double f_min = std::min(g_meas.sv_f0, g_meas.sv_f1);
+                                    double f_max = std::max(g_meas.sv_f0, g_meas.sv_f1) + df;
+                                    g_meas.f0 = f_min; g_meas.f1 = f_max;
+                                } break;
+                                case Meas::EDIT_B: {
+                                    double f_min = std::min(g_meas.sv_f0, g_meas.sv_f1) + df;
+                                    double f_max = std::max(g_meas.sv_f0, g_meas.sv_f1);
+                                    g_meas.f0 = f_min; g_meas.f1 = f_max;
+                                } break;
+                                default: break;
+                            }
+                        }
+                        if(ImGui::IsMouseReleased(ImGuiMouseButton_Left)){
+                            g_meas.edit = Meas::EDIT_NONE;
+                            // 너무 작아진 영역은 제거
+                            double tw = std::fabs(g_meas.t1 - g_meas.t0);
+                            double fw = std::fabs(g_meas.f1 - g_meas.f0);
+                            if(tw < 1.0 || fw < 1.0) g_meas.active = false;
+                        }
+                    }
+                    // 더블클릭으로 제거 (영역 안에서 좌클릭)
+                    if(inside && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
+                        g_meas.active = false;
+                        g_meas.edit = Meas::EDIT_NONE;
+                    }
+                }
+                // Del 키 = 영역 제거 (모달 focus + 입력 중 아닐 때)
+                if(g_meas.active && focused && !io.WantTextInput &&
+                   ImGui::IsKeyPressed(ImGuiKey_Delete, false)){
+                    g_meas.active = false;
+                    g_meas.edit = Meas::EDIT_NONE;
+                }
+            }
+
             if(hov){
                 ImVec2 mp = io.MousePos;
                 double t = g_t0 + (mp.x - img_pos.x) / img_sz.x * (g_t1 - g_t0);

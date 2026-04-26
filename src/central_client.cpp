@@ -384,24 +384,49 @@ void CentralClient::mux_loop(int central_fd,
                 mux_joins_[cid] = jp;
             }
 
-            // sv[1] → central_fd pump (JOIN이 local_fd에 쓰는 데이터를 relay로)
-            // enqueue_central 사용: central_sender_thr_ 가 실제 write → 블로킹 없음
+            // sv[1] → central_fd pump.
+            // BEWE-frame-aware: 9byte header 읽고 len만큼 정확히 읽어 한 MUX 메시지로 전송.
+            // (이전 64KB chunk 방식은 대용량 패킷이 여러 MUX 조각으로 분할되어 Central이
+            //  각 조각을 독립 BEWE 패킷으로 잘못 해석 → 잘못된 queue로 분류 → out-of-order
+            //  전달되어 JOIN에서 bad-magic 발생. 프레임 단위로 묶어 해결.)
             jp->thr = std::thread([jp, cid, this](){
-                std::vector<uint8_t> tbuf(65536);
-                while(jp->local_fd >= 0 && mux_running_.load()){
-                    ssize_t n = recv(jp->remote_fd, tbuf.data(), tbuf.size(), 0);
-                    if(n <= 0) break;
-                    // BEWE 제어 패킷은 큐 오버플로 시에도 드롭 불가
-                    bool no_drop = false;
-                    if(n >= 5){
-                        uint8_t btype = tbuf[4];
-                        if(btype == 0x02 || btype == 0x06 || btype == 0x0F)
-                            no_drop = true;  // AUTH_ACK, CMD_ACK, REGION_RESPONSE
+                auto recv_all = [&](void* dst, size_t need) -> bool {
+                    uint8_t* p = (uint8_t*)dst;
+                    size_t got = 0;
+                    while(got < need){
+                        ssize_t r = recv(jp->remote_fd, p + got, need - got, 0);
+                        if(r <= 0) return false;
+                        got += (size_t)r;
                     }
+                    return true;
+                };
+                std::vector<uint8_t> pkt;
+                while(jp->local_fd >= 0 && mux_running_.load()){
+                    uint8_t hdr[9];
+                    if(!recv_all(hdr, 9)) break;
+                    if(memcmp(hdr, "BEWE", 4) != 0){
+                        // 비-BEWE 데이터(잘 안 발생). 안전하게 종료.
+                        bewe_log_push(0,"[CentralClient] pump bad magic conn_id=%u\n", cid);
+                        break;
+                    }
+                    uint32_t plen;
+                    memcpy(&plen, hdr + 5, 4);
+                    if(plen > 4*1024*1024){
+                        bewe_log_push(0,"[CentralClient] pump oversize conn_id=%u plen=%u\n", cid, plen);
+                        break;
+                    }
+                    pkt.resize(9 + plen);
+                    memcpy(pkt.data(), hdr, 9);
+                    if(plen > 0 && !recv_all(pkt.data() + 9, plen)) break;
+                    bool no_drop = false;
+                    uint8_t btype = hdr[4];
+                    if(btype == 0x02 || btype == 0x06 || btype == 0x0F)
+                        no_drop = true;  // AUTH_ACK, CMD_ACK, REGION_RESPONSE
                     CentralMuxHdr mh{}; mh.conn_id=cid;
                     mh.type = static_cast<uint8_t>(CentralMuxType::DATA);
-                    mh.len  = (uint32_t)n;
-                    enqueue_central(&mh, CENTRAL_MUX_HDR_SIZE, tbuf.data(), n, no_drop);
+                    mh.len  = (uint32_t)pkt.size();
+                    enqueue_central(&mh, CENTRAL_MUX_HDR_SIZE,
+                                    pkt.data(), pkt.size(), no_drop);
                 }
                 bewe_log_push(1,"[CentralClient] pump exit conn_id=%u\n", cid);
             });
