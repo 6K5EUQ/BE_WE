@@ -145,7 +145,7 @@ public:
     };
     std::vector<BandSegment> band_segments;
     std::mutex               band_mtx;
-    bool                     band_show = true;  // 토글 (세션 한정)
+    bool                     band_show = false; // 기본 off (세션 한정 토글)
 
     // ── System monitor (bottom bar) ───────────────────────────────────────
     float sysmon_cpu=0, sysmon_ghz=0, sysmon_ram=0, sysmon_io=0;

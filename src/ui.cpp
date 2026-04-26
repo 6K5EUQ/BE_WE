@@ -3438,6 +3438,28 @@ void run_streaming_viewer(){
             LongWaterfall::start_worker(&v);
         }
 
+        // Band plan / categories — LOCAL 모드에서도 파일 로드 + UI에 미러링
+        // (HOST 모드는 아래 if(mode_sel==1) 블록에서 별도로 처리)
+        if(mode_sel == 0){
+            HostBandCategories::load_from_file();
+            HostBandCategories::rebuild_cache();
+            HostBandPlan::load_from_file();
+            HostBandPlan::rebuild_cache();
+            PktBandPlan bp{}; HostBandPlan::snapshot_pkt(bp);
+            std::lock_guard<std::mutex> lk(v.band_mtx);
+            v.band_segments.clear();
+            int n = std::min<int>((int)bp.count, MAX_BAND_SEGMENTS);
+            for(int i=0;i<n;i++){
+                const auto& be=bp.entries[i]; if(!be.valid) continue;
+                FFTViewer::BandSegment s;
+                s.freq_lo_mhz=be.freq_lo_mhz; s.freq_hi_mhz=be.freq_hi_mhz;
+                s.category=be.category;
+                strncpy(s.label,       be.label,       sizeof(s.label)-1);
+                strncpy(s.description, be.description, sizeof(s.description)-1);
+                v.band_segments.push_back(s);
+            }
+        }
+
         if(mode_sel==1){
             // HOST: 서버 시작 (public 목록 + 소유자/리스너 초기화)
             shared_files.clear(); pub_iq_files.clear(); pub_audio_files.clear();
@@ -4074,8 +4096,11 @@ void run_streaming_viewer(){
                                 };
                                 v.net_srv->cb.on_lwf_dl_req = [&v](int op_index, const char* /*who*/, const char* fn){
                                     if(!fn || !fn[0] || strchr(fn,'/')) return;
-                                    std::string full = BEWEPaths::long_waterfall_dir() + "/" + fn;
-                                    if(v.net_srv) v.net_srv->stream_lwf_file_to_op(op_index, full);
+                                    std::string full = BEWEPaths::hist_host_dir() + "/" + fn;
+                                    // Reuse existing send_file_to (FILE_META + FILE_DATA path).
+                                    std::thread([&v, op_index, full](){
+                                        if(v.net_srv) v.net_srv->send_file_to(op_index, full.c_str(), 0);
+                                    }).detach();
                                 };
 
                                 central_cli.set_on_central_conn_open([&central_cli](uint16_t /*cid*/){
@@ -5845,6 +5870,10 @@ void run_streaming_viewer(){
         // ── HIST (Long Waterfall history) 토글 (H키) ────
         if(ImGui::IsKeyPressed(ImGuiKey_H, false) && !io.WantTextInput){
             try_toggle(3, v.lwf_modal_open);
+        }
+        // ── BAND 오버레이 토글 (B키) — 메인페이지 전용. BAND는 오버레이 아니므로 mutual-excl 무관.
+        if(ImGui::IsKeyPressed(ImGuiKey_B, false) && !io.WantTextInput){
+            v.band_show = !v.band_show;
         }
 
         // ── 우측 패널 계산 ────────────────────────────────────────────────
@@ -11922,14 +11951,7 @@ void run_streaming_viewer(){
                     v.eid_sel_active=false; // 더블클릭 시 줌 드래그 시작 방지
                 }
 
-                // B키: 비트 구분 모드 토글 (비트 판단선도 함께 초기화)
-                if(mouse_in && ImGui::IsKeyPressed(ImGuiKey_B,false) && !io.WantTextInput){
-                    v.eid_push_undo();
-                    v.eid_baud_mode=!v.eid_baud_mode;
-                    v.eid_baud_s0=-1; v.eid_baud_s1=-1; v.eid_baud_click=0;
-                    v.eid_baud_drag=-1; v.eid_baud_drag_band=false;
-                    v.eid_baseline_active=false;
-                }
+                // (B키 매핑 제거됨 — 메인페이지에서 BAND 토글로 재할당)
 
                 // 비트 구분 모드: 좌클릭 인터랙션 (팝업 열린 동안 차단)
                 if(v.eid_baud_mode && mouse_in && !io.KeyCtrl

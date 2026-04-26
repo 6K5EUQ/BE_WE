@@ -1261,12 +1261,16 @@ void run_cli_host(){
                 };
                 srv->cb.on_lwf_dl_req = [&v](int op_index, const char* who, const char* fn){
                     if(!fn || !fn[0]) return;
-                    // 안전: basename만 허용, '/' 차단
                     if(strchr(fn, '/')) return;
-                    std::string full = BEWEPaths::long_waterfall_dir() + "/" + fn;
-                    if(v.net_srv) v.net_srv->stream_lwf_file_to_op(op_index, full);
+                    std::string full = BEWEPaths::hist_host_dir() + "/" + fn;
+                    std::string who_s = who ? who : "?";
                     bewe_log_push(0, "[LWF] DL_REQ from op=%d '%s' file=%s\n",
-                                  op_index, who?who:"?", fn);
+                                  op_index, who_s.c_str(), fn);
+                    // Reuse existing send_file_to (FILE_META + FILE_DATA, direct send_all
+                    // with rate limiting, no queue-drop). Detached so recv thread isn't held.
+                    std::thread([&v, op_index, full](){
+                        if(v.net_srv) v.net_srv->send_file_to(op_index, full.c_str(), 0);
+                    }).detach();
                 };
 
                 // 새 JOIN이 Central을 통해 들어오면 cached band plan + category 즉시 푸시

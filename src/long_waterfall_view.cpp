@@ -68,6 +68,15 @@ float    g_right_ratio = 0.22f;
 float    g_right_saved = 0.22f;
 bool     g_files_panel_open = true;   // S키 토글
 
+// File-list cache (HOST tab — local hist_host_dir, JOIN tab — local hist_join_dir)
+struct HistFileEntry { std::string path; std::string base; uint64_t start_utc; uint64_t size; };
+std::vector<HistFileEntry> g_host_files;
+std::vector<HistFileEntry> g_join_files;
+bool      g_host_list_dirty  = true;
+bool      g_join_list_dirty  = true;
+time_t    g_join_dir_mtime   = 0;
+int       g_active_tab       = 0;       // 0=HOST, 1=JOIN
+
 // File-list selection + context state
 std::string g_sel_path;             // currently selected file path (may equal g_open.path)
 std::string g_ctx_path;             // file targeted by current right-click context menu
@@ -263,6 +272,15 @@ std::string fmt_duration_hms(uint64_t total_sec){
     return buf;
 }
 
+// Recognize a HIST file by name (.bewehist new, .bewewf legacy, or "wfimg_/HIST_" prefix).
+static bool is_hist_filename(const std::string& fn){
+    if(fn.size() >= 9 && fn.compare(fn.size()-9, 9, ".bewehist")==0) return true;
+    if(fn.size() >= 7 && fn.compare(fn.size()-7, 7, ".bewewf")==0)  return true;
+    if(fn.rfind("wfimg_", 0) == 0) return true;
+    if(fn.rfind("HIST_",  0) == 0) return true;
+    return false;
+}
+
 void register_dl_callbacks_once(NetClient* cli){
     static NetClient* s_bound = nullptr;
     if(s_bound == cli) return;
@@ -273,26 +291,36 @@ void register_dl_callbacks_once(NetClient* cli){
         g_remote_list = list;
         g_remote_list_valid = true;
     };
-    cli->on_lwf_dl_data = [](const PktLwfDlData& d, const uint8_t* chunk, uint32_t chunk_len){
-        std::lock_guard<std::mutex> lk(g_dl_mtx);
-        if(d.is_first || !g_dl.fp || g_dl.filename != d.filename){
-            if(g_dl.fp){ fclose(g_dl.fp); g_dl.fp = nullptr; }
-            std::string dir = BEWEPaths::long_waterfall_dir();
+    // 다운로드는 기존 FILE_META/FILE_DATA 메커니즘 재사용. 저장 dir만 결정.
+    // 다른 file transfer (region/share)와 충돌하지 않도록 HIST 파일명만 리다이렉트.
+    auto prev_get_dir = cli->on_get_save_dir;
+    cli->on_get_save_dir = [prev_get_dir](const std::string& fn) -> std::string {
+        if(is_hist_filename(fn)){
+            std::string dir = BEWEPaths::hist_join_dir();
             mkdir(BEWEPaths::recordings_dir().c_str(), 0755);
+            mkdir(BEWEPaths::hist_dir().c_str(), 0755);
             mkdir(dir.c_str(), 0755);
-            std::string out = dir + "/" + d.filename;
-            g_dl.fp = fopen(out.c_str(), "wb");
-            g_dl.filename = d.filename;
-            g_dl.total = d.total_bytes;
+            return dir;
+        }
+        return prev_get_dir ? prev_get_dir(fn) : std::string();
+    };
+    auto prev_meta = cli->on_file_meta;
+    cli->on_file_meta = [prev_meta](const std::string& name, uint64_t total){
+        if(is_hist_filename(name)){
+            std::lock_guard<std::mutex> lk(g_dl_mtx);
+            g_dl.filename = name;
+            g_dl.total = total;
             g_dl.recv = 0;
         }
-        if(g_dl.fp && chunk_len > 0){
-            fwrite(chunk, 1, chunk_len, g_dl.fp);
-            g_dl.recv += chunk_len;
+        if(prev_meta) prev_meta(name, total);
+    };
+    auto prev_prog = cli->on_file_progress;
+    cli->on_file_progress = [prev_prog](const std::string& name, uint64_t done, uint64_t total){
+        if(is_hist_filename(name)){
+            std::lock_guard<std::mutex> lk(g_dl_mtx);
+            if(g_dl.filename == name){ g_dl.recv = done; g_dl.total = total; }
         }
-        if(d.is_last && g_dl.fp){
-            fclose(g_dl.fp); g_dl.fp = nullptr;
-        }
+        if(prev_prog) prev_prog(name, done, total);
     };
 }
 
@@ -410,7 +438,8 @@ void draw_modal(FFTViewer& v, NetClient* cli){
     float view_w  = std::max(200.f, win_sz.x - right_w - split_w);
 
     // ── Left: viewer ─────────────────────────────────────────────────────
-    ImGui::BeginChild("##lwf_view", ImVec2(view_w, win_sz.y), true);
+    // 정보 영역만 작은 패딩, 이미지는 child 가장자리까지 꽉 차게.
+    ImGui::BeginChild("##lwf_view", ImVec2(view_w, win_sz.y), false);
 
     // Live refresh size if open file is current LIVE.
     std::string live_path = LongWaterfall::current_file_path();
@@ -427,8 +456,8 @@ void draw_modal(FFTViewer& v, NetClient* cli){
         uint64_t stop_utc = h.start_utc_unix + dur_sec;
 
         unsigned fft_disp = h.fft_input_size > 0 ? h.fft_input_size : h.fft_size;
-        ImGui::Spacing();
-        ImGui::Indent(8.0f);
+        ImGui::Dummy(ImVec2(0, 4));
+        ImGui::Indent(10.0f);
         ImGui::Text("CF : %.3f MHz   SR : %.2f MSPS   FFT : %u   Duration : %s   Size : %.1f MB",
             h.center_freq_hz / 1e6,
             h.sample_rate_hz / 1e6,
@@ -437,10 +466,13 @@ void draw_modal(FFTViewer& v, NetClient* cli){
             g_open.total_size / 1048576.0);
         ImGui::Text("Start : %s", fmt_local_time(h.start_utc_unix, off_h).c_str());
         ImGui::Text("Stop  : %s", fmt_local_time(stop_utc, off_h).c_str());
-        ImGui::Unindent(8.0f);
-        ImGui::Spacing();
+        ImGui::Unindent(10.0f);
+        ImGui::Dummy(ImVec2(0, 2));
         ImGui::Separator();
 
+        // Image는 viewer child 끝까지 꽉 차게 (FramePadding/ItemSpacing 0).
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,  ImVec2(0,0));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0,0));
         ImVec2 img_sz = ImGui::GetContentRegionAvail();
         if(img_sz.x >= 64 && img_sz.y >= 64){
             int target_w = std::min(2048, std::max(256, (int)img_sz.x));
@@ -517,6 +549,7 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                 ImGui::SetTooltip("%s\n%.4f MHz", tstr.c_str(), fmhz);
             }
         }
+        ImGui::PopStyleVar(2);   // ItemSpacing + FramePadding
     }
     ImGui::EndChild();
 
@@ -539,127 +572,260 @@ void draw_modal(FFTViewer& v, NetClient* cli){
 
         ImGui::SameLine(0,0);
         ImGui::BeginChild("##lwf_files", ImVec2(right_w, win_sz.y), true);
-    ImGui::Text("Files");
-    ImGui::Separator();
 
-    // Build list of paths (LIVE first if any, then disk-sorted)
-    std::vector<std::pair<std::string,bool>> files; // (path, is_live)
-    if(!live_path.empty()) files.emplace_back(live_path, true);
-    {
-        DIR* d = opendir(BEWEPaths::long_waterfall_dir().c_str());
-        if(d){
-            struct dirent* de;
-            // Read header start_utc for proper chronological sort (filename can be either
-            // legacy .bewewf or new .bewehist — both have same header layout).
-            std::vector<std::pair<uint64_t, std::string>> tmp;  // (start_utc, path)
-            while((de = readdir(d)) != nullptr){
-                const char* n = de->d_name;
-                if(!n || n[0]=='.') continue;
-                const char* dot = strrchr(n, '.');
-                if(!dot || (strcmp(dot,".bewehist") != 0 && strcmp(dot,".bewewf") != 0)) continue;
-                std::string full = BEWEPaths::long_waterfall_dir() + std::string("/") + n;
-                if(full == live_path) continue;
-                LongWaterfall::FileHeader hh{};
-                uint64_t fsz = 0;
-                if(!read_header_only(full, hh, fsz)) continue;
-                tmp.emplace_back(hh.start_utc_unix, full);
+        // ── Tab strip: HOST | JOIN (ARCHIVE-style top tabs) ─────────────
+        bool is_join_mode = (cli != nullptr);
+        {
+            ImDrawList* dlf = ImGui::GetWindowDrawList();
+            ImVec2 strip_pos = ImGui::GetCursorScreenPos();
+            float  strip_h   = ImGui::GetFontSize() + 8.f;
+            // Strip bg (회색)
+            dlf->AddRectFilled(strip_pos,
+                ImVec2(strip_pos.x + ImGui::GetContentRegionAvail().x, strip_pos.y + strip_h),
+                IM_COL32(30,30,38,255));
+            const char* labels[2] = {"HOST", "JOIN"};
+            float bx = strip_pos.x + 8.f;
+            float by = strip_pos.y + 4.f;
+            for(int i=0;i<2;i++){
+                ImVec2 ts = ImGui::CalcTextSize(labels[i]);
+                bool hov = io.MousePos.x >= bx && io.MousePos.x <= bx + ts.x + 4 &&
+                           io.MousePos.y >= strip_pos.y && io.MousePos.y <= strip_pos.y + strip_h;
+                bool active = (g_active_tab == i);
+                ImU32 col = active ? IM_COL32(120,180,255,255)
+                          : (hov ? IM_COL32(180,180,200,255) : IM_COL32(140,140,160,255));
+                dlf->AddText(ImVec2(bx, by), col, labels[i]);
+                if(hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                    g_active_tab = i;
+                bx += ts.x + 16.f;
             }
-            closedir(d);
-            std::sort(tmp.begin(), tmp.end(),
-                [](const std::pair<uint64_t,std::string>& a,
-                   const std::pair<uint64_t,std::string>& b){ return a.first > b.first; });
-            for(auto& p : tmp) files.emplace_back(p.second, false);
+            ImGui::Dummy(ImVec2(0, strip_h));
+            // Active tab header (파란 ARCHIVE-style)
+            ImVec2 hdr_pos = ImGui::GetCursorScreenPos();
+            float  hdr_h   = ImGui::GetFontSize() + 6.f;
+            dlf->AddRectFilled(hdr_pos,
+                ImVec2(hdr_pos.x + ImGui::GetContentRegionAvail().x, hdr_pos.y + hdr_h),
+                IM_COL32(40,70,140,255));
+            dlf->AddText(ImVec2(hdr_pos.x + 8.f, hdr_pos.y + 3.f),
+                IM_COL32(220,230,255,255),
+                labels[g_active_tab]);
+            ImGui::Dummy(ImVec2(0, hdr_h + 2));
         }
-    }
 
-    // Render rows. Single-click = select+open, right-click = context menu.
-    for(auto& it : files){
-        const std::string& full = it.first;
-        bool is_live = it.second;
-        std::string base = full;
-        size_t s = base.find_last_of('/');
-        if(s != std::string::npos) base = base.substr(s+1);
-
-        bool sel = (g_sel_path == full);
-        ImGui::PushID(full.c_str());
-        if(is_live){
-            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(80,220,80,255));
-            std::string label = "● LIVE  " + base;
-            if(ImGui::Selectable(label.c_str(), sel)){
-                g_sel_path = full;
-                if(g_open.path != full) open_file(full);
-            }
-            ImGui::PopStyleColor();
-        } else {
-            if(ImGui::Selectable(base.c_str(), sel)){
-                g_sel_path = full;
-                if(g_open.path != full) open_file(full);
-            }
-        }
-        // Right-click → open per-row context menu
-        if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-            g_ctx_path = full;
-            g_sel_path = full;
-            ImGui::OpenPopup("##lwf_row_ctx");
-        }
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 8));
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,  ImVec2(8, 6));
-        if(g_ctx_path == full && ImGui::BeginPopup("##lwf_row_ctx")){
-            if(ImGui::MenuItem("Info")){
-                g_info_path = full;
-                g_info_modal_open = true;
-            }
-            // LIVE는 삭제 불가 (worker가 쓰는 중)
-            if(!is_live){
-                ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));
-                if(ImGui::MenuItem("Delete")){
-                    if(g_open.path == full) close_open();
-                    if(g_sel_path == full) g_sel_path.clear();
-                    unlink(full.c_str());
+        // ── HOST tab content (local files when HOST/Local, remote when JOIN) ──
+        if(g_active_tab == 0){
+                if(ImGui::Button("Reload", ImVec2(-1, 0))){
+                    if(is_join_mode){
+                        cli->cmd_lwf_list_req();          // ask remote host
+                    } else {
+                        g_host_list_dirty = true;         // rescan local dir next frame
+                    }
                 }
-                ImGui::PopStyleColor();
-            } else {
-                ImGui::BeginDisabled();
-                ImGui::MenuItem("Delete (LIVE)");
-                ImGui::EndDisabled();
-            }
-            ImGui::EndPopup();
-        }
-        ImGui::PopStyleVar(2);   // WindowPadding + ItemSpacing
-        ImGui::PopID();
-    }
+                ImGui::Separator();
 
-    // JOIN: sync from host
-    if(cli){
-        ImGui::Separator();
-        if(ImGui::Button("Sync from host", ImVec2(-1, 0))){
-            cli->cmd_lwf_list_req();
-        }
-        std::lock_guard<std::mutex> lk(g_remote_list_mtx);
-        if(g_remote_list_valid){
-            ImGui::Text("Host files: %u", (unsigned)g_remote_list.count);
-            ImGui::BeginChild("##lwf_remote", ImVec2(0, 200), true);
-            for(uint16_t i=0; i<g_remote_list.count; i++){
-                const auto& e = g_remote_list.entries[i];
-                ImGui::PushID((int)i);
-                if(ImGui::Selectable(e.filename, false)){
-                    cli->cmd_lwf_dl_req(e.filename);
+                // Build list rows
+                struct Row { std::string path_or_name; uint64_t start; uint64_t size; bool is_live; bool is_remote; };
+                std::vector<Row> rows;
+                if(is_join_mode){
+                    std::lock_guard<std::mutex> lk(g_remote_list_mtx);
+                    if(g_remote_list_valid){
+                        for(uint16_t i=0;i<g_remote_list.count;i++){
+                            const auto& e = g_remote_list.entries[i];
+                            Row r; r.path_or_name = e.filename;
+                            r.start = e.start_utc; r.size = e.size_bytes;
+                            r.is_live = false; r.is_remote = true;
+                            rows.push_back(std::move(r));
+                        }
+                    }
+                } else {
+                    // Local — scan hist_host_dir
+                    if(g_host_list_dirty){
+                        g_host_files.clear();
+                        DIR* d = opendir(BEWEPaths::hist_host_dir().c_str());
+                        if(d){
+                            struct dirent* de;
+                            while((de = readdir(d)) != nullptr){
+                                const char* n = de->d_name;
+                                if(!n || n[0]=='.') continue;
+                                if(!is_hist_filename(n)) continue;
+                                std::string full = BEWEPaths::hist_host_dir() + "/" + n;
+                                LongWaterfall::FileHeader hh{}; uint64_t fsz=0;
+                                if(!read_header_only(full, hh, fsz)) continue;
+                                HistFileEntry e; e.path=full; e.base=n;
+                                e.start_utc=hh.start_utc_unix; e.size=fsz;
+                                g_host_files.push_back(std::move(e));
+                            }
+                            closedir(d);
+                        }
+                        std::sort(g_host_files.begin(), g_host_files.end(),
+                            [](const HistFileEntry& a, const HistFileEntry& b){ return a.start_utc > b.start_utc; });
+                        g_host_list_dirty = false;
+                    }
+                    if(!live_path.empty()){
+                        Row r; r.path_or_name = live_path; r.is_live = true; r.is_remote = false;
+                        r.start = 0; r.size = 0;
+                        rows.push_back(std::move(r));
+                    }
+                    for(auto& e : g_host_files){
+                        if(e.path == live_path) continue;
+                        Row r; r.path_or_name = e.path; r.is_live = false; r.is_remote = false;
+                        r.start = e.start_utc; r.size = e.size;
+                        rows.push_back(std::move(r));
+                    }
                 }
-                ImGui::SameLine();
-                ImGui::TextDisabled(" %.1fMB", e.size_bytes/1048576.0);
-                ImGui::PopID();
-            }
-            ImGui::EndChild();
-            std::lock_guard<std::mutex> lk2(g_dl_mtx);
-            if(g_dl.total > 0){
-                ImGui::Text("DL %s: %llu / %llu",
-                    g_dl.filename.c_str(),
-                    (unsigned long long)g_dl.recv,
-                    (unsigned long long)g_dl.total);
-            }
+
+                ImGui::BeginChild("##lwf_host_rows", ImVec2(0, 0), false);
+                for(auto& r : rows){
+                    std::string base = r.path_or_name;
+                    if(!r.is_remote){
+                        size_t s = base.find_last_of('/');
+                        if(s != std::string::npos) base = base.substr(s+1);
+                    }
+                    bool sel = (g_sel_path == r.path_or_name);
+                    ImGui::PushID(r.path_or_name.c_str());
+                    if(r.is_live){
+                        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(80,220,80,255));
+                        std::string label = "[LIVE] " + base;
+                        if(ImGui::Selectable(label.c_str(), sel)){
+                            g_sel_path = r.path_or_name;
+                            if(g_open.path != r.path_or_name) open_file(r.path_or_name);
+                        }
+                        ImGui::PopStyleColor();
+                    } else {
+                        if(ImGui::Selectable(base.c_str(), sel)){
+                            g_sel_path = r.path_or_name;
+                            // Local: open in viewer immediately. Remote: just select.
+                            if(!r.is_remote && g_open.path != r.path_or_name)
+                                open_file(r.path_or_name);
+                        }
+                    }
+                    if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                        g_ctx_path = r.path_or_name;
+                        g_sel_path = r.path_or_name;
+                        ImGui::OpenPopup("##lwf_host_ctx");
+                    }
+                    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 8));
+                    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,  ImVec2(8, 6));
+                    if(g_ctx_path == r.path_or_name && ImGui::BeginPopup("##lwf_host_ctx")){
+                        // Download — JOIN mode (remote) only
+                        if(is_join_mode && r.is_remote){
+                            if(ImGui::MenuItem("Download")){
+                                cli->cmd_lwf_dl_req(r.path_or_name.c_str());
+                            }
+                        } else {
+                            ImGui::BeginDisabled();
+                            ImGui::MenuItem("Download");
+                            ImGui::EndDisabled();
+                        }
+                        // Delete — Local/Host mode only (delete local file)
+                        if(!is_join_mode && !r.is_live && !r.is_remote){
+                            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));
+                            if(ImGui::MenuItem("Delete")){
+                                if(g_open.path == r.path_or_name) close_open();
+                                if(g_sel_path == r.path_or_name) g_sel_path.clear();
+                                unlink(r.path_or_name.c_str());
+                                g_host_list_dirty = true;
+                            }
+                            ImGui::PopStyleColor();
+                        } else {
+                            ImGui::BeginDisabled();
+                            ImGui::MenuItem("Delete");
+                            ImGui::EndDisabled();
+                        }
+                        ImGui::EndPopup();
+                    }
+                    ImGui::PopStyleVar(2);
+                    ImGui::PopID();
+                }
+                ImGui::EndChild();
         }
-    } // if(cli)
-    ImGui::EndChild();    // ##lwf_files (BeginChild at top of g_files_panel_open block)
+
+        // ── JOIN tab: local hist_join_dir() (auto-refresh on mtime change) ──
+        if(g_active_tab == 1){
+                // Poll dir mtime — refresh on change.
+                struct stat dst{};
+                time_t cur_mtime = 0;
+                if(stat(BEWEPaths::hist_join_dir().c_str(), &dst) == 0) cur_mtime = dst.st_mtime;
+                if(cur_mtime != g_join_dir_mtime || g_join_list_dirty){
+                    g_join_dir_mtime = cur_mtime;
+                    g_join_list_dirty = false;
+                    g_join_files.clear();
+                    DIR* d = opendir(BEWEPaths::hist_join_dir().c_str());
+                    if(d){
+                        struct dirent* de;
+                        while((de = readdir(d)) != nullptr){
+                            const char* n = de->d_name;
+                            if(!n || n[0]=='.') continue;
+                            if(!is_hist_filename(n)) continue;
+                            std::string full = BEWEPaths::hist_join_dir() + "/" + n;
+                            LongWaterfall::FileHeader hh{}; uint64_t fsz=0;
+                            if(!read_header_only(full, hh, fsz)) continue;
+                            HistFileEntry e; e.path=full; e.base=n;
+                            e.start_utc=hh.start_utc_unix; e.size=fsz;
+                            g_join_files.push_back(std::move(e));
+                        }
+                        closedir(d);
+                    }
+                    std::sort(g_join_files.begin(), g_join_files.end(),
+                        [](const HistFileEntry& a, const HistFileEntry& b){ return a.start_utc > b.start_utc; });
+                }
+
+                // DL progress (active host→join transfer via FILE_META/DATA path)
+                {
+                    std::lock_guard<std::mutex> lk(g_dl_mtx);
+                    if(g_dl.total > 0 && g_dl.recv < g_dl.total){
+                        ImGui::Text("DL %s", g_dl.filename.c_str());
+                        float frac = g_dl.total ? (float)g_dl.recv / (float)g_dl.total : 0.f;
+                        ImGui::ProgressBar(frac, ImVec2(-1, 0));
+                        ImGui::Separator();
+                    }
+                }
+
+                ImGui::BeginChild("##lwf_join_rows", ImVec2(0, 0), false);
+                for(auto& e : g_join_files){
+                    bool sel = (g_sel_path == e.path);
+                    ImGui::PushID(e.path.c_str());
+                    if(ImGui::Selectable(e.base.c_str(), sel)){
+                        g_sel_path = e.path;
+                        if(g_open.path != e.path) open_file(e.path);
+                    }
+                    if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                        g_ctx_path = e.path;
+                        g_sel_path = e.path;
+                        ImGui::OpenPopup("##lwf_join_ctx");
+                    }
+                    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 8));
+                    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,  ImVec2(8, 6));
+                    if(g_ctx_path == e.path && ImGui::BeginPopup("##lwf_join_ctx")){
+                        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));
+                        if(ImGui::MenuItem("Delete")){
+                            if(g_open.path == e.path) close_open();
+                            if(g_sel_path == e.path) g_sel_path.clear();
+                            unlink(e.path.c_str());
+                            g_join_list_dirty = true;
+                        }
+                        ImGui::PopStyleColor();
+                        ImGui::EndPopup();
+                    }
+                    ImGui::PopStyleVar(2);
+                    ImGui::PopID();
+                }
+                ImGui::EndChild();
+
+                // Del key on selected (only when JOIN tab focused)
+                if(ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) &&
+                   ImGui::IsKeyPressed(ImGuiKey_Delete, false) &&
+                   !g_sel_path.empty()){
+                    // delete only if path is in hist_join_dir
+                    std::string prefix = BEWEPaths::hist_join_dir() + "/";
+                    if(g_sel_path.compare(0, prefix.size(), prefix) == 0){
+                        if(g_open.path == g_sel_path) close_open();
+                        unlink(g_sel_path.c_str());
+                        g_sel_path.clear();
+                        g_join_list_dirty = true;
+                    }
+                }
+        } // JOIN tab
+        ImGui::EndChild();    // ##lwf_files
 
     } // if(g_files_panel_open)
 

@@ -102,10 +102,14 @@ static inline std::string time_temp_dir(){
     return recordings_dir()+"/Time_temp";
 }
 
-// ── Long-Waterfall (host-owned 24h+ FFT magnitude image) ────────────────
-static inline std::string long_waterfall_dir(){
-    return recordings_dir()+"/long_waterfall";
-}
+// ── HIST (Long-Waterfall image) ─────────────────────────────────────────
+// recordings/hist/host : 본인이 HOST일 때 worker가 누적 기록한 파일
+// recordings/hist/join : 다른 HOST에 JOIN해서 다운로드 받은 파일
+static inline std::string hist_dir()      { return recordings_dir()+"/hist"; }
+static inline std::string hist_host_dir() { return hist_dir()+"/host"; }
+static inline std::string hist_join_dir() { return hist_dir()+"/join"; }
+// (legacy 호환: 이전 코드의 long_waterfall_dir = hist_host_dir)
+static inline std::string long_waterfall_dir(){ return hist_host_dir(); }
 
 // 디렉터리 없으면 자동 생성
 static inline void ensure_dirs(){
@@ -118,7 +122,7 @@ static inline void ensure_dirs(){
     mk(report_dir());   mk(report_iq_dir());   mk(report_audio_dir());
     mk(database_dir());
     mk(time_temp_dir());
-    mk(long_waterfall_dir());
+    mk(hist_dir()); mk(hist_host_dir()); mk(hist_join_dir());
 }
 
 } // namespace BEWEPaths

@@ -1033,34 +1033,12 @@ std::vector<OpEntry> NetServer::get_operators() const {
 }
 
 // ── Long-Waterfall send (host → single op) ───────────────────────────────
+// 둘 다 send_queue를 우회하고 fd에 직접 send_all로 씀 (send_file_to 패턴).
+// 이유: send_queue는 SEND_QUEUE_MAX 초과 시 drop함. LWF chunk를 큐로 보내면
+// 큰 파일에서 청크가 drop되어 JOIN에서 stream 깨짐 (bad magic).
+
 void NetServer::send_lwf_list_to_op(int op_index, const PktLwfList& list){
     auto pkt = make_packet(PacketType::LWF_LIST, &list, sizeof(list));
-    std::lock_guard<std::mutex> lk(clients_mtx_);
-    for(auto& cli : clients_){
-        if(cli->authed && cli->alive.load() && cli->op_index==(uint8_t)op_index){
-            cli->enqueue(pkt, true /*no_drop*/);
-            break;
-        }
-    }
-}
-
-bool NetServer::stream_lwf_file_to_op(int op_index, const std::string& filepath){
-    FILE* fp = fopen(filepath.c_str(), "rb");
-    if(!fp){
-        bewe_log_push(0, "[LWF] stream open failed: %s\n", filepath.c_str());
-        return false;
-    }
-    fseek(fp, 0, SEEK_END);
-    uint64_t total = (uint64_t)ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-
-    // basename
-    std::string base = filepath;
-    size_t s = base.find_last_of('/');
-    if(s != std::string::npos) base = base.substr(s+1);
-    if(base.size() >= 64) base.resize(63);
-
-    // find target client (snapshot the shared_ptr; release lock before slow IO)
     std::shared_ptr<ClientConn> target;
     {
         std::lock_guard<std::mutex> lk(clients_mtx_);
@@ -1069,35 +1047,11 @@ bool NetServer::stream_lwf_file_to_op(int op_index, const std::string& filepath)
                 target = cli; break;
             }
     }
-    if(!target){ fclose(fp); return false; }
-
-    constexpr uint32_t CHUNK = 64 * 1024;
-    std::vector<uint8_t> buf(sizeof(PktLwfDlData) + CHUNK);
-    uint64_t off = 0;
-    bool first = true;
-    while(off < total){
-        uint32_t cb_sz = (uint32_t)std::min<uint64_t>(CHUNK, total - off);
-        auto* d = reinterpret_cast<PktLwfDlData*>(buf.data());
-        memset(d, 0, sizeof(*d));
-        strncpy(d->filename, base.c_str(), sizeof(d->filename)-1);
-        d->total_bytes = total;
-        d->offset      = off;
-        d->chunk_bytes = cb_sz;
-        d->is_first    = first ? 1 : 0;
-        d->is_last     = (off + cb_sz >= total) ? 1 : 0;
-        if(fread(buf.data() + sizeof(PktLwfDlData), 1, cb_sz, fp) != cb_sz){
-            fclose(fp); return false;
-        }
-        auto pkt = make_packet(PacketType::LWF_DL_DATA,
-                               buf.data(),
-                               (uint32_t)(sizeof(PktLwfDlData) + cb_sz));
-        target->enqueue(pkt, true /*no_drop*/);
-        off += cb_sz;
-        first = false;
-    }
-    fclose(fp);
-    bewe_log_push(0, "[LWF] streamed %s (%llu bytes) to op=%d\n",
-                  base.c_str(), (unsigned long long)total, op_index);
-    return true;
+    if(!target) return;
+    std::lock_guard<std::mutex> wlk(target->fd_write_mtx);
+    send_all(target->fd, pkt.data(), pkt.size());
 }
+
+// (stream_lwf_file_to_op removed — host now uses send_file_to which streams via
+//  FILE_META + FILE_DATA, JOIN's on_get_save_dir routes to long_waterfall_dir.)
 

@@ -80,8 +80,9 @@ static bool is_lwf_filename(const char* n){
 bool open_new_file(uint64_t cf_hz, uint64_t sr_hz, uint32_t fft_size,
                    uint32_t fft_input_size,
                    float dmin, float dmax, float station_lon){
-    std::string dir = BEWEPaths::long_waterfall_dir();
+    std::string dir = BEWEPaths::hist_host_dir();
     mkdir(BEWEPaths::recordings_dir().c_str(), 0755);
+    mkdir(BEWEPaths::hist_dir().c_str(), 0755);
     mkdir(dir.c_str(), 0755);
 
     std::string fname = build_filename(cf_hz, sr_hz, fft_size);
@@ -296,7 +297,7 @@ std::string current_file_path(){
 
 void scan_dir_into_list(::PktLwfList& out){
     memset(&out, 0, sizeof(out));
-    std::string dir = BEWEPaths::long_waterfall_dir();
+    std::string dir = BEWEPaths::hist_host_dir();
     DIR* d = opendir(dir.c_str());
     if(!d) return;
 

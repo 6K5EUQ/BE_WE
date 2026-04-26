@@ -378,12 +378,7 @@ void NetClient::handle_packet(PacketType type,
         break;
     }
     case PacketType::LWF_DL_DATA: {
-        if(len < sizeof(PktLwfDlData)) break;
-        const auto* d = reinterpret_cast<const PktLwfDlData*>(payload);
-        if(len < sizeof(PktLwfDlData) + d->chunk_bytes) break;
-        if(on_lwf_dl_data){
-            on_lwf_dl_data(*d, payload + sizeof(PktLwfDlData), d->chunk_bytes);
-        }
+        // Deprecated: HIST download now uses FILE_META/FILE_DATA. Drop silently.
         break;
     }
 

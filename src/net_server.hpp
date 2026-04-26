@@ -281,10 +281,9 @@ public:
     void broadcast_band_plan(const PktBandPlan& pkt);
     void broadcast_band_categories(const PktBandCatSync& pkt);
 
-    // Long Waterfall responses (target a single client by op_index/connection)
+    // Long Waterfall list response (target a single client by op_index)
     void send_lwf_list_to_op(int op_index, const PktLwfList& list);
-    // Stream a long-waterfall file to a single op_index. Returns true if started.
-    bool stream_lwf_file_to_op(int op_index, const std::string& filepath);
+    // (HIST file download reuses existing send_file_to → FILE_META + FILE_DATA path.)
 
     // Digital decode log → clients with audio_mask bit set
     void broadcast_digi_log(uint8_t tab, uint8_t ch_idx, const char* msg, uint32_t audio_mask);
