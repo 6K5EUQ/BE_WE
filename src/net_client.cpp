@@ -59,9 +59,28 @@ bool NetClient::connect_fd(int fd, const char* id, const char* pw, uint8_t tier)
             }
         }
         if(static_cast<PacketType>(hdr.type) == PacketType::AUTH_ACK) break;
-        // AUTH_ACK 아닌 패킷은 스킵 (IQ_PROGRESS, CH_SYNC 등이 먼저 올 수 있음)
-        bewe_log_push(2,"[NetClient] connect_fd: skipping pre-auth pkt type=0x%02x len=%u\n",
-               hdr.type, hdr.len);
+        // BAND_PLAN_SYNC는 host의 CONN_OPEN 트리거로 AUTH_ACK보다 먼저 도착할 수 있음.
+        // 버리지 말고 pending 슬롯에 보관 → flush_pending_band_plan으로 UI에 적용.
+        if(static_cast<PacketType>(hdr.type) == PacketType::BAND_PLAN_SYNC && hdr.len >= 4){
+            uint16_t count = 0;
+            memcpy(&count, payload.data(), 2);
+            if(count > MAX_BAND_SEGMENTS) count = MAX_BAND_SEGMENTS;
+            size_t needed = 4 + (size_t)count * sizeof(PktBandEntry);
+            if(hdr.len >= needed){
+                PktBandPlan bp{};
+                bp.count = count;
+                if(count > 0)
+                    memcpy(bp.entries, payload.data() + 4, (size_t)count * sizeof(PktBandEntry));
+                std::lock_guard<std::mutex> lk(band_plan_pending_mtx);
+                band_plan_pending = std::make_unique<PktBandPlan>(bp);
+                bewe_log_push(2,"[NetClient] connect_fd: pre-auth BAND_PLAN_SYNC stashed (count=%u)\n",
+                              count);
+            }
+        } else {
+            // AUTH_ACK 아닌 패킷은 스킵 (IQ_PROGRESS, CH_SYNC 등이 먼저 올 수 있음)
+            bewe_log_push(2,"[NetClient] connect_fd: skipping pre-auth pkt type=0x%02x len=%u\n",
+                   hdr.type, hdr.len);
+        }
         if(++skip_count > 64){ fd_=-1; return false; }
     }
     if(hdr.len < sizeof(PktAuthAck)){

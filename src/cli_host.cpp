@@ -1229,12 +1229,14 @@ void run_cli_host(){
                     if(HostBandPlan::apply_remove(r)) rebroadcast_band_plan();
                 };
                 // 새 JOIN이 Central을 통해 들어오면 cached band plan 즉시 푸시
-                central_cli.set_on_central_conn_open([&central_cli](uint16_t /*cid*/){
+                central_cli.set_on_central_conn_open([&central_cli](uint16_t cid){
                     std::vector<uint8_t> pkt;
                     {
                         std::lock_guard<std::mutex> lk(HostBandPlan::g_mtx);
                         pkt = HostBandPlan::g_cached_pkt;
                     }
+                    bewe_log_push(0, "[HostBandPlan] CONN_OPEN cid=%u → push BAND_PLAN_SYNC %zu bytes\n",
+                                  cid, pkt.size());
                     if(!pkt.empty())
                         central_cli.enqueue_relay_broadcast(pkt.data(), pkt.size(), true);
                 });
