@@ -158,6 +158,10 @@ public:
     std::function<void(const PktSchedSync&)>   on_sched_sync;
     std::function<void(const PktBandPlan&)>    on_band_plan;
     std::function<void(const PktBandCatSync&)> on_band_cat;
+    // Long Waterfall — file list + chunk-stream callback (data may span multiple chunks).
+    std::function<void(const PktLwfList&)>     on_lwf_list;
+    // payload includes header (PktLwfDlData) followed by chunk_bytes raw.
+    std::function<void(const PktLwfDlData&, const uint8_t* /*chunk*/, uint32_t /*chunk_len*/)> on_lwf_dl_data;
 
     // 콜백 등록 전에 도착한 BAND_PLAN_SYNC / BAND_CAT_SYNC 보관 (race 방지)
     std::mutex                     band_plan_pending_mtx;
@@ -290,6 +294,8 @@ public:
                          const char* label, const char* description);
     bool cmd_band_cat_upsert(uint8_t id, const char* name, uint8_t r, uint8_t g, uint8_t b);
     bool cmd_band_cat_delete(uint8_t id);
+    bool cmd_lwf_list_req();
+    bool cmd_lwf_dl_req(const char* filename);
     bool cmd_db_delete(const char* filename, const char* operator_name);
     bool cmd_db_download(const char* filename, const char* operator_name);
     bool cmd_report_delete(const char* filename);

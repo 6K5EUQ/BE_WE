@@ -102,6 +102,11 @@ static inline std::string time_temp_dir(){
     return recordings_dir()+"/Time_temp";
 }
 
+// ── Long-Waterfall (host-owned 24h+ FFT magnitude image) ────────────────
+static inline std::string long_waterfall_dir(){
+    return recordings_dir()+"/long_waterfall";
+}
+
 // 디렉터리 없으면 자동 생성
 static inline void ensure_dirs(){
     auto mk=[](const std::string& p){ mkdir(p.c_str(),0755); };
@@ -113,6 +118,7 @@ static inline void ensure_dirs(){
     mk(report_dir());   mk(report_iq_dir());   mk(report_audio_dir());
     mk(database_dir());
     mk(time_temp_dir());
+    mk(long_waterfall_dir());
 }
 
 } // namespace BEWEPaths

@@ -9,6 +9,7 @@
 #include "lora_demod.hpp"
 #include "host_band_plan.hpp"
 #include "host_band_categories.hpp"
+#include "long_waterfall.hpp"
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <algorithm>
@@ -1477,10 +1478,12 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         ImVec2 _mp = ImGui::GetIO().MousePos;
         bool in_band_bar = band_bar_active &&
                            _mp.y >= band_bar_y && _mp.y <= band_bar_y + BAND_BAR_H;
-        if(!eid_panel_open && !log_panel_open && !in_band_bar) handle_new_channel_drag(gx,gw);
+        bool any_ovl = eid_panel_open || log_panel_open || digi_decode_panel_open || lwf_modal_open;
+        if(!any_ovl && !in_band_bar) handle_new_channel_drag(gx,gw);
     }
     int sel_before = selected_ch;
-    if(!region.active && !eid_panel_open && !log_panel_open) handle_channel_interactions(gx,gw,gy,gh);
+    bool any_ovl_b = eid_panel_open || log_panel_open || digi_decode_panel_open || lwf_modal_open;
+    if(!region.active && !any_ovl_b) handle_channel_interactions(gx,gw,gy,gh);
 
     // ── 좌클릭 토글 > Max Hold (채널 위가 아닌 빈 영역 클릭에서만) ──────
     // NOTE: 더블클릭 제거보다 먼저 실행해야 함 - 더블클릭 두 번째 클릭에서
@@ -1694,9 +1697,11 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
         // 마우스가 워터폴 영역 안에 있을 때만 채널 드래그 시작 허용 (band bar 우클릭 보호)
         ImVec2 _mp = ImGui::GetIO().MousePos;
         bool in_wf_area = (_mp.y >= gy && _mp.y <= gy + gh);
-        if(!eid_panel_open && !log_panel_open && in_wf_area) handle_new_channel_drag(gx,gw);
+        bool any_ovl_w = eid_panel_open || log_panel_open || digi_decode_panel_open || lwf_modal_open;
+        if(!any_ovl_w && in_wf_area) handle_new_channel_drag(gx,gw);
     }
-    if(!region.active && !eid_panel_open && !log_panel_open) handle_channel_interactions(gx,gw,gy,gh);
+    bool any_ovl_w2 = eid_panel_open || log_panel_open || digi_decode_panel_open || lwf_modal_open;
+    if(!region.active && !any_ovl_w2) handle_channel_interactions(gx,gw,gy,gh);
 
     // ── Ctrl+우클릭 드래그: 영역 IQ 녹음 선택 ────────────────────────────
     {
@@ -3427,6 +3432,12 @@ void run_streaming_viewer(){
         v.mix_stop.store(false);
         v.mix_thr=std::thread(&FFTViewer::mix_worker,&v);
 
+        // Long-waterfall worker: LOCAL/HOST 모두 (자기 SDR을 가진 경우)
+        // JOIN(mode_sel==2)은 자기 SDR 없음 → worker 안 돌림.
+        if(mode_sel == 0 || mode_sel == 1){
+            LongWaterfall::start_worker(&v);
+        }
+
         if(mode_sel==1){
             // HOST: 서버 시작 (public 목록 + 소유자/리스너 초기화)
             shared_files.clear(); pub_iq_files.clear(); pub_audio_files.clear();
@@ -4053,6 +4064,18 @@ void run_streaming_viewer(){
                                 };
                                 v.net_srv->cb.on_band_cat_delete = [rebroadcast_cat](uint8_t id){
                                     if(HostBandCategories::apply_delete(id)) rebroadcast_cat();
+                                };
+
+                                // Long Waterfall serve
+                                v.net_srv->cb.on_lwf_list_req = [&v](int op_index, const char* /*who*/){
+                                    PktLwfList list{};
+                                    LongWaterfall::scan_dir_into_list(list);
+                                    if(v.net_srv) v.net_srv->send_lwf_list_to_op(op_index, list);
+                                };
+                                v.net_srv->cb.on_lwf_dl_req = [&v](int op_index, const char* /*who*/, const char* fn){
+                                    if(!fn || !fn[0] || strchr(fn,'/')) return;
+                                    std::string full = BEWEPaths::long_waterfall_dir() + "/" + fn;
+                                    if(v.net_srv) v.net_srv->stream_lwf_file_to_op(op_index, full);
                                 };
 
                                 central_cli.set_on_central_conn_open([&central_cli](uint16_t /*cid*/){
@@ -5209,7 +5232,10 @@ void run_streaming_viewer(){
                     v.tm_active.store(true);
                 }
             }
-            if(sci>=0&&v.channels[sci].filter_active){
+            // 오버레이(EID/LOG/DIGI/HIST) 활성 시엔 채널 demod 키 (A/F/M/D 등) 무시
+            bool any_ovl_demod = v.eid_panel_open || v.log_panel_open
+                              || v.digi_decode_panel_open || v.lwf_modal_open;
+            if(!any_ovl_demod && sci>=0 && v.channels[sci].filter_active){
                 auto set_mode=[&](Channel::DemodMode m){
                     if(v.remote_mode && v.net_cli){
                         // CONNECT 모드: 서버에 CMD 전송
@@ -5413,7 +5439,9 @@ void run_streaming_viewer(){
             if(side_now != prev_side){ side_now ? push_ov(4) : pop_ov(4); prev_side=side_now; }
         }
 
-        if(!v.eid_panel_open && ImGui::IsKeyPressed(ImGuiKey_S, false) && !ImGui::GetIO().WantTextInput){
+        // S키: 메인 STATUS 패널 토글. EID/HIST 활성 시엔 그쪽 모달이 S 키 소비 (중복 토글 방지).
+        if(!v.eid_panel_open && !v.lwf_modal_open
+           && ImGui::IsKeyPressed(ImGuiKey_S, false) && !ImGui::GetIO().WantTextInput){
             if(v.right_panel_ratio > 0.01f){
                 // 열려있음 > 저장 후 닫기
                 right_panel_saved_ratio = v.right_panel_ratio;
@@ -5781,10 +5809,26 @@ void run_streaming_viewer(){
         float content_y=TOPBAR_H, content_h=disp_h-content_y-TOPBAR_H;
         const float div_h=14.0f, vdiv_w=8.0f;
 
+        // ── Mutually-exclusive overlays: EID / LOG / DIGI / HIST ─────────
+        // 한 번에 하나만 활성. 다른 게 켜져 있으면 새로 켜는 동작은 무시.
+        // 끄기는 언제나 허용.
+        auto any_other_overlay_open = [&](int self) -> bool {
+            // self: 0=EID, 1=LOG, 2=DIGI, 3=HIST
+            if(self != 0 && v.eid_panel_open) return true;
+            if(self != 1 && v.log_panel_open) return true;
+            if(self != 2 && v.digi_decode_panel_open) return true;
+            if(self != 3 && v.lwf_modal_open) return true;
+            return false;
+        };
+        auto try_toggle = [&](int self, bool& flag){
+            if(flag){ flag = false; return true; }            // 끄기는 항상 OK
+            if(any_other_overlay_open(self)) return false;    // 다른 게 켜져있으면 무시
+            flag = true; return true;
+        };
+
         // ── Signal Analysis 토글 (E키) ─── 독립 오버레이 ────
         if(ImGui::IsKeyPressed(ImGuiKey_E, false) && !io.WantTextInput){
-            v.eid_panel_open = !v.eid_panel_open;
-            if(v.eid_panel_open){
+            if(try_toggle(0, v.eid_panel_open) && v.eid_panel_open){
                 if(!v.sa_temp_path.empty() &&
                    !v.eid_computing.load() && !v.eid_data_ready.load())
                     v.eid_start(v.sa_temp_path);
@@ -5792,11 +5836,15 @@ void run_streaming_viewer(){
         }
         // ── LOG 토글 (L키) ─── 독립 오버레이 ────
         if(ImGui::IsKeyPressed(ImGuiKey_L, false) && !io.WantTextInput){
-            v.log_panel_open = !v.log_panel_open;
+            try_toggle(1, v.log_panel_open);
         }
         // ── DIGITAL DECODE 토글 (Q키) ─── 독립 오버레이 ────
         if(ImGui::IsKeyPressed(ImGuiKey_Q, false) && !io.WantTextInput){
-            v.digi_decode_panel_open = !v.digi_decode_panel_open;
+            try_toggle(2, v.digi_decode_panel_open);
+        }
+        // ── HIST (Long Waterfall history) 토글 (H키) ────
+        if(ImGui::IsKeyPressed(ImGuiKey_H, false) && !io.WantTextInput){
+            try_toggle(3, v.lwf_modal_open);
         }
 
         // ── 우측 패널 계산 ────────────────────────────────────────────────
@@ -9130,17 +9178,7 @@ void run_streaming_viewer(){
                             IM_COL32(200,200,200,255), clock_str);
             }
 
-            // ── 좌측: 타임머신 오프셋 (TM 모드 + 오프셋 있을 때만 표시) ─
-            // 좌측 서브프로그램 인디케이터(EID/LOG/DIGI) 뒤에 배치
-            if(v.tm_active.load() && v.tm_offset > 0.0f){
-                char tm_txt[48];
-                snprintf(tm_txt,sizeof(tm_txt),"-%.1f sec",v.tm_offset);
-                ImVec2 eid_sz  = ImGui::CalcTextSize("EID");
-                ImVec2 log_sz  = ImGui::CalcTextSize("LOG");
-                ImVec2 digi_sz = ImGui::CalcTextSize("DIGI");
-                float tm_x = 8.0f + eid_sz.x + 14.0f + log_sz.x + 14.0f + digi_sz.x + 14.0f;
-                dl->AddText(ImVec2(tm_x,ty_b),IM_COL32(255,200,50,255),tm_txt);
-            }
+            // (TM offset 텍스트 제거 — bottom-bar 좌측 버튼 클러스터와 위치 충돌)
 
             // ── 우측: 상태 인디케이터 (오른쪽>왼쪽) ─────────────────────
             // 초록=활성, 빨간=비활성
@@ -9338,22 +9376,37 @@ void run_streaming_viewer(){
                 return clicked;
             };
             float lx = 8.0f;
+            // Mutually-exclusive overlays — same rule as keyboard shortcuts above.
+            auto bar_other_open = [&](int self) -> bool {
+                if(self != 0 && v.eid_panel_open) return true;
+                if(self != 1 && v.log_panel_open) return true;
+                if(self != 2 && v.digi_decode_panel_open) return true;
+                if(self != 3 && v.lwf_modal_open) return true;
+                return false;
+            };
+            auto bar_try_toggle = [&](int self, bool& flag){
+                if(flag){ flag = false; return true; }
+                if(bar_other_open(self)) return false;
+                flag = true; return true;
+            };
             if(click_ind_left(lx, "EID", ov_st(v.eid_panel_open, 1))){
-                v.eid_panel_open = !v.eid_panel_open;
-                if(v.eid_panel_open){
+                if(bar_try_toggle(0, v.eid_panel_open) && v.eid_panel_open){
                     if(!v.sa_temp_path.empty() &&
                        !v.eid_computing.load() && !v.eid_data_ready.load())
                         v.eid_start(v.sa_temp_path);
                 }
             }
             if(click_ind_left(lx, "LOG", ov_st(v.log_panel_open, 2))){
-                v.log_panel_open = !v.log_panel_open;
+                bar_try_toggle(1, v.log_panel_open);
             }
             if(click_ind_left(lx, "DIGI", ov_st(v.digi_decode_panel_open, 3))){
-                v.digi_decode_panel_open = !v.digi_decode_panel_open;
+                bar_try_toggle(2, v.digi_decode_panel_open);
             }
             if(click_ind_left(lx, "BAND", v.band_show ? 1 : 0)){
-                v.band_show = !v.band_show;
+                v.band_show = !v.band_show;   // BAND는 오버레이 아님 → 그대로
+            }
+            if(click_ind_left(lx, "HIST", v.lwf_modal_open ? 1 : 0)){
+                bar_try_toggle(3, v.lwf_modal_open);
             }
 
             // 오른쪽>왼쪽: TM IQ AUD WF FFT LINK SDR
@@ -13026,6 +13079,9 @@ void run_streaming_viewer(){
             ImGui::PopStyleVar();
         } // end LOG overlay
 
+        // ── Long Waterfall viewer (host's own files + JOIN downloaded files) ─
+        LongWaterfallView::draw_modal(v, cli);
+
         ImGui::Render();
         int dw2,dh2; glfwGetFramebufferSize(win,&dw2,&dh2);
         glViewport(0,0,dw2,dh2);
@@ -13050,6 +13106,8 @@ void run_streaming_viewer(){
         v.tm_iq_close();
     }
     v.mix_stop.store(true); if(v.mix_thr.joinable()) v.mix_thr.join();
+    LongWaterfall::stop_worker();
+    LongWaterfallView::close_modal();
     v.net_bcast_stop.store(true);
     v.net_bcast_cv.notify_all();
     if(v.net_bcast_thr.joinable()) v.net_bcast_thr.join();

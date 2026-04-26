@@ -368,6 +368,25 @@ void NetClient::handle_packet(PacketType type,
         break;
     }
 
+    case PacketType::LWF_LIST: {
+        if(len < sizeof(PktLwfList)) break;
+        if(on_lwf_list){
+            PktLwfList list{};
+            memcpy(&list, payload, sizeof(list));
+            on_lwf_list(list);
+        }
+        break;
+    }
+    case PacketType::LWF_DL_DATA: {
+        if(len < sizeof(PktLwfDlData)) break;
+        const auto* d = reinterpret_cast<const PktLwfDlData*>(payload);
+        if(len < sizeof(PktLwfDlData) + d->chunk_bytes) break;
+        if(on_lwf_dl_data){
+            on_lwf_dl_data(*d, payload + sizeof(PktLwfDlData), d->chunk_bytes);
+        }
+        break;
+    }
+
     case PacketType::WF_EVENT: {
         if(len < sizeof(PktWfEvent)) break;
         auto* ev = reinterpret_cast<const PktWfEvent*>(payload);
@@ -755,6 +774,14 @@ bool NetClient::cmd_band_cat_upsert(uint8_t id, const char* name, uint8_t r, uin
 bool NetClient::cmd_band_cat_delete(uint8_t id){
     PktBandCatDelete d{}; d.id = id;
     return raw_send(PacketType::BAND_CAT_DELETE, &d, sizeof(d));
+}
+bool NetClient::cmd_lwf_list_req(){
+    return raw_send(PacketType::LWF_LIST_REQ, nullptr, 0);
+}
+bool NetClient::cmd_lwf_dl_req(const char* filename){
+    PktLwfDlReq r{};
+    if(filename) strncpy(r.filename, filename, sizeof(r.filename)-1);
+    return raw_send(PacketType::LWF_DL_REQ, &r, sizeof(r));
 }
 bool NetClient::cmd_delete_pub_file(const char* filename){
     PktPubDeleteReq req{};

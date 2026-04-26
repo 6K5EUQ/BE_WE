@@ -155,6 +155,9 @@ public:
     // 워터폴/스펙트럼: 항상 2500행 메모리 유지 (위 MAX_FFTS_MEMORY)
     // IQ 롤링: T키로 활성화
     std::atomic<bool> tm_iq_on{false};     // T키: IQ SSD 롤링 활성
+    // ── Long Waterfall (24h+ FFT magnitude image) ─────────────────────
+    bool              lwf_modal_open = false;     // IMG 버튼 토글 → viewer 모달
+    std::atomic<int>  lwf_rotate_seq{0};          // SR/CF/fft_size/IQ on-off 변경 시 ++ → worker가 새 파일
     std::atomic<bool> tm_active{false};    // 스페이스바: 타임머신 뷰 모드
     std::atomic<bool> capture_pause{false};// 캡처 스레드 pause (타임머신과 무관)
     std::atomic<bool> net_bcast_pause{false}; // /chassis 2 reset: 방송 일시 중단

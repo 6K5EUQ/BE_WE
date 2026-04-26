@@ -806,7 +806,9 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                     bewe_type == BEWE_TYPE_IQ_CHUNK ||   // 드롭 불가
                     bewe_type == BEWE_TYPE_SCHED_SYNC || // 예약 리스트 동기화
                     bewe_type == 0x31 ||                 // BAND_PLAN_SYNC (드롭 불가, 큰 패킷)
-                    bewe_type == 0x35);                  // BAND_CAT_SYNC
+                    bewe_type == 0x35 ||                 // BAND_CAT_SYNC
+                    bewe_type == 0x39 ||                 // LWF_LIST (host→client, 큰 패킷)
+                    bewe_type == 0x3B);                  // LWF_DL_DATA (host→client, file chunk, 드롭 불가)
     std::lock_guard<std::mutex> jlk(room->joins_mtx);
     for(auto& je : room->joins){
         if(!je->alive.load() || je->fd < 0) continue;

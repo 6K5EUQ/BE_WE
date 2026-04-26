@@ -1,6 +1,7 @@
 #include "fft_viewer.hpp"
 #include <thread>
 #include "net_server.hpp"
+#include "long_waterfall.hpp"
 #include <volk/volk.h>
 #include <cstring>
 #include <algorithm>
@@ -179,7 +180,9 @@ void FFTViewer::capture_and_process(){
              fft_data.assign(MAX_FFTS_MEMORY*fft_size,0);
              current_spectrum.assign(fft_size,-80.0f);
              total_ffts=0; current_fft_idx=0; cached_sp_idx=-1;}
-            texture_needs_recreate=true; continue;
+            texture_needs_recreate=true;
+            LongWaterfall::request_rotate();   // fft_size changed → new file
+            continue;
         }
 
         // ── Sample rate change ────────────────────────────────────────────
@@ -271,6 +274,7 @@ void FFTViewer::capture_and_process(){
                 {std::lock_guard<std::mutex> lk(data_mtx);
                  header.center_frequency=(uint64_t)(pending_cf*1e6);}
                 live_cf_hz.store((uint64_t)(pending_cf*1e6), std::memory_order_release);
+                LongWaterfall::request_rotate();   // CF changed → new file
                 bewe_log("Freq > %.2f MHz\n",pending_cf);
                 autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
                 warmup_cnt=0;

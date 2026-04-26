@@ -1,5 +1,6 @@
 #include "fft_viewer.hpp"
 #include "bewe_paths.hpp"
+#include "long_waterfall.hpp"
 #include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -52,6 +53,7 @@ void FFTViewer::tm_iq_open(){
     tm_iq_file_ready=true;
     bewe_log_push(0,"TM IQ rolling: ready (wav)  max %.1f GB\n",
            (double)(tm_iq_total_samples*2*sizeof(int16_t))/1e9);
+    LongWaterfall::request_rotate();   // start a fresh long-waterfall file
 }
 
 void FFTViewer::tm_iq_close(){
@@ -65,6 +67,7 @@ void FFTViewer::tm_iq_close(){
     }
     tm_iq_file_ready=false; tm_iq_write_sample=0; tm_iq_batch_cnt=0;
     memset(tm_iq_chunk_time,0,sizeof(tm_iq_chunk_time));
+    LongWaterfall::request_rotate();   // close current long-waterfall file
 }
 
 // 배치 버퍼 → 파일 플러시 (내부용)

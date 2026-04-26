@@ -60,6 +60,10 @@ enum class PacketType : uint8_t {
     BAND_CAT_SYNC      = 0x35,  // host → all clients: band category list (id/name/color)
     BAND_CAT_UPSERT    = 0x36,  // any → host: insert/update one band category
     BAND_CAT_DELETE    = 0x37,  // any → host: delete one band category by id
+    LWF_LIST_REQ       = 0x38,  // any → host: request long-waterfall file list
+    LWF_LIST           = 0x39,  // host → client: long-waterfall file list
+    LWF_DL_REQ         = 0x3A,  // any → host: download long-waterfall file by name
+    LWF_DL_DATA        = 0x3B,  // host → client: long-waterfall file data chunk
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────
@@ -323,6 +327,37 @@ struct __attribute__((packed)) PktBandCatSync {
 struct __attribute__((packed)) PktBandCatDelete {
     uint8_t id;
     uint8_t _pad[3];
+};
+
+// ── LWF: long-waterfall (host-owned image files) ─────────────────────────
+static constexpr int MAX_LWF_FILES = 64;
+struct __attribute__((packed)) LwfFileEntry {
+    char     filename[64];     // basename only
+    uint64_t size_bytes;
+    uint64_t start_utc;        // header.start_utc_unix
+    uint64_t center_freq_hz;
+    uint64_t sample_rate_hz;
+    uint32_t fft_size;
+    uint32_t num_rows;         // (size_bytes - 64) / fft_size
+};
+static_assert(sizeof(LwfFileEntry) == 104, "LwfFileEntry size");
+struct __attribute__((packed)) PktLwfList {
+    uint16_t     count;
+    uint8_t      _pad[2];
+    LwfFileEntry entries[MAX_LWF_FILES];
+};
+struct __attribute__((packed)) PktLwfDlReq {
+    char filename[64];
+};
+struct __attribute__((packed)) PktLwfDlData {
+    char     filename[64];
+    uint64_t total_bytes;
+    uint64_t offset;
+    uint32_t chunk_bytes;
+    uint8_t  is_first;
+    uint8_t  is_last;
+    uint8_t  _pad[6];
+    // raw chunk bytes follow (chunk_bytes)
 };
 
 // ── DIGI_LOG ─────────────────────────────────────────────────────────────

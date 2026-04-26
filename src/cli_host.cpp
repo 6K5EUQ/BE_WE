@@ -9,6 +9,7 @@
 #include "net_protocol.hpp"
 #include "host_band_plan.hpp"
 #include "host_band_categories.hpp"
+#include "long_waterfall.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -329,6 +330,9 @@ void run_cli_host(){
     }
     v.mix_stop.store(false);
     v.mix_thr = std::thread(&FFTViewer::mix_worker, &v);
+
+    // ── Long Waterfall worker (post-FFT image accumulator) ──────────────
+    LongWaterfall::start_worker(&v);
 
     // ── NetServer ────────────────────────────────────────────────────────
     NetServer* srv = new NetServer();
@@ -1247,6 +1251,24 @@ void run_cli_host(){
                     if(HostBandCategories::apply_delete(id)) rebroadcast_band_cat();
                 };
 
+                // ── Long Waterfall: serve list + file download to JOINs ─
+                srv->cb.on_lwf_list_req = [&v](int op_index, const char* who){
+                    PktLwfList list{};
+                    LongWaterfall::scan_dir_into_list(list);
+                    if(v.net_srv) v.net_srv->send_lwf_list_to_op(op_index, list);
+                    bewe_log_push(0, "[LWF] LIST_REQ from op=%d '%s' → %u files\n",
+                                  op_index, who?who:"?", (unsigned)list.count);
+                };
+                srv->cb.on_lwf_dl_req = [&v](int op_index, const char* who, const char* fn){
+                    if(!fn || !fn[0]) return;
+                    // 안전: basename만 허용, '/' 차단
+                    if(strchr(fn, '/')) return;
+                    std::string full = BEWEPaths::long_waterfall_dir() + "/" + fn;
+                    if(v.net_srv) v.net_srv->stream_lwf_file_to_op(op_index, full);
+                    bewe_log_push(0, "[LWF] DL_REQ from op=%d '%s' file=%s\n",
+                                  op_index, who?who:"?", fn);
+                };
+
                 // 새 JOIN이 Central을 통해 들어오면 cached band plan + category 즉시 푸시
                 central_cli.set_on_central_conn_open([&central_cli](uint16_t cid){
                     std::vector<uint8_t> bp_pkt;
@@ -1622,6 +1644,7 @@ void run_cli_host(){
                 v.mix_stop.store(true);
                 if(v.mix_thr.joinable()) v.mix_thr.join();
                 if(cap.joinable()) cap.join();
+                LongWaterfall::stop_worker();
                 if(v.fft_plan){ fftwf_destroy_plan(v.fft_plan); v.fft_plan=nullptr; }
                 if(v.fft_in)  { fftwf_free(v.fft_in);   v.fft_in=nullptr; }
                 if(v.fft_out) { fftwf_free(v.fft_out);  v.fft_out=nullptr; }

@@ -218,6 +218,12 @@ struct ServerCallbacks {
     // ── Band categories ──────────────────────────────────────────────────
     std::function<void(const PktBandCategory&)> on_band_cat_upsert;
     std::function<void(uint8_t /*id*/)>         on_band_cat_delete;
+
+    // ── Long Waterfall (host-owned files) ────────────────────────────────
+    // Default impl in net_server provides directory scan + chunk stream;
+    // host can override to filter or log.
+    std::function<void(int /*op_index*/, const char* /*who*/)>          on_lwf_list_req;
+    std::function<void(int /*op_index*/, const char* /*who*/, const char* /*filename*/)> on_lwf_dl_req;
 };
 
 // ── NetServer ─────────────────────────────────────────────────────────────
@@ -274,6 +280,11 @@ public:
     void broadcast_sched_sync(const PktSchedSync& pkt);
     void broadcast_band_plan(const PktBandPlan& pkt);
     void broadcast_band_categories(const PktBandCatSync& pkt);
+
+    // Long Waterfall responses (target a single client by op_index/connection)
+    void send_lwf_list_to_op(int op_index, const PktLwfList& list);
+    // Stream a long-waterfall file to a single op_index. Returns true if started.
+    bool stream_lwf_file_to_op(int op_index, const std::string& filepath);
 
     // Digital decode log → clients with audio_mask bit set
     void broadcast_digi_log(uint8_t tab, uint8_t ch_idx, const char* msg, uint32_t audio_mask);

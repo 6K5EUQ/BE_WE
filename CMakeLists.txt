@@ -47,6 +47,7 @@ if(CLI)
         src/central_client.cpp
         src/host_band_plan.cpp
         src/host_band_categories.cpp
+        src/long_waterfall.cpp
         src/lora_demod.cpp
         src/pluto_io.cpp
     )
@@ -127,6 +128,8 @@ else()
         src/central_client.cpp
         src/host_band_plan.cpp
         src/host_band_categories.cpp
+        src/long_waterfall.cpp
+        src/long_waterfall_view.cpp
         src/lora_demod.cpp
         src/pluto_io.cpp
         ${IMGUI_SOURCES}
