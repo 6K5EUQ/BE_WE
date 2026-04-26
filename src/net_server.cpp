@@ -1052,6 +1052,64 @@ void NetServer::send_lwf_list_to_op(int op_index, const PktLwfList& list){
     send_all(target->fd, pkt.data(), pkt.size());
 }
 
+// ── LIVE 스트리밍 broadcast helpers ──────────────────────────────────────
+// 모두 send_all + fd_write_mtx 직접 사용 (큐 우회) — file_data와 동일 패턴.
+// LAN 직결 + relay 양쪽 모두 지원.
+void NetServer::broadcast_lwf_live_start(const PktLwfLiveStart& s){
+    auto pkt = make_packet(PacketType::LWF_LIVE_START, &s, sizeof(s));
+    if(cb.on_relay_broadcast && has_relay())
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
+    std::lock_guard<std::mutex> lk(clients_mtx_);
+    for(auto& c : clients_){
+        if(c->is_relay || !c->authed || !c->alive.load()) continue;
+        std::lock_guard<std::mutex> wlk(c->fd_write_mtx);
+        send_all(c->fd, pkt.data(), pkt.size());
+    }
+}
+
+void NetServer::broadcast_lwf_live_row(const PktLwfLiveRowHdr& hdr,
+                                        const uint8_t* row, uint32_t row_bytes){
+    std::vector<uint8_t> body(sizeof(PktLwfLiveRowHdr) + row_bytes);
+    memcpy(body.data(), &hdr, sizeof(hdr));
+    if(row_bytes && row) memcpy(body.data() + sizeof(hdr), row, row_bytes);
+    auto pkt = make_packet(PacketType::LWF_LIVE_ROW, body.data(), (uint32_t)body.size());
+    if(cb.on_relay_broadcast && has_relay())
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
+    std::lock_guard<std::mutex> lk(clients_mtx_);
+    for(auto& c : clients_){
+        if(c->is_relay || !c->authed || !c->alive.load()) continue;
+        std::lock_guard<std::mutex> wlk(c->fd_write_mtx);
+        send_all(c->fd, pkt.data(), pkt.size());
+    }
+}
+
+void NetServer::broadcast_lwf_live_stop(const PktLwfLiveStop& s){
+    auto pkt = make_packet(PacketType::LWF_LIVE_STOP, &s, sizeof(s));
+    if(cb.on_relay_broadcast && has_relay())
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
+    std::lock_guard<std::mutex> lk(clients_mtx_);
+    for(auto& c : clients_){
+        if(c->is_relay || !c->authed || !c->alive.load()) continue;
+        std::lock_guard<std::mutex> wlk(c->fd_write_mtx);
+        send_all(c->fd, pkt.data(), pkt.size());
+    }
+}
+
+void NetServer::send_lwf_live_start_to_op(int op_index, const PktLwfLiveStart& s){
+    auto pkt = make_packet(PacketType::LWF_LIVE_START, &s, sizeof(s));
+    std::shared_ptr<ClientConn> target;
+    {
+        std::lock_guard<std::mutex> lk(clients_mtx_);
+        for(auto& cli : clients_)
+            if(cli->authed && cli->alive.load() && cli->op_index==(uint8_t)op_index){
+                target = cli; break;
+            }
+    }
+    if(!target) return;
+    std::lock_guard<std::mutex> wlk(target->fd_write_mtx);
+    send_all(target->fd, pkt.data(), pkt.size());
+}
+
 // (stream_lwf_file_to_op removed — host now uses send_file_to which streams via
 //  FILE_META + FILE_DATA, JOIN's on_get_save_dir routes to long_waterfall_dir.)
 

@@ -30,6 +30,15 @@ int                 g_rotate_seen_seq = 0; // worker tracks last seen
 std::thread         g_thr;
 FFTViewer*          g_v = nullptr;
 
+// Live broadcast callbacks (set by host wiring).
+LiveCallbacks       g_live_cb;
+std::mutex          g_live_cb_mtx;
+// Snapshot of LIVE_START header for join-in-progress (cleared on close).
+std::mutex          g_live_state_mtx;
+PktLwfLiveStart     g_live_state{};
+bool                g_live_state_valid = false;
+uint32_t            g_live_row_idx = 0;
+
 // Open file state — accessed only from worker thread except path read.
 std::mutex          g_path_mtx;
 std::string         g_cur_path;            // empty when no file open
@@ -46,6 +55,24 @@ int                 g_last_total_ffts = 0;
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 void close_file_locked(){
+    // Live broadcast STOP first (so JOIN closes its mirror file).
+    PktLwfLiveStop stop_pkt{};
+    bool had_state = false;
+    {
+        std::lock_guard<std::mutex> lk(g_live_state_mtx);
+        if(g_live_state_valid){
+            memcpy(stop_pkt.filename, g_live_state.filename, sizeof(stop_pkt.filename));
+            had_state = true;
+        }
+        g_live_state_valid = false;
+        g_live_row_idx = 0;
+    }
+    if(had_state){
+        LiveCallbacks cb_copy;
+        { std::lock_guard<std::mutex> lk(g_live_cb_mtx); cb_copy = g_live_cb; }
+        if(cb_copy.on_stop) cb_copy.on_stop(stop_pkt);
+    }
+
     if(g_fp){ fflush(g_fp); fclose(g_fp); g_fp = nullptr; }
     {
         std::lock_guard<std::mutex> lk(g_path_mtx);
@@ -130,6 +157,30 @@ bool open_new_file(uint64_t cf_hz, uint64_t sr_hz, uint32_t fft_size,
     printf("[LongWaterfall] new file: %s (fft=%u, %.3fMHz, %uMSPS, dB=[%.1f..%.1f])\n",
            full.c_str(), fft_size, cf_hz/1e6, (unsigned)(sr_hz/1000000),
            h.db_min, h.db_max);
+
+    // Build live-start packet + broadcast.
+    PktLwfLiveStart ls{};
+    strncpy(ls.filename, fname.c_str(), sizeof(ls.filename)-1);
+    ls.fft_size        = fft_size;
+    ls.fft_input_size  = fft_input_size;
+    ls.sample_rate_hz  = sr_hz;
+    ls.center_freq_hz  = cf_hz;
+    ls.row_rate_hz     = h.row_rate_hz;
+    ls.db_min          = h.db_min;
+    ls.db_max          = h.db_max;
+    ls.start_utc_unix  = h.start_utc_unix;
+    ls.station_lon     = h.station_lon;
+    ls.utc_offset_hours= h.utc_offset_hours;
+    {
+        std::lock_guard<std::mutex> lk(g_live_state_mtx);
+        g_live_state = ls;
+        g_live_state_valid = true;
+        g_live_row_idx = 0;
+    }
+    LiveCallbacks cb_copy;
+    { std::lock_guard<std::mutex> lk(g_live_cb_mtx); cb_copy = g_live_cb; }
+    if(cb_copy.on_start) cb_copy.on_start(ls);
+
     return true;
 }
 
@@ -144,6 +195,22 @@ void flush_row_locked(){
     }
     fwrite(row.data(), 1, row.size(), g_fp);
     fflush(g_fp);
+
+    // Live broadcast — JOIN's hist/live/<filename> appends this row.
+    PktLwfLiveRowHdr rhdr{};
+    {
+        std::lock_guard<std::mutex> lk(g_live_state_mtx);
+        if(g_live_state_valid){
+            memcpy(rhdr.filename, g_live_state.filename, sizeof(rhdr.filename));
+            rhdr.row_index = g_live_row_idx++;
+        }
+    }
+    if(rhdr.filename[0]){
+        LiveCallbacks cb_copy;
+        { std::lock_guard<std::mutex> lk(g_live_cb_mtx); cb_copy = g_live_cb; }
+        if(cb_copy.on_row) cb_copy.on_row(rhdr, row.data(), (uint32_t)row.size());
+    }
+
     std::fill(g_acc_db.begin(), g_acc_db.end(), -200.0f);
     g_acc_count = 0;
 }
@@ -293,6 +360,18 @@ void request_rotate(){
 std::string current_file_path(){
     std::lock_guard<std::mutex> lk(g_path_mtx);
     return g_cur_path;
+}
+
+void set_live_callbacks(const LiveCallbacks& cbs){
+    std::lock_guard<std::mutex> lk(g_live_cb_mtx);
+    g_live_cb = cbs;
+}
+
+bool snapshot_live_start(::PktLwfLiveStart& out){
+    std::lock_guard<std::mutex> lk(g_live_state_mtx);
+    if(!g_live_state_valid) return false;
+    out = g_live_state;
+    return true;
 }
 
 void scan_dir_into_list(::PktLwfList& out){

@@ -809,7 +809,10 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                     bewe_type == 0x35 ||                 // BAND_CAT_SYNC
                     bewe_type == 0x39 ||                 // LWF_LIST (single-target, 6.6KB)
                     bewe_type == 0x0D ||                 // FILE_DATA (chunk, 드롭 불가 — 빠진 chunk = 파일 멈춤)
-                    bewe_type == 0x0E);                  // FILE_META
+                    bewe_type == 0x0E ||                 // FILE_META
+                    bewe_type == 0x3C ||                 // LWF_LIVE_START
+                    bewe_type == 0x3D ||                 // LWF_LIVE_ROW (행 누락 = stream 깨짐)
+                    bewe_type == 0x3E);                  // LWF_LIVE_STOP
     std::lock_guard<std::mutex> jlk(room->joins_mtx);
     for(auto& je : room->joins){
         if(!je->alive.load() || je->fd < 0) continue;

@@ -285,6 +285,14 @@ public:
     void send_lwf_list_to_op(int op_index, const PktLwfList& list);
     // (HIST file download reuses existing send_file_to → FILE_META + FILE_DATA path.)
 
+    // LIVE 스트리밍 — host worker가 누적 row를 모든 JOIN에 broadcast
+    void broadcast_lwf_live_start(const PktLwfLiveStart& s);
+    void broadcast_lwf_live_row(const PktLwfLiveRowHdr& hdr,
+                                 const uint8_t* row, uint32_t row_bytes);
+    void broadcast_lwf_live_stop(const PktLwfLiveStop& s);
+    // 새 JOIN이 들어왔을 때 현재 LIVE 상태를 그 op만 보내기 위한 helper
+    void send_lwf_live_start_to_op(int op_index, const PktLwfLiveStart& s);
+
     // Digital decode log → clients with audio_mask bit set
     void broadcast_digi_log(uint8_t tab, uint8_t ch_idx, const char* msg, uint32_t audio_mask);
 

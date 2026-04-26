@@ -108,6 +108,8 @@ static inline std::string time_temp_dir(){
 static inline std::string hist_dir()      { return recordings_dir()+"/hist"; }
 static inline std::string hist_host_dir() { return hist_dir()+"/host"; }
 static inline std::string hist_join_dir() { return hist_dir()+"/join"; }
+// hist_live_dir: JOIN 실시간 수신 임시 파일. 룸 disconnect / 프로그램 종료 시 비움.
+static inline std::string hist_live_dir() { return hist_dir()+"/live"; }
 // (legacy 호환: 이전 코드의 long_waterfall_dir = hist_host_dir)
 static inline std::string long_waterfall_dir(){ return hist_host_dir(); }
 
@@ -122,7 +124,7 @@ static inline void ensure_dirs(){
     mk(report_dir());   mk(report_iq_dir());   mk(report_audio_dir());
     mk(database_dir());
     mk(time_temp_dir());
-    mk(hist_dir()); mk(hist_host_dir()); mk(hist_join_dir());
+    mk(hist_dir()); mk(hist_host_dir()); mk(hist_join_dir()); mk(hist_live_dir());
 }
 
 } // namespace BEWEPaths

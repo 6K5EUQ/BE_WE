@@ -1,4 +1,5 @@
 #include "net_client.hpp"
+#include "bewe_paths.hpp"
 #include <cstdio>
 
 extern void bewe_log_push(int col, const char* fmt, ...);
@@ -7,6 +8,7 @@ extern void bewe_log_push(int col, const char* fmt, ...);
 #include <cstring>
 #include <cerrno>
 #include <chrono>
+#include <dirent.h>
 #include <netdb.h>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -262,6 +264,21 @@ void NetClient::recv_loop(){
         }
         file_recv_list.clear();
     }
+    // JOIN의 hist/live/ 임시 폴더 비움 (룸 disconnect 시 동기 정리; TM IQ 롤링 패턴).
+    {
+        std::string ldir = BEWEPaths::hist_live_dir();
+        DIR* d = opendir(ldir.c_str());
+        if(d){
+            struct dirent* de;
+            while((de = readdir(d)) != nullptr){
+                const char* n = de->d_name;
+                if(!n || n[0]=='.') continue;
+                std::string full = ldir + "/" + n;
+                unlink(full.c_str());
+            }
+            closedir(d);
+        }
+    }
     bewe_log_push(2,"[NetClient] disconnected: reason=%s total_pkts=%llu fd=%d\n",
            disc_reason, (unsigned long long)pkt_count, fd_);
 }
@@ -392,6 +409,27 @@ void NetClient::handle_packet(PacketType type,
     }
     case PacketType::LWF_DL_DATA: {
         // Deprecated: HIST download now uses FILE_META/FILE_DATA. Drop silently.
+        break;
+    }
+
+    case PacketType::LWF_LIVE_START: {
+        if(len < sizeof(PktLwfLiveStart)) break;
+        if(on_lwf_live_start)
+            on_lwf_live_start(*reinterpret_cast<const PktLwfLiveStart*>(payload));
+        break;
+    }
+    case PacketType::LWF_LIVE_ROW: {
+        if(len < sizeof(PktLwfLiveRowHdr)) break;
+        const auto* h = reinterpret_cast<const PktLwfLiveRowHdr*>(payload);
+        uint32_t row_bytes = (uint32_t)len - (uint32_t)sizeof(PktLwfLiveRowHdr);
+        if(on_lwf_live_row)
+            on_lwf_live_row(*h, payload + sizeof(PktLwfLiveRowHdr), row_bytes);
+        break;
+    }
+    case PacketType::LWF_LIVE_STOP: {
+        if(len < sizeof(PktLwfLiveStop)) break;
+        if(on_lwf_live_stop)
+            on_lwf_live_stop(*reinterpret_cast<const PktLwfLiveStop*>(payload));
         break;
     }
 

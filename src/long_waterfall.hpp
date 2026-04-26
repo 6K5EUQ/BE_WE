@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <string>
+#include <functional>
 
 #include "net_protocol.hpp"
 
@@ -59,6 +60,22 @@ std::string current_file_path();
 // Scan ~/BE_WE/recordings/long_waterfall/ → fill PktLwfList from on-disk headers.
 // Skips files that are not valid .bewewf (header missing / wrong magic).
 void scan_dir_into_list(::PktLwfList& out);
+
+// ── Live broadcast hooks ───────────────────────────────────────────────
+// Set by host wiring (cli_host / ui). Worker calls these inside open/flush/close
+// so NetServer can fan out LIVE_START / LIVE_ROW / LIVE_STOP to all JOINs.
+// Callbacks must be cheap (queue-only); worker thread invokes them directly.
+struct LiveCallbacks {
+    std::function<void(const ::PktLwfLiveStart&)> on_start;
+    std::function<void(const ::PktLwfLiveRowHdr& hdr,
+                       const uint8_t* row, uint32_t row_bytes)> on_row;
+    std::function<void(const ::PktLwfLiveStop&)>  on_stop;
+};
+void set_live_callbacks(const LiveCallbacks& cbs);
+
+// Build PktLwfLiveStart from currently open LIVE file header (for new JOIN).
+// Returns false if no file is currently open.
+bool snapshot_live_start(::PktLwfLiveStart& out);
 
 // Public format constants (so view code can quantize/dequantize identically).
 inline uint8_t db_to_byte(float db, float dmin, float dmax){

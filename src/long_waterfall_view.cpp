@@ -102,6 +102,30 @@ struct DlState { std::string filename; uint64_t total=0, recv=0; FILE* fp=nullpt
 DlState  g_dl;
 std::mutex g_dl_mtx;
 
+// LIVE 수신 상태
+struct LiveRecv {
+    std::string filename;
+    FILE*       fp = nullptr;
+    LongWaterfall::FileHeader hdr{};
+    uint32_t    rows = 0;
+};
+LiveRecv  g_live;
+std::mutex g_live_mtx;
+bool      g_live_dirty = false;   // 새 row가 들어왔을 때 viewer에 알림용
+
+static void purge_hist_live_dir(){
+    DIR* d = opendir(BEWEPaths::hist_live_dir().c_str());
+    if(!d) return;
+    struct dirent* de;
+    while((de = readdir(d)) != nullptr){
+        const char* n = de->d_name;
+        if(!n || n[0]=='.') continue;
+        std::string full = BEWEPaths::hist_live_dir() + "/" + n;
+        unlink(full.c_str());
+    }
+    closedir(d);
+}
+
 // LWF list cached from host (JOIN side)
 PktLwfList g_remote_list{};
 bool       g_remote_list_valid = false;
@@ -350,6 +374,61 @@ void register_dl_callbacks_once(NetClient* cli){
         }
         if(prev_done) prev_done(path, name);
     };
+
+    // ── LIVE 수신 콜백 ────────────────────────────────────────────────
+    cli->on_lwf_live_start = [](const PktLwfLiveStart& s){
+        std::lock_guard<std::mutex> lk(g_live_mtx);
+        // 같은 file이면 no-op (CONN_OPEN broadcast 시 기존 JOIN 보호)
+        if(g_live.fp && g_live.filename == s.filename) return;
+        // 기존 file이 있으면 닫기
+        if(g_live.fp){ fclose(g_live.fp); g_live.fp = nullptr; }
+        std::string dir = BEWEPaths::hist_live_dir();
+        mkdir(BEWEPaths::recordings_dir().c_str(), 0755);
+        mkdir(BEWEPaths::hist_dir().c_str(), 0755);
+        mkdir(dir.c_str(), 0755);
+        std::string out = dir + "/" + s.filename;
+        FILE* fp = fopen(out.c_str(), "wb");
+        if(!fp) return;
+        // .bewehist 헤더를 host 정보 그대로 작성
+        LongWaterfall::FileHeader h{};
+        memcpy(h.magic, "BWWF", 4);
+        h.version          = 0x0002;
+        h.fft_size         = s.fft_size;
+        h.sample_rate_hz   = s.sample_rate_hz;
+        h.center_freq_hz   = s.center_freq_hz;
+        h.row_rate_hz      = s.row_rate_hz;
+        h.db_min           = s.db_min;
+        h.db_max           = s.db_max;
+        h.start_utc_unix   = s.start_utc_unix;
+        h.station_lon      = s.station_lon;
+        h.fft_input_size   = s.fft_input_size;
+        h.utc_offset_hours = s.utc_offset_hours;
+        fwrite(&h, 1, sizeof(h), fp);
+        fflush(fp);
+        g_live.filename = s.filename;
+        g_live.fp = fp;
+        g_live.hdr = h;
+        g_live.rows = 0;
+    };
+    cli->on_lwf_live_row = [](const PktLwfLiveRowHdr& hdr,
+                              const uint8_t* row, uint32_t row_bytes){
+        std::lock_guard<std::mutex> lk(g_live_mtx);
+        if(!g_live.fp) return;
+        if(g_live.filename != hdr.filename) return;       // race / stale
+        if(row_bytes != g_live.hdr.fft_size) return;      // size mismatch
+        fwrite(row, 1, row_bytes, g_live.fp);
+        fflush(g_live.fp);
+        g_live.rows++;
+        g_live_dirty = true;
+    };
+    cli->on_lwf_live_stop = [](const PktLwfLiveStop& s){
+        std::lock_guard<std::mutex> lk(g_live_mtx);
+        if(g_live.fp && g_live.filename == s.filename){
+            fclose(g_live.fp); g_live.fp = nullptr;
+            g_live.filename.clear();
+            g_live.rows = 0;
+        }
+    };
 }
 
 // ── Info modal renderer ──────────────────────────────────────────────────
@@ -483,7 +562,10 @@ void draw_modal(FFTViewer& v, NetClient* cli){
     if(!g_open_loaded){
         ImGui::TextDisabled("Select a file from the right panel.");
     } else {
-        if(g_open.path == live_path) refresh_size_live();
+        // host의 LIVE 파일 OR JOIN의 hist/live/ 임시 파일이면 file size를 폴링하며 갱신.
+        std::string live_dir_prefix = BEWEPaths::hist_live_dir() + "/";
+        bool is_join_live = (g_open.path.compare(0, live_dir_prefix.size(), live_dir_prefix) == 0);
+        if(g_open.path == live_path || is_join_live) refresh_size_live();
         const auto& h = g_open.hdr;
         int off_h = header_utc_offset(h);
         uint32_t row_rate = (uint32_t)std::max(1.0f, h.row_rate_hz);
@@ -789,15 +871,17 @@ void draw_modal(FFTViewer& v, NetClient* cli){
 
         // ── HOST section ───────────────────────────────────────────────
         ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        ImGui::SetNextItemAllowOverlap();   // CollapsingHeader 위에 SmallButton 얹기 위함
         bool host_open = ImGui::CollapsingHeader("HOST##lwf_host_sec",
             ImGuiTreeNodeFlags_DefaultOpen);
+        // Report 패턴 동일 — 헤더 우측 안쪽 SmallButton (Reload)
+        ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - 60.f);
+        if(ImGui::SmallButton("Reload##lwf_host_reload")){
+            if(is_join_mode) cli->cmd_lwf_list_req();
+            else             g_host_list_dirty = true;
+        }
 
         if(host_open){
-            // Reload — 섹션 안 첫 줄 (CollapsingHeader와 SameLine 결합 시 hit-test 문제 우회)
-            if(ImGui::Button("Reload##lwf_host_reload", ImVec2(-1, 0))){
-                if(is_join_mode) cli->cmd_lwf_list_req();
-                else             g_host_list_dirty = true;
-            }
 
             // Build HOST rows
             struct Row { std::string id; std::string base; uint64_t size; uint32_t rows;
@@ -966,6 +1050,33 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                     ImGui::Unindent(8.f);
                 }
             }
+
+            // LIVE 수신 중 파일 (host로부터 실시간 push 받음)
+            {
+                std::lock_guard<std::mutex> lk(g_live_mtx);
+                if(g_live.fp && !g_live.filename.empty()){
+                    std::string live_full = BEWEPaths::hist_live_dir() + "/" + g_live.filename;
+                    bool sel = (g_sel_path == live_full);
+                    uint64_t live_size = sizeof(LongWaterfall::FileHeader) +
+                                          (uint64_t)g_live.rows * g_live.hdr.fft_size;
+                    float pw   = ImGui::GetContentRegionAvail().x;
+                    float fn_w = pw * 0.66f;
+                    std::string info = fmt_arch_info(g_live.rows, g_live.hdr.row_rate_hz, live_size);
+                    std::string nm = "[LIVE] " + g_live.filename;
+                    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(80,220,80,255));
+                    ImGui::PushID(live_full.c_str());
+                    if(ImGui::Selectable(nm.c_str(), sel,
+                           ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw, 0))){
+                        g_sel_path = live_full;
+                        if(g_open.path != live_full) open_file(live_full);
+                    }
+                    ImGui::SameLine(fn_w + 8.f);
+                    ImGui::TextDisabled("%s", info.c_str());
+                    ImGui::PopID();
+                    ImGui::PopStyleColor();
+                }
+            }
+
             for(auto& e : g_join_files){
                 bool sel = (g_sel_path == e.path);
                 ImGui::PushID(e.path.c_str());
@@ -1033,6 +1144,14 @@ void draw_modal(FFTViewer& v, NetClient* cli){
 void close_modal(){
     close_open();
     if(g_tex){ glDeleteTextures(1, &g_tex); g_tex = 0; }
+    // 프로그램 종료 시 LIVE 임시 파일 정리.
+    {
+        std::lock_guard<std::mutex> lk(g_live_mtx);
+        if(g_live.fp){ fclose(g_live.fp); g_live.fp = nullptr; }
+        g_live.filename.clear();
+        g_live.rows = 0;
+    }
+    purge_hist_live_dir();
 }
 
 } // namespace LongWaterfallView

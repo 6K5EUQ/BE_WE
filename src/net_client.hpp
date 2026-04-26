@@ -162,6 +162,10 @@ public:
     std::function<void(const PktLwfList&)>     on_lwf_list;
     // payload includes header (PktLwfDlData) followed by chunk_bytes raw.
     std::function<void(const PktLwfDlData&, const uint8_t* /*chunk*/, uint32_t /*chunk_len*/)> on_lwf_dl_data;
+    // LIVE 스트리밍 콜백
+    std::function<void(const PktLwfLiveStart&)> on_lwf_live_start;
+    std::function<void(const PktLwfLiveRowHdr&, const uint8_t* /*row*/, uint32_t /*bytes*/)> on_lwf_live_row;
+    std::function<void(const PktLwfLiveStop&)>  on_lwf_live_stop;
 
     // 콜백 등록 전에 도착한 BAND_PLAN_SYNC / BAND_CAT_SYNC 보관 (race 방지)
     std::mutex                     band_plan_pending_mtx;

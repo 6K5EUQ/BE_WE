@@ -63,7 +63,10 @@ enum class PacketType : uint8_t {
     LWF_LIST_REQ       = 0x38,  // any → host: request long-waterfall file list
     LWF_LIST           = 0x39,  // host → client: long-waterfall file list
     LWF_DL_REQ         = 0x3A,  // any → host: download long-waterfall file by name
-    LWF_DL_DATA        = 0x3B,  // host → client: long-waterfall file data chunk
+    LWF_DL_DATA        = 0x3B,  // host → client: (deprecated; reuses FILE_DATA)
+    LWF_LIVE_START     = 0x3C,  // host → joins: start streaming current LIVE file
+    LWF_LIVE_ROW       = 0x3D,  // host → joins: one row append to LIVE file
+    LWF_LIVE_STOP      = 0x3E,  // host → joins: LIVE file rotated/closed
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────
@@ -358,6 +361,29 @@ struct __attribute__((packed)) PktLwfDlData {
     uint8_t  is_last;
     uint8_t  _pad[6];
     // raw chunk bytes follow (chunk_bytes)
+};
+
+// ── LWF_LIVE_*: host의 누적 행을 JOIN에 실시간 push ─────────────────────
+struct __attribute__((packed)) PktLwfLiveStart {
+    char     filename[64];
+    uint32_t fft_size;            // padded (디스크 row 폭)
+    uint32_t fft_input_size;      // 사용자 설정 FFT
+    uint64_t sample_rate_hz;
+    uint64_t center_freq_hz;
+    float    row_rate_hz;
+    float    db_min;
+    float    db_max;
+    uint64_t start_utc_unix;
+    float    station_lon;         // legacy v1
+    int32_t  utc_offset_hours;
+};
+struct __attribute__((packed)) PktLwfLiveRowHdr {
+    char     filename[64];
+    uint32_t row_index;
+    // raw row bytes (fft_size 길이) follow
+};
+struct __attribute__((packed)) PktLwfLiveStop {
+    char     filename[64];
 };
 
 // ── DIGI_LOG ─────────────────────────────────────────────────────────────

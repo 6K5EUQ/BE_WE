@@ -4118,7 +4118,26 @@ void run_streaming_viewer(){
                                         central_cli.enqueue_relay_broadcast(bc_pkt.data(), bc_pkt.size(), true);
                                     if(!bp_pkt.empty())
                                         central_cli.enqueue_relay_broadcast(bp_pkt.data(), bp_pkt.size(), true);
+                                    PktLwfLiveStart ls{};
+                                    if(LongWaterfall::snapshot_live_start(ls)){
+                                        auto pkt = make_packet(PacketType::LWF_LIVE_START, &ls, sizeof(ls));
+                                        central_cli.enqueue_relay_broadcast(pkt.data(), pkt.size(), true);
+                                    }
                                 });
+
+                                // Worker LIVE callback → NetServer broadcast
+                                LongWaterfall::LiveCallbacks lcb;
+                                lcb.on_start = [&v](const PktLwfLiveStart& s){
+                                    if(v.net_srv) v.net_srv->broadcast_lwf_live_start(s);
+                                };
+                                lcb.on_row = [&v](const PktLwfLiveRowHdr& hdr,
+                                                  const uint8_t* row, uint32_t row_bytes){
+                                    if(v.net_srv) v.net_srv->broadcast_lwf_live_row(hdr, row, row_bytes);
+                                };
+                                lcb.on_stop = [&v](const PktLwfLiveStop& s){
+                                    if(v.net_srv) v.net_srv->broadcast_lwf_live_stop(s);
+                                };
+                                LongWaterfall::set_live_callbacks(lcb);
                             }
                             central_cli.set_on_central_chat([_log_mtx, _log](const char* from, const char* msg){
                                 std::lock_guard<std::mutex> lk(*_log_mtx);

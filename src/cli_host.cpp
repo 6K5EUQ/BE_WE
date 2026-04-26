@@ -1275,7 +1275,7 @@ void run_cli_host(){
                 };
 
                 // 새 JOIN이 Central을 통해 들어오면 cached band plan + category 즉시 푸시
-                central_cli.set_on_central_conn_open([&central_cli](uint16_t cid){
+                central_cli.set_on_central_conn_open([&v, &central_cli](uint16_t cid){
                     std::vector<uint8_t> bp_pkt;
                     {
                         std::lock_guard<std::mutex> lk(HostBandPlan::g_mtx);
@@ -1292,7 +1292,29 @@ void run_cli_host(){
                         central_cli.enqueue_relay_broadcast(bc_pkt.data(), bc_pkt.size(), true);
                     if(!bp_pkt.empty())
                         central_cli.enqueue_relay_broadcast(bp_pkt.data(), bp_pkt.size(), true);
+                    // 현재 LIVE 파일이 있으면 새 JOIN이 받을 수 있도록 LIVE_START broadcast.
+                    // (기존 JOIN들은 동일 filename이면 no-op으로 처리)
+                    PktLwfLiveStart ls{};
+                    if(LongWaterfall::snapshot_live_start(ls)){
+                        auto pkt = make_packet(PacketType::LWF_LIVE_START, &ls, sizeof(ls));
+                        central_cli.enqueue_relay_broadcast(pkt.data(), pkt.size(), true);
+                    }
+                    (void)v;
                 });
+
+                // Worker → NetServer LIVE broadcast 연결.
+                LongWaterfall::LiveCallbacks lcb;
+                lcb.on_start = [&v](const PktLwfLiveStart& s){
+                    if(v.net_srv) v.net_srv->broadcast_lwf_live_start(s);
+                };
+                lcb.on_row   = [&v](const PktLwfLiveRowHdr& hdr,
+                                    const uint8_t* row, uint32_t row_bytes){
+                    if(v.net_srv) v.net_srv->broadcast_lwf_live_row(hdr, row, row_bytes);
+                };
+                lcb.on_stop  = [&v](const PktLwfLiveStop& s){
+                    if(v.net_srv) v.net_srv->broadcast_lwf_live_stop(s);
+                };
+                LongWaterfall::set_live_callbacks(lcb);
 
                 central_cli.set_on_central_report_list([](const uint8_t* pkt, size_t len){
                     extern std::vector<ReportFileEntry> g_report_list;
