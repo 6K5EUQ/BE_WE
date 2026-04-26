@@ -249,6 +249,19 @@ void NetClient::recv_loop(){
         handle_packet(static_cast<PacketType>(hdr.type), payload.data(), len);
     }
     connected_.store(false);
+    // disconnect 시 진행 중이던 파일 다운로드 정리: partial 파일 삭제 + fd 닫기
+    {
+        std::lock_guard<std::mutex> lk(file_recv_mtx);
+        for(auto& fr : file_recv_list){
+            if(fr.fp){ fclose(fr.fp); fr.fp = nullptr; }
+            if(!fr.done && !fr.save_path.empty()){
+                unlink(fr.save_path.c_str());
+                bewe_log_push(2,"[NetClient] removed partial file %s on disconnect\n",
+                              fr.save_path.c_str());
+            }
+        }
+        file_recv_list.clear();
+    }
     bewe_log_push(2,"[NetClient] disconnected: reason=%s total_pkts=%llu fd=%d\n",
            disc_reason, (unsigned long long)pkt_count, fd_);
 }

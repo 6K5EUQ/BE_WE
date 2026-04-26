@@ -766,35 +766,24 @@ void draw_modal(FFTViewer& v, NetClient* cli){
 
         bool is_join_mode = (cli != nullptr);
 
-        // ── 상단 HISTORY 블루 헤더 (메인페이지 STATUS 헤더 패턴) ────────
-        {
-            ImDrawList* dlf = ImGui::GetWindowDrawList();
-            ImVec2 hp = ImGui::GetCursorScreenPos();
-            float  hh = ImGui::GetFontSize() + 6.f;
-            float  hw = ImGui::GetContentRegionAvail().x;
-            dlf->AddRectFilled(hp, ImVec2(hp.x + hw, hp.y + hh),
-                IM_COL32(40,70,140,255));
-            dlf->AddText(ImVec2(hp.x + 8.f, hp.y + 3.f),
-                IM_COL32(220,230,255,255), "HISTORY");
-            ImGui::Dummy(ImVec2(0, hh + 4));
+        // ── 상단 HISTORY 헤더 (ARCHIVE 동일 패턴 — BeginTabBar + TabActive 색) ─
+        ImGui::PushStyleColor(ImGuiCol_Tab,        ImVec4(0.12f,0.12f,0.16f,1.f));
+        ImGui::PushStyleColor(ImGuiCol_TabHovered, ImVec4(0.20f,0.30f,0.45f,1.f));
+        ImGui::PushStyleColor(ImGuiCol_TabActive,  ImVec4(0.15f,0.40f,0.65f,1.f));
+        if(ImGui::BeginTabBar("##lwf_hist_tabs")){
+            if(ImGui::BeginTabItem("HISTORY")) ImGui::EndTabItem();
+            ImGui::EndTabBar();
         }
+        ImGui::PopStyleColor(3);
 
-        // size: 메인 archive와 동일 포맷 [###.#M] (B/K/M/G).
-        auto fmt_size_archive = [](uint64_t b) -> std::string {
-            char buf[24];
-            if(b >= 1000000000ULL) snprintf(buf, sizeof(buf), "[%.1fG]", b/1e9);
-            else if(b >= 1000000)  snprintf(buf, sizeof(buf), "[%.1fM]", b/1e6);
-            else if(b >= 1000)     snprintf(buf, sizeof(buf), "[%.1fK]", b/1e3);
-            else                   snprintf(buf, sizeof(buf), "[%dB]", (int)b);
-            return buf;
-        };
-        auto fmt_dur_short = [](uint32_t rows, float row_rate) -> std::string {
+        // ARCHIVE의 draw_arch_file 동일 포맷 — "%4.0fs %6.1fM" (sec=0이면 size만 padding).
+        auto fmt_arch_info = [](uint32_t rows, float row_rate, uint64_t bytes) -> std::string {
             if(row_rate < 0.5f) row_rate = 5.0f;
-            uint32_t s = (uint32_t)((double)rows / row_rate);
-            char buf[16];
-            if(s >= 3600) snprintf(buf, sizeof(buf), "%uh%um", s/3600, (s%3600)/60);
-            else if(s >= 60) snprintf(buf, sizeof(buf), "%um%us", s/60, s%60);
-            else snprintf(buf, sizeof(buf), "%us", s);
+            double sec = (double)rows / row_rate;
+            double mb  = bytes / 1048576.0;
+            char buf[40];
+            if(sec > 0) snprintf(buf, sizeof(buf), "%4.0fs %6.1fM", sec, mb);
+            else        snprintf(buf, sizeof(buf), "     %6.1fM", mb);
             return buf;
         };
 
@@ -880,18 +869,23 @@ void draw_modal(FFTViewer& v, NetClient* cli){
             for(auto& r : host_rows){
                 bool sel = (g_sel_path == r.id);
                 ImGui::PushID(r.id.c_str());
-                // Archive 패턴: 단일 Selectable에 "  filename  duration  [size]" 합침.
-                std::string display = (r.is_live ? "[LIVE] " : "  ") + r.base
-                                     + "  " + fmt_dur_short(r.rows, r.row_rate)
-                                     + "  " + fmt_size_archive(r.size);
+                // ARCHIVE draw_arch_file 동일 패턴: Selectable(filename) + SameLine(fn_w+8) + TextDisabled.
+                float pw   = ImGui::GetContentRegionAvail().x;
+                float fn_w = pw * 0.66f;
+                std::string nm = r.is_live ? ("[LIVE] " + r.base) : r.base;
+                std::string info = fmt_arch_info(r.rows, r.row_rate, r.size);
                 if(r.is_live)
                     ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(80,220,80,255));
-                if(ImGui::Selectable(display.c_str(), sel)){
+                if(ImGui::Selectable(nm.c_str(), sel,
+                       ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw, 0))){
                     g_sel_path = r.id;
                     if(!r.is_remote && g_open.path != r.id) open_file(r.id);
                 }
                 if(r.is_live) ImGui::PopStyleColor();
-                if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                bool item_hov_h = ImGui::IsItemHovered();
+                ImGui::SameLine(fn_w + 8.f);
+                ImGui::TextDisabled("%s", info.c_str());
+                if(item_hov_h && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
                     g_ctx_path = r.id; g_sel_path = r.id;
                     ImGui::OpenPopup("##lwf_host_ctx");
                 }
@@ -978,14 +972,19 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                 LongWaterfall::FileHeader hh{}; uint64_t fsz=0;
                 read_header_only(e.path, hh, fsz);
                 uint32_t rows_ct = hh.fft_size > 0 ? (uint32_t)((fsz - sizeof(hh)) / hh.fft_size) : 0;
-                std::string display = "  " + e.base
-                                    + "  " + fmt_dur_short(rows_ct, hh.row_rate_hz)
-                                    + "  " + fmt_size_archive(e.size);
-                if(ImGui::Selectable(display.c_str(), sel)){
+                // ARCHIVE 동일 패턴
+                float pw   = ImGui::GetContentRegionAvail().x;
+                float fn_w = pw * 0.66f;
+                std::string info = fmt_arch_info(rows_ct, hh.row_rate_hz, e.size);
+                if(ImGui::Selectable(e.base.c_str(), sel,
+                       ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw, 0))){
                     g_sel_path = e.path;
                     if(g_open.path != e.path) open_file(e.path);
                 }
-                if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                bool item_hov_j = ImGui::IsItemHovered();
+                ImGui::SameLine(fn_w + 8.f);
+                ImGui::TextDisabled("%s", info.c_str());
+                if(item_hov_j && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
                     g_ctx_path = e.path; g_sel_path = e.path;
                     ImGui::OpenPopup("##lwf_join_ctx");
                 }

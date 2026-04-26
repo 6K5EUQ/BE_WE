@@ -420,8 +420,9 @@ void CentralClient::mux_loop(int central_fd,
                     if(plen > 0 && !recv_all(pkt.data() + 9, plen)) break;
                     bool no_drop = false;
                     uint8_t btype = hdr[4];
-                    if(btype == 0x02 || btype == 0x06 || btype == 0x0F)
-                        no_drop = true;  // AUTH_ACK, CMD_ACK, REGION_RESPONSE
+                    if(btype == 0x02 || btype == 0x06 || btype == 0x0F
+                       || btype == 0x0D || btype == 0x0E)   // FILE_DATA + FILE_META
+                        no_drop = true;  // AUTH_ACK, CMD_ACK, REGION_RESPONSE, FILE_*
                     CentralMuxHdr mh{}; mh.conn_id=cid;
                     mh.type = static_cast<uint8_t>(CentralMuxType::DATA);
                     mh.len  = (uint32_t)pkt.size();
