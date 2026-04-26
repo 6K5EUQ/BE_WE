@@ -59,8 +59,8 @@ bool NetClient::connect_fd(int fd, const char* id, const char* pw, uint8_t tier)
             }
         }
         if(static_cast<PacketType>(hdr.type) == PacketType::AUTH_ACK) break;
-        // BAND_PLAN_SYNC는 host의 CONN_OPEN 트리거로 AUTH_ACK보다 먼저 도착할 수 있음.
-        // 버리지 말고 pending 슬롯에 보관 → flush_pending_band_plan으로 UI에 적용.
+        // BAND_PLAN_SYNC / BAND_CAT_SYNC는 host의 CONN_OPEN 트리거로 AUTH_ACK보다
+        // 먼저 도착할 수 있음. 버리지 말고 pending 슬롯에 보관 → flush_*로 UI에 적용.
         if(static_cast<PacketType>(hdr.type) == PacketType::BAND_PLAN_SYNC && hdr.len >= 4){
             uint16_t count = 0;
             memcpy(&count, payload.data(), 2);
@@ -76,6 +76,15 @@ bool NetClient::connect_fd(int fd, const char* id, const char* pw, uint8_t tier)
                 bewe_log_push(2,"[NetClient] connect_fd: pre-auth BAND_PLAN_SYNC stashed (count=%u)\n",
                               count);
             }
+        } else if(static_cast<PacketType>(hdr.type) == PacketType::BAND_CAT_SYNC
+                  && hdr.len >= sizeof(PktBandCatSync)){
+            PktBandCatSync cs{};
+            memcpy(&cs, payload.data(), sizeof(cs));
+            if(cs.count > MAX_BAND_CATEGORIES) cs.count = MAX_BAND_CATEGORIES;
+            std::lock_guard<std::mutex> lk(band_cat_pending_mtx);
+            band_cat_pending = std::make_unique<PktBandCatSync>(cs);
+            bewe_log_push(2,"[NetClient] connect_fd: pre-auth BAND_CAT_SYNC stashed (count=%u)\n",
+                          cs.count);
         } else {
             // AUTH_ACK 아닌 패킷은 스킵 (IQ_PROGRESS, CH_SYNC 등이 먼저 올 수 있음)
             bewe_log_push(2,"[NetClient] connect_fd: skipping pre-auth pkt type=0x%02x len=%u\n",
@@ -343,6 +352,19 @@ void NetClient::handle_packet(PacketType type,
             band_plan_pending = std::make_unique<PktBandPlan>(bp);
         }
         if(on_band_plan) on_band_plan(bp);
+        break;
+    }
+
+    case PacketType::BAND_CAT_SYNC: {
+        if(len < sizeof(PktBandCatSync)) break;
+        PktBandCatSync cs{};
+        memcpy(&cs, payload, sizeof(cs));
+        if(cs.count > MAX_BAND_CATEGORIES) cs.count = MAX_BAND_CATEGORIES;
+        {
+            std::lock_guard<std::mutex> lk(band_cat_pending_mtx);
+            band_cat_pending = std::make_unique<PktBandCatSync>(cs);
+        }
+        if(on_band_cat) on_band_cat(cs);
         break;
     }
 
@@ -691,6 +713,12 @@ void NetClient::flush_pending_band_plan(){
         on_band_plan(*band_plan_pending);
     }
 }
+void NetClient::flush_pending_band_cat(){
+    std::lock_guard<std::mutex> lk(band_cat_pending_mtx);
+    if(band_cat_pending && on_band_cat){
+        on_band_cat(*band_cat_pending);
+    }
+}
 bool NetClient::cmd_band_add(float freq_lo_mhz, float freq_hi_mhz, uint8_t category,
                              const char* label, const char* description){
     PktBandEntry e{};
@@ -716,6 +744,17 @@ bool NetClient::cmd_band_update(float freq_lo_mhz, float freq_hi_mhz, uint8_t ca
     strncpy(e.label,       label       ? label       : "", sizeof(e.label)-1);
     strncpy(e.description, description ? description : "", sizeof(e.description)-1);
     return raw_send(PacketType::BAND_UPDATE, &e, sizeof(e));
+}
+bool NetClient::cmd_band_cat_upsert(uint8_t id, const char* name, uint8_t r, uint8_t g, uint8_t b){
+    PktBandCategory c{};
+    c.id = id; c.valid = 1;
+    c.r = r; c.g = g; c.b = b;
+    strncpy(c.name, name ? name : "", sizeof(c.name)-1);
+    return raw_send(PacketType::BAND_CAT_UPSERT, &c, sizeof(c));
+}
+bool NetClient::cmd_band_cat_delete(uint8_t id){
+    PktBandCatDelete d{}; d.id = id;
+    return raw_send(PacketType::BAND_CAT_DELETE, &d, sizeof(d));
 }
 bool NetClient::cmd_delete_pub_file(const char* filename){
     PktPubDeleteReq req{};

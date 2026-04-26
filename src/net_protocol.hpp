@@ -53,10 +53,13 @@ enum class PacketType : uint8_t {
     DB_LIST_REQ        = 0x2E,  // client → central: request DB list refresh
     REPORT_LIST_REQ    = 0x2F,  // client → central: request Report list refresh
     SCHED_SYNC         = 0x30,  // server → all clients: scheduled recording list snapshot
-    BAND_PLAN_SYNC     = 0x31,  // central → all clients: band plan (frequency allocation overlay)
-    BAND_ADD           = 0x32,  // any → central: add band segment
-    BAND_REMOVE        = 0x33,  // any → central: remove band segment (by freq_lo+hi)
-    BAND_UPDATE        = 0x34,  // any → central: update band segment
+    BAND_PLAN_SYNC     = 0x31,  // host → all clients: band plan (frequency allocation overlay)
+    BAND_ADD           = 0x32,  // any → host: add band segment
+    BAND_REMOVE        = 0x33,  // any → host: remove band segment (by freq_lo+hi)
+    BAND_UPDATE        = 0x34,  // any → host: update band segment
+    BAND_CAT_SYNC      = 0x35,  // host → all clients: band category list (id/name/color)
+    BAND_CAT_UPSERT    = 0x36,  // any → host: insert/update one band category
+    BAND_CAT_DELETE    = 0x37,  // any → host: delete one band category by id
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────
@@ -299,6 +302,27 @@ struct __attribute__((packed)) PktBandPlan {
 struct __attribute__((packed)) PktBandRemove {
     float freq_lo_mhz;
     float freq_hi_mhz;
+};
+
+// ── BAND_CAT: 카테고리 목록 (host → all). 가변 크기. ───────────────────
+// id 0~10 builtin, 11~255 user-defined. 빈 슬롯은 valid=0.
+static constexpr int MAX_BAND_CATEGORIES = 64;
+struct __attribute__((packed)) PktBandCategory {
+    uint8_t  id;
+    uint8_t  valid;
+    uint8_t  r, g, b;        // RGB color
+    uint8_t  _pad[3];
+    char     name[24];
+}; // 32 bytes
+static_assert(sizeof(PktBandCategory) == 32, "PktBandCategory size");
+struct __attribute__((packed)) PktBandCatSync {
+    uint16_t        count;        // entries[0..count-1] valid
+    uint8_t         _pad[2];
+    PktBandCategory entries[MAX_BAND_CATEGORIES];
+};
+struct __attribute__((packed)) PktBandCatDelete {
+    uint8_t id;
+    uint8_t _pad[3];
 };
 
 // ── DIGI_LOG ─────────────────────────────────────────────────────────────

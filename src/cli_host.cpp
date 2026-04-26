@@ -8,6 +8,7 @@
 #include "central_client.hpp"
 #include "net_protocol.hpp"
 #include "host_band_plan.hpp"
+#include "host_band_categories.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -1228,17 +1229,42 @@ void run_cli_host(){
                 srv->cb.on_band_remove = [rebroadcast_band_plan](const PktBandRemove& r){
                     if(HostBandPlan::apply_remove(r)) rebroadcast_band_plan();
                 };
-                // 새 JOIN이 Central을 통해 들어오면 cached band plan 즉시 푸시
+
+                // ── Host-owned band categories (~/BE_WE/band_categories.json) ─
+                HostBandCategories::load_from_file();
+                HostBandCategories::rebuild_cache();
+                auto rebroadcast_band_cat = [&v](){
+                    HostBandCategories::save_to_file();
+                    HostBandCategories::rebuild_cache();
+                    PktBandCatSync cs{};
+                    HostBandCategories::snapshot_pkt(cs);
+                    if(v.net_srv) v.net_srv->broadcast_band_categories(cs);
+                };
+                srv->cb.on_band_cat_upsert = [rebroadcast_band_cat](const PktBandCategory& c){
+                    if(HostBandCategories::apply_upsert(c)) rebroadcast_band_cat();
+                };
+                srv->cb.on_band_cat_delete = [rebroadcast_band_cat](uint8_t id){
+                    if(HostBandCategories::apply_delete(id)) rebroadcast_band_cat();
+                };
+
+                // 새 JOIN이 Central을 통해 들어오면 cached band plan + category 즉시 푸시
                 central_cli.set_on_central_conn_open([&central_cli](uint16_t cid){
-                    std::vector<uint8_t> pkt;
+                    std::vector<uint8_t> bp_pkt;
                     {
                         std::lock_guard<std::mutex> lk(HostBandPlan::g_mtx);
-                        pkt = HostBandPlan::g_cached_pkt;
+                        bp_pkt = HostBandPlan::g_cached_pkt;
                     }
-                    bewe_log_push(0, "[HostBandPlan] CONN_OPEN cid=%u → push BAND_PLAN_SYNC %zu bytes\n",
-                                  cid, pkt.size());
-                    if(!pkt.empty())
-                        central_cli.enqueue_relay_broadcast(pkt.data(), pkt.size(), true);
+                    std::vector<uint8_t> bc_pkt;
+                    {
+                        std::lock_guard<std::mutex> lk(HostBandCategories::g_mtx);
+                        bc_pkt = HostBandCategories::g_cached_pkt;
+                    }
+                    bewe_log_push(0, "[HostBand] CONN_OPEN cid=%u → push plan %zu + cats %zu bytes\n",
+                                  cid, bp_pkt.size(), bc_pkt.size());
+                    if(!bc_pkt.empty())
+                        central_cli.enqueue_relay_broadcast(bc_pkt.data(), bc_pkt.size(), true);
+                    if(!bp_pkt.empty())
+                        central_cli.enqueue_relay_broadcast(bp_pkt.data(), bp_pkt.size(), true);
                 });
 
                 central_cli.set_on_central_report_list([](const uint8_t* pkt, size_t len){

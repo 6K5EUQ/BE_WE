@@ -214,6 +214,10 @@ struct ServerCallbacks {
     std::function<void(const PktBandEntry&)>  on_band_add;
     std::function<void(const PktBandEntry&)>  on_band_update;
     std::function<void(const PktBandRemove&)> on_band_remove;
+
+    // ── Band categories ──────────────────────────────────────────────────
+    std::function<void(const PktBandCategory&)> on_band_cat_upsert;
+    std::function<void(uint8_t /*id*/)>         on_band_cat_delete;
 };
 
 // ── NetServer ─────────────────────────────────────────────────────────────
@@ -269,6 +273,7 @@ public:
     // Scheduled recording list snapshot → all clients
     void broadcast_sched_sync(const PktSchedSync& pkt);
     void broadcast_band_plan(const PktBandPlan& pkt);
+    void broadcast_band_categories(const PktBandCatSync& pkt);
 
     // Digital decode log → clients with audio_mask bit set
     void broadcast_digi_log(uint8_t tab, uint8_t ch_idx, const char* msg, uint32_t audio_mask);

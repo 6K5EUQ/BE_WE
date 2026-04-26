@@ -8,12 +8,14 @@
 #include "central_client.hpp"
 #include "lora_demod.hpp"
 #include "host_band_plan.hpp"
+#include "host_band_categories.hpp"
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <algorithm>
 #include <chrono>
 #include <map>
 #include <unordered_map>
+#include <set>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -36,6 +38,9 @@ void bewe_log(const char* fmt, ...){
     va_end(ap);
     bewe_log_push(0, "%s", buf);
 }
+
+// Open flag for the band category management modal (toggled from band Add/Edit modal).
+bool g_band_cat_modal_open = false;
 
 // ── 파일 크기 포맷 ────────────────────────────────────────────────────────
 static std::string fmt_filesize(const std::string& dir, const std::string& fname){
@@ -985,19 +990,16 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
 
     // ── Band Plan 14px 라벨 띠 (스펙트럼 상단) ───────────────────────────
     if(band_bar_active){
-        static const ImU32 BAND_COLORS[] = {
-            IM_COL32(255,180, 80, 110),  // 0 Broadcast
-            IM_COL32( 80,180,255, 110),  // 1 Aero
-            IM_COL32( 80,255,180, 110),  // 2 Marine
-            IM_COL32(255,255, 80, 110),  // 3 Amateur
-            IM_COL32(180, 80,255, 110),  // 4 Cell
-            IM_COL32(255, 80,180, 110),  // 5 ISM
-            IM_COL32(120,200,255, 110),  // 6 WiFi-BT
-            IM_COL32(200,100,100, 110),  // 7 Mil
-            IM_COL32(150,180,200, 110),  // 8 Public-Safety
-            IM_COL32(180,150,200, 110),  // 9 Government
-            IM_COL32(160,160,160, 110),  // 10 Other
-        };
+        // Snapshot category id → RGB so we don't lock per band entry.
+        std::unordered_map<uint8_t, ImU32> cat_color;
+        {
+            std::lock_guard<std::mutex> lk(HostBandCategories::g_mtx);
+            for(auto& c : HostBandCategories::g_cats){
+                if(!c.valid) continue;
+                cat_color[c.id] = IM_COL32(c.r, c.g, c.b, 110);
+            }
+        }
+        ImU32 fallback_col = IM_COL32(160,160,160,110);
         // 뒤배경 (어두운 회색)
         dl->AddRectFilled(ImVec2(gx, band_bar_y),
                           ImVec2(gx+gw, band_bar_y+BAND_BAR_H),
@@ -1015,9 +1017,8 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
             if(hi <= lo) continue;
             float x0 = gx + (lo - vis_lo) / (vis_hi - vis_lo) * gw;
             float x1 = gx + (hi - vis_lo) / (vis_hi - vis_lo) * gw;
-            uint8_t c = b.category;
-            if(c > 10) c = 10;
-            ImU32 col = BAND_COLORS[c];
+            auto it = cat_color.find(b.category);
+            ImU32 col = (it != cat_color.end()) ? it->second : fallback_col;
             dl->AddRectFilled(ImVec2(x0, band_bar_y+1),
                               ImVec2(x1, band_bar_y+BAND_BAR_H-1), col);
             // 라벨이 폭 안에 들어갈 때만 그리기
@@ -1151,7 +1152,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
             ImGui::SetNextWindowBgAlpha(0.97f);
             ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.f);
             ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f,0.10f,0.16f,1.f));
-            const char* title = bm.is_edit ? "Band Info / Edit##band_modal" : "Add Band##band_modal";
+            const char* title = bm.is_edit ? "Band Info##band_modal" : "Add Band##band_modal";
             ImGui::Begin(title, &bm.open,
                 ImGuiWindowFlags_NoResize|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoCollapse);
 
@@ -1175,16 +1176,38 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
             ImGui::SetNextItemWidth(140);
             ImGui::InputFloat("##bm_hi", &bm.freq_hi, 0.f, 0.f, "%.4f MHz");
 
-            // Category combo
-            static const char* CAT_NAMES[] = {
-                "Broadcast","Aero","Marine","Amateur","Cell",
-                "ISM","WiFi-BT","Mil","Public-Safety","Government","Other"
-            };
+            // Category combo (host-owned dynamic list)
+            std::vector<PktBandCategory> cats_snapshot;
+            {
+                std::lock_guard<std::mutex> lk(HostBandCategories::g_mtx);
+                for(auto& c : HostBandCategories::g_cats)
+                    if(c.valid) cats_snapshot.push_back(c);
+            }
             ImGui::AlignTextToFramePadding();
             ImGui::Text("Category");   ImGui::SameLine(LBL_W);
             ImGui::SetNextItemWidth(180);
-            if(bm.category < 0 || bm.category > 10) bm.category = 10;
-            ImGui::Combo("##bm_cat", &bm.category, CAT_NAMES, 11);
+            // 현재 선택된 cat id의 이름 찾기
+            const char* cur_name = "(none)";
+            for(auto& c : cats_snapshot) if(c.id == (uint8_t)bm.category){ cur_name = c.name; break; }
+            if(ImGui::BeginCombo("##bm_cat", cur_name)){
+                for(auto& c : cats_snapshot){
+                    ImGui::PushID((int)c.id);
+                    // 컬러 스와치 + 이름
+                    ImVec4 col4(c.r/255.f, c.g/255.f, c.b/255.f, 1.f);
+                    ImGui::ColorButton("##sw", col4, ImGuiColorEditFlags_NoTooltip|ImGuiColorEditFlags_NoBorder, ImVec2(12,12));
+                    ImGui::SameLine();
+                    bool sel = ((uint8_t)bm.category == c.id);
+                    if(ImGui::Selectable(c.name, sel)) bm.category = (int)c.id;
+                    if(sel) ImGui::SetItemDefaultFocus();
+                    ImGui::PopID();
+                }
+                ImGui::Separator();
+                if(ImGui::Selectable("Manage categories...")) {
+                    extern bool g_band_cat_modal_open;
+                    g_band_cat_modal_open = true;
+                }
+                ImGui::EndCombo();
+            }
 
             // Description (multi-line)
             ImGui::AlignTextToFramePadding();
@@ -1256,6 +1279,126 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
             if(ImGui::Button("Cancel", ImVec2(80,0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)){
                 bm.open = false;
             }
+            ImGui::End();
+            ImGui::PopStyleColor();
+            ImGui::PopStyleVar();
+        }
+
+        // ── Category Manage modal ────────────────────────────────────────
+        if(g_band_cat_modal_open){
+            ImGui::SetNextWindowSize(ImVec2(440.f, 0.f));
+            ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x*0.5f - 220.f,
+                                           ImGui::GetIO().DisplaySize.y*0.25f),
+                                    ImGuiCond_Appearing);
+            ImGui::SetNextWindowBgAlpha(0.97f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.f);
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f,0.10f,0.16f,1.f));
+            ImGui::Begin("Manage Band Categories##band_cat_modal", &g_band_cat_modal_open,
+                ImGuiWindowFlags_NoResize|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoCollapse);
+
+            std::vector<PktBandCategory> cats_snap;
+            {
+                std::lock_guard<std::mutex> lk(HostBandCategories::g_mtx);
+                for(auto& c : HostBandCategories::g_cats)
+                    if(c.valid) cats_snap.push_back(c);
+            }
+            std::sort(cats_snap.begin(), cats_snap.end(),
+                [](const PktBandCategory& a, const PktBandCategory& b){ return a.id < b.id; });
+
+            // 기존 카테고리 목록 — 행마다 색/이름/삭제
+            for(auto& c : cats_snap){
+                ImGui::PushID((int)c.id);
+                ImVec4 col4(c.r/255.f, c.g/255.f, c.b/255.f, 1.f);
+                if(ImGui::ColorEdit3("##col", &col4.x,
+                    ImGuiColorEditFlags_NoInputs|ImGuiColorEditFlags_NoLabel|ImGuiColorEditFlags_NoTooltip)){
+                    PktBandCategory upd = c;
+                    upd.r = (uint8_t)(col4.x*255); upd.g = (uint8_t)(col4.y*255); upd.b = (uint8_t)(col4.z*255);
+                    if(net_cli) net_cli->cmd_band_cat_upsert(upd.id, upd.name, upd.r, upd.g, upd.b);
+                    else if(net_srv){
+                        if(HostBandCategories::host_local_upsert(upd)){
+                            PktBandCatSync cs{}; HostBandCategories::snapshot_pkt(cs);
+                            net_srv->broadcast_band_categories(cs);
+                        }
+                    }
+                }
+                ImGui::SameLine();
+                char idbuf[16]; snprintf(idbuf, sizeof(idbuf), "#%u", (unsigned)c.id);
+                ImGui::TextDisabled("%s", idbuf);
+                ImGui::SameLine();
+                char nm_edit[24]; memset(nm_edit, 0, sizeof(nm_edit));
+                strncpy(nm_edit, c.name, sizeof(nm_edit)-1);
+                ImGui::SetNextItemWidth(220);
+                if(ImGui::InputText("##nm", nm_edit, sizeof(nm_edit),
+                                    ImGuiInputTextFlags_EnterReturnsTrue) && nm_edit[0]){
+                    PktBandCategory upd = c;
+                    strncpy(upd.name, nm_edit, sizeof(upd.name)-1);
+                    if(net_cli) net_cli->cmd_band_cat_upsert(upd.id, upd.name, upd.r, upd.g, upd.b);
+                    else if(net_srv){
+                        if(HostBandCategories::host_local_upsert(upd)){
+                            PktBandCatSync cs{}; HostBandCategories::snapshot_pkt(cs);
+                            net_srv->broadcast_band_categories(cs);
+                        }
+                    }
+                }
+                ImGui::SameLine();
+                ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));
+                if(ImGui::SmallButton("X")){
+                    if(net_cli) net_cli->cmd_band_cat_delete(c.id);
+                    else if(net_srv){
+                        if(HostBandCategories::host_local_delete(c.id)){
+                            PktBandCatSync cs{}; HostBandCategories::snapshot_pkt(cs);
+                            net_srv->broadcast_band_categories(cs);
+                        }
+                    }
+                }
+                ImGui::PopStyleColor();
+                ImGui::PopID();
+            }
+
+            ImGui::Separator();
+            ImGui::Text("Add new category:");
+            static char  s_new_name[24] = {};
+            static float s_new_col[3]   = {0.6f, 0.6f, 0.6f};
+            ImGui::SetNextItemWidth(200);
+            ImGui::InputText("##newnm", s_new_name, sizeof(s_new_name));
+            ImGui::SameLine();
+            ImGui::ColorEdit3("##newcol", s_new_col,
+                ImGuiColorEditFlags_NoInputs|ImGuiColorEditFlags_NoLabel|ImGuiColorEditFlags_NoTooltip);
+            ImGui::SameLine();
+            bool can_add = s_new_name[0] != 0;
+            if(!can_add) ImGui::BeginDisabled();
+            if(ImGui::Button("Add")){
+                // 사용 가능한 가장 작은 id (11~255 중 비어있는 첫 번째)
+                std::set<uint8_t> used;
+                for(auto& c : cats_snap) used.insert(c.id);
+                int new_id = 11;
+                while(new_id < 256 && used.count((uint8_t)new_id)) new_id++;
+                if(new_id < 256){
+                    uint8_t r = (uint8_t)(s_new_col[0]*255);
+                    uint8_t g = (uint8_t)(s_new_col[1]*255);
+                    uint8_t b = (uint8_t)(s_new_col[2]*255);
+                    if(net_cli) net_cli->cmd_band_cat_upsert((uint8_t)new_id, s_new_name, r, g, b);
+                    else if(net_srv){
+                        PktBandCategory nc{};
+                        nc.id = (uint8_t)new_id; nc.valid = 1;
+                        nc.r = r; nc.g = g; nc.b = b;
+                        strncpy(nc.name, s_new_name, sizeof(nc.name)-1);
+                        if(HostBandCategories::host_local_upsert(nc)){
+                            PktBandCatSync cs{}; HostBandCategories::snapshot_pkt(cs);
+                            net_srv->broadcast_band_categories(cs);
+                        }
+                    }
+                    s_new_name[0] = 0;
+                }
+            }
+            if(!can_add) ImGui::EndDisabled();
+
+            ImGui::Spacing();
+            if(ImGui::Button("Close", ImVec2(80,0))
+                || ImGui::IsKeyPressed(ImGuiKey_Escape, false)){
+                g_band_cat_modal_open = false;
+            }
+
             ImGui::End();
             ImGui::PopStyleColor();
             ImGui::PopStyleVar();
@@ -1547,7 +1690,12 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
     ImGui::SetCursorScreenPos(ImVec2(gx,gy));
     ImGui::InvisibleButton("wf_graph",ImVec2(gw,gh));
     bool hov=ImGui::IsItemHovered();
-    if(!eid_panel_open && !log_panel_open) handle_new_channel_drag(gx,gw);
+    {
+        // 마우스가 워터폴 영역 안에 있을 때만 채널 드래그 시작 허용 (band bar 우클릭 보호)
+        ImVec2 _mp = ImGui::GetIO().MousePos;
+        bool in_wf_area = (_mp.y >= gy && _mp.y <= gy + gh);
+        if(!eid_panel_open && !log_panel_open && in_wf_area) handle_new_channel_drag(gx,gw);
+    }
     if(!region.active && !eid_panel_open && !log_panel_open) handle_channel_interactions(gx,gw,gy,gh);
 
     // ── Ctrl+우클릭 드래그: 영역 IQ 녹음 선택 ────────────────────────────
@@ -2645,8 +2793,21 @@ void run_streaming_viewer(){
                 v.band_segments.push_back(s);
             }
         };
-        // 콜백 등록 전에 도착한 BAND_PLAN_SYNC 패킷 flush
-        // (connect_fd 직후 Central이 cached pkt를 push하는데 콜백 등록은 그보다 늦어 race 발생)
+        // Band categories: host pushes the full list. Mirror into HostBandCategories::g_cats
+        // so any code (rendering, modal) can read by id without a separate JOIN-side store.
+        cli->on_band_cat = [](const PktBandCatSync& cs){
+            std::lock_guard<std::mutex> lk(HostBandCategories::g_mtx);
+            HostBandCategories::g_cats.clear();
+            int n = std::min<int>((int)cs.count, MAX_BAND_CATEGORIES);
+            for(int i=0;i<n;i++){
+                const auto& c = cs.entries[i];
+                if(!c.valid) continue;
+                HostBandCategories::g_cats.push_back(c);
+            }
+        };
+        // 콜백 등록 전에 도착한 BAND_*_SYNC 패킷 flush
+        // (connect_fd 직후 host가 cached pkt를 push하는데 콜백 등록은 그보다 늦어 race 발생)
+        cli->flush_pending_band_cat();
         cli->flush_pending_band_plan();
 
         // WF 이벤트 수신 콜백 (IQ Start/Stop 표시)
@@ -3876,14 +4037,35 @@ void run_streaming_viewer(){
                                 v.net_srv->cb.on_band_remove = [rebroadcast](const PktBandRemove& r){
                                     if(HostBandPlan::apply_remove(r)) rebroadcast();
                                 };
+
+                                // Categories
+                                HostBandCategories::load_from_file();
+                                HostBandCategories::rebuild_cache();
+                                auto rebroadcast_cat = [&v](){
+                                    HostBandCategories::save_to_file();
+                                    HostBandCategories::rebuild_cache();
+                                    PktBandCatSync cs{};
+                                    HostBandCategories::snapshot_pkt(cs);
+                                    if(v.net_srv) v.net_srv->broadcast_band_categories(cs);
+                                };
+                                v.net_srv->cb.on_band_cat_upsert = [rebroadcast_cat](const PktBandCategory& c){
+                                    if(HostBandCategories::apply_upsert(c)) rebroadcast_cat();
+                                };
+                                v.net_srv->cb.on_band_cat_delete = [rebroadcast_cat](uint8_t id){
+                                    if(HostBandCategories::apply_delete(id)) rebroadcast_cat();
+                                };
+
                                 central_cli.set_on_central_conn_open([&central_cli](uint16_t /*cid*/){
-                                    std::vector<uint8_t> pkt;
-                                    {
-                                        std::lock_guard<std::mutex> lk(HostBandPlan::g_mtx);
-                                        pkt = HostBandPlan::g_cached_pkt;
-                                    }
-                                    if(!pkt.empty())
-                                        central_cli.enqueue_relay_broadcast(pkt.data(), pkt.size(), true);
+                                    std::vector<uint8_t> bp_pkt;
+                                    { std::lock_guard<std::mutex> lk(HostBandPlan::g_mtx);
+                                      bp_pkt = HostBandPlan::g_cached_pkt; }
+                                    std::vector<uint8_t> bc_pkt;
+                                    { std::lock_guard<std::mutex> lk(HostBandCategories::g_mtx);
+                                      bc_pkt = HostBandCategories::g_cached_pkt; }
+                                    if(!bc_pkt.empty())
+                                        central_cli.enqueue_relay_broadcast(bc_pkt.data(), bc_pkt.size(), true);
+                                    if(!bp_pkt.empty())
+                                        central_cli.enqueue_relay_broadcast(bp_pkt.data(), bp_pkt.size(), true);
                                 });
                             }
                             central_cli.set_on_central_chat([_log_mtx, _log](const char* from, const char* msg){

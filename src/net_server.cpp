@@ -452,6 +452,19 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
         break;
     }
 
+    case PacketType::BAND_CAT_UPSERT: {
+        if(!c->authed || len < sizeof(PktBandCategory)) break;
+        if(cb.on_band_cat_upsert)
+            cb.on_band_cat_upsert(*reinterpret_cast<const PktBandCategory*>(payload));
+        break;
+    }
+    case PacketType::BAND_CAT_DELETE: {
+        if(!c->authed || len < sizeof(PktBandCatDelete)) break;
+        auto* d = reinterpret_cast<const PktBandCatDelete*>(payload);
+        if(cb.on_band_cat_delete) cb.on_band_cat_delete(d->id);
+        break;
+    }
+
     default: break;
     }
 }
@@ -649,6 +662,17 @@ void NetServer::broadcast_sched_sync(const PktSchedSync& sync){
 // via on_relay_broadcast (Central fans out to N joins).
 void NetServer::broadcast_band_plan(const PktBandPlan& bp){
     auto pkt = make_packet(PacketType::BAND_PLAN_SYNC, &bp, sizeof(bp));
+    if(cb.on_relay_broadcast && has_relay())
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), true /*no_drop*/);
+    std::lock_guard<std::mutex> lk(clients_mtx_);
+    for(auto& c : clients_){
+        if(c->is_relay || !c->authed || !c->alive.load()) continue;
+        c->enqueue(pkt, false);
+    }
+}
+
+void NetServer::broadcast_band_categories(const PktBandCatSync& cs){
+    auto pkt = make_packet(PacketType::BAND_CAT_SYNC, &cs, sizeof(cs));
     if(cb.on_relay_broadcast && has_relay())
         cb.on_relay_broadcast(pkt.data(), pkt.size(), true /*no_drop*/);
     std::lock_guard<std::mutex> lk(clients_mtx_);

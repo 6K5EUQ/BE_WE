@@ -157,11 +157,15 @@ public:
     std::function<void(const PktChannelSync&)> on_channel_sync;
     std::function<void(const PktSchedSync&)>   on_sched_sync;
     std::function<void(const PktBandPlan&)>    on_band_plan;
+    std::function<void(const PktBandCatSync&)> on_band_cat;
 
-    // 콜백 등록 전에 도착한 BAND_PLAN_SYNC 보관 (race 방지)
-    std::mutex                  band_plan_pending_mtx;
-    std::unique_ptr<PktBandPlan> band_plan_pending;
+    // 콜백 등록 전에 도착한 BAND_PLAN_SYNC / BAND_CAT_SYNC 보관 (race 방지)
+    std::mutex                     band_plan_pending_mtx;
+    std::unique_ptr<PktBandPlan>   band_plan_pending;
+    std::mutex                     band_cat_pending_mtx;
+    std::unique_ptr<PktBandCatSync> band_cat_pending;
     void flush_pending_band_plan();  // 콜백 등록 직후 호출
+    void flush_pending_band_cat();
     std::function<void(const PktWfEvent&)>     on_wf_event;
     std::function<void(uint8_t tab, uint8_t ch_idx, const char* msg)> on_digi_log;
     std::function<void(const std::string& name, uint64_t total)> on_file_meta;
@@ -284,6 +288,8 @@ public:
     bool cmd_band_remove(float freq_lo_mhz, float freq_hi_mhz);
     bool cmd_band_update(float freq_lo_mhz, float freq_hi_mhz, uint8_t category,
                          const char* label, const char* description);
+    bool cmd_band_cat_upsert(uint8_t id, const char* name, uint8_t r, uint8_t g, uint8_t b);
+    bool cmd_band_cat_delete(uint8_t id);
     bool cmd_db_delete(const char* filename, const char* operator_name);
     bool cmd_db_download(const char* filename, const char* operator_name);
     bool cmd_report_delete(const char* filename);

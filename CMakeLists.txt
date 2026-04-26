@@ -46,6 +46,7 @@ if(CLI)
         src/net_stream.cpp
         src/central_client.cpp
         src/host_band_plan.cpp
+        src/host_band_categories.cpp
         src/lora_demod.cpp
         src/pluto_io.cpp
     )
@@ -125,6 +126,7 @@ else()
         src/globe.cpp
         src/central_client.cpp
         src/host_band_plan.cpp
+        src/host_band_categories.cpp
         src/lora_demod.cpp
         src/pluto_io.cpp
         ${IMGUI_SOURCES}
