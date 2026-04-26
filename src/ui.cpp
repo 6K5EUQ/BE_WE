@@ -1415,7 +1415,8 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         ImVec2 mp = ImGui::GetIO().MousePos;
         bool ctrl = ImGui::GetIO().KeyCtrl;
         bool in_sp = (mp.x>=gx && mp.x<=gx+gw && mp.y>=gy && mp.y<=gy+gh);
-        if(!eid_panel_open && !log_panel_open && ctrl && in_sp &&
+        if(!eid_panel_open && !log_panel_open && !digi_decode_panel_open && !lwf_modal_open
+           && ctrl && in_sp &&
            ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
             notch_drag.selecting = true;
             notch_drag.drag_x0 = notch_drag.drag_x1 = mp.x;
@@ -1711,7 +1712,8 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
         bool in_wf=(mp.x>=gx&&mp.x<=gx+gw&&mp.y>=gy&&mp.y<=gy+gh);
 
         // ── 신규 선택: Ctrl+우클릭 드래그 ──────────────────────────────
-        if(!eid_panel_open&&ctrl&&ImGui::IsMouseClicked(ImGuiMouseButton_Right)&&in_wf&&(tm_iq_file_ready||remote_mode)){
+        if(!eid_panel_open&&!log_panel_open&&!digi_decode_panel_open&&!lwf_modal_open
+           &&ctrl&&ImGui::IsMouseClicked(ImGuiMouseButton_Right)&&in_wf&&(tm_iq_file_ready||remote_mode)){
             region.selecting=true; region.active=false;
             region.edit_mode=RegionSel::EDIT_NONE;
             region.drag_x0=mp.x; region.drag_y0=mp.y;
@@ -4097,9 +4099,11 @@ void run_streaming_viewer(){
                                 v.net_srv->cb.on_lwf_dl_req = [&v](int op_index, const char* /*who*/, const char* fn){
                                     if(!fn || !fn[0] || strchr(fn,'/')) return;
                                     std::string full = BEWEPaths::hist_host_dir() + "/" + fn;
-                                    // Reuse existing send_file_to (FILE_META + FILE_DATA path).
-                                    std::thread([&v, op_index, full](){
-                                        if(v.net_srv) v.net_srv->send_file_to(op_index, full.c_str(), 0);
+                                    static std::atomic<uint8_t> tid_ctr{1};
+                                    uint8_t tid = tid_ctr.fetch_add(1);
+                                    if(tid == 0) tid = tid_ctr.fetch_add(1);
+                                    std::thread([&v, op_index, full, tid](){
+                                        if(v.net_srv) v.net_srv->send_file_to(op_index, full.c_str(), tid);
                                     }).detach();
                                 };
 

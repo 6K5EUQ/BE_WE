@@ -1264,12 +1264,13 @@ void run_cli_host(){
                     if(strchr(fn, '/')) return;
                     std::string full = BEWEPaths::hist_host_dir() + "/" + fn;
                     std::string who_s = who ? who : "?";
-                    bewe_log_push(0, "[LWF] DL_REQ from op=%d '%s' file=%s\n",
-                                  op_index, who_s.c_str(), fn);
-                    // Reuse existing send_file_to (FILE_META + FILE_DATA, direct send_all
-                    // with rate limiting, no queue-drop). Detached so recv thread isn't held.
-                    std::thread([&v, op_index, full](){
-                        if(v.net_srv) v.net_srv->send_file_to(op_index, full.c_str(), 0);
+                    static std::atomic<uint8_t> tid_ctr{1};
+                    uint8_t tid = tid_ctr.fetch_add(1);
+                    if(tid == 0) tid = tid_ctr.fetch_add(1);  // 0 reserved for non-HIST
+                    bewe_log_push(0, "[LWF] DL_REQ from op=%d '%s' file=%s tid=%u\n",
+                                  op_index, who_s.c_str(), fn, (unsigned)tid);
+                    std::thread([&v, op_index, full, tid](){
+                        if(v.net_srv) v.net_srv->send_file_to(op_index, full.c_str(), tid);
                     }).detach();
                 };
 

@@ -807,8 +807,9 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                     bewe_type == BEWE_TYPE_SCHED_SYNC || // 예약 리스트 동기화
                     bewe_type == 0x31 ||                 // BAND_PLAN_SYNC (드롭 불가, 큰 패킷)
                     bewe_type == 0x35 ||                 // BAND_CAT_SYNC
-                    bewe_type == 0x39);                  // LWF_LIST (single-target, 6.6KB)
-                    // LWF_DL_DATA (0x3B) deprecated — HIST download은 FILE_META/FILE_DATA 재사용
+                    bewe_type == 0x39 ||                 // LWF_LIST (single-target, 6.6KB)
+                    bewe_type == 0x0D ||                 // FILE_DATA (chunk, 드롭 불가 — 빠진 chunk = 파일 멈춤)
+                    bewe_type == 0x0E);                  // FILE_META
     std::lock_guard<std::mutex> jlk(room->joins_mtx);
     for(auto& je : room->joins){
         if(!je->alive.load() || je->fd < 0) continue;
