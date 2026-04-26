@@ -263,15 +263,7 @@ private:
     void load_schedules_from_json();
     void save_schedules_to_json();   // 모든 station 스냅샷을 JSON으로 덤프
 
-    // ── Frequency Band Plan persistence (전역 — 모든 station 공유) ────────
-    std::mutex              band_mtx_;
-    std::string             band_plan_json_path_;
-    std::vector<PktBandEntry> band_segments_;          // 메모리 마스터
-    std::vector<uint8_t>    cached_band_plan_pkt_;     // BEWE 헤더 포함 패킷
-    void load_band_plan_from_json();                   // 비어 있으면 default 폴백
-    void save_band_plan_to_json();
-    void rebuild_band_plan_cache();                    // band_segments_ → cached pkt
-    void broadcast_band_plan_to_all();                 // 모든 room/JOIN에 push
+    // (band plan: now host-owned. Central just relays BAND_PLAN_SYNC and BAND_ADD/UPDATE/REMOVE.)
 
     // 전역 채팅: 중앙서버에 접속한 모든 JOIN + 다른 방의 HOST에게 CHAT BEWE 패킷 전달
     // skip_host_room: 소스 방의 HOST는 제외 (이미 알고 있음)

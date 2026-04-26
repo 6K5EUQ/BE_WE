@@ -435,6 +435,23 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
         break;
     }
 
+    // ── Band plan: any client (LAN-direct or relay-injected) → host ──────
+    case PacketType::BAND_ADD: {
+        if(!c->authed || len < sizeof(PktBandEntry)) break;
+        if(cb.on_band_add) cb.on_band_add(*reinterpret_cast<const PktBandEntry*>(payload));
+        break;
+    }
+    case PacketType::BAND_UPDATE: {
+        if(!c->authed || len < sizeof(PktBandEntry)) break;
+        if(cb.on_band_update) cb.on_band_update(*reinterpret_cast<const PktBandEntry*>(payload));
+        break;
+    }
+    case PacketType::BAND_REMOVE: {
+        if(!c->authed || len < sizeof(PktBandRemove)) break;
+        if(cb.on_band_remove) cb.on_band_remove(*reinterpret_cast<const PktBandRemove*>(payload));
+        break;
+    }
+
     default: break;
     }
 }
@@ -626,11 +643,14 @@ void NetServer::broadcast_sched_sync(const PktSchedSync& sync){
     }
 }
 
-// ── Broadcast band plan (HOST → all JOINs, including LAN-direct) ─────────
-// Central → HOST 푸시는 별도. 이건 HOST가 받은 후 자기 NetServer로 forward.
+// ── Broadcast band plan (HOST → all JOINs, LAN + relay) ──────────────────
+// Host owns ~/BE_WE/band_plan.json. Whenever state changes, host calls this.
+// LAN-direct JOINs receive via per-client enqueue; relay-side JOINs receive
+// via on_relay_broadcast (Central fans out to N joins).
 void NetServer::broadcast_band_plan(const PktBandPlan& bp){
     auto pkt = make_packet(PacketType::BAND_PLAN_SYNC, &bp, sizeof(bp));
-    // relay 측 JOIN은 Central이 직접 보내므로 on_relay_broadcast는 생략
+    if(cb.on_relay_broadcast && has_relay())
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), true /*no_drop*/);
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
         if(c->is_relay || !c->authed || !c->alive.load()) continue;

@@ -7,6 +7,7 @@
 #include "bewe_paths.hpp"
 #include "central_client.hpp"
 #include "net_protocol.hpp"
+#include "host_band_plan.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -1186,35 +1187,56 @@ void run_cli_host(){
                     bewe_log_push(0, "[Central] restored %d scheduled entries\n", (int)v.sched_entries.size());
                 });
 
-                // Central에 저장된 band plan 수신 → v.band_segments 갱신
-                // 가변 크기: pkt = BEWE 헤더(9) + count(2) + pad(2) + count * sizeof(PktBandEntry)
-                central_cli.set_on_central_band_plan([&v](const uint8_t* pkt, size_t len){
-                    if(len < 9 + 4) return;
-                    const uint8_t* payload = pkt + 9;
-                    uint16_t count = 0;
-                    memcpy(&count, payload, 2);
-                    if(count > MAX_BAND_SEGMENTS) count = MAX_BAND_SEGMENTS;
-                    size_t need = 4 + (size_t)count * sizeof(PktBandEntry);
-                    if(len - 9 < need) return;
-                    const PktBandEntry* entries =
-                        reinterpret_cast<const PktBandEntry*>(payload + 4);
-                    {
-                        std::lock_guard<std::mutex> lk(v.band_mtx);
-                        v.band_segments.clear();
-                        v.band_segments.reserve(count);
-                        for(int i=0; i<(int)count; i++){
-                            const auto& be = entries[i];
-                            if(!be.valid) continue;
-                            FFTViewer::BandSegment s;
-                            s.freq_lo_mhz = be.freq_lo_mhz;
-                            s.freq_hi_mhz = be.freq_hi_mhz;
-                            s.category    = be.category;
-                            strncpy(s.label,       be.label,       sizeof(s.label)-1);
-                            strncpy(s.description, be.description, sizeof(s.description)-1);
-                            v.band_segments.push_back(s);
-                        }
+                // ── Host-owned band plan (~/BE_WE/band_plan.json) ────────
+                // Load from disk on host start, mirror into v.band_segments,
+                // accept JOIN/HOST edits, persist + rebroadcast.
+                HostBandPlan::load_from_file();
+                HostBandPlan::rebuild_cache();
+                auto mirror_into_v = [&v](){
+                    PktBandPlan bp{};
+                    HostBandPlan::snapshot_pkt(bp);
+                    std::lock_guard<std::mutex> lk(v.band_mtx);
+                    v.band_segments.clear();
+                    int n = std::min<int>((int)bp.count, MAX_BAND_SEGMENTS);
+                    for(int i=0;i<n;i++){
+                        const auto& be = bp.entries[i];
+                        if(!be.valid) continue;
+                        FFTViewer::BandSegment s;
+                        s.freq_lo_mhz = be.freq_lo_mhz;
+                        s.freq_hi_mhz = be.freq_hi_mhz;
+                        s.category    = be.category;
+                        strncpy(s.label,       be.label,       sizeof(s.label)-1);
+                        strncpy(s.description, be.description, sizeof(s.description)-1);
+                        v.band_segments.push_back(s);
                     }
-                    bewe_log_push(0, "[Central] band plan: %d segments\n", (int)v.band_segments.size());
+                };
+                mirror_into_v();
+                auto rebroadcast_band_plan = [&v, mirror_into_v](){
+                    HostBandPlan::save_to_file();
+                    HostBandPlan::rebuild_cache();
+                    PktBandPlan bp{};
+                    HostBandPlan::snapshot_pkt(bp);
+                    if(v.net_srv) v.net_srv->broadcast_band_plan(bp);
+                    mirror_into_v();
+                };
+                srv->cb.on_band_add = [rebroadcast_band_plan](const PktBandEntry& e){
+                    if(HostBandPlan::apply_add(e)) rebroadcast_band_plan();
+                };
+                srv->cb.on_band_update = [rebroadcast_band_plan](const PktBandEntry& e){
+                    if(HostBandPlan::apply_update(e)) rebroadcast_band_plan();
+                };
+                srv->cb.on_band_remove = [rebroadcast_band_plan](const PktBandRemove& r){
+                    if(HostBandPlan::apply_remove(r)) rebroadcast_band_plan();
+                };
+                // 새 JOIN이 Central을 통해 들어오면 cached band plan 즉시 푸시
+                central_cli.set_on_central_conn_open([&central_cli](uint16_t /*cid*/){
+                    std::vector<uint8_t> pkt;
+                    {
+                        std::lock_guard<std::mutex> lk(HostBandPlan::g_mtx);
+                        pkt = HostBandPlan::g_cached_pkt;
+                    }
+                    if(!pkt.empty())
+                        central_cli.enqueue_relay_broadcast(pkt.data(), pkt.size(), true);
                 });
 
                 central_cli.set_on_central_report_list([](const uint8_t* pkt, size_t len){

@@ -7,6 +7,7 @@
 #include "globe.hpp"
 #include "central_client.hpp"
 #include "lora_demod.hpp"
+#include "host_band_plan.hpp"
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <algorithm>
@@ -1067,6 +1068,25 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         };
         static BandModalState bm;
 
+        // Host-mode helper: after host_local_*, snapshot → broadcast → mirror to band_segments.
+        auto host_publish_band_plan = [this](){
+            if(!net_srv) return;
+            PktBandPlan bp{}; HostBandPlan::snapshot_pkt(bp);
+            net_srv->broadcast_band_plan(bp);
+            std::lock_guard<std::mutex> lk(band_mtx);
+            band_segments.clear();
+            int n = std::min<int>((int)bp.count, MAX_BAND_SEGMENTS);
+            for(int i=0;i<n;i++){
+                const auto& be=bp.entries[i]; if(!be.valid) continue;
+                FFTViewer::BandSegment s;
+                s.freq_lo_mhz=be.freq_lo_mhz; s.freq_hi_mhz=be.freq_hi_mhz;
+                s.category=be.category;
+                strncpy(s.label,       be.label,       sizeof(s.label)-1);
+                strncpy(s.description, be.description, sizeof(s.description)-1);
+                band_segments.push_back(s);
+            }
+        };
+
         // 컨텍스트 메뉴
         if(ImGui::BeginPopup("##band_ctx")){
             ImVec2 mp = ImGui::GetIO().MousePos;
@@ -1111,10 +1131,10 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
                 if(ImGui::MenuItem("Delete")){
                     if(net_cli){
                         net_cli->cmd_band_remove(hit2->freq_lo_mhz, hit2->freq_hi_mhz);
-                    } else if(net_srv && net_srv->cb.on_relay_broadcast){
-                        PktBandRemove rm{}; rm.freq_lo_mhz = hit2->freq_lo_mhz; rm.freq_hi_mhz = hit2->freq_hi_mhz;
-                        auto pkt = make_packet(PacketType::BAND_REMOVE, &rm, sizeof(rm));
-                        net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
+                    } else if(net_srv){
+                        // Host: authoritative — apply locally + broadcast.
+                        PktBandRemove rm{}; rm.freq_lo_mhz=hit2->freq_lo_mhz; rm.freq_hi_mhz=hit2->freq_hi_mhz;
+                        if(HostBandPlan::host_local_remove(rm)) host_publish_band_plan();
                     }
                 }
                 ImGui::PopStyleColor();
@@ -1195,38 +1215,38 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
                             net_cli->cmd_band_update(bm.freq_lo, bm.freq_hi,
                                                      (uint8_t)bm.category, bm.label, bm.description);
                         }
-                    } else if(net_srv && net_srv->cb.on_relay_broadcast){
+                    } else if(net_srv){
+                        // Host: authoritative — apply locally + broadcast.
+                        bool changed = false;
                         if(fabsf(bm.orig_lo - bm.freq_lo) > 1e-4f
                         || fabsf(bm.orig_hi - bm.freq_hi) > 1e-4f){
-                            PktBandRemove rm{}; rm.freq_lo_mhz = bm.orig_lo; rm.freq_hi_mhz = bm.orig_hi;
-                            auto p1 = make_packet(PacketType::BAND_REMOVE, &rm, sizeof(rm));
-                            net_srv->cb.on_relay_broadcast(p1.data(), p1.size(), true);
+                            PktBandRemove rm{}; rm.freq_lo_mhz=bm.orig_lo; rm.freq_hi_mhz=bm.orig_hi;
+                            changed |= HostBandPlan::host_local_remove(rm);
                             PktBandEntry e{}; e.valid=1; e.category=(uint8_t)bm.category;
                             e.freq_lo_mhz=bm.freq_lo; e.freq_hi_mhz=bm.freq_hi;
-                            strncpy(e.label, bm.label, sizeof(e.label)-1);
+                            strncpy(e.label,       bm.label,       sizeof(e.label)-1);
                             strncpy(e.description, bm.description, sizeof(e.description)-1);
-                            auto p2 = make_packet(PacketType::BAND_ADD, &e, sizeof(e));
-                            net_srv->cb.on_relay_broadcast(p2.data(), p2.size(), true);
+                            changed |= HostBandPlan::host_local_add(e);
                         } else {
                             PktBandEntry e{}; e.valid=1; e.category=(uint8_t)bm.category;
                             e.freq_lo_mhz=bm.freq_lo; e.freq_hi_mhz=bm.freq_hi;
-                            strncpy(e.label, bm.label, sizeof(e.label)-1);
+                            strncpy(e.label,       bm.label,       sizeof(e.label)-1);
                             strncpy(e.description, bm.description, sizeof(e.description)-1);
-                            auto p = make_packet(PacketType::BAND_UPDATE, &e, sizeof(e));
-                            net_srv->cb.on_relay_broadcast(p.data(), p.size(), true);
+                            changed |= HostBandPlan::host_local_update(e);
                         }
+                        if(changed) host_publish_band_plan();
                     }
                 } else {
                     if(net_cli){
                         net_cli->cmd_band_add(bm.freq_lo, bm.freq_hi,
                                               (uint8_t)bm.category, bm.label, bm.description);
-                    } else if(net_srv && net_srv->cb.on_relay_broadcast){
+                    } else if(net_srv){
+                        // Host: authoritative — apply locally + broadcast.
                         PktBandEntry e{}; e.valid=1; e.category=(uint8_t)bm.category;
                         e.freq_lo_mhz=bm.freq_lo; e.freq_hi_mhz=bm.freq_hi;
-                        strncpy(e.label, bm.label, sizeof(e.label)-1);
+                        strncpy(e.label,       bm.label,       sizeof(e.label)-1);
                         strncpy(e.description, bm.description, sizeof(e.description)-1);
-                        auto p = make_packet(PacketType::BAND_ADD, &e, sizeof(e));
-                        net_srv->cb.on_relay_broadcast(p.data(), p.size(), true);
+                        if(HostBandPlan::host_local_add(e)) host_publish_band_plan();
                     }
                 }
                 bm.open = false;
@@ -3820,6 +3840,51 @@ void run_streaming_viewer(){
                                 v.net_srv->cb.on_relay_broadcast = [&central_cli](const uint8_t* pkt, size_t len, bool no_drop){
                                     central_cli.enqueue_relay_broadcast(pkt, len, no_drop);
                                 };
+
+                                // ── Host-owned band plan ─────────────────
+                                HostBandPlan::load_from_file();
+                                HostBandPlan::rebuild_cache();
+                                auto mirror = [&v](){
+                                    PktBandPlan bp{}; HostBandPlan::snapshot_pkt(bp);
+                                    std::lock_guard<std::mutex> lk(v.band_mtx);
+                                    v.band_segments.clear();
+                                    int n = std::min<int>((int)bp.count, MAX_BAND_SEGMENTS);
+                                    for(int i=0;i<n;i++){
+                                        const auto& be=bp.entries[i]; if(!be.valid) continue;
+                                        FFTViewer::BandSegment s;
+                                        s.freq_lo_mhz=be.freq_lo_mhz; s.freq_hi_mhz=be.freq_hi_mhz;
+                                        s.category=be.category;
+                                        strncpy(s.label,       be.label,       sizeof(s.label)-1);
+                                        strncpy(s.description, be.description, sizeof(s.description)-1);
+                                        v.band_segments.push_back(s);
+                                    }
+                                };
+                                mirror();
+                                auto rebroadcast = [&v, mirror](){
+                                    HostBandPlan::save_to_file();
+                                    HostBandPlan::rebuild_cache();
+                                    PktBandPlan bp{}; HostBandPlan::snapshot_pkt(bp);
+                                    if(v.net_srv) v.net_srv->broadcast_band_plan(bp);
+                                    mirror();
+                                };
+                                v.net_srv->cb.on_band_add = [rebroadcast](const PktBandEntry& e){
+                                    if(HostBandPlan::apply_add(e)) rebroadcast();
+                                };
+                                v.net_srv->cb.on_band_update = [rebroadcast](const PktBandEntry& e){
+                                    if(HostBandPlan::apply_update(e)) rebroadcast();
+                                };
+                                v.net_srv->cb.on_band_remove = [rebroadcast](const PktBandRemove& r){
+                                    if(HostBandPlan::apply_remove(r)) rebroadcast();
+                                };
+                                central_cli.set_on_central_conn_open([&central_cli](uint16_t /*cid*/){
+                                    std::vector<uint8_t> pkt;
+                                    {
+                                        std::lock_guard<std::mutex> lk(HostBandPlan::g_mtx);
+                                        pkt = HostBandPlan::g_cached_pkt;
+                                    }
+                                    if(!pkt.empty())
+                                        central_cli.enqueue_relay_broadcast(pkt.data(), pkt.size(), true);
+                                });
                             }
                             central_cli.set_on_central_chat([_log_mtx, _log](const char* from, const char* msg){
                                 std::lock_guard<std::mutex> lk(*_log_mtx);

@@ -207,6 +207,13 @@ struct ServerCallbacks {
     // 이 콜백을 통해 FFT/오디오/채팅 등이 relay 클라이언트로 전달됨 (N× 대역폭 문제 해결)
     // no_drop: IQ_CHUNK 등 드롭하면 안 되는 패킷
     std::function<void(const uint8_t*, size_t, bool no_drop)> on_relay_broadcast;
+
+    // ── Band plan (host owns ~/BE_WE/band_plan.json) ─────────────────────
+    // JOIN/HOST 어느쪽이든 보낸 ADD/UPDATE/REMOVE 가 도달하면 호출.
+    // 핸들러는 HostBandPlan::apply_*() 후 save+rebuild+broadcast 한다.
+    std::function<void(const PktBandEntry&)>  on_band_add;
+    std::function<void(const PktBandEntry&)>  on_band_update;
+    std::function<void(const PktBandRemove&)> on_band_remove;
 };
 
 // ── NetServer ─────────────────────────────────────────────────────────────

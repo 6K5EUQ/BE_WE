@@ -175,7 +175,7 @@ private:
     std::function<void(const uint8_t*, size_t)> on_central_db_dl_info_; // Central DB 다운로드 .info
     std::function<void(const uint8_t*, size_t)> on_central_report_list_; // Central Report 목록
     std::function<void(const uint8_t*, size_t)> on_central_sched_sync_;  // Central 저장 예약 리스트 복원
-    std::function<void(const uint8_t*, size_t)> on_central_band_plan_;   // Central 저장 band plan
+    std::function<void(uint16_t)>               on_central_conn_open_;   // 새 JOIN 도착 알림 (cid)
 
     void mux_loop(int central_fd,
                   std::function<void(int)> on_new_join,
@@ -204,7 +204,8 @@ public:
     void set_on_central_sched_sync(std::function<void(const uint8_t*, size_t)> cb){
         on_central_sched_sync_ = std::move(cb);
     }
-    void set_on_central_band_plan(std::function<void(const uint8_t*, size_t)> cb){
-        on_central_band_plan_ = std::move(cb);
+    // 새 JOIN이 Central을 통해 접속하면 호출 (Host가 BAND_PLAN_SYNC 푸시 트리거로 사용)
+    void set_on_central_conn_open(std::function<void(uint16_t)> cb){
+        on_central_conn_open_ = std::move(cb);
     }
 };

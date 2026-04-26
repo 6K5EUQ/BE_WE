@@ -411,6 +411,9 @@ void CentralClient::mux_loop(int central_fd,
             on_new_join(sv[0]);
             bewe_log_push(1,"[CentralClient] new JOIN conn_id=%u, injected fd=%d\n", cid, sv[0]);
 
+            // Host 쪽에서 BAND_PLAN_SYNC 등 초기 상태 푸시 트리거
+            if(on_central_conn_open_) on_central_conn_open_(cid);
+
         } else if(mux_type == CentralMuxType::DATA){
             if(mux.len > (uint32_t)buf.size()) buf.resize(mux.len);
             if(mux.len > 0 && !central_recv_all(central_fd, buf.data(), mux.len)) break;
@@ -453,9 +456,7 @@ void CentralClient::mux_loop(int central_fd,
                         on_central_sched_sync_(buf.data(), mux.len);
                     continue;
                 }
-                if(btype == 0x31){  // BAND_PLAN_SYNC: 주파수 할당 오버레이 데이터
-                    if(on_central_band_plan_)
-                        on_central_band_plan_(buf.data(), mux.len);
+                if(btype == 0x31){  // BAND_PLAN_SYNC: host owns it; ignore any incoming.
                     continue;
                 }
             }
