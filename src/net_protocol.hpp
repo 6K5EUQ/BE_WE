@@ -68,6 +68,7 @@ enum class PacketType : uint8_t {
     LWF_LIVE_ROW       = 0x3D,  // host → joins: one row append to LIVE file
     LWF_LIVE_STOP      = 0x3E,  // host → joins: LIVE file rotated/closed
     LWF_LIVE_REQ       = 0x3F,  // any → host: opt-in request to start LIVE stream
+    LWF_DELETE_REQ     = 0x40,  // any → host: delete a long-waterfall file by name
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────

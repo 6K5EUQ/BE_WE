@@ -4112,6 +4112,17 @@ void run_streaming_viewer(){
                                     if(!LongWaterfall::snapshot_live_start(ls)) return;
                                     if(v.net_srv) v.net_srv->send_lwf_live_start_to_op(op_index, ls);
                                 };
+                                // Remote delete: JOIN이 host의 HIST 파일 삭제 요청 (active LIVE 보호).
+                                v.net_srv->cb.on_lwf_delete_req = [&v](int op_index, const char* /*who*/, const char* fn){
+                                    if(!fn || !fn[0] || strchr(fn, '/')) return;
+                                    PktLwfLiveStart ls{};
+                                    if(LongWaterfall::snapshot_live_start(ls) && std::string(ls.filename) == fn) return;
+                                    std::string full = BEWEPaths::hist_host_dir() + "/" + fn;
+                                    if(unlink(full.c_str()) != 0) return;
+                                    PktLwfList list{};
+                                    LongWaterfall::scan_dir_into_list(list);
+                                    if(v.net_srv) v.net_srv->send_lwf_list_to_op(op_index, list);
+                                };
 
                                 central_cli.set_on_central_conn_open([&central_cli](uint16_t /*cid*/){
                                     std::vector<uint8_t> bp_pkt;

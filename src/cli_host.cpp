@@ -1285,6 +1285,27 @@ void run_cli_host(){
                     bewe_log_push(0, "[LWF] LIVE_REQ from op=%d '%s' → LIVE_START unicast\n",
                                   op_index, who?who:"?");
                 };
+                // Remote delete: JOIN이 host의 HIST 파일 삭제 요청. 현재 LIVE 파일은 보호.
+                srv->cb.on_lwf_delete_req = [&v](int op_index, const char* who, const char* fn){
+                    if(!fn || !fn[0] || strchr(fn, '/')) return;
+                    PktLwfLiveStart ls{};
+                    if(LongWaterfall::snapshot_live_start(ls) && std::string(ls.filename) == fn){
+                        bewe_log_push(1, "[LWF] DEL_REQ refused (active LIVE): '%s' from op=%d\n",
+                                      fn, op_index);
+                        return;
+                    }
+                    std::string full = BEWEPaths::hist_host_dir() + "/" + fn;
+                    if(unlink(full.c_str()) != 0){
+                        bewe_log_push(1, "[LWF] DEL_REQ unlink failed: '%s' errno=%d from op=%d\n",
+                                      fn, errno, op_index);
+                        return;
+                    }
+                    bewe_log_push(0, "[LWF] DEL_REQ '%s' deleted by op=%d '%s'\n",
+                                  fn, op_index, who?who:"?");
+                    PktLwfList list{};
+                    LongWaterfall::scan_dir_into_list(list);
+                    if(v.net_srv) v.net_srv->send_lwf_list_to_op(op_index, list);
+                };
 
                 // 새 JOIN이 Central을 통해 들어오면 cached band plan + category 즉시 푸시
                 central_cli.set_on_central_conn_open([&v, &central_cli](uint16_t cid){

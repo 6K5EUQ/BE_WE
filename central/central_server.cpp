@@ -815,7 +815,8 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                     bewe_type == 0x3C ||                 // LWF_LIVE_START
                     bewe_type == 0x3D ||                 // LWF_LIVE_ROW (행 누락 = stream 깨짐)
                     bewe_type == 0x3E ||                 // LWF_LIVE_STOP
-                    bewe_type == 0x3F);                  // LWF_LIVE_REQ (JOIN→host opt-in)
+                    bewe_type == 0x3F ||                 // LWF_LIVE_REQ (JOIN→host opt-in)
+                    bewe_type == 0x40);                  // LWF_DELETE_REQ (JOIN→host)
     std::lock_guard<std::mutex> jlk(room->joins_mtx);
     for(auto& je : room->joins){
         if(!je->alive.load() || je->fd < 0) continue;

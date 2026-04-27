@@ -302,6 +302,7 @@ public:
     bool cmd_lwf_list_req();
     bool cmd_lwf_dl_req(const char* filename);
     bool cmd_lwf_live_req();
+    bool cmd_lwf_delete_req(const char* filename);
     bool cmd_db_delete(const char* filename, const char* operator_name);
     bool cmd_db_download(const char* filename, const char* operator_name);
     bool cmd_report_delete(const char* filename);

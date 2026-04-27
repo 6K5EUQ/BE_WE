@@ -481,6 +481,12 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
         if(cb.on_lwf_live_req) cb.on_lwf_live_req(c->op_index, c->name);
         break;
     }
+    case PacketType::LWF_DELETE_REQ: {
+        if(!c->authed || len < sizeof(PktLwfDlReq)) break;
+        auto* req = reinterpret_cast<const PktLwfDlReq*>(payload);
+        if(cb.on_lwf_delete_req) cb.on_lwf_delete_req(c->op_index, c->name, req->filename);
+        break;
+    }
 
     default: break;
     }

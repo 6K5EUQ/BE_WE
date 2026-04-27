@@ -837,6 +837,11 @@ bool NetClient::cmd_lwf_dl_req(const char* filename){
 bool NetClient::cmd_lwf_live_req(){
     return raw_send(PacketType::LWF_LIVE_REQ, nullptr, 0);
 }
+bool NetClient::cmd_lwf_delete_req(const char* filename){
+    PktLwfDlReq r{};
+    if(filename) strncpy(r.filename, filename, sizeof(r.filename)-1);
+    return raw_send(PacketType::LWF_DELETE_REQ, &r, sizeof(r));
+}
 bool NetClient::cmd_delete_pub_file(const char* filename){
     PktPubDeleteReq req{};
     strncpy(req.filename, filename, sizeof(req.filename)-1);

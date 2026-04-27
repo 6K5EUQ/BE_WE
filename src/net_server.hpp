@@ -225,6 +225,7 @@ struct ServerCallbacks {
     std::function<void(int /*op_index*/, const char* /*who*/)>          on_lwf_list_req;
     std::function<void(int /*op_index*/, const char* /*who*/, const char* /*filename*/)> on_lwf_dl_req;
     std::function<void(int /*op_index*/, const char* /*who*/)>          on_lwf_live_req;
+    std::function<void(int /*op_index*/, const char* /*who*/, const char* /*filename*/)> on_lwf_delete_req;
 };
 
 // ── NetServer ─────────────────────────────────────────────────────────────
