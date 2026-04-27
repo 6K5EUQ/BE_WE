@@ -74,27 +74,28 @@ void close_file_locked(){
     }
 
     if(g_fp){ fflush(g_fp); fclose(g_fp); g_fp = nullptr; }
+    // Finalize: -LIVE → -<HHMM>Z based on close time.
     {
         std::lock_guard<std::mutex> lk(g_path_mtx);
+        if(!g_cur_path.empty()){
+            auto slash = g_cur_path.find_last_of('/');
+            std::string dir  = (slash == std::string::npos) ? "" : g_cur_path.substr(0, slash+1);
+            std::string base = (slash == std::string::npos) ? g_cur_path : g_cur_path.substr(slash+1);
+            std::string fin  = build_hist_filename_finalize(base, (uint64_t)time(nullptr));
+            if(fin != base){
+                std::string final_full = dir + fin;
+                if(rename(g_cur_path.c_str(), final_full.c_str()) == 0){
+                    printf("[LongWaterfall] rotate finalize: %s → %s\n", base.c_str(), fin.c_str());
+                } else {
+                    fprintf(stderr, "[LongWaterfall] rename failed: %s → %s errno=%d\n",
+                            base.c_str(), fin.c_str(), errno);
+                }
+            }
+        }
         g_cur_path.clear();
     }
     g_acc_db.clear();
     g_acc_count = 0;
-}
-
-std::string build_filename(uint64_t cf_hz, uint64_t /*sr_hz*/, uint32_t /*fft_size*/){
-    // SR/FFT/dB 등 모든 메타는 파일 헤더에 있음 → 파일명은 식별용 최소.
-    // Format: HIST_<MmmDD.YYYY>_<HHMMSS>_<CF MHz>.bewehist  (UTC 기반)
-    time_t now = time(nullptr);
-    struct tm tm_utc;
-    gmtime_r(&now, &tm_utc);
-    char date[16], hms[8];
-    strftime(date, sizeof(date), "%b%d.%Y", &tm_utc);
-    strftime(hms,  sizeof(hms),  "%H%M%S",  &tm_utc);
-    char buf[256];
-    snprintf(buf, sizeof(buf), "HIST_%s_%s_%.1fMHz.bewehist",
-             date, hms, cf_hz / 1e6);
-    return buf;
 }
 
 // Returns true if filename ends with .bewehist (new) or .bewewf (legacy).
@@ -106,41 +107,51 @@ static bool is_lwf_filename(const char* n){
 
 bool open_new_file(uint64_t cf_hz, uint64_t sr_hz, uint32_t fft_size,
                    uint32_t fft_input_size,
-                   float dmin, float dmax, float station_lon){
+                   float dmin, float dmax,
+                   float station_lon, float station_lat,
+                   const char* station_name){
     std::string dir = BEWEPaths::hist_host_dir();
     mkdir(BEWEPaths::recordings_dir().c_str(), 0755);
     mkdir(BEWEPaths::hist_dir().c_str(), 0755);
     mkdir(dir.c_str(), 0755);
 
-    std::string fname = build_filename(cf_hz, sr_hz, fft_size);
+    uint64_t now_utc = (uint64_t)time(nullptr);
+    std::string fname = build_hist_filename_live(now_utc, cf_hz);
+    // 같은 분에 두 번 시작될 가능성 — 충돌 회피 suffix
     std::string full = dir + "/" + fname;
+    for(int n=2; access(full.c_str(), F_OK)==0 && n<100; ++n){
+        auto pos = fname.rfind("-LIVE.bewehist");
+        if(pos == std::string::npos) break;
+        fname = fname.substr(0,pos) + "_" + std::to_string(n) + "-LIVE.bewehist";
+        full  = dir + "/" + fname;
+    }
 
     FILE* fp = fopen(full.c_str(), "wb");
     if(!fp){
         fprintf(stderr, "[LongWaterfall] open failed: %s errno=%d\n", full.c_str(), errno);
         return false;
     }
-    // Quantization range: snapshot the live waterfall's display range so the
-    // image matches what the user sees on screen. Pad slightly to avoid clipping.
     if(!(dmax > dmin)){ dmin = DEFAULT_DB_MIN; dmax = DEFAULT_DB_MAX; }
     FileHeader h{};
     memcpy(h.magic, "BWWF", 4);
-    h.version        = 0x0002;   // v2: utc_offset_hours field used
+    h.version        = FILE_VERSION;     // 0x0003
     h.fft_size       = fft_size;
     h.sample_rate_hz = sr_hz;
     h.center_freq_hz = cf_hz;
     h.row_rate_hz    = DEFAULT_ROW_RATE_HZ;
     h.db_min         = dmin;
     h.db_max         = dmax;
-    h.start_utc_unix = (uint64_t)time(nullptr);
-    h.station_lon    = station_lon;        // legacy field, kept zero/unused by reader
+    h.start_utc_unix = now_utc;
+    h.station_lon    = station_lon;
     h.fft_input_size = fft_input_size;
-    // Host system TZ — reliable (tm_gmtoff). Avoids station_lon login-side bug.
     {
-        time_t now = time(nullptr);
+        time_t now = (time_t)now_utc;
         struct tm lt; localtime_r(&now, &lt);
         h.utc_offset_hours = (int32_t)(lt.tm_gmtoff / 3600);
     }
+    // v3 fields
+    h.station_lat = station_lat;
+    if(station_name) strncpy(h.station_name, station_name, sizeof(h.station_name)-1);
     if(fwrite(&h, 1, sizeof(h), fp) != sizeof(h)){
         fclose(fp); return false;
     }
@@ -154,9 +165,9 @@ bool open_new_file(uint64_t cf_hz, uint64_t sr_hz, uint32_t fft_size,
         std::lock_guard<std::mutex> lk(g_path_mtx);
         g_cur_path = full;
     }
-    printf("[LongWaterfall] new file: %s (fft=%u, %.3fMHz, %uMSPS, dB=[%.1f..%.1f])\n",
+    printf("[LongWaterfall] new file: %s (fft=%u, %.3fMHz, %uMSPS, dB=[%.1f..%.1f], station='%s')\n",
            full.c_str(), fft_size, cf_hz/1e6, (unsigned)(sr_hz/1000000),
-           h.db_min, h.db_max);
+           h.db_min, h.db_max, h.station_name);
 
     // Build live-start packet + broadcast.
     PktLwfLiveStart ls{};
@@ -171,6 +182,8 @@ bool open_new_file(uint64_t cf_hz, uint64_t sr_hz, uint32_t fft_size,
     ls.start_utc_unix  = h.start_utc_unix;
     ls.station_lon     = h.station_lon;
     ls.utc_offset_hours= h.utc_offset_hours;
+    ls.station_lat     = h.station_lat;
+    memcpy(ls.station_name, h.station_name, sizeof(ls.station_name));
     {
         std::lock_guard<std::mutex> lk(g_live_state_mtx);
         g_live_state = ls;
@@ -294,11 +307,13 @@ void worker_loop(){
               dmin = g_v->display_power_min;
               dmax = g_v->display_power_max; }
             float    lon = g_v->station_lon;
+            float    lat = g_v->station_lat;
+            std::string sn = g_v->station_name;     // const std::string copy
             if(cf == 0 || sr == 0 || fsz == 0){
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 continue;
             }
-            if(!open_new_file(cf, sr, fsz, fis, dmin, dmax, lon)){
+            if(!open_new_file(cf, sr, fsz, fis, dmin, dmax, lon, lat, sn.c_str())){
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
                 continue;
             }
@@ -380,7 +395,13 @@ void scan_dir_into_list(::PktLwfList& out){
     DIR* d = opendir(dir.c_str());
     if(!d) return;
 
-    struct Entry { std::string name; uint64_t size; uint64_t start; uint64_t cf; uint64_t sr; uint32_t fft; };
+    struct Entry {
+        std::string name;
+        uint64_t size, start, cf, sr;
+        uint32_t fft;
+        char     station_name[32];
+        float    station_lat, station_lon;
+    };
     std::vector<Entry> all;
     struct dirent* de;
     while((de = readdir(d)) != nullptr){
@@ -394,17 +415,21 @@ void scan_dir_into_list(::PktLwfList& out){
         FILE* fp = fopen(full.c_str(), "rb");
         if(!fp) continue;
         FileHeader h{};
-        if(fread(&h, 1, sizeof(h), fp) != sizeof(h) || memcmp(h.magic, "BWWF", 4) != 0){
+        if(fread(&h, 1, sizeof(h), fp) != sizeof(h) || memcmp(h.magic, "BWWF", 4) != 0
+           || h.version != FILE_VERSION){
             fclose(fp); continue;
         }
         fclose(fp);
-        Entry e;
+        Entry e{};
         e.name  = n;
         e.size  = (uint64_t)st.st_size;
         e.start = h.start_utc_unix;
         e.cf    = h.center_freq_hz;
         e.sr    = h.sample_rate_hz;
         e.fft   = h.fft_size;
+        memcpy(e.station_name, h.station_name, sizeof(e.station_name));
+        e.station_lat = h.station_lat;
+        e.station_lon = h.station_lon;
         all.push_back(e);
     }
     closedir(d);
@@ -425,6 +450,9 @@ void scan_dir_into_list(::PktLwfList& out){
         e.sample_rate_hz = all[i].sr;
         e.fft_size       = all[i].fft;
         e.num_rows       = (uint32_t)((all[i].size - sizeof(FileHeader)) / std::max<uint64_t>(1, all[i].fft));
+        memcpy(e.station_name, all[i].station_name, sizeof(e.station_name));
+        e.station_lat    = all[i].station_lat;
+        e.station_lon    = all[i].station_lon;
     }
 }
 

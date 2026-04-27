@@ -12,6 +12,8 @@
 // Each row = fft_size bytes.
 
 #include <cstdint>
+#include <cstdio>
+#include <ctime>
 #include <string>
 #include <functional>
 
@@ -21,11 +23,11 @@ class FFTViewer;
 
 namespace LongWaterfall {
 
-// Disk file header (matches plan §"파일 포맷"; total 64 B padded).
+// Disk file header — v3 layout (128 B). v2(64B) and earlier rejected by reader.
 #pragma pack(push, 1)
 struct FileHeader {
     char     magic[4];          // "BWWF"
-    uint16_t version;           // 0x0001
+    uint16_t version;           // 0x0003
     uint32_t fft_size;
     uint64_t sample_rate_hz;
     uint64_t center_freq_hz;
@@ -33,13 +35,19 @@ struct FileHeader {
     float    db_min;            // dB → byte 0
     float    db_max;            // dB → byte 255
     uint64_t start_utc_unix;    // file creation, UTC seconds
-    float    station_lon;       // legacy v1; unreliable due to login coord bug — readers ignore.
+    float    station_lon;       // signed degrees (v3: filled from FFTViewer.station_lon)
     uint32_t fft_input_size;    // user-set FFT size (= fft_size / FFT_PAD_FACTOR); 0 if unknown
-    int32_t  utc_offset_hours;  // v2+: host system TZ at file open (tm_gmtoff/3600). v1 files = 0 → fallback to viewer TZ
-    uint8_t  reserved[6];       // pad to 64
+    int32_t  utc_offset_hours;  // host system TZ at file open (tm_gmtoff/3600)
+    uint8_t  reserved_v2[6];    // pad to 64 (v2 layout end)
+    // ── v3 extension ────
+    char     station_name[32];  // null-terminated; "" if unknown
+    float    station_lat;       // signed degrees
+    uint8_t  reserved_v3[28];   // pad to 128
 };
 #pragma pack(pop)
-static_assert(sizeof(FileHeader) == 64, "LongWaterfall::FileHeader must be 64");
+static_assert(sizeof(FileHeader) == 128, "LongWaterfall::FileHeader v3 must be 128");
+
+constexpr uint16_t FILE_VERSION = 0x0003;
 
 constexpr float DEFAULT_ROW_RATE_HZ = 5.0f;
 constexpr float DEFAULT_DB_MIN = -120.0f;
@@ -88,6 +96,42 @@ inline uint8_t db_to_byte(float db, float dmin, float dmax){
 }
 inline float byte_to_db(uint8_t b, float dmin, float dmax){
     return dmin + (dmax - dmin) * (b / 255.0f);
+}
+
+// ── Mission-code filename helpers (host + JOIN 공용) ──────────────────────
+// 양식: <MissCode><DD>_<Mon><DD>.<YYYY>_<F.F>MHz_<HHMM>-LIVE.bewehist
+// 종료 시 -LIVE → -<HHMM>Z 로 rename.
+// MissCode: A=Jan, B=Feb, ..., L=Dec (alphabet, 'I' 포함).
+inline char mission_letter(int mon0_11){ return (char)('A' + mon0_11); }
+inline const char* month_abbr3(int mon0_11){
+    static const char* m[] = {"Jan","Feb","Mar","Apr","May","Jun",
+                               "Jul","Aug","Sep","Oct","Nov","Dec"};
+    return m[mon0_11];
+}
+inline std::string build_hist_filename_live(uint64_t start_utc, uint64_t cf_hz){
+    time_t st = (time_t)start_utc;
+    struct tm tm_utc; gmtime_r(&st, &tm_utc);
+    double cf_mhz = (double)cf_hz / 1e6;
+    char buf[96];
+    snprintf(buf, sizeof(buf),
+        "%c%02d_%s%02d.%04d_%.1fMHz_%02d%02d-LIVE.bewehist",
+        mission_letter(tm_utc.tm_mon), tm_utc.tm_mday,
+        month_abbr3(tm_utc.tm_mon), tm_utc.tm_mday, 1900 + tm_utc.tm_year,
+        cf_mhz, tm_utc.tm_hour, tm_utc.tm_min);
+    return buf;
+}
+// Returns finalized basename when given a "...-LIVE.bewehist" basename + end_utc.
+// If input doesn't match, returns input unchanged.
+inline std::string build_hist_filename_finalize(const std::string& live_name,
+                                                 uint64_t end_utc){
+    auto pos = live_name.rfind("-LIVE.bewehist");
+    if(pos == std::string::npos) return live_name;
+    time_t et = (time_t)end_utc;
+    struct tm tm_utc; gmtime_r(&et, &tm_utc);
+    char tail[24];
+    snprintf(tail, sizeof(tail), "-%02d%02dZ.bewehist",
+             tm_utc.tm_hour, tm_utc.tm_min);
+    return live_name.substr(0, pos) + tail;
 }
 
 } // namespace LongWaterfall

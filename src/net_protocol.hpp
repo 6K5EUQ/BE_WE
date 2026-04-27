@@ -343,9 +343,12 @@ struct __attribute__((packed)) LwfFileEntry {
     uint64_t center_freq_hz;
     uint64_t sample_rate_hz;
     uint32_t fft_size;
-    uint32_t num_rows;         // (size_bytes - 64) / fft_size
+    uint32_t num_rows;         // (size_bytes - sizeof(FileHeader)) / fft_size
+    char     station_name[32]; // v3: host station name
+    float    station_lat;      // v3
+    float    station_lon;      // v3
 };
-static_assert(sizeof(LwfFileEntry) == 104, "LwfFileEntry size");
+static_assert(sizeof(LwfFileEntry) == 144, "LwfFileEntry size");
 struct __attribute__((packed)) PktLwfList {
     uint16_t     count;
     uint8_t      _pad[2];
@@ -376,8 +379,10 @@ struct __attribute__((packed)) PktLwfLiveStart {
     float    db_min;
     float    db_max;
     uint64_t start_utc_unix;
-    float    station_lon;         // legacy v1
+    float    station_lon;
     int32_t  utc_offset_hours;
+    char     station_name[32];    // v3: host station name
+    float    station_lat;         // v3
 };
 struct __attribute__((packed)) PktLwfLiveRowHdr {
     char     filename[64];
