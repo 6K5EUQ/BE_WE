@@ -112,6 +112,8 @@ struct LiveRecv {
 LiveRecv  g_live;
 std::mutex g_live_mtx;
 bool      g_live_dirty = false;   // 새 row가 들어왔을 때 viewer에 알림용
+// STREAM opt-in 게이트: false면 LIVE_START/ROW/STOP 모두 drop (디스크 안 씀).
+std::atomic<bool> g_stream_on{false};
 
 static void purge_hist_live_dir(){
     DIR* d = opendir(BEWEPaths::hist_live_dir().c_str());
@@ -377,6 +379,7 @@ void register_dl_callbacks_once(NetClient* cli){
 
     // ── LIVE 수신 콜백 ────────────────────────────────────────────────
     cli->on_lwf_live_start = [](const PktLwfLiveStart& s){
+        if(!g_stream_on.load()) return;
         std::lock_guard<std::mutex> lk(g_live_mtx);
         // 같은 file이면 no-op (CONN_OPEN broadcast 시 기존 JOIN 보호)
         if(g_live.fp && g_live.filename == s.filename) return;
@@ -412,6 +415,7 @@ void register_dl_callbacks_once(NetClient* cli){
     };
     cli->on_lwf_live_row = [](const PktLwfLiveRowHdr& hdr,
                               const uint8_t* row, uint32_t row_bytes){
+        if(!g_stream_on.load()) return;
         std::lock_guard<std::mutex> lk(g_live_mtx);
         if(!g_live.fp) return;
         if(g_live.filename != hdr.filename) return;       // race / stale
@@ -422,6 +426,7 @@ void register_dl_callbacks_once(NetClient* cli){
         g_live_dirty = true;
     };
     cli->on_lwf_live_stop = [](const PktLwfLiveStop& s){
+        if(!g_stream_on.load()) return;
         std::lock_guard<std::mutex> lk(g_live_mtx);
         if(g_live.fp && g_live.filename == s.filename){
             fclose(g_live.fp); g_live.fp = nullptr;
@@ -869,6 +874,75 @@ void draw_modal(FFTViewer& v, NetClient* cli){
             return buf;
         };
 
+        // ── LIVE section (JOIN only — opt-in stream from host) ───────
+        if(is_join_mode){
+            ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+            ImGui::SetNextItemAllowOverlap();
+            bool live_open = ImGui::CollapsingHeader("LIVE##lwf_live_sec",
+                ImGuiTreeNodeFlags_DefaultOpen);
+            // Reload 패턴 동일 — 헤더 우측 SmallButton (STREAM 토글)
+            bool stream_on = g_stream_on.load();
+            ImU32 btn_col = stream_on ? IM_COL32(40,160,60,255) : IM_COL32(180,40,40,255);
+            ImU32 btn_hov = stream_on ? IM_COL32(60,180,80,255) : IM_COL32(200,60,60,255);
+            ImU32 btn_act = stream_on ? IM_COL32(80,200,100,255) : IM_COL32(220,80,80,255);
+            ImGui::PushStyleColor(ImGuiCol_Button,        btn_col);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, btn_hov);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  btn_act);
+            ImGui::PushStyleColor(ImGuiCol_Text,          IM_COL32(255,255,255,255));
+            ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - 60.f);
+            bool clicked = ImGui::SmallButton("STREAM##lwf_stream");
+            ImGui::PopStyleColor(4);
+            if(clicked){
+                if(!stream_on){
+                    g_stream_on.store(true);
+                    cli->cmd_lwf_live_req();
+                } else {
+                    g_stream_on.store(false);
+                    std::string live_full;
+                    {
+                        std::lock_guard<std::mutex> lk(g_live_mtx);
+                        if(!g_live.filename.empty())
+                            live_full = BEWEPaths::hist_live_dir() + "/" + g_live.filename;
+                        if(g_live.fp){ fclose(g_live.fp); g_live.fp = nullptr; }
+                        g_live.filename.clear();
+                        g_live.rows = 0;
+                    }
+                    if(!live_full.empty() && g_open.path == live_full) close_open();
+                    purge_hist_live_dir();
+                }
+            }
+            if(live_open){
+                std::lock_guard<std::mutex> lk(g_live_mtx);
+                if(g_live.fp && !g_live.filename.empty()){
+                    std::string live_full = BEWEPaths::hist_live_dir() + "/" + g_live.filename;
+                    bool sel = (g_sel_path == live_full);
+                    uint64_t live_size = sizeof(LongWaterfall::FileHeader) +
+                                          (uint64_t)g_live.rows * g_live.hdr.fft_size;
+                    float pw   = ImGui::GetContentRegionAvail().x;
+                    float fn_w = pw * 0.66f;
+                    std::string info = fmt_arch_info(g_live.rows, g_live.hdr.row_rate_hz, live_size);
+                    std::string nm = g_live.filename;
+                    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(80,220,80,255));
+                    ImGui::PushID(live_full.c_str());
+                    if(ImGui::Selectable(nm.c_str(), sel,
+                           ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw, 0))){
+                        g_sel_path = live_full;
+                        if(g_open.path != live_full) open_file(live_full);
+                    }
+                    ImGui::SameLine(fn_w + 8.f);
+                    ImGui::TextDisabled("%s", info.c_str());
+                    ImGui::PopID();
+                    ImGui::PopStyleColor();
+                } else {
+                    ImGui::Indent(8.f);
+                    ImGui::TextDisabled("%s", g_stream_on.load()
+                        ? "Waiting for host LIVE_START..."
+                        : "STREAM is OFF.");
+                    ImGui::Unindent(8.f);
+                }
+            }
+        }
+
         // ── HOST section ───────────────────────────────────────────────
         ImGui::SetNextItemOpen(true, ImGuiCond_Once);
         ImGui::SetNextItemAllowOverlap();   // CollapsingHeader 위에 SmallButton 얹기 위함
@@ -1051,32 +1125,6 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                 }
             }
 
-            // LIVE 수신 중 파일 (host로부터 실시간 push 받음)
-            {
-                std::lock_guard<std::mutex> lk(g_live_mtx);
-                if(g_live.fp && !g_live.filename.empty()){
-                    std::string live_full = BEWEPaths::hist_live_dir() + "/" + g_live.filename;
-                    bool sel = (g_sel_path == live_full);
-                    uint64_t live_size = sizeof(LongWaterfall::FileHeader) +
-                                          (uint64_t)g_live.rows * g_live.hdr.fft_size;
-                    float pw   = ImGui::GetContentRegionAvail().x;
-                    float fn_w = pw * 0.66f;
-                    std::string info = fmt_arch_info(g_live.rows, g_live.hdr.row_rate_hz, live_size);
-                    std::string nm = "[LIVE] " + g_live.filename;
-                    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(80,220,80,255));
-                    ImGui::PushID(live_full.c_str());
-                    if(ImGui::Selectable(nm.c_str(), sel,
-                           ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw, 0))){
-                        g_sel_path = live_full;
-                        if(g_open.path != live_full) open_file(live_full);
-                    }
-                    ImGui::SameLine(fn_w + 8.f);
-                    ImGui::TextDisabled("%s", info.c_str());
-                    ImGui::PopID();
-                    ImGui::PopStyleColor();
-                }
-            }
-
             for(auto& e : g_join_files){
                 bool sel = (g_sel_path == e.path);
                 ImGui::PushID(e.path.c_str());
@@ -1144,7 +1192,8 @@ void draw_modal(FFTViewer& v, NetClient* cli){
 void close_modal(){
     close_open();
     if(g_tex){ glDeleteTextures(1, &g_tex); g_tex = 0; }
-    // 프로그램 종료 시 LIVE 임시 파일 정리.
+    // 모달 종료 시 STREAM OFF + LIVE 임시 파일 정리.
+    g_stream_on.store(false);
     {
         std::lock_guard<std::mutex> lk(g_live_mtx);
         if(g_live.fp){ fclose(g_live.fp); g_live.fp = nullptr; }

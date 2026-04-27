@@ -1273,6 +1273,18 @@ void run_cli_host(){
                         if(v.net_srv) v.net_srv->send_file_to(op_index, full.c_str(), tid);
                     }).detach();
                 };
+                // STREAM opt-in: JOIN이 LWF_LIVE_REQ 보낼 때만 그 op에 한해 LIVE_START unicast.
+                srv->cb.on_lwf_live_req = [&v](int op_index, const char* who){
+                    PktLwfLiveStart ls{};
+                    if(!LongWaterfall::snapshot_live_start(ls)){
+                        bewe_log_push(1, "[LWF] LIVE_REQ op=%d '%s' but no LIVE file open\n",
+                                      op_index, who?who:"?");
+                        return;
+                    }
+                    if(v.net_srv) v.net_srv->send_lwf_live_start_to_op(op_index, ls);
+                    bewe_log_push(0, "[LWF] LIVE_REQ from op=%d '%s' → LIVE_START unicast\n",
+                                  op_index, who?who:"?");
+                };
 
                 // 새 JOIN이 Central을 통해 들어오면 cached band plan + category 즉시 푸시
                 central_cli.set_on_central_conn_open([&v, &central_cli](uint16_t cid){
@@ -1292,13 +1304,7 @@ void run_cli_host(){
                         central_cli.enqueue_relay_broadcast(bc_pkt.data(), bc_pkt.size(), true);
                     if(!bp_pkt.empty())
                         central_cli.enqueue_relay_broadcast(bp_pkt.data(), bp_pkt.size(), true);
-                    // 현재 LIVE 파일이 있으면 새 JOIN이 받을 수 있도록 LIVE_START broadcast.
-                    // (기존 JOIN들은 동일 filename이면 no-op으로 처리)
-                    PktLwfLiveStart ls{};
-                    if(LongWaterfall::snapshot_live_start(ls)){
-                        auto pkt = make_packet(PacketType::LWF_LIVE_START, &ls, sizeof(ls));
-                        central_cli.enqueue_relay_broadcast(pkt.data(), pkt.size(), true);
-                    }
+                    // LIVE_START는 JOIN이 STREAM 버튼으로 명시 요청(LWF_LIVE_REQ)할 때만 unicast.
                     (void)v;
                 });
 

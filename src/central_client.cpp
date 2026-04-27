@@ -304,6 +304,7 @@ void CentralClient::mux_loop(int central_fd,
     uint64_t sp_tot=stat_tx_total_bytes.load(), sp_fft=stat_tx_fft_bytes.load();
     uint64_t sp_aud=stat_tx_audio_bytes.load(), sp_hb=stat_tx_hb_bytes.load();
     uint64_t sp_file=stat_tx_file_bytes.load();
+    uint64_t sp_hist=stat_tx_hist_bytes.load();
     auto print_host_stats = [&](){
         auto now = std::chrono::steady_clock::now();
         double win_sec = std::chrono::duration_cast<std::chrono::milliseconds>(now - stats_last).count() / 1000.0;
@@ -312,14 +313,16 @@ void CentralClient::mux_loop(int central_fd,
         uint64_t t=stat_tx_total_bytes.load(), f=stat_tx_fft_bytes.load();
         uint64_t a=stat_tx_audio_bytes.load(), h=stat_tx_hb_bytes.load();
         uint64_t fl=stat_tx_file_bytes.load();
-        bewe_log_push(0,"[HOST] [STATS] room='%s' uptime=%llds | trans: %.1f KB/s | hb=%.1f KB/s fft=%.1f KB/s audio=%.1f KB/s File=%.1f KB/s\n",
+        uint64_t hi=stat_tx_hist_bytes.load();
+        bewe_log_push(0,"[HOST] [STATS] room='%s' uptime=%llds | trans: %.1f KB/s | hb=%.1f KB/s fft=%.1f KB/s audio=%.1f KB/s File=%.1f KB/s hist=%.1f KB/s\n",
             stat_room_id.c_str(), uptime,
             (double)(t-sp_tot)/win_sec/1024.0,
             (double)(h-sp_hb)/win_sec/1024.0,
             (double)(f-sp_fft)/win_sec/1024.0,
             (double)(a-sp_aud)/win_sec/1024.0,
-            (double)(fl-sp_file)/win_sec/1024.0);
-        stats_last=now; sp_tot=t; sp_fft=f; sp_aud=a; sp_hb=h; sp_file=fl;
+            (double)(fl-sp_file)/win_sec/1024.0,
+            (double)(hi-sp_hist)/win_sec/1024.0);
+        stats_last=now; sp_tot=t; sp_fft=f; sp_aud=a; sp_hb=h; sp_file=fl; sp_hist=hi;
     };
 
     // SO_RCVTIMEO 루프 밖에서 한 번만 설정 (HB 주기 3초)

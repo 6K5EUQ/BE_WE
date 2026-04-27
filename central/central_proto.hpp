@@ -139,6 +139,11 @@ static constexpr uint8_t BEWE_TYPE_DB_LIST_REQ  = 0x2E;
 static constexpr uint8_t BEWE_TYPE_REPORT_LIST_REQ = 0x2F;
 static constexpr uint8_t BEWE_TYPE_SCHED_SYNC      = 0x30;
 
+static constexpr uint8_t BEWE_TYPE_LWF_LIVE_START  = 0x3C;
+static constexpr uint8_t BEWE_TYPE_LWF_LIVE_ROW    = 0x3D;
+static constexpr uint8_t BEWE_TYPE_LWF_LIVE_STOP   = 0x3E;
+static constexpr uint8_t BEWE_TYPE_LWF_LIVE_REQ    = 0x3F;
+
 static constexpr uint8_t BEWE_TYPE_CHAT     = 0x07;
 
 // AUTH_REQ payload: id[32] + pw[64] + tier[1] = 97 bytes

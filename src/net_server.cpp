@@ -476,6 +476,11 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
         if(cb.on_lwf_dl_req) cb.on_lwf_dl_req(c->op_index, c->name, req->filename);
         break;
     }
+    case PacketType::LWF_LIVE_REQ: {
+        if(!c->authed) break;
+        if(cb.on_lwf_live_req) cb.on_lwf_live_req(c->op_index, c->name);
+        break;
+    }
 
     default: break;
     }

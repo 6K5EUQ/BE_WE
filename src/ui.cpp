@@ -4106,6 +4106,12 @@ void run_streaming_viewer(){
                                         if(v.net_srv) v.net_srv->send_file_to(op_index, full.c_str(), tid);
                                     }).detach();
                                 };
+                                // STREAM opt-in: JOIN의 LWF_LIVE_REQ에만 그 op로 LIVE_START unicast.
+                                v.net_srv->cb.on_lwf_live_req = [&v](int op_index, const char* /*who*/){
+                                    PktLwfLiveStart ls{};
+                                    if(!LongWaterfall::snapshot_live_start(ls)) return;
+                                    if(v.net_srv) v.net_srv->send_lwf_live_start_to_op(op_index, ls);
+                                };
 
                                 central_cli.set_on_central_conn_open([&central_cli](uint16_t /*cid*/){
                                     std::vector<uint8_t> bp_pkt;
@@ -4118,11 +4124,7 @@ void run_streaming_viewer(){
                                         central_cli.enqueue_relay_broadcast(bc_pkt.data(), bc_pkt.size(), true);
                                     if(!bp_pkt.empty())
                                         central_cli.enqueue_relay_broadcast(bp_pkt.data(), bp_pkt.size(), true);
-                                    PktLwfLiveStart ls{};
-                                    if(LongWaterfall::snapshot_live_start(ls)){
-                                        auto pkt = make_packet(PacketType::LWF_LIVE_START, &ls, sizeof(ls));
-                                        central_cli.enqueue_relay_broadcast(pkt.data(), pkt.size(), true);
-                                    }
+                                    // LIVE_START는 STREAM opt-in으로만 송신 (CONN_OPEN auto-broadcast 제거).
                                 });
 
                                 // Worker LIVE callback → NetServer broadcast

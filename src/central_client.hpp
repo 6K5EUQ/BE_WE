@@ -75,6 +75,7 @@ public:
     std::atomic<uint64_t> stat_tx_audio_bytes{0};
     std::atomic<uint64_t> stat_tx_hb_bytes{0};
     std::atomic<uint64_t> stat_tx_file_bytes{0};  // IQ_CHUNK / DB_SAVE_* / DB_DL_* 등 파일 전송
+    std::atomic<uint64_t> stat_tx_hist_bytes{0};  // LWF_LIVE_ROW (HIST 실시간 스트림)
     std::string           stat_room_id;
 
     // HOST→중앙서버 broadcast (conn_id=0xFFFF, 1회 전송 → 중앙서버가 N명에게 fan-out)
@@ -97,6 +98,8 @@ public:
                  || bt == BEWE_TYPE_DB_SAVE_META || bt == BEWE_TYPE_DB_SAVE_DATA
                  || bt == BEWE_TYPE_DB_DL_DATA   || bt == BEWE_TYPE_DB_DL_INFO)
                 stat_tx_file_bytes.fetch_add(tot, std::memory_order_relaxed);
+            else if(bt == BEWE_TYPE_LWF_LIVE_ROW)
+                stat_tx_hist_bytes.fetch_add(tot, std::memory_order_relaxed);
         }
         enqueue_central(&mh, CENTRAL_MUX_HDR_SIZE, bewe_pkt, bewe_len, no_drop);
     }
