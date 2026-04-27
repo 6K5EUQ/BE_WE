@@ -110,6 +110,7 @@ void FFTViewer::set_frequency(float cf_mhz){
     autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
     // 범위 밖 채널 Holding 전환 + JOIN에 CH_SYNC 브로드캐스트
     update_dem_by_freq(cf_mhz);
+    LongWaterfall::request_rotate();   // CF changed (direct path) -> new file
 }
 
 // ── RTL-SDR 캡처 루프 ─────────────────────────────────────────────────────
