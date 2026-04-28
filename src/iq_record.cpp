@@ -342,6 +342,7 @@ void FFTViewer::stop_audio_rec(int ch_idx){
     // 실제 녹음 출력이 없으면 파일 삭제 + RecEntry 제거
     if(ch.audio_rec_frames==0){
         remove(ch.audio_rec_path.c_str());
+        remove((ch.audio_rec_path + ".info").c_str());
         bewe_log("Audio REC empty, deleted: %s\n", ch.audio_rec_path.c_str());
         std::lock_guard<std::mutex> lk(rec_entries_mtx);
         rec_entries.erase(std::remove_if(rec_entries.begin(),rec_entries.end(),
@@ -546,6 +547,7 @@ void FFTViewer::stop_iq_rec(int ch_idx){
 
     if(ch.iq_rec_frames==0){
         remove(ch.iq_rec_path.c_str());
+        remove((ch.iq_rec_path + ".info").c_str());
         bewe_log("IQ REC empty, deleted: %s\n",ch.iq_rec_path.c_str());
         std::lock_guard<std::mutex> lk(rec_entries_mtx);
         rec_entries.erase(std::remove_if(rec_entries.begin(),rec_entries.end(),
@@ -634,6 +636,7 @@ void FFTViewer::stop_join_audio_rec(int ch_idx){
     // 실제 녹음 출력이 없으면 파일 삭제 + RecEntry 제거
     if(ch.audio_rec_frames==0){
         remove(ch.audio_rec_path.c_str());
+        remove((ch.audio_rec_path + ".info").c_str());
         bewe_log("JOIN Audio REC empty, deleted: %s\n", ch.audio_rec_path.c_str());
         std::lock_guard<std::mutex> lk(rec_entries_mtx);
         rec_entries.erase(std::remove_if(rec_entries.begin(),rec_entries.end(),

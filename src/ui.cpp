@@ -3097,6 +3097,7 @@ void run_streaming_viewer(){
                     // 빈 파일이면 디스크에서 삭제하고 [Done] 표시 안 함
                     if(written == 0){
                         remove(save_path.c_str());
+                        remove((save_path + ".info").c_str());
                         bewe_log_push(0,"[JOIN] IQ write: EMPTY file removed '%s'\n", save_path.c_str());
                         std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                         v.rec_entries.erase(
@@ -3991,6 +3992,7 @@ void run_streaming_viewer(){
                 bool is_iq = (fname.size()>3&&fname.substr(0,3)=="IQ_")||(fname.size()>3&&fname.substr(0,3)=="sa_");
                 std::string fp = (is_iq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+fname;
                 remove(fp.c_str());
+                remove((fp + ".info").c_str());
                 // 목록에서 제거
                 auto rm_from = [&](std::vector<std::string>& vec){
                     vec.erase(std::remove(vec.begin(),vec.end(),fname),vec.end());
@@ -5397,6 +5399,7 @@ void run_streaming_viewer(){
                         for(auto it=v.rec_entries.begin();it!=v.rec_entries.end();++it){
                             if(it->is_audio && it->ch_idx==sci){
                                 remove(it->path.c_str());
+                                remove((it->path + ".info").c_str());
                                 v.rec_entries.erase(it);
                                 break;
                             }
