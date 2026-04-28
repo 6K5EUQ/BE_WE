@@ -835,9 +835,25 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
             targets.push_back(je);
         }
     }
+    // FILE_DATA payload 첫 바이트 다음(=offset 1)이 is_last. PktFileData: transfer_id[1]+is_last[1]+...
+    bool is_file_last = (bewe_type == 0x0D && bewe_len >= BEWE_HDR_SIZE + 2 &&
+                         bewe_pkt[BEWE_HDR_SIZE + 1] == 1);
+    bool is_file_meta = (bewe_type == 0x0E);
+
     for(auto& je : targets){
-        if(is_file)
+        // 다운로드 중 JOIN에는 FFT 보내지 않음 (HB는 ctrl_queue로 계속 감 → LINK 유지)
+        if(is_fft && je->active_file_transfers.load(std::memory_order_relaxed) > 0)
+            continue;
+
+        if(is_file){
+            if(is_file_meta)
+                je->active_file_transfers.fetch_add(1, std::memory_order_relaxed);
             je->enqueue_file(bewe_pkt, bewe_len);   // 한도 초과 시 BLOCK → HOST까지 backpressure
+            if(is_file_last){
+                int prev = je->active_file_transfers.fetch_sub(1, std::memory_order_relaxed);
+                if(prev <= 0) je->active_file_transfers.store(0, std::memory_order_relaxed); // saturate
+            }
+        }
         else if(is_ctrl)
             je->enqueue_ctrl(bewe_pkt, bewe_len);
         else

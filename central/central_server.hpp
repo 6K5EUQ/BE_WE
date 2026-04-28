@@ -33,6 +33,10 @@ struct JoinEntry {
     FILE*       db_fp   = nullptr;
     std::string db_path;
 
+    // 진행 중인 file 전송 수 (FILE_META에서 ++, FILE_DATA(is_last=1)에서 --).
+    // > 0 이면 dispatch_to_joins가 FFT_FRAME을 이 JOIN에 보내지 않음 (HB는 계속 보냄).
+    std::atomic<int> active_file_transfers{0};
+
     // ── 독립 송신 큐 ──────────────────────────────────────────────────────
     // 우선순위: ctrl_queue > file_queue > send_queue(FFT) > audio_queue
     // 단일 send 스레드가 우선순위 순서로 큐에서 꺼내 전송
