@@ -13,8 +13,7 @@
 // ADALM-Pluto 고정 파라미터 (RTL-SDR/BladeRF 경로와 호환)
 static constexpr uint32_t PLUTO_DEFAULT_SR = 3200000;  // 3.2 MSPS
 static constexpr uint32_t PLUTO_MAX_SR     = 61440000; // 61.44 MSPS (AD9361 최대, USB2 드롭 발생)
-// Pluto에서 TM IQ 롤링 허용 상한 (3.2 MSPS 이하만 허용; 10/20/40/61.44는 차단)
-static constexpr uint32_t PLUTO_IQ_REC_MAX_SR = 3200000;
+// Pluto는 모든 SR에서 TM IQ 롤링 허용 (USB 2.0 한계로 고 SR에서 데이터 드롭 발생 가능 — 워터폴/HIST 용도).
 static constexpr int      PLUTO_BUF_MIN    = 8192;     // iio_buffer 최소 샘플 수
 static constexpr int      PLUTO_BUF_SAMPS  = 8192;     // 초기 iio_buffer 샘플 수 (FFT size 변경 시 확장됨)
 
@@ -75,7 +74,7 @@ bool FFTViewer::initialize_pluto(float cf_mhz, float sr_msps){
         fprintf(stderr,"Pluto: ad9361_set_bb_rate(%u) failed rc=%d\n", sr, rc);
     pluto_cfg_attr_ll(v0, "rf_bandwidth",        (long long)sr);
     pluto_cfg_attr_s (v0, "gain_control_mode",   "manual");
-    pluto_cfg_attr_ll(v0, "hardwaregain",        30);
+    pluto_cfg_attr_ll(v0, "hardwaregain",        20);
     pluto_cfg_attr_ll(lo, "frequency",           (long long)(cf_mhz * 1e6));
 
     // 실제 값 재읽기
@@ -286,15 +285,10 @@ void FFTViewer::capture_and_process_pluto(){
             texture_needs_recreate=true;
             // SR 변경 > 신호 크기 스케일이 달라질 수 있어 오토스케일 재트리거
             autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
-            // TM IQ가 켜져 있었고 새 SR이 Pluto 허용 범위면 재시작. 61.44 MSPS면 차단.
+            // TM IQ 재시작 (Pluto는 모든 SR 허용 — 고 SR은 USB2 드롭 감수)
             if(tm_was_on){
-                if(new_sr > PLUTO_IQ_REC_MAX_SR){
-                    bewe_log_push(0,"[TM IQ] disabled: Pluto SR %.2f MSPS (power spectrum only)\n",
-                                  new_sr/1e6f);
-                } else {
-                    tm_iq_open();
-                    tm_iq_on.store(true);
-                }
+                tm_iq_open();
+                tm_iq_on.store(true);
             }
             dem_restart_needed.store(true); // demod가 새 SR로 재초기화되도록
             bewe_log_push(0,"SR > %.3f MSPS\n", actual_sr/1e6f);

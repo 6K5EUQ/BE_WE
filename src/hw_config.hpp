@@ -100,7 +100,7 @@ inline HWConfig make_pluto_config(uint32_t actual_sr){
     c.name            = "ADALM-Pluto";
     c.gain_min        = 0.0f;       // AD9363 manual gain 0..71
     c.gain_max        = 71.0f;
-    c.gain_default    = 30.0f;
+    c.gain_default    = 20.0f;
     return c;
 }
 
