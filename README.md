@@ -46,6 +46,12 @@ Click the power axis to cycle through peak-holding modes. Sweep a band once and 
 
 ![Max Decay](assets/max_decay.png)
 
+### Band Plan Overlay
+
+Toggle **BAND** in the bottom bar to see allocation segments above the spectrum (AIR / Amateur / Marine / TV·DAB / …). Right-click any band to edit label, frequency range, category, and description in place. Categories are user-defined with custom colors, and each HOST owns its own `band_plan.json` — edits are broadcast to all JOINs automatically.
+
+![Band Plan](assets/band_plan.png)
+
 ### Channels, Holding List, and Notch Filters
 
 Up to 10 demodulator channels at once (AM / FM / MAGIC, AIS, LoRa). Retune away from a channel and it slides into the **Holding** list with its squelch timer intact — come back and it rejoins automatically. Unwanted carriers can be killed with a global **Notch filter pool** that persists across sample-rate changes.
@@ -54,9 +60,15 @@ Up to 10 demodulator channels at once (AM / FM / MAGIC, AIS, LoRa). Retune away 
 
 ### Time Machine & Region IQ Export
 
-Press `T` for a 60-second rolling IQ buffer, `Space` to freeze and scroll back, and `Ctrl+Right-drag` on the waterfall to export just that time-frequency region as an IQ file.
+Press `T` for a 60-second rolling IQ buffer, `Space` to freeze and scroll back, and `Ctrl+Right-drag` on the waterfall to mark a time-frequency region — the box shows live `BW / Duration` and `R` exports it as an IQ file.
 
 ![Time Machine](assets/Screen2.png)
+
+### HISTORY — Long-Term Waterfall Archive
+
+Press `H` to open the long-waterfall archive. Every HOST keeps a continuous record of what its receiver saw, with mission-coded filenames and a header that embeds station name, lat/lon, and UTC range. Frequency changes auto-rotate to a fresh segment so each file is single-CF. `Ctrl+Right-drag` marks any region for a `BW / Duration` measurement; opt-in live streaming lets a JOIN watch the archive grow row-by-row, and remote delete cleans up from either side.
+
+![HISTORY](assets/history.png)
 
 ### Recording with Auto-Populated File Info
 
@@ -193,9 +205,10 @@ make -j$(nproc)
 |---|---|
 | `T` | Start/stop Time Machine rolling recording |
 | `Space` | Freeze waterfall (Time Machine view) |
-| `Ctrl+Right-drag` | Export region as IQ file |
+| `Ctrl+Right-drag` | Mark region (shows BW / Duration); `R` to save as IQ |
 | `Scroll` | Zoom frequency axis |
 | `I` | Start/stop per-channel IQ recording |
+| `H` | Open HISTORY overlay (long-waterfall archive) |
 | `D` | Toggle digital decode panel |
 | `L` | Toggle LOG overlay (HOST / SERVER events) |
 | `F11` | Fullscreen / windowed |
