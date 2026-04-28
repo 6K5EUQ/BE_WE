@@ -214,6 +214,10 @@ struct HostRoom {
     // host_mux_loop이 recv 루프에서 매번 flush → blocking send 없이 안전
     std::deque<std::vector<uint8_t>>      host_send_queue;
 
+    // ── HOST→Central DB 업로드 수신 상태 (룸당 단일 mux_loop 스레드, mutex 불필요) ─
+    FILE*       db_fp   = nullptr;
+    std::string db_path;
+
     mutable std::mutex                    joins_mtx;
     std::vector<std::shared_ptr<JoinEntry>> joins;
     uint16_t                              next_conn_id = 1;

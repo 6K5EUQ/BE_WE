@@ -447,6 +447,15 @@ void CentralServer::host_mux_loop(std::shared_ptr<HostRoom> room){
 
     room->alive.store(false);
     if(room->fd >= 0){ shutdown(room->fd, SHUT_RDWR); close(room->fd); room->fd=-1; }
+    // 진행 중이던 DB 업로드가 있으면 partial 파일 정리
+    if(room->db_fp){
+        fclose(room->db_fp); room->db_fp=nullptr;
+        if(!room->db_path.empty()){
+            unlink(room->db_path.c_str());
+            printf("[Central] removed partial DB upload %s on room close\n", room->db_path.c_str());
+            room->db_path.clear();
+        }
+    }
     {
         std::lock_guard<std::mutex> jlk(room->joins_mtx);
         for(auto& je : room->joins){
@@ -656,10 +665,8 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
 
     // ── DB_SAVE: HOST가 보내도 Central에서 인터셉트하여 저장 ───────────
     if(bewe_type == BEWE_TYPE_DB_SAVE_META || bewe_type == BEWE_TYPE_DB_SAVE_DATA){
-        // HOST 방향에서 온 DB_SAVE — JOIN의 intercept와 동일한 로직 재사용
-        // room에 임시 db_fp 저장 (HOST 전용)
-        static FILE* host_db_fp = nullptr;
-        static std::string host_db_path;
+        // 룸별로 db_fp/db_path 보관 (host_mux_loop이 룸당 단일 스레드라 mutex 불필요)
+        // 이전엔 function-local static을 써서 두 HOST 동시 업로드 시 파일이 섞였음.
         const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
         size_t plen = bewe_len - BEWE_HDR_SIZE;
         if(bewe_type == BEWE_TYPE_DB_SAVE_META && plen >= 128+8+1+32){
@@ -674,13 +681,13 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
             printf("[Central] DB_SAVE_META(HOST): '%s' by '%s' → %s\n",filename,op_name,dst.c_str());
             if(info[0]){ FILE* fi=fopen((dst+".info").c_str(),"w");
                 if(fi){fwrite(info,1,strnlen(info,511),fi);fclose(fi);} }
-            if(host_db_fp) fclose(host_db_fp);
-            host_db_fp=fopen(dst.c_str(),"wb"); host_db_path=dst;
-        } else if(bewe_type == BEWE_TYPE_DB_SAVE_DATA && plen>=6 && host_db_fp){
+            if(room->db_fp) fclose(room->db_fp);
+            room->db_fp=fopen(dst.c_str(),"wb"); room->db_path=dst;
+        } else if(bewe_type == BEWE_TYPE_DB_SAVE_DATA && plen>=6 && room->db_fp){
             uint8_t is_last=payload[1]; uint32_t cb=0; memcpy(&cb,payload+2,4);
-            if(plen>=6+cb) fwrite(payload+6,1,cb,host_db_fp);
-            if(is_last){fclose(host_db_fp);host_db_fp=nullptr;
-                printf("[Central] DB_SAVE complete(HOST): %s\n",host_db_path.c_str());host_db_path.clear();
+            if(plen>=6+cb) fwrite(payload+6,1,cb,room->db_fp);
+            if(is_last){fclose(room->db_fp);room->db_fp=nullptr;
+                printf("[Central] DB_SAVE complete(HOST): %s\n",room->db_path.c_str());room->db_path.clear();
                 broadcast_db_list(room); }
         }
         return; // JOIN에 포워드 안 함
