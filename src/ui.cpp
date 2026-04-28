@@ -1904,11 +1904,19 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
                 if(on_edge_t) dl->AddLine(ImVec2(drx0,ry0),ImVec2(drx1,ry0),IM_COL32(255,150,150,255),2.5f);
                 if(on_edge_b) dl->AddLine(ImVec2(drx0,ry1),ImVec2(drx1,ry1),IM_COL32(255,150,150,255),2.5f);
             }
-            char hint[64];
-            float cf=(region.freq_lo+region.freq_hi)*0.5f;
-            float bw=(region.freq_hi-region.freq_lo)*1000.0f;
-            snprintf(hint,sizeof(hint),"%.3f MHz  BW %.0f kHz  [R]Save",cf,bw);
-            dl->AddText(ImVec2(drx0+2,dry0+2),IM_COL32(255,180,180,255),hint);
+            char hint[96];
+            float bw_mhz = region.freq_hi - region.freq_lo;
+            float rps_disp = (float)header.sample_rate / (float)fft_input_size / (float)time_average;
+            if(rps_disp <= 0) rps_disp = 37.5f;
+            float dur_s = (float)(region.fft_top - region.fft_bot) / rps_disp;
+            snprintf(hint, sizeof(hint), "BW : %.4f MHz   Duration : %.3f s", bw_mhz, dur_s);
+            ImVec2 ts = ImGui::CalcTextSize(hint);
+            float tx = drx0 + 4.f;
+            float ty = dry0 - ts.y - 4.f;
+            if(ty < gy + 2) ty = dry1 + 4.f;
+            dl->AddRectFilled(ImVec2(tx-3, ty-2), ImVec2(tx+ts.x+3, ty+ts.y+2),
+                              IM_COL32(0,0,0,170));
+            dl->AddText(ImVec2(tx, ty), IM_COL32(255,200,200,255), hint);
 
             // 영역 해제: 영역 안 클릭 2회 또는 더블클릭
             // lclick 카운트 처리 (편집 중 아닐때)

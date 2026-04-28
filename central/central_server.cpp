@@ -802,6 +802,8 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
     // FFT: auth 완료된 JOIN에게만, 전용 send_queue (대용량, 드롭 허용)
     // 제어(HEARTBEAT/STATUS/CMD_ACK 등): ctrl_queue (우선 전송, 드롭 없음)
     bool is_fft = (bewe_type == BEWE_TYPE_FFT);
+    // FILE_DATA(0x0D)/FILE_META(0x0E)는 별도 file_queue로 분리해 backpressure 유발
+    bool is_file = (bewe_type == 0x0D || bewe_type == 0x0E);
     bool is_ctrl = (bewe_type == BEWE_TYPE_HEARTBEAT || bewe_type == BEWE_TYPE_STATUS ||
                     bewe_type == BEWE_TYPE_CMD || bewe_type == BEWE_TYPE_OP_LIST ||
                     bewe_type == BEWE_TYPE_AUTH_ACK ||
@@ -810,19 +812,26 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                     bewe_type == 0x31 ||                 // BAND_PLAN_SYNC (드롭 불가, 큰 패킷)
                     bewe_type == 0x35 ||                 // BAND_CAT_SYNC
                     bewe_type == 0x39 ||                 // LWF_LIST (single-target, 6.6KB)
-                    bewe_type == 0x0D ||                 // FILE_DATA (chunk, 드롭 불가 — 빠진 chunk = 파일 멈춤)
-                    bewe_type == 0x0E ||                 // FILE_META
                     bewe_type == 0x3C ||                 // LWF_LIVE_START
                     bewe_type == 0x3D ||                 // LWF_LIVE_ROW (행 누락 = stream 깨짐)
                     bewe_type == 0x3E ||                 // LWF_LIVE_STOP
                     bewe_type == 0x3F ||                 // LWF_LIVE_REQ (JOIN→host opt-in)
                     bewe_type == 0x40);                  // LWF_DELETE_REQ (JOIN→host)
-    std::lock_guard<std::mutex> jlk(room->joins_mtx);
-    for(auto& je : room->joins){
-        if(!je->alive.load() || je->fd < 0) continue;
-        if(conn_id != 0xFFFF && conn_id != je->conn_id) continue;
-        if(is_fft && !je->authed) continue;
-        if(is_ctrl)
+    // joins 스냅샷 후 lock 해제 — enqueue_file이 BLOCK 될 수 있어 joins_mtx 잡고 있으면 안 됨
+    std::vector<std::shared_ptr<JoinEntry>> targets;
+    {
+        std::lock_guard<std::mutex> jlk(room->joins_mtx);
+        for(auto& je : room->joins){
+            if(!je->alive.load() || je->fd < 0) continue;
+            if(conn_id != 0xFFFF && conn_id != je->conn_id) continue;
+            if(is_fft && !je->authed) continue;
+            targets.push_back(je);
+        }
+    }
+    for(auto& je : targets){
+        if(is_file)
+            je->enqueue_file(bewe_pkt, bewe_len);   // 한도 초과 시 BLOCK → HOST까지 backpressure
+        else if(is_ctrl)
             je->enqueue_ctrl(bewe_pkt, bewe_len);
         else
             je->enqueue_data(bewe_pkt, bewe_len);

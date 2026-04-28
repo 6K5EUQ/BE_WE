@@ -611,19 +611,22 @@ inline bool send_all(int fd, const void* buf, size_t len){
 }
 
 // Returns:  1 = OK,  0 = timeout (EAGAIN),  -1 = error/disconnect
+// On -1, errno is set: real recv() errno on syscall failure, or ECONNRESET on peer-close
+// (r==0). Without this, callers would see stale errno from earlier syscalls (e.g. mkdir
+// EEXIST=17), producing misleading "(File exists)" diagnostics.
 inline int recv_all_ex(int fd, void* buf, size_t len, const std::atomic<bool>& alive){
     uint8_t* p = static_cast<uint8_t*>(buf);
     size_t remaining = len;
     while(remaining > 0){
-        if(!alive.load(std::memory_order_relaxed)) return -1;
+        if(!alive.load(std::memory_order_relaxed)){ errno = ECONNRESET; return -1; }
         ssize_t r = recv(fd, p, remaining, 0);
         if(r > 0){ p += r; remaining -= r; continue; }
-        if(r == 0) return -1;                         // peer closed
+        if(r == 0){ errno = ECONNRESET; return -1; }  // peer closed
         if(errno == EAGAIN || errno == EWOULDBLOCK){
             if(remaining == len) return 0;             // nothing read yet → timeout
             continue;                                  // partial read → retry
         }
-        return -1;                                     // real error
+        return -1;                                     // real error (errno already set)
     }
     return 1;
 }

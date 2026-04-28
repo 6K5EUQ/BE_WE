@@ -34,13 +34,18 @@ struct JoinEntry {
     std::string db_path;
 
     // ── 독립 송신 큐 ──────────────────────────────────────────────────────
-    // 우선순위: ctrl_queue(제어) > send_queue(FFT) > audio_queue(오디오)
+    // 우선순위: ctrl_queue > file_queue > send_queue(FFT) > audio_queue
     // 단일 send 스레드가 우선순위 순서로 큐에서 꺼내 전송
     static constexpr size_t SEND_QUEUE_MAX_BYTES  = 2 * 1024 * 1024; // FFT 2MB (~0.5초)
     static constexpr size_t AUDIO_QUEUE_MAX_BYTES = 512 * 1024;      // 오디오 512KB (~0.5초)
+    // FILE 큐: 한도 초과 시 enqueue가 BLOCK 되어 host_mux_loop을 통해 HOST까지 backpressure 전파
+    static constexpr size_t FILE_QUEUE_MAX_BYTES  = 4 * 1024 * 1024; // 4MB (~16 chunk)
 
     // 제어 큐 (AUTH_ACK, CMD_ACK, STATUS, OP_LIST, CH_SYNC 등) — 드롭 없음
     std::deque<std::vector<uint8_t>> ctrl_queue;
+    // FILE 큐 (FILE_META 0x0E, FILE_DATA 0x0D) — 드롭 없음, 한도 초과 시 enqueue BLOCK
+    std::deque<std::vector<uint8_t>> file_queue;
+    size_t                  file_queue_bytes = 0;
     // FFT 큐
     std::deque<std::vector<uint8_t>> send_queue;
     size_t                  send_queue_bytes = 0;
@@ -50,6 +55,7 @@ struct JoinEntry {
 
     std::mutex              send_mtx;   // 모든 큐 공유 lock
     std::condition_variable send_cv;
+    std::condition_variable file_drain_cv; // file_queue 소진 시 enqueue 깨움
     std::thread             send_thr;
 
     std::atomic<bool>       send_stop{false};
@@ -66,7 +72,9 @@ struct JoinEntry {
             if(r <= 0){
                 printf("[JoinEntry] send_raw FAIL conn_id=%u bewe_type=0x%02x total=%zu r=%zd errno=%d(%s)\n",
                        conn_id, bewe_t, pkt.size(), r, errno, strerror(errno));
-                alive.store(false); break;
+                alive.store(false);
+                file_drain_cv.notify_all(); // blocked enqueue_file 깨움
+                break;
             }
             p += r; rem -= r;
         }
@@ -83,10 +91,11 @@ struct JoinEntry {
                 {
                     std::unique_lock<std::mutex> lk(send_mtx);
                     send_cv.wait(lk, [this]{
-                        return !ctrl_queue.empty() || !send_queue.empty() ||
-                               !audio_queue.empty() || send_stop.load();
+                        return !ctrl_queue.empty() || !file_queue.empty() ||
+                               !send_queue.empty() || !audio_queue.empty() ||
+                               send_stop.load();
                     });
-                    if(send_stop.load() && ctrl_queue.empty() &&
+                    if(send_stop.load() && ctrl_queue.empty() && file_queue.empty() &&
                        send_queue.empty() && audio_queue.empty()) break;
                     // 제어 패킷이 있으면 제어만 먼저 전송 (FFT/오디오와 절대 혼합 금지)
                     // → AUTH_ACK가 FFT보다 항상 먼저 JOIN에 도달 보장
@@ -96,6 +105,15 @@ struct JoinEntry {
                             ctrl_queue.pop_front();
                         }
                     } else {
+                        // FILE 1 청크 (256KB) — backpressure 핵심: drain 시 enqueue 깨움
+                        if(!file_queue.empty()){
+                            size_t sz = file_queue.front().size();
+                            batch.push_back(std::move(file_queue.front()));
+                            file_queue.pop_front();
+                            if(file_queue_bytes >= sz) file_queue_bytes -= sz;
+                            else file_queue_bytes = 0;
+                            file_drain_cv.notify_one();
+                        }
                         // FFT 최대 4개 (burst 완화)
                         int n = 0;
                         while(!send_queue.empty() && n++ < 4){
@@ -124,6 +142,7 @@ struct JoinEntry {
     void stop_send_worker(){
         send_stop.store(true);
         send_cv.notify_all();
+        file_drain_cv.notify_all(); // blocked enqueue_file 깨움
         if(send_thr.joinable()) send_thr.join();
     }
 
@@ -161,6 +180,23 @@ struct JoinEntry {
         }
         audio_queue.emplace_back(data, data + len);
         audio_queue_bytes += len;
+        send_cv.notify_one();
+    }
+
+    // FILE 큐에 push (드롭 없음, 한도 초과 시 BLOCK).
+    // 호출자: dispatch_to_joins. 블로킹이 host_mux_loop을 막아 HOST send까지 backpressure 전파.
+    // joins_mtx를 들고 있는 동안 호출하면 안 됨 — 호출 측에서 snapshot 패턴으로 lock 해제 후 호출.
+    void enqueue_file(const uint8_t* data, size_t len){
+        std::unique_lock<std::mutex> lk(send_mtx);
+        // 빈 큐일 땐 한도 무관 통과 (단일 chunk가 한도보다 커도 보낼 수 있도록)
+        file_drain_cv.wait(lk, [this, len]{
+            return !alive.load() || send_stop.load() ||
+                   file_queue.empty() ||
+                   file_queue_bytes + len <= FILE_QUEUE_MAX_BYTES;
+        });
+        if(!alive.load() || send_stop.load()) return;
+        file_queue.emplace_back(data, data + len);
+        file_queue_bytes += len;
         send_cv.notify_one();
     }
 };
