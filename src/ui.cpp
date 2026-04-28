@@ -1943,12 +1943,21 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
     if(hov){
         ImVec2 mm=ImGui::GetIO().MousePos;
         float af=x_to_abs(mm.x,gx,gw);
-        char info[64]; snprintf(info,64,"%.3f MHz",af);
-        ImVec2 ts=ImGui::CalcTextSize(info);
-        float tx=gx+gw-ts.x, ty=gy;
-        dl->AddRectFilled(ImVec2(tx,ty),ImVec2(tx+ts.x,ty+ts.y+5),IM_COL32(20,20,20,220));
-        dl->AddRect(ImVec2(tx,ty),ImVec2(tx+ts.x,ty+ts.y+5),IM_COL32(100,100,100,255));
-        dl->AddText(ImVec2(tx,ty+2),IM_COL32(0,255,0,255),info);
+        // 커서 y → fft_idx → wall-clock ms (HIST hover와 동일 포맷)
+        int hov_disp_idx = tm_active.load() ? tm_display_fft_idx : current_fft_idx;
+        int hov_fft_idx = hov_disp_idx - (int)(mm.y - gy);
+        int64_t wt_ms = fft_idx_to_wall_time_ms(hov_fft_idx);
+        if(wt_ms <= 0){
+            float rps = (float)header.sample_rate / (float)fft_input_size / (float)time_average;
+            if(rps <= 0) rps = 37.5f;
+            int64_t now_ms = (int64_t)(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+            wt_ms = now_ms - (int64_t)((current_fft_idx - hov_fft_idx) * 1000.0f / rps);
+        }
+        time_t wt_sec = (time_t)(wt_ms / 1000);
+        struct tm lt; localtime_r(&wt_sec, &lt);
+        char tbuf[16]; strftime(tbuf, sizeof(tbuf), "%H:%M:%S", &lt);
+        ImGui::SetTooltip("%s\n%.3f MHz", tbuf, af);
         if(!eid_panel_open) handle_zoom_scroll(gx,gw,mm.x);
     }
 }
