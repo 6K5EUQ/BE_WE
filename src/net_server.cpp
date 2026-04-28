@@ -747,7 +747,7 @@ void NetServer::broadcast_heartbeat(uint8_t host_state, uint8_t sdr_temp_c, uint
     if(antenna) strncpy(hb.antenna, antenna, sizeof(hb.antenna)-1);
     auto pkt = make_packet(PacketType::HEARTBEAT, &hb, sizeof(hb));
     if(cb.on_relay_broadcast)
-        cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), true); // no_drop=true — HB 유실은 LINK 끊김
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
         if(c->is_relay || !c->authed || !c->alive.load()) continue;

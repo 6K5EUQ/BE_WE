@@ -7938,7 +7938,30 @@ void run_streaming_viewer(){
                             char dn[32], tn[32];
                             fmt_sz(x.done_bytes, dn, sizeof(dn));
                             fmt_sz(x.total_bytes, tn, sizeof(tn));
-                            snprintf(buf,sizeof(buf),"%s / %s (%.0f%%)", dn, tn, frac*100.f);
+                            // EWMA 속도: 200ms 이상 경과 시만 갱신 (지터 완화)
+                            int64_t now_us = (int64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch()).count();
+                            if(x.last_steady_us == 0){
+                                x.last_steady_us = now_us; x.last_done_bytes = (int64_t)x.done_bytes;
+                            } else if(now_us - x.last_steady_us >= 200000){
+                                int64_t db = (int64_t)x.done_bytes - x.last_done_bytes;
+                                double  dt = (now_us - x.last_steady_us) / 1e6;
+                                if(dt > 0){
+                                    double inst_bps = (db > 0) ? (double)db / dt : 0.0;
+                                    x.bps_ewma = (x.bps_ewma == 0.0) ? inst_bps
+                                                                     : x.bps_ewma * 0.7 + inst_bps * 0.3;
+                                }
+                                x.last_steady_us  = now_us;
+                                x.last_done_bytes = (int64_t)x.done_bytes;
+                            }
+                            char sn[24] = "";
+                            if(x.bps_ewma > 0.0){
+                                if(x.bps_ewma < 1024)               snprintf(sn,sizeof(sn)," (%.0f B/s)", x.bps_ewma);
+                                else if(x.bps_ewma < 1024*1024)     snprintf(sn,sizeof(sn)," (%.1f KB/s)", x.bps_ewma/1024);
+                                else if(x.bps_ewma < 1024.0*1024*1024) snprintf(sn,sizeof(sn)," (%.2f MB/s)", x.bps_ewma/(1024*1024));
+                                else                                snprintf(sn,sizeof(sn)," (%.2f GB/s)", x.bps_ewma/(1024.0*1024*1024));
+                            }
+                            snprintf(buf,sizeof(buf),"%s / %s%s  %.0f%%", dn, tn, sn, frac*100.f);
                             ImGui::ProgressBar(frac, ImVec2(-1, 0), buf);
                             ImGui::TextDisabled("  %s", x.filename.c_str());
                         }

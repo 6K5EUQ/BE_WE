@@ -631,6 +631,10 @@ public:
         bool        is_sa       = false;   // SA로 열 수 있는 파일
         std::string local_path;
         enum Dir : uint8_t { DIR_UNKNOWN=0, DIR_DOWNLOAD=1, DIR_UPLOAD=2 } dir = DIR_UNKNOWN;
+        // 속도 측정 (EWMA bytes/sec) — render에서 갱신
+        int64_t     last_done_bytes = 0;
+        int64_t     last_steady_us  = 0;   // steady_clock microseconds
+        double      bps_ewma        = 0.0;
     };
     std::vector<FileXfer> file_xfers;
     std::mutex            file_xfer_mtx;

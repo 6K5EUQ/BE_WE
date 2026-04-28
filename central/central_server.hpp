@@ -42,8 +42,9 @@ struct JoinEntry {
     // 단일 send 스레드가 우선순위 순서로 큐에서 꺼내 전송
     static constexpr size_t SEND_QUEUE_MAX_BYTES  = 2 * 1024 * 1024; // FFT 2MB (~0.5초)
     static constexpr size_t AUDIO_QUEUE_MAX_BYTES = 512 * 1024;      // 오디오 512KB (~0.5초)
-    // FILE 큐: 한도 초과 시 enqueue가 BLOCK 되어 host_mux_loop을 통해 HOST까지 backpressure 전파
-    static constexpr size_t FILE_QUEUE_MAX_BYTES  = 4 * 1024 * 1024; // 4MB (~16 chunk)
+    // FILE 큐: 한도 초과 시 enqueue가 BLOCK 되어 host_mux_loop을 통해 HOST까지 backpressure 전파.
+    // 16MB로 키워 cascade backpressure 빈도 줄이고 다운로드 속도 향상.
+    static constexpr size_t FILE_QUEUE_MAX_BYTES  = 16 * 1024 * 1024; // 16MB (~64 chunk × 256KB)
 
     // 제어 큐 (AUTH_ACK, CMD_ACK, STATUS, OP_LIST, CH_SYNC 등) — 드롭 없음
     std::deque<std::vector<uint8_t>> ctrl_queue;
@@ -109,15 +110,17 @@ struct JoinEntry {
                             ctrl_queue.pop_front();
                         }
                     } else {
-                        // FILE 1 청크 (256KB) — backpressure 핵심: drain 시 enqueue 깨움
-                        if(!file_queue.empty()){
+                        // FILE 청크 최대 4개/라운드 (1MB) — drain 속도 ↑, drain 시 enqueue 깨움.
+                        // FFT는 v1.5.15부터 다운로드 중 JOIN에 안 보내므로 파일에 더 양보 가능.
+                        int nf = 0;
+                        while(!file_queue.empty() && nf++ < 4){
                             size_t sz = file_queue.front().size();
                             batch.push_back(std::move(file_queue.front()));
                             file_queue.pop_front();
                             if(file_queue_bytes >= sz) file_queue_bytes -= sz;
                             else file_queue_bytes = 0;
-                            file_drain_cv.notify_one();
                         }
+                        if(nf > 0) file_drain_cv.notify_one();
                         // FFT 최대 4개 (burst 완화)
                         int n = 0;
                         while(!send_queue.empty() && n++ < 4){

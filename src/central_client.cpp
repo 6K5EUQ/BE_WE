@@ -209,7 +209,11 @@ void CentralClient::enqueue_central(const void* hdr, size_t hdr_len,
     std::vector<uint8_t> pkt(total);
     if(hdr_len && hdr)   memcpy(pkt.data(),           hdr,  hdr_len);
     if(data_len && data) memcpy(pkt.data() + hdr_len, data, data_len);
-    central_send_queue_.push_back({std::move(pkt), no_drop});
+    // HEARTBEAT(0x14)는 큐 front에 priority push — backed up이어도 다음 batch 첫 번째로 송신됨.
+    // BEWE 헤더 type 위치: hdr_len(CentralMuxHdr 7B) + 4 (BEWE magic 뒤).
+    bool is_hb = (data_len >= 9 && ((const uint8_t*)data)[4] == 0x14);
+    if(is_hb) central_send_queue_.push_front({std::move(pkt), no_drop});
+    else      central_send_queue_.push_back({std::move(pkt), no_drop});
     central_queue_bytes_ += total;
     central_queue_cv_.notify_one();
 }
