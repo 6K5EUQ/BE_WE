@@ -29,6 +29,8 @@
 #include <mutex>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 namespace {
@@ -49,6 +51,11 @@ struct OpenFile {
     uint64_t total_size = 0;
     uint32_t num_rows = 0;
     FILE*    fp = nullptr;
+    // mmap 가속: rebuild_texture가 fseek/fread 대신 직접 포인터 액세스.
+    // 실패 시(open/mmap 에러) map==nullptr 유지 — fp fallback으로 동작.
+    int            fd = -1;
+    const uint8_t* map = nullptr;
+    size_t         map_size = 0;
 };
 OpenFile g_open;
 
@@ -187,6 +194,8 @@ uint64_t   g_last_known_rows = 0;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 void close_open(){
+    if(g_open.map){ munmap((void*)g_open.map, g_open.map_size); }
+    if(g_open.fd >= 0){ ::close(g_open.fd); }
     if(g_open.fp){ fclose(g_open.fp); g_open.fp = nullptr; }
     g_open = OpenFile{};
     g_last_known_rows = 0;
@@ -211,6 +220,19 @@ bool open_file(const std::string& path){
     g_open.total_size = sz;
     g_open.num_rows = (uint32_t)((sz - sizeof(h)) / h.fft_size);
     g_open.fp = fp;
+    // mmap (RDONLY, SHARED) — 실패해도 fp fallback으로 동작.
+    g_open.fd = ::open(path.c_str(), O_RDONLY);
+    if(g_open.fd >= 0 && sz > 0){
+        void* m = mmap(nullptr, sz, PROT_READ, MAP_SHARED, g_open.fd, 0);
+        if(m != MAP_FAILED){
+            g_open.map = (const uint8_t*)m;
+            g_open.map_size = sz;
+            // jump-around 패턴: 커널 readahead가 별 도움 안 됨.
+            posix_madvise(m, sz, POSIX_MADV_RANDOM);
+        } else {
+            ::close(g_open.fd); g_open.fd = -1;
+        }
+    }
     g_t0 = 0; g_t1 = std::max<uint32_t>(1, g_open.num_rows);
     g_f0 = 0; g_f1 = h.fft_size;
     g_tex_dirty = true;
@@ -247,6 +269,16 @@ void refresh_size_live(){
             g_t0 = g_t1 - w;
             if(g_t0 < 0) g_t0 = 0;
         }
+        // mmap 확장: LIVE 파일은 계속 자라므로 새 크기로 remap.
+        if(g_open.fd >= 0){
+            if(g_open.map){ munmap((void*)g_open.map, g_open.map_size); g_open.map = nullptr; g_open.map_size = 0; }
+            void* m = mmap(nullptr, sz, PROT_READ, MAP_SHARED, g_open.fd, 0);
+            if(m != MAP_FAILED){
+                g_open.map = (const uint8_t*)m;
+                g_open.map_size = sz;
+                posix_madvise(m, sz, POSIX_MADV_RANDOM);
+            }
+        }
         g_tex_dirty = true;
         g_last_known_rows = g_open.num_rows;
     }
@@ -270,12 +302,37 @@ void rebuild_texture(float view_db_min, float view_db_max){
     const float fspan = std::max(1e-3f, fmax - fmin);
     const float vspan_inv = 1.0f / std::max(1.0f, view_db_max - view_db_min);
 
+    // 256-entry color LUT — byte를 최종 픽셀 색으로 한 번에 매핑.
+    ImU32 color_lut[256];
+    for(int b=0; b<256; b++){
+        float db = fmin + (b / 255.0f) * fspan;
+        float tt = (db - view_db_min) * vspan_inv;
+        if(tt < 0.f) tt = 0.f; else if(tt > 1.f) tt = 1.f;
+        color_lut[b] = jet_color((uint8_t)(tt * 255.0f));
+    }
+
+    // 가시 linear freq 범위 → 저장 bin 범위 (FFT-shift 풀기).
+    // linear: 0=lowest, fft_half=DC, fft_sz-1=highest. storage: 0=DC.
+    // bin = (idx<fft_half) ? idx+fft_half : idx-fft_half.
+    int lin_lo = (int)std::floor(g_f0); if(lin_lo < 0) lin_lo = 0;
+    int lin_hi = (int)std::ceil (g_f1); if(lin_hi > (int)fft_sz) lin_hi = fft_sz;
+    if(lin_hi <= lin_lo) lin_hi = lin_lo + 1;
+    int br_lo[2], br_hi[2]; int n_br = 0;
+    if(lin_hi <= fft_half){
+        br_lo[0] = lin_lo + fft_half; br_hi[0] = lin_hi + fft_half; n_br = 1;
+    } else if(lin_lo >= fft_half){
+        br_lo[0] = lin_lo - fft_half; br_hi[0] = lin_hi - fft_half; n_br = 1;
+    } else {
+        br_lo[0] = lin_lo + fft_half; br_hi[0] = (int)fft_sz;
+        br_lo[1] = 0;                 br_hi[1] = lin_hi - fft_half; n_br = 2;
+    }
+
     std::vector<uint8_t> rowbuf(fft_sz);
+    std::vector<uint8_t> col_max(fft_sz, 0);  // 호이스팅: 컬럼마다 가시 bin만 zero.
 
     int rows_total = (int)t_span;
-    int cols_total = W;
     int rows_per_col_max = 64;
-    int rows_step = std::max(1, rows_total / (cols_total * rows_per_col_max));
+    int rows_step = std::max(1, rows_total / (W * rows_per_col_max));
 
     for(int x=0; x<W; x++){
         double t_a = g_t0 + (x      / (double)W) * t_span;
@@ -289,14 +346,29 @@ void rebuild_texture(float view_db_min, float view_db_max){
             for(int y=0; y<H; y++) g_pixel_buf[(size_t)y*W + x] = IM_COL32(20,20,25,255);
             continue;
         }
-        std::vector<uint8_t> col_max(fft_sz, 0);
+        // 가시 bin 영역만 0으로 reset (max-hold 시작값).
+        for(int k=0; k<n_br; k++)
+            std::memset(col_max.data() + br_lo[k], 0, (size_t)(br_hi[k] - br_lo[k]));
+
         int n_sampled = 0;
         for(int r=ra; r<rb; r += rows_step){
             uint64_t off = sizeof(LongWaterfall::FileHeader) + (uint64_t)r * fft_sz;
-            fseek(g_open.fp, (long)off, SEEK_SET);
-            if(fread(rowbuf.data(), 1, fft_sz, g_open.fp) != fft_sz) break;
-            for(uint32_t i=0; i<fft_sz; i++)
-                if(rowbuf[i] > col_max[i]) col_max[i] = rowbuf[i];
+            const uint8_t* rb_ptr;
+            if(g_open.map && off + fft_sz <= g_open.map_size){
+                // mmap fast path — syscall 없음, page cache 직접 액세스.
+                rb_ptr = g_open.map + off;
+            } else {
+                fseek(g_open.fp, (long)off, SEEK_SET);
+                if(fread(rowbuf.data(), 1, fft_sz, g_open.fp) != fft_sz) break;
+                rb_ptr = rowbuf.data();
+            }
+            // 가시 bin만 max-hold (off-screen bin 무시).
+            uint8_t* cm_ptr = col_max.data();
+            for(int k=0; k<n_br; k++){
+                int b0 = br_lo[k], b1 = br_hi[k];
+                for(int b=b0; b<b1; b++)
+                    if(rb_ptr[b] > cm_ptr[b]) cm_ptr[b] = rb_ptr[b];
+            }
             if(++n_sampled >= rows_per_col_max) break;
         }
         // Y axis: max-hold across all bins mapped to each pixel row (avoids
@@ -314,10 +386,7 @@ void rebuild_texture(float view_db_min, float view_db_max){
                 int bin = (idx < fft_half) ? (idx + fft_half) : (idx - fft_half);
                 if(col_max[bin] > mx) mx = col_max[bin];
             }
-            float db = fmin + (mx / 255.0f) * fspan;
-            float t  = (db - view_db_min) * vspan_inv;
-            if(t < 0.f) t = 0.f; else if(t > 1.f) t = 1.f;
-            g_pixel_buf[(size_t)y*W + x] = jet_color((uint8_t)(t * 255.0f));
+            g_pixel_buf[(size_t)y*W + x] = color_lut[mx];
         }
     }
 
