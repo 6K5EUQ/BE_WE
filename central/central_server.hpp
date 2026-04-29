@@ -1,6 +1,7 @@
 #pragma once
 #include "central_proto.hpp"
 #include "../src/net_protocol.hpp"  // PktBandEntry/PktBandPlan/PktBandRemove
+#include "emitter_db.hpp"
 #include <thread>
 #include <mutex>
 #include <atomic>
@@ -300,6 +301,28 @@ private:
 
     // BEWE 패킷 빌드 헬퍼 (magic + type + len + payload)
     static std::vector<uint8_t> make_bewe_packet(uint8_t type, const void* payload, uint32_t plen);
+
+    // ── Signal Library / Emitter DB ─────────────────────────────────────
+    BeweCentral::EmitterDb emitter_db_;
+    // 새 sighting을 emitter_db에 ingest (info_data 파싱 → Sighting → ingest_sighting).
+    // 결과: emitters/sightings 갱신 후 모든 방에 EMITTER_LIST + SIGHTING_LIST broadcast.
+    void ingest_report_to_emitter_db(const char* filename,
+                                     const char* reporter,
+                                     const char* info_data);
+    // 모든 방에 emitter 목록 페이지 1장(또는 전체) broadcast.
+    void broadcast_emitter_list_all();
+    // 한 JOIN 또는 HOST에게 응답 형태로 페이지 송신.
+    void send_emitter_list_page(std::shared_ptr<JoinEntry> je,
+                                std::shared_ptr<HostRoom> room,
+                                uint16_t conn_id, uint16_t off, uint16_t lim);
+    void send_sighting_list_page(std::shared_ptr<JoinEntry> je,
+                                 std::shared_ptr<HostRoom> room,
+                                 uint16_t conn_id,
+                                 const std::string& euid_filter,
+                                 uint16_t off, uint16_t lim);
+    // emitter 1개의 변경(upsert/delete/sighting link)을 모든 방·JOIN에 broadcast.
+    void broadcast_emitter_changed(const std::string& euid);
+    void broadcast_sighting_changed(const std::string& sid);
 
     // ── Scheduled recording persistence ─────────────────────────────────
     // ~/BE_WE/DataBase/schedules.json 에 station_id 별 SCHED_SYNC 스냅샷 저장

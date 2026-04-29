@@ -489,6 +489,16 @@ void CentralClient::mux_loop(int central_fd,
                         on_central_sched_sync_(buf.data(), mux.len);
                     continue;
                 }
+                if(btype == 0x42){  // EMITTER_LIST: Central → HOST
+                    if(on_central_emitter_list_)
+                        on_central_emitter_list_(buf.data(), mux.len);
+                    continue;
+                }
+                if(btype == 0x46){  // SIGHTING_LIST: Central → HOST
+                    if(on_central_sighting_list_)
+                        on_central_sighting_list_(buf.data(), mux.len);
+                    continue;
+                }
                 if(btype == 0x31){  // BAND_PLAN_SYNC: host owns it; ignore any incoming.
                     continue;
                 }

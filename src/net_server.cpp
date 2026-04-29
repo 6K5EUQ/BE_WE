@@ -329,7 +329,7 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
     case PacketType::REPORT_ADD: {
         if(!c->authed || len < sizeof(PktReportAdd)) break;
         auto* ra = reinterpret_cast<const PktReportAdd*>(payload);
-        if(cb.on_report_add) cb.on_report_add(c->op_index, c->name, ra->filename, ra->info_summary);
+        if(cb.on_report_add) cb.on_report_add(c->op_index, c->name, ra->filename, ra->info_data);
         break;
     }
 

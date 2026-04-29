@@ -144,6 +144,16 @@ static constexpr uint8_t BEWE_TYPE_LWF_LIVE_ROW    = 0x3D;
 static constexpr uint8_t BEWE_TYPE_LWF_LIVE_STOP   = 0x3E;
 static constexpr uint8_t BEWE_TYPE_LWF_LIVE_REQ    = 0x3F;
 
+// ── Signal Library / Emitter DB (relay 내부 dispatch에 사용) ─────────────
+static constexpr uint8_t BEWE_TYPE_RPT_ADD            = 0x23;  // REPORT_ADD (intercept 후 emitter ingest)
+static constexpr uint8_t BEWE_TYPE_EMITTER_LIST_REQ   = 0x41;
+static constexpr uint8_t BEWE_TYPE_EMITTER_LIST       = 0x42;
+static constexpr uint8_t BEWE_TYPE_EMITTER_UPSERT     = 0x43;
+static constexpr uint8_t BEWE_TYPE_EMITTER_DELETE     = 0x44;
+static constexpr uint8_t BEWE_TYPE_SIGHTING_LIST_REQ  = 0x45;
+static constexpr uint8_t BEWE_TYPE_SIGHTING_LIST      = 0x46;
+static constexpr uint8_t BEWE_TYPE_SIGHTING_LINK      = 0x47;
+
 static constexpr uint8_t BEWE_TYPE_CHAT     = 0x07;
 
 // AUTH_REQ payload: id[32] + pw[64] + tier[1] = 97 bytes

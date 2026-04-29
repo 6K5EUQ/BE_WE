@@ -650,6 +650,31 @@ void NetClient::handle_packet(PacketType type,
         break;
     }
 
+    case PacketType::EMITTER_LIST: {
+        if(len < sizeof(PktEmitterList)) break;
+        auto* hdr = reinterpret_cast<const PktEmitterList*>(payload);
+        uint16_t cnt = hdr->count;
+        size_t expected = sizeof(PktEmitterList) + cnt * sizeof(PktEmitterEntry);
+        if(len < expected) break;
+        const PktEmitterEntry* arr = reinterpret_cast<const PktEmitterEntry*>(
+            payload + sizeof(PktEmitterList));
+        std::vector<PktEmitterEntry> list(arr, arr + cnt);
+        if(on_emitter_list) on_emitter_list(*hdr, list);
+        break;
+    }
+    case PacketType::SIGHTING_LIST: {
+        if(len < sizeof(PktSightingList)) break;
+        auto* hdr = reinterpret_cast<const PktSightingList*>(payload);
+        uint16_t cnt = hdr->count;
+        size_t expected = sizeof(PktSightingList) + cnt * sizeof(PktSightingEntry);
+        if(len < expected) break;
+        const PktSightingEntry* arr = reinterpret_cast<const PktSightingEntry*>(
+            payload + sizeof(PktSightingList));
+        std::vector<PktSightingEntry> list(arr, arr + cnt);
+        if(on_sighting_list) on_sighting_list(*hdr, list);
+        break;
+    }
+
     default: break;
     }
 }
@@ -910,12 +935,46 @@ bool NetClient::cmd_report_update(const char* filename, const char* info_data){
     strncpy(ru.info_data, info_data ? info_data : "", 511);
     return raw_send(PacketType::REPORT_UPDATE, &ru, sizeof(ru));
 }
-bool NetClient::cmd_report_add(const char* filename, const char* info_summary){
+bool NetClient::cmd_report_add(const char* filename, const char* info_data){
     PktReportAdd ra{};
     strncpy(ra.filename, filename, 127);
     strncpy(ra.reporter, my_name, 31);
-    strncpy(ra.info_summary, info_summary ? info_summary : "", 255);
+    strncpy(ra.info_data, info_data ? info_data : "", 511);
     return raw_send(PacketType::REPORT_ADD, &ra, sizeof(ra));
+}
+
+// ── Signal Library / Emitter DB ────────────────────────────────────────
+bool NetClient::cmd_emitter_list_req(uint16_t off, uint16_t lim){
+    PktEmitterListReq r{};
+    r.offset = off;
+    r.limit  = lim ? lim : MAX_EMITTERS_PER_PKT;
+    return raw_send(PacketType::EMITTER_LIST_REQ, &r, sizeof(r));
+}
+bool NetClient::cmd_emitter_upsert(const PktEmitterUpsert& up){
+    return raw_send(PacketType::EMITTER_UPSERT, &up, sizeof(up));
+}
+bool NetClient::cmd_emitter_delete(const char* emitter_uid){
+    PktEmitterDelete d{};
+    strncpy(d.emitter_uid, emitter_uid ? emitter_uid : "", EMITTER_UID_LEN-1);
+    return raw_send(PacketType::EMITTER_DELETE, &d, sizeof(d));
+}
+bool NetClient::cmd_sighting_list_req(const char* emitter_uid_filter,
+                                       uint16_t off, uint16_t lim){
+    PktSightingListReq r{};
+    if(emitter_uid_filter)
+        strncpy(r.emitter_uid, emitter_uid_filter, EMITTER_UID_LEN-1);
+    r.offset = off;
+    r.limit  = lim ? lim : MAX_SIGHTINGS_PER_PKT;
+    return raw_send(PacketType::SIGHTING_LIST_REQ, &r, sizeof(r));
+}
+bool NetClient::cmd_sighting_link(const char* sighting_id, const char* emitter_uid,
+                                  uint8_t action, const char* editor){
+    PktSightingLink l{};
+    strncpy(l.sighting_id, sighting_id ? sighting_id : "", SIGHTING_ID_LEN-1);
+    strncpy(l.emitter_uid, emitter_uid ? emitter_uid : "", EMITTER_UID_LEN-1);
+    l.action = action;
+    strncpy(l.editor, editor ? editor : my_name, SIGHTING_REPORTER_LEN-1);
+    return raw_send(PacketType::SIGHTING_LINK, &l, sizeof(l));
 }
 bool NetClient::cmd_db_save(const char* filepath, const char* operator_name){
     FILE* fp = fopen(filepath, "rb");

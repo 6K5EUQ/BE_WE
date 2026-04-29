@@ -1,5 +1,6 @@
 #include "central_server.hpp"
 #include "../src/net_protocol.hpp"
+#include "info_parse.hpp"
 #include <cstdio>
 #include <cstring>
 #include <cerrno>
@@ -107,6 +108,16 @@ bool CentralServer::start(int port){
         mkdir(base.c_str(), 0755);
         schedules_json_path_ = base + "/schedules.json";
         load_schedules_from_json();
+
+        // Emitter DB: load existing _emitters/_sightings; if first run, migrate from _reports/.
+        emitter_db_.load(base);
+        std::string rpt_dir = base + "/_reports";
+        if(emitter_db_.sighting_count() == 0){
+            printf("[Central] EmitterDb migration: scanning %s ...\n", rpt_dir.c_str());
+            emitter_db_.migrate_from_reports(rpt_dir);
+        }
+        printf("[Central] EmitterDb: %zu emitters, %zu sightings loaded\n",
+               emitter_db_.emitter_count(), emitter_db_.sighting_count());
     }
     listen_fd_ = make_listen_sock(port);
     if(listen_fd_ < 0) return false;
@@ -789,8 +800,9 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         if(bewe_type == 0x23 && plen >= sizeof(PktReportAdd)){
             auto* ra = reinterpret_cast<const PktReportAdd*>(payload);
             FILE* fi = fopen((rpt_dir+"/"+ra->filename+".info").c_str(), "w");
-            if(fi){ if(ra->info_summary[0]) fprintf(fi,"%s",ra->info_summary); else fprintf(fi,"Operator: %s\n",ra->reporter); fclose(fi); }
+            if(fi){ if(ra->info_data[0]) fprintf(fi,"%s",ra->info_data); else fprintf(fi,"Operator: %s\n",ra->reporter); fclose(fi); }
             printf("[Central] REPORT_ADD(HOST): '%s'\n", ra->filename);
+            ingest_report_to_emitter_db(ra->filename, ra->reporter, ra->info_data);
         } else if(bewe_type == BEWE_TYPE_RPT_DELETE && plen >= 128){
             char fn[129]={}; memcpy(fn,payload,128);
             remove((rpt_dir+"/"+fn+".info").c_str());
@@ -1089,12 +1101,12 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
             std::string ip = rpt_dir + "/" + std::string(ra->filename) + ".info";
             FILE* fi = fopen(ip.c_str(), "w");
             if(fi){
-                // info_summary에 기본 정보 저장
-                if(ra->info_summary[0]) fprintf(fi, "%s", ra->info_summary);
+                if(ra->info_data[0]) fprintf(fi, "%s", ra->info_data);
                 else fprintf(fi, "Operator: %s\n", ra->reporter);
                 fclose(fi);
             }
             printf("[Central] REPORT_ADD: '%s' by '%s'\n", ra->filename, ra->reporter);
+            ingest_report_to_emitter_db(ra->filename, ra->reporter, ra->info_data);
             broadcast_report_list_central(room);
         }
         return true; // HOST에 포워드 안 함
@@ -1129,7 +1141,116 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
             FILE* fi = fopen(ip.c_str(), "w");
             if(fi){ fwrite(info, 1, strnlen(info,511), fi); fclose(fi); }
             printf("[Central] REPORT_UPDATE: '%s'\n", fn);
+            // .info 갱신 시에도 emitter_db 재 ingest (운영자 수정값 반영).
+            ingest_report_to_emitter_db(fn, "" /*reporter unknown — preserved by sighting_id*/, info);
             broadcast_report_list_central(room);
+        }
+        return true;
+    }
+
+    // ── Signal Library / Emitter DB ─────────────────────────────────────
+    if(bewe_type == BEWE_TYPE_EMITTER_LIST_REQ){
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        uint16_t off = 0, lim = MAX_EMITTERS_PER_PKT;
+        if(plen >= sizeof(PktEmitterListReq)){
+            auto* r = reinterpret_cast<const PktEmitterListReq*>(payload);
+            off = r->offset;
+            lim = r->limit > 0 ? r->limit : MAX_EMITTERS_PER_PKT;
+            if(lim > MAX_EMITTERS_PER_PKT) lim = MAX_EMITTERS_PER_PKT;
+        }
+        send_emitter_list_page(je, room, je->conn_id, off, lim);
+        return true;
+    }
+    if(bewe_type == BEWE_TYPE_SIGHTING_LIST_REQ){
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        std::string filter;
+        uint16_t off = 0, lim = MAX_SIGHTINGS_PER_PKT;
+        if(plen >= sizeof(PktSightingListReq)){
+            auto* r = reinterpret_cast<const PktSightingListReq*>(payload);
+            char tmp[EMITTER_UID_LEN+1]={};
+            memcpy(tmp, r->emitter_uid, EMITTER_UID_LEN);
+            filter = tmp;
+            off = r->offset;
+            lim = r->limit > 0 ? r->limit : MAX_SIGHTINGS_PER_PKT;
+            if(lim > MAX_SIGHTINGS_PER_PKT) lim = MAX_SIGHTINGS_PER_PKT;
+        }
+        send_sighting_list_page(je, room, je->conn_id, filter, off, lim);
+        return true;
+    }
+    if(bewe_type == BEWE_TYPE_EMITTER_UPSERT){
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        if(plen >= sizeof(PktEmitterUpsert)){
+            auto* up = reinterpret_cast<const PktEmitterUpsert*>(payload);
+            BeweCentral::Emitter e;
+            char tmp[EMITTER_UID_LEN+1]={}; memcpy(tmp, up->emitter_uid, EMITTER_UID_LEN);
+            e.emitter_uid = tmp;
+            char nm[EMITTER_NAME_LEN+1]={}; memcpy(nm, up->display_name, EMITTER_NAME_LEN);
+            e.display_name = nm;
+            e.freq_center_mhz   = up->freq_center_mhz;
+            e.freq_tolerance_khz = up->freq_tolerance_khz;
+            e.bw_khz            = up->bw_khz;
+            char md[EMITTER_MOD_LEN+1]={}; memcpy(md, up->modulation, EMITTER_MOD_LEN);
+            e.modulation = md;
+            char pr[EMITTER_PROTO_LEN+1]={}; memcpy(pr, up->protocol, EMITTER_PROTO_LEN);
+            e.protocol = pr;
+            char tg[EMITTER_TAGS_LEN+1]={}; memcpy(tg, up->tags_id, EMITTER_TAGS_LEN);
+            e.tags_id = tg;
+            char nt[EMITTER_NOTES_LEN+1]={}; memcpy(nt, up->operator_notes, EMITTER_NOTES_LEN);
+            e.operator_notes = nt;
+            char ed[SIGHTING_REPORTER_LEN+1]={}; memcpy(ed, up->editor, SIGHTING_REPORTER_LEN);
+            if(e.created_by.empty()) e.created_by = ed;
+            emitter_db_.upsert_emitter(e);
+            broadcast_emitter_changed(e.emitter_uid);
+            printf("[Central] EMITTER_UPSERT: '%s' by '%s'\n",
+                   e.emitter_uid.c_str(), ed);
+        }
+        return true;
+    }
+    if(bewe_type == BEWE_TYPE_EMITTER_DELETE){
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        if(plen >= sizeof(PktEmitterDelete)){
+            auto* dp = reinterpret_cast<const PktEmitterDelete*>(payload);
+            char tmp[EMITTER_UID_LEN+1]={}; memcpy(tmp, dp->emitter_uid, EMITTER_UID_LEN);
+            std::string uid = tmp;
+            // 삭제 전 자식 sighting 목록을 미리 알아둠 → 변경 broadcast 위해.
+            BeweCentral::Emitter saved;
+            std::vector<std::string> children;
+            if(emitter_db_.find_emitter(uid, saved)) children = saved.member_sighting_ids;
+            if(emitter_db_.delete_emitter(uid)){
+                broadcast_emitter_changed(uid); // count=0이지만 여기선 entry 빈 → 클라가 무시할 수 있음
+                for(auto& sid : children) broadcast_sighting_changed(sid);
+                printf("[Central] EMITTER_DELETE: '%s'\n", uid.c_str());
+            }
+        }
+        return true;
+    }
+    if(bewe_type == BEWE_TYPE_SIGHTING_LINK){
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        if(plen >= sizeof(PktSightingLink)){
+            auto* lk = reinterpret_cast<const PktSightingLink*>(payload);
+            char sid[SIGHTING_ID_LEN+1]={}; memcpy(sid, lk->sighting_id, SIGHTING_ID_LEN);
+            char tuid[EMITTER_UID_LEN+1]={}; memcpy(tuid, lk->emitter_uid, EMITTER_UID_LEN);
+            // 링크 변경 전 sighting의 기존 emitter도 갱신해야 함.
+            BeweCentral::Sighting before;
+            std::string old_euid;
+            if(emitter_db_.find_sighting(sid, before)) old_euid = before.emitter_uid;
+            if(emitter_db_.link_sighting(sid, tuid, lk->action)){
+                BeweCentral::Sighting after;
+                if(emitter_db_.find_sighting(sid, after)){
+                    if(!old_euid.empty() && old_euid != after.emitter_uid)
+                        broadcast_emitter_changed(old_euid);
+                    if(!after.emitter_uid.empty())
+                        broadcast_emitter_changed(after.emitter_uid);
+                    broadcast_sighting_changed(sid);
+                }
+                printf("[Central] SIGHTING_LINK: %s action=%u target=%s\n",
+                       sid, (unsigned)lk->action, tuid);
+            }
         }
         return true;
     }
@@ -1216,20 +1337,30 @@ void CentralServer::broadcast_report_list_central(std::shared_ptr<HostRoom> room
             std::string fn = n.substr(0, n.size()-5);
             ReportFileEntry re{};
             strncpy(re.filename, fn.c_str(), 127);
-            // .info에서 reporter, info_summary 읽기
+            // .info 전체를 info_data에 보존, Operator만 reporter 필드로 추출.
             std::string ip = rpt_dir + "/" + n;
             FILE* fi = fopen(ip.c_str(), "r");
             if(fi){
-                char line[256]; int pos=0;
-                while(fgets(line,sizeof(line),fi)){
-                    char k[64]={},val[128]={};
-                    if(sscanf(line,"%63[^:]: %127[^\n]",k,val)>=1){
-                        if(strcmp(k,"Operator")==0) strncpy(re.reporter,val,31);
-                    }
-                    int l=(int)strlen(line);
-                    if(pos+l<255){ memcpy(re.info_summary+pos,line,l); pos+=l; }
-                }
+                size_t nr = fread(re.info_data, 1, sizeof(re.info_data)-1, fi);
+                re.info_data[nr] = 0;
                 fclose(fi);
+                // Operator 라인 추출
+                const char* p = re.info_data;
+                while(*p){
+                    if(strncmp(p, "Operator:", 9) == 0){
+                        const char* v = p + 9;
+                        while(*v == ' ' || *v == '\t') v++;
+                        const char* eend = v;
+                        while(*eend && *eend != '\n' && *eend != '\r') eend++;
+                        size_t L = (size_t)(eend - v);
+                        if(L > 31) L = 31;
+                        memcpy(re.reporter, v, L);
+                        re.reporter[L] = 0;
+                        break;
+                    }
+                    while(*p && *p != '\n') p++;
+                    if(*p == '\n') p++;
+                }
             }
             entries.push_back(re);
         }
@@ -1718,3 +1849,213 @@ void CentralServer::load_schedules_from_json(){
 
 // (Band plan persistence: removed. Each HOST owns ~/BE_WE/band_plan.json.
 //  Central just relays BAND_PLAN_SYNC and BAND_ADD/UPDATE/REMOVE.)
+
+// ── Signal Library / Emitter DB ────────────────────────────────────────
+
+// helper: copy std::string into fixed char[N] (NUL-terminated)
+static inline void copy_to_fixed(char* dst, size_t cap, const std::string& src){
+    size_t L = std::min(cap - 1, src.size());
+    memcpy(dst, src.data(), L);
+    dst[L] = 0;
+}
+
+// helper: convert BeweCentral::Emitter → PktEmitterEntry (wire form)
+static void emitter_to_wire(const BeweCentral::Emitter& e, PktEmitterEntry& out){
+    memset(&out, 0, sizeof(out));
+    copy_to_fixed(out.emitter_uid,    sizeof(out.emitter_uid),    e.emitter_uid);
+    copy_to_fixed(out.display_name,   sizeof(out.display_name),   e.display_name);
+    out.freq_center_mhz   = e.freq_center_mhz;
+    out.freq_tolerance_khz = e.freq_tolerance_khz;
+    out.bw_khz            = e.bw_khz;
+    copy_to_fixed(out.modulation,     sizeof(out.modulation),     e.modulation);
+    copy_to_fixed(out.protocol,       sizeof(out.protocol),       e.protocol);
+    copy_to_fixed(out.tags_id,        sizeof(out.tags_id),        e.tags_id);
+    out.first_seen_utc    = e.first_seen_utc;
+    out.last_seen_utc     = e.last_seen_utc;
+    out.sighting_count    = e.sighting_count;
+    // contributing_stations: comma-separated, truncated.
+    std::string joined;
+    for(size_t i=0;i<e.contributing_stations.size();i++){
+        if(i) joined += ",";
+        joined += e.contributing_stations[i];
+        if(joined.size() > sizeof(out.contributing_stations)-1) break;
+    }
+    copy_to_fixed(out.contributing_stations, sizeof(out.contributing_stations), joined);
+    copy_to_fixed(out.operator_notes, sizeof(out.operator_notes), e.operator_notes);
+}
+
+static void sighting_to_wire(const BeweCentral::Sighting& s, PktSightingEntry& out){
+    memset(&out, 0, sizeof(out));
+    copy_to_fixed(out.sighting_id,  sizeof(out.sighting_id),  s.sighting_id);
+    copy_to_fixed(out.filename,     sizeof(out.filename),     s.filename);
+    copy_to_fixed(out.reporter,     sizeof(out.reporter),     s.reporter);
+    copy_to_fixed(out.station,      sizeof(out.station),      s.station);
+    out.freq_mhz = s.freq_mhz;
+    out.bw_khz   = s.bw_khz;
+    copy_to_fixed(out.modulation,   sizeof(out.modulation),   s.modulation);
+    copy_to_fixed(out.protocol,     sizeof(out.protocol),     s.protocol);
+    out.start_utc  = s.start_utc;
+    out.duration_s = s.duration_s;
+    copy_to_fixed(out.emitter_uid,  sizeof(out.emitter_uid),  s.emitter_uid);
+    out.match_status = s.match_status;
+}
+
+void CentralServer::ingest_report_to_emitter_db(const char* filename,
+                                                 const char* reporter,
+                                                 const char* info_data){
+    if(!filename || !*filename) return;
+    BeweCentral::Sighting s;
+    s.filename = filename;
+    s.reporter = reporter ? reporter : "";
+    s.station  = s.reporter; // 별도 station 필드 없으면 reporter를 사용
+    if(info_data && *info_data){
+        auto kv = InfoParse::parse(info_data);
+        if(kv.count("Frequency")) InfoParse::extract_freq_mhz(kv["Frequency"], s.freq_mhz);
+        if(kv.count("Bandwidth")) InfoParse::extract_bw_khz(kv["Bandwidth"], s.bw_khz);
+        s.modulation    = kv.count("Modulation") ? kv["Modulation"] : "";
+        s.protocol      = kv.count("Protocol") ? kv["Protocol"] : "";
+        s.target        = kv.count("Target") ? kv["Target"] : "";
+        s.tags          = kv.count("Tags") ? kv["Tags"] : "";
+        s.operator_name = kv.count("Operator") ? kv["Operator"] : s.reporter;
+        if(kv.count("Location") && !kv["Location"].empty()) s.station = kv["Location"];
+        if(kv.count("Day") && kv.count("Up Time"))
+            InfoParse::extract_start_utc(kv["Day"], kv["Up Time"], s.start_utc);
+        if(kv.count("Duration")) InfoParse::extract_duration_s(kv["Duration"], s.duration_s);
+    } else {
+        s.operator_name = s.reporter;
+    }
+    s.sighting_id = BeweCentral::sighting_id_from(s.filename, s.reporter);
+    auto mr = emitter_db_.ingest_sighting(s);
+    printf("[Central] EmitterDb ingest: '%s' → %s (status=%u, score=%.2f)\n",
+           s.filename.c_str(),
+           mr.emitter_uid.empty() ? "<orphan>" : mr.emitter_uid.c_str(),
+           (unsigned)mr.status, mr.score);
+    // Broadcast change.
+    if(!mr.emitter_uid.empty()) broadcast_emitter_changed(mr.emitter_uid);
+    broadcast_sighting_changed(s.sighting_id);
+}
+
+// 한 conn에 emitter 페이지 전송 (sender == je: JOIN으로 / je == nullptr + room: HOST에).
+void CentralServer::send_emitter_list_page(std::shared_ptr<JoinEntry> je,
+                                           std::shared_ptr<HostRoom> room,
+                                           uint16_t conn_id,
+                                           uint16_t off, uint16_t lim){
+    std::vector<BeweCentral::Emitter> rows;
+    uint16_t total = 0;
+    emitter_db_.list_emitters(off, lim, rows, total);
+    size_t payload_sz = sizeof(PktEmitterList) + rows.size() * sizeof(PktEmitterEntry);
+    std::vector<uint8_t> payload(payload_sz, 0);
+    auto* hdr = reinterpret_cast<PktEmitterList*>(payload.data());
+    hdr->total_count = total;
+    hdr->offset      = off;
+    hdr->count       = (uint16_t)rows.size();
+    auto* arr = reinterpret_cast<PktEmitterEntry*>(payload.data() + sizeof(PktEmitterList));
+    for(size_t i=0;i<rows.size();i++) emitter_to_wire(rows[i], arr[i]);
+
+    auto bewe = make_bewe_packet(BEWE_TYPE_EMITTER_LIST, payload.data(), (uint32_t)payload_sz);
+    if(je && je->fd >= 0 && je->authed){
+        je->enqueue_ctrl(bewe.data(), bewe.size());
+    } else if(room){
+        enqueue_host_send(room, conn_id, CentralMuxType::DATA, bewe.data(), (uint32_t)bewe.size());
+    }
+}
+
+void CentralServer::send_sighting_list_page(std::shared_ptr<JoinEntry> je,
+                                             std::shared_ptr<HostRoom> room,
+                                             uint16_t conn_id,
+                                             const std::string& euid_filter,
+                                             uint16_t off, uint16_t lim){
+    std::vector<BeweCentral::Sighting> rows;
+    uint16_t total = 0;
+    emitter_db_.list_sightings(euid_filter, off, lim, rows, total);
+    size_t payload_sz = sizeof(PktSightingList) + rows.size() * sizeof(PktSightingEntry);
+    std::vector<uint8_t> payload(payload_sz, 0);
+    auto* hdr = reinterpret_cast<PktSightingList*>(payload.data());
+    copy_to_fixed(hdr->emitter_uid_filter, sizeof(hdr->emitter_uid_filter), euid_filter);
+    hdr->total_count = total;
+    hdr->offset      = off;
+    hdr->count       = (uint16_t)rows.size();
+    auto* arr = reinterpret_cast<PktSightingEntry*>(payload.data() + sizeof(PktSightingList));
+    for(size_t i=0;i<rows.size();i++) sighting_to_wire(rows[i], arr[i]);
+
+    auto bewe = make_bewe_packet(BEWE_TYPE_SIGHTING_LIST, payload.data(), (uint32_t)payload_sz);
+    if(je && je->fd >= 0 && je->authed){
+        je->enqueue_ctrl(bewe.data(), bewe.size());
+    } else if(room){
+        enqueue_host_send(room, conn_id, CentralMuxType::DATA, bewe.data(), (uint32_t)bewe.size());
+    }
+}
+
+// 모든 방의 모든 JOIN + HOST에 emitter 1개의 변경을 보냄 (single-entry list 형태).
+void CentralServer::broadcast_emitter_changed(const std::string& euid){
+    BeweCentral::Emitter e;
+    bool exists = emitter_db_.find_emitter(euid, e);
+    // 존재하지 않으면(= delete됨) count=0으로 보냄. 클라이언트는 uid 매칭으로 자체 캐시에서 삭제.
+    PktEmitterEntry entry{};
+    if(exists) emitter_to_wire(e, entry);
+    else copy_to_fixed(entry.emitter_uid, sizeof(entry.emitter_uid), euid);
+    size_t cnt = exists ? 1 : 0;
+    size_t payload_sz = sizeof(PktEmitterList) + (exists ? sizeof(PktEmitterEntry) : 0);
+    // delete의 경우 entry는 uid만 박아 전달하되 count=0이라 클라가 무시 → 클라가 별도 EMITTER_DELETE
+    // 패킷을 reflect 받아 처리하도록 함. 여기서는 delete된 uid 전파를 위해 count=1, 단 payload는
+    // 빈 entry. 더 단순하게: count=1로 보내되 클라가 freq=0 + name 빈 으로 인지 못함. → 그냥
+    // single-entry로 보내고, 클라는 uid가 자기 캐시에 있으면 갱신, 없으면 새로 추가.
+    cnt = 1;
+    payload_sz = sizeof(PktEmitterList) + sizeof(PktEmitterEntry);
+    std::vector<uint8_t> payload(payload_sz, 0);
+    auto* hdr = reinterpret_cast<PktEmitterList*>(payload.data());
+    hdr->total_count = (uint16_t)emitter_db_.emitter_count();
+    hdr->offset = 0;
+    hdr->count = (uint16_t)cnt;
+    auto* arr = reinterpret_cast<PktEmitterEntry*>(payload.data() + sizeof(PktEmitterList));
+    arr[0] = entry;
+
+    auto bewe = make_bewe_packet(BEWE_TYPE_EMITTER_LIST, payload.data(), (uint32_t)payload_sz);
+    std::lock_guard<std::mutex> lk(rooms_mtx_);
+    for(auto& room : rooms_){
+        // HOST에 (HOST의 NetClient/Server는 이를 받아 자체 캐시 업데이트)
+        enqueue_host_send(room, 0xFFFF, CentralMuxType::DATA, bewe.data(), (uint32_t)bewe.size());
+        std::lock_guard<std::mutex> jlk(room->joins_mtx);
+        for(auto& je : room->joins){
+            if(je->alive.load() && je->fd >= 0 && je->authed)
+                je->enqueue_ctrl(bewe.data(), bewe.size());
+        }
+    }
+}
+
+void CentralServer::broadcast_sighting_changed(const std::string& sid){
+    BeweCentral::Sighting s;
+    if(!emitter_db_.find_sighting(sid, s)) return;
+    PktSightingEntry entry{};
+    sighting_to_wire(s, entry);
+    size_t payload_sz = sizeof(PktSightingList) + sizeof(PktSightingEntry);
+    std::vector<uint8_t> payload(payload_sz, 0);
+    auto* hdr = reinterpret_cast<PktSightingList*>(payload.data());
+    hdr->total_count = (uint16_t)emitter_db_.sighting_count();
+    hdr->offset = 0;
+    hdr->count = 1;
+    memcpy(payload.data() + sizeof(PktSightingList), &entry, sizeof(entry));
+
+    auto bewe = make_bewe_packet(BEWE_TYPE_SIGHTING_LIST, payload.data(), (uint32_t)payload_sz);
+    std::lock_guard<std::mutex> lk(rooms_mtx_);
+    for(auto& room : rooms_){
+        enqueue_host_send(room, 0xFFFF, CentralMuxType::DATA, bewe.data(), (uint32_t)bewe.size());
+        std::lock_guard<std::mutex> jlk(room->joins_mtx);
+        for(auto& je : room->joins){
+            if(je->alive.load() && je->fd >= 0 && je->authed)
+                je->enqueue_ctrl(bewe.data(), bewe.size());
+        }
+    }
+}
+
+void CentralServer::broadcast_emitter_list_all(){
+    // 첫 페이지만 broadcast — 클라가 더 필요하면 EMITTER_LIST_REQ로 페이징.
+    std::lock_guard<std::mutex> lk(rooms_mtx_);
+    for(auto& room : rooms_){
+        std::lock_guard<std::mutex> jlk(room->joins_mtx);
+        for(auto& je : room->joins){
+            if(je->alive.load() && je->fd >= 0 && je->authed)
+                send_emitter_list_page(je, nullptr, 0, 0, MAX_EMITTERS_PER_PKT);
+        }
+    }
+}

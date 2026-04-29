@@ -939,7 +939,7 @@ void run_cli_host(){
 
     // ── Report: JOIN이 파일을 report에 추가 → 전체 브로드캐스트 ──────
     srv->cb.on_report_add = [&](uint8_t op_idx, const char* op_name,
-                                 const char* filename, const char* info_summary){
+                                 const char* filename, const char* info_data){
         bewe_log_push(0,"[Report] %s reported '%s'\n", op_name, filename);
         // report 목록 갱신 후 브로드캐스트
         std::vector<ReportFileEntry> entries;
@@ -954,18 +954,31 @@ void run_cli_host(){
                 strncpy(re.filename, n.c_str(), 127);
                 std::string fp = dir+"/"+n;
                 struct stat st{}; if(stat(fp.c_str(),&st)==0) re.size_bytes=(uint64_t)st.st_size;
-                // .info에서 reporter 읽기
+                // .info 전체를 info_data로 보존 + 운영자 이름 추출.
                 std::string ip = fp+".info";
                 FILE* fi = fopen(ip.c_str(), "r");
                 if(fi){
-                    char line[256];
-                    while(fgets(line,sizeof(line),fi)){
-                        char k[64]={},val[128]={};
-                        if(sscanf(line,"%63[^:]: %127[^\n]",k,val)>=1){
-                            if(strcmp(k,"Operator")==0) strncpy(re.reporter,val,31);
-                        }
-                    }
+                    size_t n_read = fread(re.info_data, 1, sizeof(re.info_data)-1, fi);
+                    re.info_data[n_read] = 0;
                     fclose(fi);
+                    // Operator 라인 추출 (reporter 필드용)
+                    const char* p = re.info_data;
+                    while(*p){
+                        if(strncmp(p, "Operator:", 9) == 0){
+                            const char* v = p + 9;
+                            while(*v == ' ' || *v == '\t') v++;
+                            const char* end = v;
+                            while(*end && *end != '\n' && *end != '\r') end++;
+                            size_t L = (size_t)(end - v);
+                            if(L > 31) L = 31;
+                            memcpy(re.reporter, v, L);
+                            re.reporter[L] = 0;
+                            break;
+                        }
+                        // skip to next line
+                        while(*p && *p != '\n') p++;
+                        if(*p == '\n') p++;
+                    }
                 }
                 out.push_back(re);
             }

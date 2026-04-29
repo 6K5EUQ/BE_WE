@@ -130,6 +130,7 @@ else()
         src/host_band_categories.cpp
         src/long_waterfall.cpp
         src/long_waterfall_view.cpp
+        src/sig_lib_view.cpp
         src/lora_demod.cpp
         src/pluto_io.cpp
         ${IMGUI_SOURCES}

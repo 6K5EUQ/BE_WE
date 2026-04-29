@@ -307,10 +307,18 @@ public:
     bool cmd_db_download(const char* filename, const char* operator_name);
     bool cmd_report_delete(const char* filename);
     bool cmd_report_update(const char* filename, const char* info_data);
-    bool cmd_report_add(const char* filename, const char* info_summary);
+    bool cmd_report_add(const char* filename, const char* info_data);
     bool cmd_db_save(const char* filepath, const char* operator_name);
     bool cmd_request_db_list();           // JOIN → Central: refresh DB list
     bool cmd_request_report_list();       // JOIN → Central: refresh Report list
+
+    // ── Signal Library / Emitter DB (JOIN ↔ Central) ────────────────────
+    bool cmd_emitter_list_req(uint16_t off, uint16_t lim);
+    bool cmd_emitter_upsert(const PktEmitterUpsert& up);
+    bool cmd_emitter_delete(const char* emitter_uid);
+    bool cmd_sighting_list_req(const char* emitter_uid_filter, uint16_t off, uint16_t lim);
+    bool cmd_sighting_link(const char* sighting_id, const char* emitter_uid,
+                           uint8_t action, const char* editor);
 
     // Report list received from HOST
     std::function<void(const std::vector<ReportFileEntry>&)> on_report_list;
@@ -320,6 +328,9 @@ public:
     std::function<void(const PktDbDownloadData*, const uint8_t*, uint32_t)> on_db_download_data;
     // DB download .info from Central (도착 순서: .info → .wav 청크들)
     std::function<void(const PktDbDownloadInfo*)> on_db_download_info;
+    // Signal Library received from Central
+    std::function<void(const PktEmitterList&, const std::vector<PktEmitterEntry>&)> on_emitter_list;
+    std::function<void(const PktSightingList&, const std::vector<PktSightingEntry>&)> on_sighting_list;
 
 private:
     int  fd_ = -1;

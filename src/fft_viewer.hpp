@@ -155,6 +155,18 @@ public:
     // 워터폴/스펙트럼: 항상 2500행 메모리 유지 (위 MAX_FFTS_MEMORY)
     // IQ 롤링: T키로 활성화
     std::atomic<bool> tm_iq_on{false};     // T키: IQ SSD 롤링 활성
+    // ── Signal Library / Emitter DB ───────────────────────────────────
+    bool                            sig_lib_panel_open = false;   // M키 토글
+    std::mutex                      sig_lib_mtx;                  // emitters/sightings 보호
+    std::vector<PktEmitterEntry>    sig_lib_emitters;             // Central 캐시
+    std::vector<PktSightingEntry>   sig_lib_sightings;            // 선택된 emitter의 sightings (또는 전체)
+    bool                            sig_lib_dirty = false;        // overlay 진입 시 list_req 트리거
+    std::string                     sig_lib_selected_uid;         // 좌측 테이블 선택 emitter
+    std::string                     sig_lib_sightings_filter_uid; // sightings 캐시의 현재 필터
+    char                            sig_lib_search[128] = {};
+    bool                            sig_lib_show_pending = true;
+    bool                            sig_lib_show_auto = true;
+    bool                            sig_lib_show_confirmed = true;
     // ── Long Waterfall (24h+ FFT magnitude image) ─────────────────────
     bool              lwf_modal_open = false;     // IMG 버튼 토글 → viewer 모달
     std::atomic<int>  lwf_rotate_seq{0};          // SR/CF/fft_size/IQ on-off 변경 시 ++ → worker가 새 파일

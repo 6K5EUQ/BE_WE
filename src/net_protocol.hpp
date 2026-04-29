@@ -69,6 +69,15 @@ enum class PacketType : uint8_t {
     LWF_LIVE_STOP      = 0x3E,  // host → joins: LIVE file rotated/closed
     LWF_LIVE_REQ       = 0x3F,  // any → host: opt-in request to start LIVE stream
     LWF_DELETE_REQ     = 0x40,  // any → host: delete a long-waterfall file by name
+
+    // ── Signal Library / Emitter DB (central-managed) ─────────────────────
+    EMITTER_LIST_REQ   = 0x41,  // client → central: 전체 emitter 목록 요청 (off/lim)
+    EMITTER_LIST       = 0x42,  // central → all: emitter 목록 broadcast (페이지네이션)
+    EMITTER_UPSERT     = 0x43,  // client → central: emitter create/update (이름·메모 등)
+    EMITTER_DELETE     = 0x44,  // client → central: emitter 삭제 (자식 sighting은 unlink)
+    SIGHTING_LIST_REQ  = 0x45,  // client → central: sighting 목록 (특정 emitter 또는 전체)
+    SIGHTING_LIST      = 0x46,  // central → caller: sighting 목록 응답
+    SIGHTING_LINK      = 0x47,  // client → central: confirm/reject/move/split sighting
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────
@@ -510,11 +519,13 @@ struct __attribute__((packed)) PktIqProgress {
 };
 
 // ── REPORT_LIST / REPORT_ADD ──────────────────────────────────────────────
+// v1.6.0+: info_summary[256] → info_data[512] (REPORT_UPDATE와 동일한 전체 .info)
+//          - 운영자가 적은 모든 필드 보존 → emitter 매칭 입력으로 사용.
 struct __attribute__((packed)) ReportFileEntry {
     char     filename[128];
     uint64_t size_bytes;
     char     reporter[32];
-    char     info_summary[256]; // key .info fields (Freq, Protocol, Target...)
+    char     info_data[512];    // full .info contents (used for emitter matching)
 };
 struct __attribute__((packed)) PktReportList {
     uint16_t count;
@@ -523,7 +534,7 @@ struct __attribute__((packed)) PktReportList {
 struct __attribute__((packed)) PktReportAdd {
     char     filename[128];
     char     reporter[32];
-    char     info_summary[256];
+    char     info_data[512];    // full .info contents (was info_summary[256])
 };
 
 // ── DB_SAVE ──────────────────────────────────────────────────────────────
@@ -585,6 +596,110 @@ struct __attribute__((packed)) PktReportUpdate {
 struct __attribute__((packed)) PktDbDeleteReq {
     char     filename[128];
     char     operator_name[32];
+};
+
+// ── Signal Library / Emitter DB (0x41–0x47) ──────────────────────────────
+// 운영자가 .info에 직접 적은 값 + 녹음 시점 자동 기재값만 매칭에 사용.
+// 자동 디코더 결과(AIS/ADS-B/PRI)는 .info 자체에 자동 stamp되지 않으므로
+// 본 패킷 페이로드에도 들어오지 않음.
+constexpr int EMITTER_UID_LEN     = 16;     // "e_<8hex>"
+constexpr int EMITTER_NAME_LEN    = 64;
+constexpr int EMITTER_NOTES_LEN   = 512;
+constexpr int EMITTER_MOD_LEN     = 16;
+constexpr int EMITTER_PROTO_LEN   = 16;
+constexpr int EMITTER_TAGS_LEN    = 32;
+constexpr int STATIONS_LIST_LEN   = 128;    // 콤마 구분 contributing stations
+constexpr int SIGHTING_ID_LEN     = 16;
+constexpr int SIGHTING_FILE_LEN   = 128;
+constexpr int SIGHTING_REPORTER_LEN = 32;
+constexpr int SIGHTING_STATION_LEN  = 32;
+constexpr int MAX_EMITTERS_PER_PKT  = 200;  // 페이지네이션 단위
+constexpr int MAX_SIGHTINGS_PER_PKT = 200;
+
+struct __attribute__((packed)) PktEmitterEntry {
+    char     emitter_uid[EMITTER_UID_LEN];
+    char     display_name[EMITTER_NAME_LEN];
+    float    freq_center_mhz;
+    float    freq_tolerance_khz;
+    float    bw_khz;
+    char     modulation[EMITTER_MOD_LEN];
+    char     protocol[EMITTER_PROTO_LEN];
+    char     tags_id[EMITTER_TAGS_LEN];
+    int64_t  first_seen_utc;
+    int64_t  last_seen_utc;
+    uint32_t sighting_count;
+    char     contributing_stations[STATIONS_LIST_LEN]; // 콤마 구분
+    char     operator_notes[EMITTER_NOTES_LEN];
+};
+
+struct __attribute__((packed)) PktEmitterListReq {
+    uint16_t offset;
+    uint16_t limit;
+};
+
+struct __attribute__((packed)) PktEmitterList {
+    uint16_t total_count;
+    uint16_t offset;
+    uint16_t count;
+    uint8_t  _pad[2];
+    // PktEmitterEntry[count] follows
+};
+
+// 신규(emitter_uid 빈) 또는 기존 갱신.
+struct __attribute__((packed)) PktEmitterUpsert {
+    char     emitter_uid[EMITTER_UID_LEN];
+    char     display_name[EMITTER_NAME_LEN];
+    float    freq_center_mhz;
+    float    freq_tolerance_khz;
+    float    bw_khz;
+    char     modulation[EMITTER_MOD_LEN];
+    char     protocol[EMITTER_PROTO_LEN];
+    char     tags_id[EMITTER_TAGS_LEN];
+    char     operator_notes[EMITTER_NOTES_LEN];
+    char     editor[SIGHTING_REPORTER_LEN]; // 변경 stamp용
+};
+
+struct __attribute__((packed)) PktEmitterDelete {
+    char emitter_uid[EMITTER_UID_LEN];
+};
+
+struct __attribute__((packed)) PktSightingEntry {
+    char     sighting_id[SIGHTING_ID_LEN];
+    char     filename[SIGHTING_FILE_LEN];
+    char     reporter[SIGHTING_REPORTER_LEN];
+    char     station[SIGHTING_STATION_LEN];
+    float    freq_mhz;
+    float    bw_khz;
+    char     modulation[EMITTER_MOD_LEN];
+    char     protocol[EMITTER_PROTO_LEN];
+    int64_t  start_utc;
+    uint32_t duration_s;
+    char     emitter_uid[EMITTER_UID_LEN];
+    uint8_t  match_status;          // MS_AUTO_HIGH..MS_MANUAL (emitter_db.hpp)
+    uint8_t  _pad[3];
+};
+
+struct __attribute__((packed)) PktSightingListReq {
+    char     emitter_uid[EMITTER_UID_LEN]; // 빈 = 전체
+    uint16_t offset;
+    uint16_t limit;
+};
+
+struct __attribute__((packed)) PktSightingList {
+    char     emitter_uid_filter[EMITTER_UID_LEN];
+    uint16_t total_count;
+    uint16_t offset;
+    uint16_t count;
+    uint8_t  _pad[2];
+    // PktSightingEntry[count] follows
+};
+
+struct __attribute__((packed)) PktSightingLink {
+    char     sighting_id[SIGHTING_ID_LEN];
+    char     emitter_uid[EMITTER_UID_LEN]; // move/split의 target (confirm/reject 시 빈)
+    uint8_t  action;                       // 0=confirm 1=reject 2=move 3=split_to_new
+    uint8_t  _pad[3];
+    char     editor[SIGHTING_REPORTER_LEN];
 };
 
 // ── Wire helpers ──────────────────────────────────────────────────────────

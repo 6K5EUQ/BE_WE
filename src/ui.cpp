@@ -10,6 +10,7 @@
 #include "host_band_plan.hpp"
 #include "host_band_categories.hpp"
 #include "long_waterfall.hpp"
+#include "sig_lib_view.hpp"
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <algorithm>
@@ -5886,11 +5887,12 @@ void run_streaming_viewer(){
         // 한 번에 하나만 활성. 다른 게 켜져 있으면 새로 켜는 동작은 무시.
         // 끄기는 언제나 허용.
         auto any_other_overlay_open = [&](int self) -> bool {
-            // self: 0=EID, 1=LOG, 2=DIGI, 3=HIST
+            // self: 0=EID, 1=LOG, 2=DIGI, 3=HIST, 4=SIG_LIB
             if(self != 0 && v.eid_panel_open) return true;
             if(self != 1 && v.log_panel_open) return true;
             if(self != 2 && v.digi_decode_panel_open) return true;
             if(self != 3 && v.lwf_modal_open) return true;
+            if(self != 4 && v.sig_lib_panel_open) return true;
             return false;
         };
         auto try_toggle = [&](int self, bool& flag){
@@ -5918,6 +5920,12 @@ void run_streaming_viewer(){
         // ── HIST (Long Waterfall history) 토글 (H키) ────
         if(ImGui::IsKeyPressed(ImGuiKey_H, false) && !io.WantTextInput){
             try_toggle(3, v.lwf_modal_open);
+        }
+        // ── Signal Library 토글 (M키) — 새 오버레이 ────
+        if(ImGui::IsKeyPressed(ImGuiKey_M, false) && !io.WantTextInput){
+            if(try_toggle(4, v.sig_lib_panel_open) && v.sig_lib_panel_open){
+                v.sig_lib_dirty = true;  // 첫 진입 시 emitter list 요청
+            }
         }
         // ── BAND 오버레이 토글 (B키) — 메인페이지 전용. BAND는 오버레이 아니므로 mutual-excl 무관.
         if(ImGui::IsKeyPressed(ImGuiKey_B, false) && !io.WantTextInput){
@@ -6365,16 +6373,26 @@ void run_streaming_viewer(){
                                 strncpy(re.filename, n.substr(0,n.size()-5).c_str(), 127);
                                 FILE* fi = fopen((rpt_dir+"/"+n).c_str(), "r");
                                 if(fi){
-                                    char line[256]; int pos=0;
-                                    while(fgets(line,sizeof(line),fi)){
-                                        char k[64]={},val[128]={};
-                                        if(sscanf(line,"%63[^:]: %127[^\n]",k,val)>=1){
-                                            if(strcmp(k,"Operator")==0) strncpy(re.reporter,val,31);
-                                        }
-                                        int l=(int)strlen(line);
-                                        if(pos+l<255){ memcpy(re.info_summary+pos,line,l); pos+=l; }
-                                    }
+                                    size_t nr = fread(re.info_data, 1, sizeof(re.info_data)-1, fi);
+                                    re.info_data[nr] = 0;
                                     fclose(fi);
+                                    // Operator 라인 추출 (reporter 표시용)
+                                    const char* p = re.info_data;
+                                    while(*p){
+                                        if(strncmp(p, "Operator:", 9) == 0){
+                                            const char* v = p + 9;
+                                            while(*v == ' ' || *v == '\t') v++;
+                                            const char* eend = v;
+                                            while(*eend && *eend != '\n' && *eend != '\r') eend++;
+                                            size_t L = (size_t)(eend - v);
+                                            if(L > 31) L = 31;
+                                            memcpy(re.reporter, v, L);
+                                            re.reporter[L] = 0;
+                                            break;
+                                        }
+                                        while(*p && *p != '\n') p++;
+                                        if(*p == '\n') p++;
+                                    }
                                 }
                                 rpt_entries.push_back(re);
                             }
@@ -8194,7 +8212,7 @@ void run_streaming_viewer(){
                                 ImGui::TextDisabled("by %s", re.reporter);
                             }
                             if(rh){
-                                if(re.info_summary[0]) ImGui::SetTooltip("%s", re.info_summary);
+                                if(re.info_data[0]) ImGui::SetTooltip("%s", re.info_data);
                                 if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
                                     file_ctx.selected = true;
                                     file_ctx.open     = false;
@@ -9632,27 +9650,24 @@ void run_streaming_viewer(){
 
             // ── Report ────────────────────────────────────────────────
             if(ImGui::Selectable("  Report")){
-                // 파일 복사 없음 — 제목 + .info만 Central에 전송
+                // 파일 복사 없음 — 제목 + .info 전체를 Central에 전송 (운영자 매칭 입력).
                 {
-                    char info_sum[256] = {};
+                    char info_buf[512] = {};
                     std::string ip2 = file_ctx.filepath + ".info";
                     FILE* fis = fopen(ip2.c_str(), "r");
                     if(fis){
-                        char line[256]; int pos2=0;
-                        while(fgets(line,sizeof(line),fis) && pos2<250){
-                            int l = (int)strlen(line);
-                            if(pos2+l < 255){ memcpy(info_sum+pos2, line, l); pos2+=l; }
-                        }
+                        size_t nr = fread(info_buf, 1, sizeof(info_buf)-1, fis);
+                        info_buf[nr] = 0;
                         fclose(fis);
                     }
                     if(v.net_cli){
-                        v.net_cli->cmd_report_add(file_ctx.filename.c_str(), info_sum);
+                        v.net_cli->cmd_report_add(file_ctx.filename.c_str(), info_buf);
                     } else if(v.net_srv && v.net_srv->cb.on_relay_broadcast){
                         // HOST: relay를 통해 Central에 전송
                         PktReportAdd ra{};
                         strncpy(ra.filename, file_ctx.filename.c_str(), 127);
                         strncpy(ra.reporter, login_get_id(), 31);
-                        strncpy(ra.info_summary, info_sum, 255);
+                        strncpy(ra.info_data, info_buf, 511);
                         auto pkt = make_packet(PacketType::REPORT_ADD, &ra, sizeof(ra));
                         v.net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
                     }
@@ -13195,6 +13210,9 @@ void run_streaming_viewer(){
 
         // ── Long Waterfall viewer (host's own files + JOIN downloaded files) ─
         LongWaterfallView::draw_modal(v, cli);
+
+        // ── Signal Library overlay ────────────────────────────────────────
+        SigLibView::draw_overlay(v, cli);
 
         ImGui::Render();
         int dw2,dh2; glfwGetFramebufferSize(win,&dw2,&dh2);
