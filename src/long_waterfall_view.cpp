@@ -63,6 +63,11 @@ bool     g_tex_dirty = true;
 double   g_t0=0, g_t1=0;
 double   g_f0=0, g_f1=0;
 
+// 메인 워터폴의 display_power_min/max를 공유 — 프레임 사이 변화 감지용 캐시.
+// draw_modal()이 매 프레임 비교해 다르면 g_tex_dirty=true 후 rebuild_texture 재호출.
+float    g_view_db_min_cached = 0.0f;
+float    g_view_db_max_cached = 0.0f;
+
 // Right-panel split ratio (file list width fraction, 0..1)
 float    g_right_ratio = 0.22f;
 float    g_right_saved = 0.22f;
@@ -247,7 +252,7 @@ void refresh_size_live(){
     }
 }
 
-void rebuild_texture(){
+void rebuild_texture(float view_db_min, float view_db_max){
     if(!g_open.fp) return;
     if(g_pixel_buf.size() != (size_t)g_tex_w * g_tex_h)
         g_pixel_buf.assign((size_t)g_tex_w * g_tex_h, 0);
@@ -258,6 +263,12 @@ void rebuild_texture(){
     uint32_t fft_sz = g_open.hdr.fft_size;
     if(fft_sz == 0) return;
     int fft_half = (int)fft_sz / 2;
+
+    // byte → dB → 메인 워터폴 윈도 [view_db_min, view_db_max] 재정규화.
+    const float fmin = g_open.hdr.db_min;
+    const float fmax = g_open.hdr.db_max;
+    const float fspan = std::max(1e-3f, fmax - fmin);
+    const float vspan_inv = 1.0f / std::max(1.0f, view_db_max - view_db_min);
 
     std::vector<uint8_t> rowbuf(fft_sz);
 
@@ -303,7 +314,10 @@ void rebuild_texture(){
                 int bin = (idx < fft_half) ? (idx + fft_half) : (idx - fft_half);
                 if(col_max[bin] > mx) mx = col_max[bin];
             }
-            g_pixel_buf[(size_t)y*W + x] = jet_color(mx);
+            float db = fmin + (mx / 255.0f) * fspan;
+            float t  = (db - view_db_min) * vspan_inv;
+            if(t < 0.f) t = 0.f; else if(t > 1.f) t = 1.f;
+            g_pixel_buf[(size_t)y*W + x] = jet_color((uint8_t)(t * 255.0f));
         }
     }
 
@@ -572,7 +586,7 @@ void draw_info_modal(){
         snprintf(buf, sizeof(buf), "%u", fft_disp);
         row("FFT:",        buf);
         snprintf(buf, sizeof(buf), "%.1f / %.1f dB", h.db_min, h.db_max);
-        row("dB range:",   buf);
+        row("File range:", buf);
         if(h.station_lon != 0.0f){
             snprintf(buf, sizeof(buf), "%.4f°", h.station_lon);
             row("Host lon:", buf);
@@ -684,6 +698,8 @@ void draw_modal(FFTViewer& v, NetClient* cli){
         }
         ImGui::Text("Start : %s", fmt_local_time(h.start_utc_unix, off_h).c_str());
         ImGui::Text("Stop  : %s", fmt_local_time(stop_utc, off_h).c_str());
+        ImGui::Text("Color : %.1f / %.1f dB (shared with main)",
+            v.display_power_min, v.display_power_max);
         ImGui::Unindent(10.0f);
         ImGui::Dummy(ImVec2(0, 2));
         ImGui::Separator();
@@ -699,7 +715,14 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                 g_tex_w = target_w; g_tex_h = target_h;
                 g_tex_dirty = true;
             }
-            if(g_tex_dirty) rebuild_texture();
+            // 메인 워터폴 dB 윈도가 바뀌면 HIST 텍스처도 재빌드.
+            if(v.display_power_min != g_view_db_min_cached ||
+               v.display_power_max != g_view_db_max_cached){
+                g_view_db_min_cached = v.display_power_min;
+                g_view_db_max_cached = v.display_power_max;
+                g_tex_dirty = true;
+            }
+            if(g_tex_dirty) rebuild_texture(v.display_power_min, v.display_power_max);
 
             ImVec2 img_pos = ImGui::GetCursorScreenPos();
             if(g_tex){
