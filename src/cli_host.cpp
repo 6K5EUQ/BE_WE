@@ -1374,15 +1374,15 @@ void run_cli_host(){
                                  rh = std::string(central_host), rp = central_port,
                                  reconnect_fn](){
                     std::thread([&v, &central_cli, rh, rp, reconnect_fn](){
-                        for(int attempt=0; attempt<5; attempt++){
-                            // 3초 대기를 0.1초 단위로 쪼개어 shutdown 즉시 반응
-                            for(int i=0;i<30;i++){
+                        for(int attempt=1; ; attempt++){
+                            // 5초 대기를 0.1초 단위로 쪼개어 shutdown 즉시 반응
+                            for(int i=0;i<50;i++){
                                 if(g_shutdown.load()) return;
                                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                             }
                             if(g_shutdown.load()) return;
                             if(!v.net_srv) return;
-                            bewe_log_push(0,"[CLI] Central auto-reconnect attempt %d/5\n", attempt+1);
+                            bewe_log_push(0,"[CLI] Central auto-reconnect attempt %d\n", attempt);
                             std::string sid2 = v.station_name + "_" + std::string(login_get_id());
                             int rfd2 = central_cli.open_room(
                                 rh, rp, sid2, v.station_name,
@@ -1397,7 +1397,6 @@ void run_cli_host(){
                                 return;
                             }
                         }
-                        bewe_log_push(0,"[CLI] Central auto-reconnect failed after 5 attempts\n");
                     }).detach();
                 };
                 central_cli.start_mux_adapter(rfd,

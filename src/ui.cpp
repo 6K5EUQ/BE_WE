@@ -4257,12 +4257,15 @@ void run_streaming_viewer(){
                             // 재귀적 자동 재연결 함수 (shared_ptr로 캡처)
                             auto reconnect_fn = std::make_shared<std::function<void()>>();
                             *reconnect_fn = [&v, &central_cli, rh, rp, reconnect_fn](){
-                                // Central Server 끊김 > 자동 재연결 (3초 후, 최대 5회)
+                                // Central 끊김 > 5초 간격으로 무한 재시도
                                 std::thread([&v, &central_cli, rh, rp, reconnect_fn](){
-                                    for(int attempt=0; attempt<5; attempt++){
-                                        std::this_thread::sleep_for(std::chrono::seconds(3));
-                                        if(!v.net_srv) return;  // HOST 모드 종료됨
-                                        bewe_log_push(2,"[UI] Central auto-reconnect attempt %d/5\n", attempt+1);
+                                    for(int attempt=1; ; attempt++){
+                                        for(int i=0;i<50;i++){
+                                            if(!v.net_srv) return;
+                                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                                        }
+                                        if(!v.net_srv) return;
+                                        bewe_log_push(2,"[UI] Central auto-reconnect attempt %d\n", attempt);
                                         std::string sid = v.station_name + "_" + std::string(login_get_id());
                                         int rfd2 = central_cli.open_room(
                                             rh, rp, sid, v.station_name,
@@ -4277,7 +4280,6 @@ void run_streaming_viewer(){
                                             return;
                                         }
                                     }
-                                    bewe_log_push(2,"[UI] Central auto-reconnect failed after 5 attempts\n");
                                 }).detach();
                             };
                             central_cli.start_mux_adapter(rfd,
@@ -5505,12 +5507,13 @@ void run_streaming_viewer(){
             return g_overlay_stack.empty() ? 0 : g_overlay_stack.back();
         };
         {
-            static bool prev_eid=false, prev_log=false, prev_digi=false, prev_side=false;
+            static bool prev_eid=false, prev_log=false, prev_digi=false, prev_side=false, prev_lib=false;
             bool side_now = v.right_panel_ratio > 0.01f;
             if(v.eid_panel_open != prev_eid){ v.eid_panel_open ? push_ov(1) : pop_ov(1); prev_eid=v.eid_panel_open; }
             if(v.log_panel_open != prev_log){ v.log_panel_open ? push_ov(2) : pop_ov(2); prev_log=v.log_panel_open; }
             if(v.digi_decode_panel_open != prev_digi){ v.digi_decode_panel_open ? push_ov(3) : pop_ov(3); prev_digi=v.digi_decode_panel_open; }
             if(side_now != prev_side){ side_now ? push_ov(4) : pop_ov(4); prev_side=side_now; }
+            if(v.sig_lib_panel_open != prev_lib){ v.sig_lib_panel_open ? push_ov(5) : pop_ov(5); prev_lib=v.sig_lib_panel_open; }
         }
 
         // S키: 메인 STATUS 패널 토글. EID/HIST 활성 시엔 그쪽 모달이 S 키 소비 (중복 토글 방지).
@@ -5909,10 +5912,8 @@ void run_streaming_viewer(){
                     v.eid_start(v.sa_temp_path);
             }
         }
-        // ── LOG 토글 (L키) ─── 독립 오버레이 ────
-        if(ImGui::IsKeyPressed(ImGuiKey_L, false) && !io.WantTextInput){
-            try_toggle(1, v.log_panel_open);
-        }
+        // ── LOG 토글 ─── 독립 오버레이 ────
+        // (L key reassigned to Signal Library)
         // ── DIGITAL DECODE 토글 (Q키) ─── 독립 오버레이 ────
         if(ImGui::IsKeyPressed(ImGuiKey_Q, false) && !io.WantTextInput){
             try_toggle(2, v.digi_decode_panel_open);
@@ -5921,15 +5922,18 @@ void run_streaming_viewer(){
         if(ImGui::IsKeyPressed(ImGuiKey_H, false) && !io.WantTextInput){
             try_toggle(3, v.lwf_modal_open);
         }
-        // ── Signal Library 토글 (M키) — 새 오버레이 ────
-        if(ImGui::IsKeyPressed(ImGuiKey_M, false) && !io.WantTextInput){
+        // ── Signal Library 토글 (L키) — 새 오버레이 ────
+        if(ImGui::IsKeyPressed(ImGuiKey_L, false) && !io.WantTextInput){
             if(try_toggle(4, v.sig_lib_panel_open) && v.sig_lib_panel_open){
-                v.sig_lib_dirty = true;  // 첫 진입 시 emitter list 요청
+                v.sig_lib_dirty = true;
             }
         }
-        // ── BAND 오버레이 토글 (B키) — 메인페이지 전용. BAND는 오버레이 아니므로 mutual-excl 무관.
+        // ── BAND 토글 (B키) — SA overlay 열려있으면 Bits 뷰로, 아니면 BAND 토글 ────
         if(ImGui::IsKeyPressed(ImGuiKey_B, false) && !io.WantTextInput){
-            v.band_show = !v.band_show;
+            if(v.eid_panel_open)
+                v.eid_view_mode = 7; // Bits
+            else
+                v.band_show = !v.band_show;
         }
 
         // ── 우측 패널 계산 ────────────────────────────────────────────────
@@ -8804,6 +8808,7 @@ void run_streaming_viewer(){
                         if(ImGui::IsKeyPressed(ImGuiKey_7, false)) v.eid_view_mode = 8; // Audio
                         if(ImGui::IsKeyPressed(ImGuiKey_8, false)) v.eid_view_mode = 6; // Power
                         if(ImGui::IsKeyPressed(ImGuiKey_9, false)) v.eid_view_mode = 7; // Bits
+                        if(ImGui::IsKeyPressed(ImGuiKey_B, false)) v.eid_view_mode = 7; // Bits
                         // 좌우 방향키: 현재 화면 폭만큼 팬
                         if(!io.WantTextInput){
                             double span = vt1 - vt0;
@@ -9500,6 +9505,7 @@ void run_streaming_viewer(){
                 if(self != 1 && v.log_panel_open) return true;
                 if(self != 2 && v.digi_decode_panel_open) return true;
                 if(self != 3 && v.lwf_modal_open) return true;
+                if(self != 4 && v.sig_lib_panel_open) return true;
                 return false;
             };
             auto bar_try_toggle = [&](int self, bool& flag){
@@ -9507,7 +9513,7 @@ void run_streaming_viewer(){
                 if(bar_other_open(self)) return false;
                 flag = true; return true;
             };
-            if(click_ind_left(lx, "EID", ov_st(v.eid_panel_open, 1))){
+            if(click_ind_left(lx, "SA", ov_st(v.eid_panel_open, 1))){
                 if(bar_try_toggle(0, v.eid_panel_open) && v.eid_panel_open){
                     if(!v.sa_temp_path.empty() &&
                        !v.eid_computing.load() && !v.eid_data_ready.load())
@@ -9521,10 +9527,15 @@ void run_streaming_viewer(){
                 bar_try_toggle(2, v.digi_decode_panel_open);
             }
             if(click_ind_left(lx, "BAND", v.band_show ? 1 : 0)){
-                v.band_show = !v.band_show;   // BAND는 오버레이 아님 → 그대로
+                v.band_show = !v.band_show;
             }
             if(click_ind_left(lx, "HIST", v.lwf_modal_open ? 1 : 0)){
                 bar_try_toggle(3, v.lwf_modal_open);
+            }
+            if(click_ind_left(lx, "LIB", ov_st(v.sig_lib_panel_open, 5))){
+                if(bar_try_toggle(4, v.sig_lib_panel_open) && v.sig_lib_panel_open){
+                    v.sig_lib_dirty = true;
+                }
             }
 
             // 오른쪽>왼쪽: TM IQ AUD WF FFT LINK SDR
