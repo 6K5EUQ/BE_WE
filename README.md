@@ -10,8 +10,8 @@
 
 - [What is BE_WE](#what-is-be_we)
 - [Feature Tour](#feature-tour)
-- [Signal Analyzer](#signal-analyzer)
-- [EID — Emitter Identification](#eid--emitter-identification)
+- [Signal Analyzer (SA)](#signal-analyzer-sa)
+- [Signal Library (LIB)](#signal-library-lib)
 - [Supported Hardware](#supported-hardware)
 - [Build & Quick Start](#build--quick-start)
 - [Key Bindings](#key-bindings)
@@ -27,7 +27,8 @@ A Linux-native SDR app where **one HOST captures RF and many JOIN clients watch 
 - **Multi-user** — every operator sees the same waterfall; channels, chat, and file sharing are live
 - **3D Globe discovery** — click a station marker, no IP addresses
 - **Time Machine** — 60-second IQ rewind; recover the signal you just missed
-- **Signal Analyzer + EID** — offline multi-domain inspection and RF fingerprinting
+- **Signal Analyzer (SA)** — offline multi-domain inspection and RF fingerprinting
+- **Signal Library (LIB)** — cross-session emitter DB; reports auto-aggregate by frequency, operator confirms matches
 - **Central relay** — single port (7700), no LAN/WAN configuration
 
 ---
@@ -66,7 +67,7 @@ Press `T` for a 60-second rolling IQ buffer, `Space` to freeze and scroll back, 
 
 ### HISTORY — Long-Term Waterfall Archive
 
-Press `H` to open the long-waterfall archive. Every HOST keeps a continuous record of what its receiver saw, with mission-coded filenames and a header that embeds station name, lat/lon, and UTC range. Frequency changes auto-rotate to a fresh segment so each file is single-CF. `Ctrl+Right-drag` marks any region for a `BW / Duration` measurement; opt-in live streaming lets a JOIN watch the archive grow row-by-row, and remote delete cleans up from either side.
+Press `H` to open the long-waterfall archive. Every HOST keeps a continuous record of what its receiver saw, with mission-coded filenames and a header that embeds station name, lat/lon, and UTC range. Frequency changes auto-rotate to a fresh segment so each file is single-CF. `Ctrl+Right-drag` marks any region for a `BW / Duration` measurement; opt-in live streaming lets a JOIN watch the archive grow row-by-row, and remote delete cleans up from either side. Multi-GB archives stay smooth — the viewer is mmap-backed so pan and zoom touch only resident pages, and the color range follows the main spectrum's dB window so what you see live is what you see in history.
 
 ![HISTORY](assets/history.png)
 
@@ -86,10 +87,12 @@ Compile with `-DCLI=ON` for a zero-GPU build. Interactive prompt-based startup; 
 
 ---
 
-## Signal Analyzer
+## Signal Analyzer (SA)
 
 Open any WAV/IQ file for offline inspection. Tabs across the top switch domains:
-`Spectrogram · Amp · Freq · Phase · I/Q · Const · Audio · Power · Bits`
+`Spectrogram · Amp · Freq · Phase · I/Q · Const · Audio · Power · Bits`. Press `1`–`9` to flip between domains (or `B` for Bits when the SA overlay is open). Built-in band-pass filter, arrow-key carrier sweep (`←/→` ±1 Hz, `↑/↓` ±10 Hz), and percentile-based auto-scaling so different files compare fairly.
+
+SA doubles as an **emitter-ID workbench** — verify transmitter identity, detect spoofed or cloned radios, and characterize oscillator stability via per-domain RF fingerprints (envelope, I/Q, instantaneous phase / frequency, constellation, M-th power spectrum).
 
 ### Spectrogram
 
@@ -120,11 +123,15 @@ Demodulated bit stream rendered as a 2D bitmap — frame sync patterns and scram
 
 ---
 
-## EID — Emitter Identification
+## Signal Library (LIB)
 
-Extracts RF-level fingerprints (envelope, I/Q, phase, instantaneous frequency, constellation, M-th power spectrum) from a single WAV/IQ. Press keys `1`–`6` to flip between domains. Built-in band-pass filter, arrow-key carrier sweep, and percentile-based auto-scaling so different files compare fairly.
+Press `L` to open the Library overlay. Every time an operator presses **Report** on a recording, the full `.info` file is shipped to Central, which auto-aggregates sightings by **operator-entered fields only** — frequency (within tolerance), modulation, protocol, and explicit ID tokens (e.g. `MMSI:...`, `callsign:...`) typed into Tags. Auto-decoder outputs (AIS / ADS-B / auto-id) are deliberately **not** trusted for matching; if the operator wants those signals to count they copy them into `.info` themselves.
 
-Use it to verify transmitter identity, detect spoofed or cloned radios, and characterize oscillator stability.
+If `.info` lacks operator-entered fields, frequency alone caps the match score and the sighting lands in a **Pending** queue for human Confirm / Reject — no silent merges. Confirmed sightings accumulate across all stations and sessions: `first_seen`, `last_seen`, contributing-station list, and operator notes are kept on a single emitter record. The overlay has a sortable table (Name / Freq / Mod / Count / Last seen), full-text filter, an editable detail pane (display name, tags ID, notes), and a sightings timeline with per-row Confirm / Reject / Split actions.
+
+The result: a station that missed a transmission gets it filled in by another station that caught it, and the tribal knowledge ("that 405.10 FM repeater", "the 437.85 sat uplink") stops living in one operator's head.
+
+![Signal Library](assets/signal_library.png)
 
 ---
 
@@ -191,6 +198,16 @@ make -j$(nproc)
 ./BE_WE
 ```
 
+The Central relay (single-port HOST/JOIN/Library backend, default port 7700) is a separate executable:
+
+```bash
+cd central && mkdir -p build && cd build
+cmake .. && make -j
+./bewe_central           # runs in foreground; logs to stdout
+```
+
+`~/BE_WE/DataBase/_emitters/` and `_sightings/` are created on first run; if `_reports/` already has `.info` files from earlier sessions they migrate automatically.
+
 ### First Run
 
 1. Log in with ID / password — `Ctrl+1 / 2 / 3` picks the tier
@@ -201,6 +218,8 @@ make -j$(nproc)
 
 ## Key Bindings
 
+Overlays are mutually exclusive — opening one closes whichever is currently up. LOG has no hotkey; toggle it from the bottom bar.
+
 | Key | Action |
 |---|---|
 | `T` | Start/stop Time Machine rolling recording |
@@ -208,11 +227,14 @@ make -j$(nproc)
 | `Ctrl+Right-drag` | Mark region (shows BW / Duration); `R` to save as IQ |
 | `Scroll` | Zoom frequency axis |
 | `I` | Start/stop per-channel IQ recording |
-| `H` | Open HISTORY overlay (long-waterfall archive) |
-| `D` | Toggle digital decode panel |
-| `L` | Toggle LOG overlay (HOST / SERVER events) |
+| `E` | Toggle Signal Analyzer (SA) overlay |
+| `Q` | Toggle Digital Decode (DIGI) overlay |
+| `H` | Toggle HISTORY overlay (long-waterfall archive) |
+| `L` | Toggle Signal Library (LIB) overlay |
+| `B` | Toggle BAND overlay — or jump to the Bits tab when SA is open |
+| `1` – `9` | Switch domain inside the SA overlay |
 | `F11` | Fullscreen / windowed |
-| `← / →` · `↑ / ↓` (EID Phase) | Carrier sweep ±1 Hz / ±10 Hz |
+| `← / →` · `↑ / ↓` (SA Phase) | Carrier sweep ±1 Hz / ±10 Hz |
 
 ---
 
