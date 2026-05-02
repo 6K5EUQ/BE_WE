@@ -77,54 +77,9 @@ std::vector<std::string> CentralClient::make_candidates(const std::string& prima
     return cands;
 }
 
-// ── 목록 조회 ─────────────────────────────────────────────────────────────
-std::vector<CentralClient::Station>
-CentralClient::fetch_stations(const std::string& host, int port){
-    std::vector<Station> out;
-    // 후보 IP 순서로 접속 시도 (LAN → WAN)
-    auto cands = make_candidates(host);
-    int fd = tcp_connect_any(cands, port);
-    if(fd < 0) return out;
-    timeval tv{5,0};
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    if(!central_send_pkt(fd, CentralPktType::LIST_REQ, nullptr, 0)){ close(fd); return out; }
-    CentralPktHdr hdr{}; std::vector<uint8_t> payload;
-    if(!central_recv_pkt(fd, hdr, payload, 256*1024)){ close(fd); return out; }
-    close(fd);
-    if(static_cast<CentralPktType>(hdr.type) != CentralPktType::LIST_RESP) return out;
-    if(payload.size() < sizeof(CentralListResp)) return out;
-    auto* resp = reinterpret_cast<const CentralListResp*>(payload.data());
-
-    // LAN IP 캐시 업데이트 (relay 서버가 자신의 LAN IP를 알려줌)
-    {
-        std::lock_guard<std::mutex> lk(central_lan_ips_mtx);
-        central_lan_ips.clear();
-        for(int li = 0; li < (int)resp->lan_ip_count && li < CENTRAL_MAX_LAN_IPS; li++){
-            std::string ip(resp->lan_ips[li], strnlen(resp->lan_ips[li], 15));
-            if(!ip.empty()) central_lan_ips.push_back(ip);
-        }
-    }
-
-    uint16_t cnt = resp->count;
-    const CentralStation* arr = reinterpret_cast<const CentralStation*>(
-        payload.data() + sizeof(CentralListResp));
-    uint16_t max_cnt = (uint16_t)((payload.size()-sizeof(CentralListResp))/sizeof(CentralStation));
-    if(cnt > max_cnt) cnt = max_cnt;
-    for(int i = 0; i < (int)cnt; i++){
-        Station s;
-        s.station_id  = std::string(arr[i].station_id,
-                            strnlen(arr[i].station_id, sizeof(arr[i].station_id)));
-        s.name        = std::string(arr[i].station_name,
-                            strnlen(arr[i].station_name, sizeof(arr[i].station_name)));
-        s.lat         = arr[i].lat;
-        s.lon         = arr[i].lon;
-        s.host_tier   = arr[i].host_tier;
-        s.user_count  = arr[i].user_count;
-        out.push_back(std::move(s));
-    }
-    return out;
-}
+// ── 목록 조회 (persistent TCP) ────────────────────────────────────────────
+// 한 fd를 유지하며 LIST_REQ를 1초마다 반복 송신. WiFi에서 매 폴링마다 새 connect
+// 하던 기존 방식의 round-trip 비용 (3-5s)을 제거 → 1초 주기 실효화.
 
 void CentralClient::start_polling(const std::string& host, int port,
                                  std::function<void(const std::vector<Station>&)> cb){
@@ -141,11 +96,64 @@ void CentralClient::stop_polling(){
 void CentralClient::poll_loop(std::string host, int port,
                              std::function<void(const std::vector<Station>&)> cb){
     while(poll_running_.load()){
-        auto st = fetch_stations(host, port);
-        cb(st); // 빈 벡터도 전달 (stale 정리용)
-        // 1초 폴링 (지구본 station 닫힘 반영 빠르게)
-        for(int i = 0; i < 10 && poll_running_.load(); i++)
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // 1) connect (실패 시 backoff 후 재시도)
+        auto cands = make_candidates(host);
+        int fd = tcp_connect_any(cands, port);
+        if(fd < 0){
+            for(int i = 0; i < 20 && poll_running_.load(); i++)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
+        timeval tv{5,0};
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+        // 2) 같은 fd에서 LIST_REQ 반복 — socket 사망 시 outer loop가 reconnect
+        while(poll_running_.load()){
+            if(!central_send_pkt(fd, CentralPktType::LIST_REQ, nullptr, 0)) break;
+            CentralPktHdr hdr{}; std::vector<uint8_t> payload;
+            if(!central_recv_pkt(fd, hdr, payload, 256*1024)) break;
+            if(static_cast<CentralPktType>(hdr.type) != CentralPktType::LIST_RESP) break;
+            if(payload.size() < sizeof(CentralListResp)) break;
+
+            auto* resp = reinterpret_cast<const CentralListResp*>(payload.data());
+
+            // LAN IP 캐시 갱신
+            {
+                std::lock_guard<std::mutex> lk(central_lan_ips_mtx);
+                central_lan_ips.clear();
+                for(int li = 0; li < (int)resp->lan_ip_count && li < CENTRAL_MAX_LAN_IPS; li++){
+                    std::string ip(resp->lan_ips[li], strnlen(resp->lan_ips[li], 15));
+                    if(!ip.empty()) central_lan_ips.push_back(ip);
+                }
+            }
+
+            uint16_t cnt = resp->count;
+            const CentralStation* arr = reinterpret_cast<const CentralStation*>(
+                payload.data() + sizeof(CentralListResp));
+            uint16_t max_cnt = (uint16_t)((payload.size()-sizeof(CentralListResp))/sizeof(CentralStation));
+            if(cnt > max_cnt) cnt = max_cnt;
+            std::vector<Station> stations;
+            for(int i = 0; i < (int)cnt; i++){
+                Station s;
+                s.station_id  = std::string(arr[i].station_id,
+                                    strnlen(arr[i].station_id, sizeof(arr[i].station_id)));
+                s.name        = std::string(arr[i].station_name,
+                                    strnlen(arr[i].station_name, sizeof(arr[i].station_name)));
+                s.lat         = arr[i].lat;
+                s.lon         = arr[i].lon;
+                s.host_tier   = arr[i].host_tier;
+                s.user_count  = arr[i].user_count;
+                stations.push_back(std::move(s));
+            }
+            cb(stations);
+
+            // 1초 sleep — stop_polling()에 빠르게 반응
+            for(int i = 0; i < 10 && poll_running_.load(); i++)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        close(fd);
+        // socket 끊김 → outer loop가 즉시 reconnect 시도
     }
 }
 

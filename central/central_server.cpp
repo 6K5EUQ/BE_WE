@@ -284,8 +284,7 @@ void CentralServer::handshake(int fd){
         join_loop(je, room);
 
     } else if(type == CentralPktType::LIST_REQ){
-        handle_list_req(fd);
-        close(fd);
+        list_poller_loop(fd);  // 첫 응답 후 fd 안 닫고 추가 LIST_REQ 대기 (close는 loop 안에서)
     } else {
         printf("[Central] handshake: unknown type=0x%02x fd=%d\n", hdr.type, fd);
         close(fd);
@@ -1551,6 +1550,22 @@ void CentralServer::handle_list_req(int fd){
         memcpy(payload.data()+sizeof(CentralListResp),
                stations.data(), cnt*sizeof(CentralStation));
     central_send_pkt(fd, CentralPktType::LIST_RESP, payload.data(), plen);
+}
+
+// ── Persistent LIST polling: 한 connection에서 LIST_REQ 반복 처리 ───────────
+// 클라이언트가 매 폴링마다 TCP connect하지 않도록 fd를 유지함.
+// WiFi에서 connect 비용 (3-5초) 제거 → polling 1초 주기 실효화.
+void CentralServer::list_poller_loop(int fd){
+    // 첫 LIST_REQ는 handshake에서 이미 읽음 → 즉시 1회 응답
+    handle_list_req(fd);
+    // 이후 추가 LIST_REQ를 같은 fd에서 대기
+    while(running_.load()){
+        CentralPktHdr hdr{}; std::vector<uint8_t> payload;
+        if(!central_recv_pkt(fd, hdr, payload, 64*1024)) break;
+        if(static_cast<CentralPktType>(hdr.type) != CentralPktType::LIST_REQ) break;
+        handle_list_req(fd);
+    }
+    close(fd);
 }
 
 std::shared_ptr<HostRoom> CentralServer::find_room(const std::string& id) const {

@@ -272,6 +272,7 @@ private:
     void join_loop(std::shared_ptr<JoinEntry> je, std::shared_ptr<HostRoom> room);
 
     void handle_list_req(int fd);
+    void list_poller_loop(int fd);  // persistent LIST_REQ polling (fd 닫지 않고 반복 응답)
     std::shared_ptr<HostRoom> find_room(const std::string& id) const;
 
     // ── BEWE 패킷 인터셉트 (중앙 제어) ──────────────────────────────────

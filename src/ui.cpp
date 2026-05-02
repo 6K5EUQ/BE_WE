@@ -2262,7 +2262,6 @@ void run_streaming_viewer(){
                 std::lock_guard<std::mutex> lk(v.discovered_stations_mtx);
                 double now = glfwGetTime();
                 for(auto& rs : stations){
-                    // station_id 기반 upsert (Central Server 모드: ip/port 없음)
                     bool found = false;
                     for(auto& s : v.discovered_stations){
                         if(!s.station_id.empty() && s.station_id == rs.station_id){
@@ -2271,7 +2270,7 @@ void run_streaming_viewer(){
                             s.lon        = rs.lon;
                             s.user_count = rs.user_count;
                             s.host_tier  = rs.host_tier ? rs.host_tier : 1;
-                            s.last_seen  = now + 2.0;
+                            s.last_seen  = now + 1.0;
                             found = true; break;
                         }
                     }
@@ -2281,11 +2280,11 @@ void run_streaming_viewer(){
                         ns.name       = rs.name;
                         ns.lat        = rs.lat;
                         ns.lon        = rs.lon;
-                        ns.tcp_port   = 0;  // Central Server 모드: 포트 직접 연결 없음
-                        ns.ip         = ""; // Central Server 모드: IP 직접 연결 없음
+                        ns.tcp_port   = 0;
+                        ns.ip         = "";
                         ns.user_count = rs.user_count;
                         ns.host_tier  = rs.host_tier ? rs.host_tier : 1;
-                        ns.last_seen  = now + 12.0;
+                        ns.last_seen  = now + 1.0;
                         v.discovered_stations.push_back(ns);
                     }
                 }
@@ -2326,7 +2325,7 @@ void run_streaming_viewer(){
         ImGuiIO& io = ImGui::GetIO();
 
         // Purge stale stations: last_seen이 현재 시각보다 과거면 즉시 제거
-        // (last_seen = now + 2 로 설정되므로 poll에서 2초간 갱신 없으면 사라짐)
+        // grace=1초 (persistent TCP 폴링이므로 1초 주기가 실효 보장됨)
         {
             std::lock_guard<std::mutex> lk(v.discovered_stations_mtx);
             double now2 = glfwGetTime();

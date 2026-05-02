@@ -24,7 +24,7 @@
 //   이후 relay_fd는 투명 BEWE 스트림 → NetClient::connect_fd()에 전달
 //
 // 목록 조회:
-//   fetch_stations() / start_polling()
+//   start_polling() — persistent TCP, 1초 주기 LIST_REQ 반복
 
 class CentralClient {
 public:
@@ -46,8 +46,7 @@ public:
     std::vector<std::string> central_lan_ips;
     std::mutex               central_lan_ips_mtx;
 
-    // ── 목록 조회 ─────────────────────────────────────────────────────────
-    std::vector<Station> fetch_stations(const std::string& host, int port);
+    // ── 목록 조회 (persistent TCP) ──────────────────────────────────────
     void start_polling(const std::string& host, int port,
                        std::function<void(const std::vector<Station>&)> cb);
     void stop_polling();
