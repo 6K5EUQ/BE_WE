@@ -148,8 +148,8 @@ void CentralClient::poll_loop(std::string host, int port,
             }
             cb(stations);
 
-            // 1초 sleep — stop_polling()에 빠르게 반응
-            for(int i = 0; i < 10 && poll_running_.load(); i++)
+            // 700ms sleep — cb 간격이 grace 1초보다 짧도록 보장 (RTT 여유 300ms)
+            for(int i = 0; i < 7 && poll_running_.load(); i++)
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         close(fd);
