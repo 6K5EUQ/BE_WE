@@ -760,10 +760,11 @@ void draw_modal(FFTViewer& v, NetClient* cli){
             fmt_duration_hms(dur_sec).c_str(),
             g_open.total_size / 1048576.0);
         if(h.station_name[0]){
+            // station_lon은 globe.pick의 W↔E 반전 부호로 저장됨 → 표시할 때 라벨 뒤집어 보정.
             ImGui::Text("Station : %s (%.4f%c %.4f%c)",
                 h.station_name,
                 fabsf(h.station_lat), h.station_lat>=0 ? 'N' : 'S',
-                fabsf(h.station_lon), h.station_lon>=0 ? 'E' : 'W');
+                fabsf(h.station_lon), h.station_lon>=0 ? 'W' : 'E');
         }
         ImGui::Text("Start : %s", fmt_local_time(h.start_utc_unix, off_h).c_str());
         ImGui::Text("Stop  : %s", fmt_local_time(stop_utc, off_h).c_str());

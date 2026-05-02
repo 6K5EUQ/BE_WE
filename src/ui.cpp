@@ -2449,6 +2449,30 @@ void run_streaming_viewer(){
             }
         }
 
+        // ── Hover coordinate display (bottom-right) ───────────────────────
+        // 지구본 위에 마우스 올리면 해당 lat/lon을 화면 우하단에 박스로 표시.
+        // 드래그(회전) 중엔 숨김 — 회전 중 빠르게 바뀌어 가독성 떨어짐.
+        if(globe_ok && pop_state == POP_NONE && !io.WantCaptureMouse
+           && !ImGui::IsMouseDown(ImGuiMouseButton_Left)){
+            float hlat, hlon;
+            if(globe.pick(io.MousePos.x, io.MousePos.y, hlat, hlon)){
+                char hbuf[48];
+                snprintf(hbuf, sizeof(hbuf), "%.4f°%s  %.4f°%s",
+                         fabsf(hlat), hlat >= 0.f ? "N" : "S",
+                         fabsf(hlon), hlon >= 0.f ? "W" : "E");
+                ImVec2 tsz = ImGui::CalcTextSize(hbuf);
+                const float pad = 6.f, margin = 12.f;
+                float bx0 = (float)fw - tsz.x - pad*2.f - margin;
+                float by0 = (float)fh - tsz.y - pad*2.f - margin;
+                ImDrawList* fdl = ImGui::GetForegroundDrawList();
+                fdl->AddRectFilled(ImVec2(bx0, by0),
+                                   ImVec2(bx0 + tsz.x + pad*2.f, by0 + tsz.y + pad*2.f),
+                                   IM_COL32(10,30,40,180), 4.f);
+                fdl->AddText(ImVec2(bx0 + pad, by0 + pad),
+                             IM_COL32(180,220,255,230), hbuf);
+            }
+        }
+
         // ── Title ─────────────────────────────────────────────────────────
         {
             ImDrawList* fdl = ImGui::GetForegroundDrawList();
