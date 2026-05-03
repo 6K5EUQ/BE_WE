@@ -392,6 +392,14 @@ bool snapshot_live_start(::PktLwfLiveStart& out){
 void scan_dir_into_list(::PktLwfList& out){
     memset(&out, 0, sizeof(out));
     std::string dir = BEWEPaths::hist_host_dir();
+    // Exclude the file currently being recorded — JOINs see it via LIVE_START
+    // (LIVE tab) instead, never as a finished entry in the HOST tab.
+    std::string cur_full = current_file_path();
+    std::string cur_base;
+    if(!cur_full.empty()){
+        size_t s = cur_full.find_last_of('/');
+        cur_base = (s == std::string::npos) ? cur_full : cur_full.substr(s+1);
+    }
     DIR* d = opendir(dir.c_str());
     if(!d) return;
 
@@ -408,6 +416,7 @@ void scan_dir_into_list(::PktLwfList& out){
         const char* n = de->d_name;
         if(!n || n[0]=='.') continue;
         if(!is_lwf_filename(n)) continue;
+        if(!cur_base.empty() && cur_base == n) continue; // skip active LIVE
         std::string full = dir + "/" + n;
         struct stat st{};
         if(stat(full.c_str(), &st) != 0) continue;

@@ -1383,6 +1383,19 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                 }
             }
 
+            // HOST tab never shows files whose name contains "live" — those
+            // belong in the LIVE tab regardless of recording state or STREAM.
+            host_rows.erase(std::remove_if(host_rows.begin(), host_rows.end(),
+                [](const Row& r){
+                    const std::string& s = r.base;
+                    for(size_t i = 0; i + 4 <= s.size(); i++){
+                        char c0 = s[i],   c1 = s[i+1], c2 = s[i+2], c3 = s[i+3];
+                        auto lc = [](char c){ return (c>='A'&&c<='Z')?(char)(c+32):c; };
+                        if(lc(c0)=='l' && lc(c1)=='i' && lc(c2)=='v' && lc(c3)=='e') return true;
+                    }
+                    return false;
+                }), host_rows.end());
+
             for(auto& r : host_rows){
                 bool sel = (g_selected.count(r.id) > 0) || (g_sel_path == r.id);
                 ImGui::PushID(r.id.c_str());
