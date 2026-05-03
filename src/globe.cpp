@@ -605,9 +605,12 @@ void GlobeRenderer::build_sphere(int stacks, int slices) {
             float theta = 2.f * (float)M_PI * (float)sl / slices;
             float x = r * cosf(theta);
             float z = r * sinf(theta);
-            // u=0 at theta=0 (lon=0°E), offset +0.5 so Greenwich→texture center
+            // u=0.5 at theta=0 (Greenwich at texture center); GL_REPEAT handles u>1 wrap.
+            // Do NOT wrap u into [0,1] here — that would create a one-quad seam at the
+            // antimeridian where two adjacent vertices have u≈1.0 and u≈0.0, smearing
+            // the entire texture across that quad. Let u run 0.5→1.5 monotonically and
+            // rely on GL_TEXTURE_WRAP_S=GL_REPEAT for sampling continuity.
             float u = (float)sl / slices + 0.5f;
-            if (u > 1.f) u -= 1.f;
             verts.push_back(x); verts.push_back(y); verts.push_back(z);
             verts.push_back(u); verts.push_back(v);
         }
