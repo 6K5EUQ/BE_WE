@@ -27,6 +27,8 @@
 #include <cmath>
 #include <algorithm>
 #include <mutex>
+#include <unordered_map>
+#include <functional>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
@@ -103,9 +105,16 @@ struct Meas {
 };
 Meas g_meas;
 
-// File-list selection + context state
-std::string g_sel_path;             // currently selected file path (may equal g_open.path)
+// File-list selection + context state.
+// g_sel_path = primary single-selection (drives "open" on plain click). Kept for
+// legacy callers (close_open / scroll-to / open_file flow).
+// g_selected = multi-selection set used by Ctrl-click and the Delete key. The
+// primary g_sel_path is always also a member while it is non-empty.
+// section codes — 0=LIVE, 1=HOST_LOCAL, 2=HOST_REMOTE (basename-only id),
+// 3=LOCAL/JOIN downloaded.
+std::string g_sel_path;
 std::string g_ctx_path;             // file targeted by current right-click context menu
+std::unordered_map<std::string,int> g_selected;
 bool        g_info_modal_open = false;
 std::string g_info_path;            // file shown in Info modal
 
@@ -238,6 +247,52 @@ bool open_file(const std::string& path){
     g_tex_dirty = true;
     g_last_known_rows = g_open.num_rows;
     return true;
+}
+
+// ── HIST file selection / delete helpers ──────────────────────────────────
+// section codes: 0=LIVE, 1=HOST_LOCAL, 2=HOST_REMOTE, 3=LOCAL/JOIN
+static void hist_click_select(const std::string& id, int section, bool ctrl,
+                              bool plain_opens, std::function<void()> open_fn){
+    if(ctrl){
+        // toggle membership; do not change open file
+        auto it = g_selected.find(id);
+        if(it != g_selected.end()) g_selected.erase(it);
+        else g_selected[id] = section;
+        // primary single-select tracks last-toggled-into membership
+        if(g_selected.count(id)) g_sel_path = id;
+        else if(g_sel_path == id) g_sel_path.clear();
+    } else {
+        g_selected.clear();
+        g_selected[id] = section;
+        g_sel_path = id;
+        if(plain_opens && open_fn) open_fn();
+    }
+}
+
+// Delete a single HIST item by section. Caller must pass cli (may be null in HOST mode).
+static void hist_delete_one(const std::string& id, int section, NetClient* cli){
+    switch(section){
+        case 0: // LIVE local file (full path)
+            if(g_open.path == id) close_open();
+            unlink(id.c_str());
+            g_live_list_dirty = true;
+            break;
+        case 1: // HOST local file (full path)
+            if(g_open.path == id) close_open();
+            unlink(id.c_str());
+            g_host_list_dirty = true;
+            break;
+        case 2: // HOST remote — id is host-side basename
+            if(cli) cli->cmd_lwf_delete_req(id.c_str());
+            // host responds with new LWF_LIST → auto refresh
+            break;
+        case 3: // LOCAL / JOIN-downloaded (full path)
+            if(g_open.path == id) close_open();
+            unlink(id.c_str());
+            g_join_list_dirty = true;
+            break;
+    }
+    if(g_sel_path == id) g_sel_path.clear();
 }
 
 bool read_header_only(const std::string& path, LongWaterfall::FileHeader& h, uint64_t& size){
@@ -1158,7 +1213,7 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                 }
                 for(auto& e : g_live_files){
                     bool is_active = (e.path == active_path);
-                    bool sel = (g_sel_path == e.path);
+                    bool sel = (g_selected.count(e.path) > 0) || (g_sel_path == e.path);
                     LongWaterfall::FileHeader hh{}; uint64_t fsz=0;
                     uint32_t rows_ct;
                     float    row_rate;
@@ -1185,8 +1240,9 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                     if(is_active) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(80,220,80,255));
                     if(ImGui::Selectable(nm.c_str(), sel,
                            ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw, 0))){
-                        g_sel_path = e.path;
-                        if(g_open.path != e.path) open_file(e.path);
+                        bool ctrl = ImGui::GetIO().KeyCtrl;
+                        hist_click_select(e.path, 0, ctrl, /*plain_opens=*/true,
+                            [&]{ if(g_open.path != e.path) open_file(e.path); });
                     }
                     if(is_active) ImGui::PopStyleColor();
                     bool item_hov_l = ImGui::IsItemHovered();
@@ -1209,10 +1265,8 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                         if(!is_active){
                             ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));
                             if(ImGui::MenuItem("Delete")){
-                                if(g_open.path == e.path) close_open();
-                                if(g_sel_path == e.path) g_sel_path.clear();
-                                unlink(e.path.c_str());
-                                g_live_list_dirty = true;
+                                hist_delete_one(e.path, 0, nullptr);
+                                g_selected.erase(e.path);
                             }
                             ImGui::PopStyleColor();
                         } else {
@@ -1255,11 +1309,23 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                 float    station_lon = 0.f;
             };
             std::vector<Row> host_rows;
+            // JOIN-side knowledge of the host's current LIVE filename (set by
+            // PktLwfLiveStart). If we're streaming, exclude that filename from
+            // the HOST tab — it shows in the LIVE tab instead.
+            std::string remote_live_basename;
+            {
+                std::lock_guard<std::mutex> lk(g_live_mtx);
+                if(g_live.fp && !g_live.host_filename.empty())
+                    remote_live_basename = g_live.host_filename;
+            }
             if(is_join_mode){
                 std::lock_guard<std::mutex> lk(g_remote_list_mtx);
                 if(g_remote_list_valid){
                     for(uint16_t i=0;i<g_remote_list.count;i++){
                         const auto& e = g_remote_list.entries[i];
+                        // Skip the host's currently active LIVE file — shown in LIVE tab.
+                        if(!remote_live_basename.empty()
+                           && remote_live_basename == e.filename) continue;
                         Row r; r.id = e.filename; r.base = e.filename;
                         r.size = e.size_bytes; r.rows = e.num_rows;
                         r.row_rate = LongWaterfall::DEFAULT_ROW_RATE_HZ;
@@ -1299,23 +1365,7 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                         [](const HistFileEntry& a, const HistFileEntry& b){ return a.start_utc > b.start_utc; });
                     g_host_list_dirty = false;
                 }
-                if(!live_path.empty()){
-                    Row r; r.id = live_path; r.base = live_path;
-                    size_t s = r.base.find_last_of('/');
-                    if(s != std::string::npos) r.base = r.base.substr(s+1);
-                    LongWaterfall::FileHeader hh{}; uint64_t fsz=0;
-                    read_header_only(live_path, hh, fsz);
-                    r.size = fsz;
-                    r.rows = hh.fft_size > 0 ? (uint32_t)((fsz - sizeof(hh)) / hh.fft_size) : 0;
-                    r.row_rate = hh.row_rate_hz;
-                    r.is_live = true; r.is_remote = false;
-                    r.cf_hz = hh.center_freq_hz;
-                    r.start_utc = hh.start_utc_unix;
-                    memcpy(r.station_name, hh.station_name, sizeof(r.station_name));
-                    r.station_lat = hh.station_lat;
-                    r.station_lon = hh.station_lon;
-                    host_rows.push_back(std::move(r));
-                }
+                // Active LIVE file is shown only in the LIVE tab — skip here.
                 for(auto& e : g_host_files){
                     if(e.path == live_path) continue;
                     LongWaterfall::FileHeader hh{}; uint64_t fsz=0;
@@ -1334,7 +1384,7 @@ void draw_modal(FFTViewer& v, NetClient* cli){
             }
 
             for(auto& r : host_rows){
-                bool sel = (g_sel_path == r.id);
+                bool sel = (g_selected.count(r.id) > 0) || (g_sel_path == r.id);
                 ImGui::PushID(r.id.c_str());
                 // ARCHIVE draw_arch_file 동일 패턴: Selectable(filename) + SameLine(fn_w+8) + TextDisabled.
                 float pw   = ImGui::GetContentRegionAvail().x;
@@ -1346,8 +1396,10 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                     ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(80,220,80,255));
                 if(ImGui::Selectable(nm.c_str(), sel,
                        ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw, 0))){
-                    g_sel_path = r.id;
-                    if(!r.is_remote && g_open.path != r.id) open_file(r.id);
+                    bool ctrl = ImGui::GetIO().KeyCtrl;
+                    int sec = r.is_remote ? 2 : 1;
+                    hist_click_select(r.id, sec, ctrl, /*plain_opens=*/true,
+                        [&]{ if(!r.is_remote && g_open.path != r.id) open_file(r.id); });
                 }
                 if(r.is_live) ImGui::PopStyleColor();
                 bool item_hov_h = ImGui::IsItemHovered();
@@ -1381,16 +1433,9 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                     if(can_del_local || can_del_remote){
                         ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));
                         if(ImGui::MenuItem("Delete")){
-                            if(can_del_local){
-                                if(g_open.path == r.id) close_open();
-                                if(g_sel_path == r.id) g_sel_path.clear();
-                                unlink(r.id.c_str());
-                                g_host_list_dirty = true;
-                            } else {
-                                // r.id는 host 측 filename (basename only)
-                                cli->cmd_lwf_delete_req(r.id.c_str());
-                                // host가 응답으로 LWF_LIST 다시 보내줌 → 자동 갱신
-                            }
+                            int sec = can_del_local ? 1 : 2;
+                            hist_delete_one(r.id, sec, cli);
+                            g_selected.erase(r.id);
                         }
                         ImGui::PopStyleColor();
                     } else {
@@ -1451,7 +1496,7 @@ void draw_modal(FFTViewer& v, NetClient* cli){
             }
 
             for(auto& e : g_join_files){
-                bool sel = (g_sel_path == e.path);
+                bool sel = (g_selected.count(e.path) > 0) || (g_sel_path == e.path);
                 ImGui::PushID(e.path.c_str());
                 LongWaterfall::FileHeader hh{}; uint64_t fsz=0;
                 read_header_only(e.path, hh, fsz);
@@ -1463,8 +1508,9 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                 std::string nm_j = strip_hist_ext(e.base);
                 if(ImGui::Selectable(nm_j.c_str(), sel,
                        ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw, 0))){
-                    g_sel_path = e.path;
-                    if(g_open.path != e.path) open_file(e.path);
+                    bool ctrl = ImGui::GetIO().KeyCtrl;
+                    hist_click_select(e.path, 3, ctrl, /*plain_opens=*/true,
+                        [&]{ if(g_open.path != e.path) open_file(e.path); });
                 }
                 bool item_hov_j = ImGui::IsItemHovered();
                 if(item_hov_j){
@@ -1484,10 +1530,8 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                 if(g_ctx_path == e.path && ImGui::BeginPopup("##lwf_local_ctx")){
                     ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));
                     if(ImGui::MenuItem("Delete")){
-                        if(g_open.path == e.path) close_open();
-                        if(g_sel_path == e.path) g_sel_path.clear();
-                        unlink(e.path.c_str());
-                        g_join_list_dirty = true;
+                        hist_delete_one(e.path, 3, nullptr);
+                        g_selected.erase(e.path);
                     }
                     ImGui::PopStyleColor();
                     ImGui::EndPopup();
@@ -1496,17 +1540,25 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                 ImGui::PopID();
             }
 
-            // Del 키
+            // Multi-select Del 키 — section 별로 분기, 활성 LIVE 는 제외.
             if(ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) &&
                ImGui::IsKeyPressed(ImGuiKey_Delete, false) &&
-               !g_sel_path.empty()){
-                std::string prefix = BEWEPaths::hist_join_dir() + "/";
-                if(g_sel_path.compare(0, prefix.size(), prefix) == 0){
-                    if(g_open.path == g_sel_path) close_open();
-                    unlink(g_sel_path.c_str());
-                    g_sel_path.clear();
-                    g_join_list_dirty = true;
+               !g_selected.empty()){
+                std::string live_active_path;
+                {
+                    std::lock_guard<std::mutex> lk(g_live_mtx);
+                    if(g_live.fp && !g_live.filename.empty())
+                        live_active_path = BEWEPaths::hist_live_dir() + "/" + g_live.filename;
                 }
+                std::vector<std::pair<std::string,int>> targets;
+                for(const auto& [id, sec] : g_selected){
+                    if(sec == 0 && id == live_active_path) continue; // skip active LIVE
+                    targets.push_back({id, sec});
+                }
+                for(const auto& [id, sec] : targets){
+                    hist_delete_one(id, sec, cli);
+                }
+                g_selected.clear();
             }
         }
         ImGui::EndChild();    // ##lwf_files

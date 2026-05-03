@@ -61,12 +61,6 @@ private:
     GLint  idx_count_   = 0;
     GLint  land_vtx_count_ = 0;
 
-    // Stars background
-    GLuint prog_stars_  = 0;
-    GLuint vao_stars_   = 0;
-    GLuint vbo_stars_   = 0;
-    GLint  star_count_  = 0;
-
     // Map line segment boundaries for glMultiDrawArrays
     std::vector<GLint>   seg_starts_;
     std::vector<GLsizei> seg_counts_;
@@ -101,7 +95,6 @@ private:
     void   build_sphere(int stacks, int slices);
     void   build_map_lines();
     void   build_land();
-    void   build_stars();
     bool   load_earth_texture();
     GLuint compile_shader(const char* vsrc, const char* fsrc);
 };

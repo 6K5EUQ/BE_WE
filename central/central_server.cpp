@@ -285,6 +285,16 @@ void CentralServer::handshake(int fd){
 
     } else if(type == CentralPktType::LIST_REQ){
         list_poller_loop(fd);  // 첫 응답 후 fd 안 닫고 추가 LIST_REQ 대기 (close는 loop 안에서)
+    } else if(type == CentralPktType::LIST_REQ_V2){
+        // status-page v2 — single-shot extended LIST then close.
+        handle_list_req_v2(fd);
+        close(fd);
+    } else if(type == CentralPktType::STATION_DETAIL_REQ){
+        if(payload.size() >= sizeof(CentralStationDetailReq)){
+            auto* dr = reinterpret_cast<const CentralStationDetailReq*>(payload.data());
+            handle_station_detail_req(fd, *dr);
+        }
+        close(fd);
     } else {
         printf("[Central] handshake: unknown type=0x%02x fd=%d\n", hdr.type, fd);
         close(fd);
@@ -387,6 +397,21 @@ void CentralServer::host_mux_loop(std::shared_ptr<HostRoom> room){
         }
 
         room->last_hb = std::chrono::steady_clock::now();
+
+        // ── HOST_STATE (status page v2 cache) ──────────────────────────────
+        if(mux.type == static_cast<uint8_t>(CentralMuxType::HOST_STATE)){
+            if(mux.len > 0){
+                if(buf.size() < mux.len) buf.resize(mux.len);
+                if(!central_recv_all(room->fd, buf.data(), mux.len)) break;
+                recv_bytes += mux.len;
+                if(mux.len >= sizeof(CentralHostStateFull)){
+                    std::lock_guard<std::mutex> slk(room->state_mtx);
+                    memcpy(&room->state, buf.data(), sizeof(CentralHostStateFull));
+                    room->has_state = true;
+                }
+            }
+            continue;
+        }
 
         // ── NET_RESET ───────────────────────────────────────────────────────
         if(mux.type == static_cast<uint8_t>(CentralMuxType::NET_RESET)){
@@ -1550,6 +1575,62 @@ void CentralServer::handle_list_req(int fd){
         memcpy(payload.data()+sizeof(CentralListResp),
                stations.data(), cnt*sizeof(CentralStation));
     central_send_pkt(fd, CentralPktType::LIST_RESP, payload.data(), plen);
+}
+
+// status page v2 — extended LIST including operator/freq/sample_rate from
+// each room's last cached HOST_STATE. Single-shot (no persistent polling).
+void CentralServer::handle_list_req_v2(int fd){
+    std::vector<CentralStationV2> stations;
+    {
+        std::lock_guard<std::mutex> lk(rooms_mtx_);
+        for(auto& r : rooms_){
+            if(!r->alive.load() || r->resetting.load()) continue;
+            if(r->info.station_name[0] == '\0') continue;
+            CentralStationV2 s2{};
+            // copy v1 fields
+            memcpy(s2.station_id,   r->info.station_id,   sizeof(s2.station_id));
+            memcpy(s2.station_name, r->info.station_name, sizeof(s2.station_name));
+            s2.lat        = r->info.lat;
+            s2.lon        = r->info.lon;
+            s2.host_tier  = r->info.host_tier;
+            s2.user_count = r->info.user_count;
+            // overlay cached state if any
+            std::lock_guard<std::mutex> slk(r->state_mtx);
+            if(r->has_state){
+                memcpy(s2.operator_login, r->state.operator_login,
+                       sizeof(s2.operator_login));
+                s2.center_freq_hz  = r->state.center_freq_hz;
+                s2.sample_rate_hz  = r->state.sample_rate_hz;
+                s2.hist_recording  = r->state.hist_recording;
+                s2.channel_count   = r->state.channel_count;
+            }
+            stations.push_back(s2);
+        }
+    }
+    uint16_t cnt = (uint16_t)stations.size();
+    uint32_t plen = sizeof(CentralListResp) + cnt * sizeof(CentralStationV2);
+    std::vector<uint8_t> payload(plen);
+    auto* resp = reinterpret_cast<CentralListResp*>(payload.data());
+    resp->count = cnt;
+    collect_lan_ips(*resp);
+    if(cnt > 0)
+        memcpy(payload.data() + sizeof(CentralListResp),
+               stations.data(), cnt * sizeof(CentralStationV2));
+    central_send_pkt(fd, CentralPktType::LIST_RESP_V2, payload.data(), plen);
+}
+
+void CentralServer::handle_station_detail_req(int fd, const CentralStationDetailReq& req){
+    std::string sid(req.station_id, strnlen(req.station_id, sizeof(req.station_id)));
+    auto room = find_room(sid);
+    CentralHostStateFull out{};
+    bool has = false;
+    if(room){
+        std::lock_guard<std::mutex> slk(room->state_mtx);
+        if(room->has_state){ out = room->state; has = true; }
+    }
+    central_send_pkt(fd, CentralPktType::STATION_DETAIL_RESP,
+                     has ? &out : nullptr,
+                     has ? sizeof(out) : 0);
 }
 
 // ── Persistent LIST polling: 한 connection에서 LIST_REQ 반복 처리 ───────────

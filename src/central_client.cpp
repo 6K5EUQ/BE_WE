@@ -311,6 +311,7 @@ void CentralClient::mux_loop(int central_fd,
 
     // keepalive heartbeat 타이머
     auto last_hb = std::chrono::steady_clock::now();
+    auto last_state = last_hb;
     auto stats_start = last_hb;
     auto stats_last  = last_hb;
     uint64_t sp_tot=stat_tx_total_bytes.load(), sp_fft=stat_tx_fft_bytes.load();
@@ -368,6 +369,20 @@ void CentralClient::mux_loop(int central_fd,
                 stat_tx_total_bytes.fetch_add(hb_tot, std::memory_order_relaxed);
                 stat_tx_hb_bytes.fetch_add(hb_tot, std::memory_order_relaxed);
                 enqueue_central(&hb, CENTRAL_MUX_HDR_SIZE, &hbp, sizeof(hbp));
+            }
+            // HOST_STATE every 5 s for status page v2 (skipped if no state_fn)
+            if(state_fn_ &&
+               std::chrono::duration_cast<std::chrono::seconds>(now-last_state).count() >= 5){
+                last_state = now;
+                CentralHostStateFull st{};
+                state_fn_(st);
+                CentralMuxHdr smh{}; smh.conn_id = 0xFFFF;
+                smh.type = static_cast<uint8_t>(CentralMuxType::HOST_STATE);
+                smh.len  = sizeof(st);
+                uint64_t st_tot = CENTRAL_MUX_HDR_SIZE + sizeof(st);
+                stat_tx_total_bytes.fetch_add(st_tot, std::memory_order_relaxed);
+                stat_tx_hb_bytes.fetch_add(st_tot, std::memory_order_relaxed);
+                enqueue_central(&smh, CENTRAL_MUX_HDR_SIZE, &st, sizeof(st));
             }
             continue;
         }

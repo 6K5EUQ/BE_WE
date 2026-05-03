@@ -1403,6 +1403,29 @@ void run_cli_host(){
                     [&v](int local_fd){ if(v.net_srv) v.net_srv->inject_fd(local_fd); },
                     [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; },
                     *reconnect_fn);
+                central_cli.set_state_fn([&v](CentralHostStateFull& st){
+                    const char* lid = login_get_id();
+                    if(lid) strncpy(st.operator_login, lid, sizeof(st.operator_login)-1);
+                    st.center_freq_hz = v.live_cf_hz.load();
+                    st.sample_rate_hz = v.header.sample_rate;
+                    PktLwfLiveStart lst{};
+                    st.hist_recording = LongWaterfall::snapshot_live_start(lst) ? 1 : 0;
+                    int cnt = 0;
+                    for(int i=0; i<MAX_CHANNELS && cnt<CENTRAL_HSTATE_MAX_CHANNELS; i++){
+                        const auto& c = v.channels[i];
+                        if(!c.filter_active) continue;
+                        auto& d = st.channels[cnt++];
+                        d.active = 1;
+                        d.mode = (uint8_t)c.mode;
+                        d.digital_mode = (uint8_t)c.digital_mode;
+                        d.iq_rec_on = c.iq_rec_on.load() ? 1 : 0;
+                        d.audio_rec_on = c.audio_rec_on.load() ? 1 : 0;
+                        d.dem_run = c.dem_run.load() ? 1 : 0;
+                        d.s_mhz = c.s; d.e_mhz = c.e;
+                        memcpy(d.owner, c.owner, sizeof(d.owner));
+                    }
+                    st.channel_count = (uint8_t)cnt;
+                });
                 bewe_log_push(0,"[BEWE CLI] Central relay connected\n");
             } else {
                 bewe_log_push(0,"[BEWE CLI] Central relay unavailable\n");

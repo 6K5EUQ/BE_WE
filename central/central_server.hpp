@@ -241,6 +241,13 @@ struct HostRoom {
     std::vector<uint8_t>      cached_op_list;     // 릴레이가 빌드
     std::vector<uint8_t>      cached_sched_sync;  // 예약 리스트 (JSON에 영속화)
 
+    // Status page v2 — host periodic state cache (CentralHostStateFull).
+    // Updated whenever a HOST_STATE MUX message arrives. has_state_ false
+    // until first HOST_STATE seen → LIST_RESP_V2 fields default to empty.
+    std::mutex                state_mtx;
+    bool                      has_state = false;
+    CentralHostStateFull      state{};
+
     // 인증/오퍼레이터 관리 (릴레이가 중앙 관리)
     uint8_t                   next_op_idx = 1;
     char                      host_name[32] = {};
@@ -272,6 +279,8 @@ private:
     void join_loop(std::shared_ptr<JoinEntry> je, std::shared_ptr<HostRoom> room);
 
     void handle_list_req(int fd);
+    void handle_list_req_v2(int fd);                 // status page v2
+    void handle_station_detail_req(int fd, const CentralStationDetailReq& req);
     void list_poller_loop(int fd);  // persistent LIST_REQ polling (fd 닫지 않고 반복 응답)
     std::shared_ptr<HostRoom> find_room(const std::string& id) const;
 

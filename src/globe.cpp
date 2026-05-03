@@ -90,32 +90,6 @@ void main(){
 }
 )GLSL";
 
-static const char* STARS_VERT = R"GLSL(
-#version 330 core
-layout(location=0) in vec2 aPos;   // NDC x,y directly
-layout(location=1) in float aBrightness;
-out float vBright;
-void main(){
-    vBright = aBrightness;
-    gl_Position = vec4(aPos, 0.999, 1.0);
-    gl_PointSize = 1.5 + aBrightness * 2.5;
-}
-)GLSL";
-
-static const char* STARS_FRAG = R"GLSL(
-#version 330 core
-in float vBright;
-out vec4 FragColor;
-void main(){
-    vec2 c = gl_PointCoord - 0.5;
-    float d = dot(c, c) * 4.0;
-    if(d > 1.0) discard;
-    float alpha = (1.0 - d * 0.8) * vBright;
-    vec3 col = mix(vec3(1.0, 0.88, 0.75), vec3(0.88, 0.95, 1.0), vBright);
-    FragColor = vec4(col, alpha);
-}
-)GLSL";
-
 // ── Static helpers ────────────────────────────────────────────────────────
 
 static void latlon_to_xyz(float lat_deg, float lon_deg,
@@ -140,7 +114,6 @@ bool GlobeRenderer::init() {
     build_sphere(64, 128);
     build_land();
     build_map_lines();
-    build_stars();
     load_earth_texture();
     // Default orientation: screen center = 38N 127E, north pole straight up
     // col2=pick-fwd(38N,-127lon), col1=Gram-Schmidt(north,fwd), col0=cross(col1,col2)
@@ -166,9 +139,6 @@ void GlobeRenderer::destroy() {
     if (prog_sphere_){ glDeleteProgram(prog_sphere_); prog_sphere_=0; }
     if (prog_lines_) { glDeleteProgram(prog_lines_); prog_lines_=0; }
     if (prog_land_)  { glDeleteProgram(prog_land_); prog_land_=0; }
-    if (vao_stars_)  { glDeleteVertexArrays(1, &vao_stars_); vao_stars_=0; }
-    if (vbo_stars_)  { glDeleteBuffers(1, &vbo_stars_); vbo_stars_=0; }
-    if (prog_stars_) { glDeleteProgram(prog_stars_); prog_stars_=0; }
     seg_starts_.clear(); seg_counts_.clear();
 }
 
@@ -180,27 +150,11 @@ void GlobeRenderer::render() {
     float mvp[16];
     get_mvp(mvp);
 
-    // 0. Draw star background in NDC — no depth test, always behind globe
-    if (prog_stars_ && vao_stars_) {
-        glDisable(GL_DEPTH_TEST);
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-        glEnable(GL_PROGRAM_POINT_SIZE);
-
-        glUseProgram(prog_stars_);
-        glBindVertexArray(vao_stars_);
-        glDrawArrays(GL_POINTS, 0, star_count_);
-        glBindVertexArray(0);
-
-        glEnable(GL_DEPTH_TEST);
-        glDisable(GL_BLEND);
-        glDisable(GL_PROGRAM_POINT_SIZE);
-    }
-
     // 1. Draw globe sphere (with texture if loaded, else flat color)
     glUseProgram(prog_sphere_);
     GLint u = glGetUniformLocation(prog_sphere_, "uMVP");
     glUniformMatrix4fv(u, 1, GL_FALSE, mvp);
+
     if (tex_earth_) {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, tex_earth_);
@@ -769,46 +723,32 @@ bool GlobeRenderer::load_earth_texture() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    // Anisotropic filtering if available
+    // Anisotropic filtering — try core 4.6 constant, fall back to EXT.
     float maxAniso = 1.f;
+    GLenum err_before = glGetError();
+    (void)err_before;
+#ifdef GL_MAX_TEXTURE_MAX_ANISOTROPY
     glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY, &maxAniso);
-    if (maxAniso > 1.f)
+    if (glGetError() != GL_NO_ERROR) maxAniso = 1.f;
+#endif
+#ifdef GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT
+    if (maxAniso <= 1.f) {
+        glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maxAniso);
+        if (glGetError() != GL_NO_ERROR) maxAniso = 1.f;
+    }
+#endif
+    if (maxAniso > 1.f) {
+#ifdef GL_TEXTURE_MAX_ANISOTROPY
         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, maxAniso);
+#elif defined(GL_TEXTURE_MAX_ANISOTROPY_EXT)
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, maxAniso);
+#endif
+    }
+
     glBindTexture(GL_TEXTURE_2D, 0);
     stbi_image_free(data);
-    bewe_log_push(1,"[Globe] earth texture loaded: %dx%d\n", w, h);
+    bewe_log_push(1,"[Globe] earth texture loaded: %dx%d, maxAniso=%.1f\n",
+                  w, h, maxAniso);
     return true;
 }
 
-void GlobeRenderer::build_stars() {
-    // Stars stored as NDC x,y + brightness (3 floats each)
-    static const int N = 2500;
-    float verts[N * 3];
-
-    uint32_t seed = 0xDEADBEEFu;
-    auto lcg = [&]() -> float {
-        seed = seed * 1664525u + 1013904223u;
-        return (float)(seed >> 8) / (float)(1 << 24); // [0,1)
-    };
-
-    for (int i = 0; i < N; i++) {
-        verts[i*3+0] = lcg() * 2.f - 1.f; // NDC x
-        verts[i*3+1] = lcg() * 2.f - 1.f; // NDC y
-        float b = lcg(); b = b * b;        // bias toward dim
-        verts[i*3+2] = 0.2f + b * 0.8f;
-    }
-    star_count_ = N;
-
-    prog_stars_ = compile_shader(STARS_VERT, STARS_FRAG);
-
-    glGenVertexArrays(1, &vao_stars_);
-    glGenBuffers(1, &vbo_stars_);
-    glBindVertexArray(vao_stars_);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_stars_);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)(2*sizeof(float)));
-    glBindVertexArray(0);
-}

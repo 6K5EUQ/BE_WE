@@ -45,6 +45,35 @@ void bewe_log(const char* fmt, ...){
 bool g_band_cat_modal_open = false;
 
 // ── 파일 크기 포맷 ────────────────────────────────────────────────────────
+// Status page v2 — register periodic HOST_STATE producer on a CentralClient.
+// Idempotent (set_state_fn just overwrites). Safe to call after every
+// start_mux_adapter; persists across reconnects within the same client.
+static void register_host_state_fn(CentralClient& cli, FFTViewer& v){
+    cli.set_state_fn([&v](CentralHostStateFull& st){
+        const char* lid = login_get_id();
+        if(lid) strncpy(st.operator_login, lid, sizeof(st.operator_login)-1);
+        st.center_freq_hz = v.live_cf_hz.load();
+        st.sample_rate_hz = v.header.sample_rate;
+        PktLwfLiveStart lst{};
+        st.hist_recording = LongWaterfall::snapshot_live_start(lst) ? 1 : 0;
+        int cnt = 0;
+        for(int i=0; i<MAX_CHANNELS && cnt<CENTRAL_HSTATE_MAX_CHANNELS; i++){
+            const auto& c = v.channels[i];
+            if(!c.filter_active) continue;
+            auto& d = st.channels[cnt++];
+            d.active = 1;
+            d.mode = (uint8_t)c.mode;
+            d.digital_mode = (uint8_t)c.digital_mode;
+            d.iq_rec_on    = c.iq_rec_on.load() ? 1 : 0;
+            d.audio_rec_on = c.audio_rec_on.load() ? 1 : 0;
+            d.dem_run      = c.dem_run.load() ? 1 : 0;
+            d.s_mhz = c.s; d.e_mhz = c.e;
+            memcpy(d.owner, c.owner, sizeof(d.owner));
+        }
+        st.channel_count = (uint8_t)cnt;
+    });
+}
+
 static std::string fmt_filesize(const std::string& dir, const std::string& fname){
     std::string path = dir.empty() ? fname : (dir + "/" + fname);
     struct stat st{};
@@ -4309,6 +4338,7 @@ void run_streaming_viewer(){
                                 [&v](int local_fd){ if(v.net_srv) v.net_srv->inject_fd(local_fd); },
                                 [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; },
                                 *reconnect_fn);
+                            register_host_state_fn(central_cli, v);
                             bewe_log_push(2,"[UI] Central MUX adapter started\n");
                         } else {
                             bewe_log_push(2,"[UI] Central open_room failed, Central unavailable\n");
@@ -4798,6 +4828,7 @@ void run_streaming_viewer(){
                         central_ptr->start_mux_adapter(rfd,
                             [vp](int local_fd){ if(vp->net_srv) vp->net_srv->inject_fd(local_fd); },
                             [vp](){ return vp->net_srv ? (uint8_t)vp->net_srv->client_count() : (uint8_t)0; });
+                        register_host_state_fn(*central_ptr, *vp);
                         bewe_log_push(2,"[UI] Central reconnected after chassis 2 reset\n");
                     } else {
                         bewe_log_push(2,"[UI] Central reconnect failed after chassis 2 reset\n");
@@ -10191,6 +10222,7 @@ void run_streaming_viewer(){
                                         central_ptr->start_mux_adapter(rfd,
                                             [vp](int local_fd){ if(vp->net_srv) vp->net_srv->inject_fd(local_fd); },
                                             [vp](){ return vp->net_srv ? (uint8_t)vp->net_srv->client_count() : (uint8_t)0; });
+                                        register_host_state_fn(*central_ptr, *vp);
                                         bewe_log_push(2,"[UI] Central reconnected after chassis 2 reset (chat)\n");
                                     }
                                 } else if(central_ptr->is_central_connected()){

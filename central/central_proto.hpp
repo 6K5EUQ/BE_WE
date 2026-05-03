@@ -74,6 +74,10 @@ enum class CentralPktType : uint8_t {
     JOIN_ROOM = 0x10,
     LIST_REQ  = 0x20,
     LIST_RESP = 0x21,
+    LIST_REQ_V2          = 0x22,  // status-page extended LIST (operator/freq/sample_rate)
+    LIST_RESP_V2         = 0x23,
+    STATION_DETAIL_REQ   = 0x24,  // payload: station_id[32]
+    STATION_DETAIL_RESP  = 0x25,  // payload: CentralHostStateFull
     ERROR     = 0xFF,
 };
 
@@ -112,6 +116,7 @@ enum class CentralMuxType : uint8_t {
     CONN_OPEN  = 0x02,  // 새 JOIN 연결됨 (len=0)
     CONN_CLOSE = 0x03,  // JOIN 연결 끊김 (len=0)
     NET_RESET  = 0x04,  // 네트워크 리셋 (len=1: 0=reset, 1=open)
+    HOST_STATE = 0x05,  // host → relay periodic state (CentralHostStateFull payload)
 };
 
 // ── BEWE 패킷 타입 상수 (릴레이가 내부 파싱에 사용) ─────────────────────
@@ -211,6 +216,72 @@ struct __attribute__((packed)) CentralListResp {
 struct __attribute__((packed)) CentralError {
     char msg[64];
 };
+
+// ── Status page v2 — extended station record + on-demand detail ──────────
+// Backward compatible: legacy LIST_REQ/LIST_RESP unchanged; this is an
+// additional channel only the web status page uses.
+
+static constexpr int CENTRAL_HSTATE_MAX_CHANNELS = 10;
+
+// Per-channel snapshot embedded inside CentralHostStateFull.
+struct __attribute__((packed)) CentralHostStateChannel {
+    uint8_t  active;          // 1 if slot is in use
+    uint8_t  mode;            // demod mode (0=NONE, 1=AM, 2=FM, 3=MAGIC, ...)
+    uint8_t  digital_mode;    // digital decoder type (0=NONE, 1=AIS, 2=ADS-B, 3=AUTO_ID)
+    uint8_t  iq_rec_on;
+    uint8_t  audio_rec_on;
+    uint8_t  dem_run;         // demod thread running
+    uint8_t  _pad[2];
+    float    s_mhz, e_mhz;    // filter range in MHz (absolute)
+    char     owner[32];       // channel owner login
+};
+static_assert(sizeof(CentralHostStateChannel) == 48,
+              "CentralHostStateChannel must be 48 bytes");
+
+// Full host-side state. Sent by host periodically (~5 s) as a MUX HOST_STATE
+// message; cached on central per HostRoom. STATION_DETAIL_RESP returns this
+// struct verbatim. LIST_RESP_V2 sends a station-level summary (subset).
+struct __attribute__((packed)) CentralHostStateFull {
+    char     operator_login[32];
+    uint64_t center_freq_hz;
+    uint32_t sample_rate_hz;
+    uint8_t  hist_recording;     // 0/1: any LIVE waterfall recording active
+    uint8_t  channel_count;      // active channels
+    uint8_t  _pad[2];
+    CentralHostStateChannel channels[CENTRAL_HSTATE_MAX_CHANNELS];
+};
+static_assert(sizeof(CentralHostStateFull) ==
+              32 + 8 + 4 + 1 + 1 + 2 + 48 * CENTRAL_HSTATE_MAX_CHANNELS,
+              "CentralHostStateFull layout");
+
+// Extended station record used in LIST_RESP_V2. First 108 bytes match
+// CentralStation byte-for-byte, then summary fields.
+struct __attribute__((packed)) CentralStationV2 {
+    char    station_id[32];
+    char    station_name[64];
+    float   lat, lon;
+    uint8_t host_tier;
+    uint8_t user_count;
+    uint8_t _pad[2];
+    // ── v2 extension (48 B) ────────────────────────────────────────────
+    char     operator_login[32];
+    uint64_t center_freq_hz;
+    uint32_t sample_rate_hz;
+    uint8_t  hist_recording;
+    uint8_t  channel_count;
+    uint8_t  _pad2[2];
+};
+static_assert(sizeof(CentralStationV2) == sizeof(CentralStation) + 48,
+              "CentralStationV2 = CentralStation + 48 byte extension");
+
+// LIST_RESP_V2 layout: same header as CentralListResp, then CentralStationV2[].
+// (Re-using CentralListResp header keeps lan_ip discovery identical.)
+
+// STATION_DETAIL_REQ payload
+struct __attribute__((packed)) CentralStationDetailReq {
+    char station_id[32];
+};
+// STATION_DETAIL_RESP payload = CentralHostStateFull (or empty if station unknown)
 
 // ── Wire helpers ───────────────────────────────────────────────────────────
 #include <vector>

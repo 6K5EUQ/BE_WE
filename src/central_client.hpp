@@ -218,4 +218,13 @@ public:
     void set_on_central_conn_open(std::function<void(uint16_t)> cb){
         on_central_conn_open_ = std::move(cb);
     }
+
+    // status page v2 — host 의 현재 state 를 채워주는 콜백.
+    // mux_loop 가 5 초마다 호출해 결과를 HOST_STATE MUX 메시지로 송신.
+    // null 이면 HOST_STATE 송신 안 함 (구버전 central 과 호환).
+    void set_state_fn(std::function<void(CentralHostStateFull&)> cb){
+        state_fn_ = std::move(cb);
+    }
+private:
+    std::function<void(CentralHostStateFull&)> state_fn_;
 };
