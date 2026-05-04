@@ -937,58 +937,6 @@ void run_cli_host(){
         srv->send_share_list(-1, slist);
     };
 
-    // ── Report: JOIN이 파일을 report에 추가 → 전체 브로드캐스트 ──────
-    srv->cb.on_report_add = [&](uint8_t op_idx, const char* op_name,
-                                 const char* filename, const char* info_data){
-        bewe_log_push(0,"[Report] %s reported '%s'\n", op_name, filename);
-        // report 목록 갱신 후 브로드캐스트
-        std::vector<ReportFileEntry> entries;
-        auto scan_rpt = [](const std::string& dir, std::vector<ReportFileEntry>& out){
-            DIR* d = opendir(dir.c_str()); if(!d) return;
-            struct dirent* e;
-            while((e = readdir(d))){
-                if(e->d_name[0]=='.') continue;
-                std::string n(e->d_name);
-                if(n.size()<5 || n.substr(n.size()-4)!=".wav") continue;
-                ReportFileEntry re{};
-                strncpy(re.filename, n.c_str(), 127);
-                std::string fp = dir+"/"+n;
-                struct stat st{}; if(stat(fp.c_str(),&st)==0) re.size_bytes=(uint64_t)st.st_size;
-                // .info 전체를 info_data로 보존 + 운영자 이름 추출.
-                std::string ip = fp+".info";
-                FILE* fi = fopen(ip.c_str(), "r");
-                if(fi){
-                    size_t n_read = fread(re.info_data, 1, sizeof(re.info_data)-1, fi);
-                    re.info_data[n_read] = 0;
-                    fclose(fi);
-                    // Operator 라인 추출 (reporter 필드용)
-                    const char* p = re.info_data;
-                    while(*p){
-                        if(strncmp(p, "Operator:", 9) == 0){
-                            const char* v = p + 9;
-                            while(*v == ' ' || *v == '\t') v++;
-                            const char* end = v;
-                            while(*end && *end != '\n' && *end != '\r') end++;
-                            size_t L = (size_t)(end - v);
-                            if(L > 31) L = 31;
-                            memcpy(re.reporter, v, L);
-                            re.reporter[L] = 0;
-                            break;
-                        }
-                        // skip to next line
-                        while(*p && *p != '\n') p++;
-                        if(*p == '\n') p++;
-                    }
-                }
-                out.push_back(re);
-            }
-            closedir(d);
-        };
-        scan_rpt(BEWEPaths::report_iq_dir(), entries);
-        scan_rpt(BEWEPaths::report_audio_dir(), entries);
-        srv->broadcast_report_list(entries);
-    };
-
     // ── DB Save: JOIN이 파일을 Central DB에 저장 → HOST가 대행 ──────
     static struct { FILE* fp=nullptr; std::string path; uint8_t tid=0; } db_recv;
     srv->cb.on_db_save = [&](uint8_t op_idx, const char* op_name,
@@ -1153,9 +1101,6 @@ void run_cli_host(){
                     }
                 });
 
-                // Central Report 목록 수신
-                extern std::vector<ReportFileEntry> g_report_list;
-                extern std::mutex g_report_list_mtx;
                 // Central에 저장된 예약 리스트를 HOST가 받아 v.sched_entries 복원
                 central_cli.set_on_central_sched_sync([&v](const uint8_t* pkt, size_t len){
                     if(len < 9 + sizeof(PktSchedSync)) return;
@@ -1349,21 +1294,6 @@ void run_cli_host(){
                     if(v.net_srv) v.net_srv->broadcast_lwf_live_stop(s);
                 };
                 LongWaterfall::set_live_callbacks(lcb);
-
-                central_cli.set_on_central_report_list([](const uint8_t* pkt, size_t len){
-                    extern std::vector<ReportFileEntry> g_report_list;
-                    extern std::mutex g_report_list_mtx;
-                    if(len < 9 + sizeof(PktReportList)) return;
-                    const uint8_t* payload = pkt + 9;
-                    auto* hdr = reinterpret_cast<const PktReportList*>(payload);
-                    uint16_t cnt = hdr->count;
-                    size_t expected = sizeof(PktReportList) + cnt * sizeof(ReportFileEntry);
-                    if(len - 9 < expected) return;
-                    const ReportFileEntry* ent = reinterpret_cast<const ReportFileEntry*>(payload + sizeof(PktReportList));
-                    { std::lock_guard<std::mutex> lk(g_report_list_mtx);
-                      g_report_list.assign(ent, ent + cnt); }
-                    bewe_log_push(0,"[Central] REPORT_LIST: %u reports\n", cnt);
-                });
 
                 srv->cb.on_relay_broadcast = [&central_cli](const uint8_t* pkt, size_t len, bool no_drop){
                     central_cli.enqueue_relay_broadcast(pkt, len, no_drop);

@@ -7,10 +7,6 @@
 // 전역 DB 목록 (Central server에서 수신, ui.cpp + cli_host.cpp에서 접근)
 std::vector<DbFileEntry> g_db_list;
 std::mutex g_db_list_mtx;
-
-// 전역 Report 목록 (Central server에서 수신)
-std::vector<ReportFileEntry> g_report_list;
-std::mutex g_report_list_mtx;
 #include <cfloat>
 #include <cstdarg>
 #include <ctime>

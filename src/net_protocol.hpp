@@ -38,20 +38,16 @@ enum class PacketType : uint8_t {
     PUB_DELETE_REQ     = 0x15,  // client → server: request delete of public file (owner only)
     IQ_PROGRESS        = 0x16,  // server → all: IQ 파일 전송 진행상황 (REC/Transferring/Done)
     IQ_CHUNK           = 0x20,  // HOST → JOIN (MUX): IQ 파일 청크 전송
-    REPORT_LIST        = 0x22,  // server → all: reported files list
-    REPORT_ADD         = 0x23,  // client → server: new report notification
+    REPORT_ADD         = 0x23,  // client → central: ingest report into emitter DB
     DB_SAVE_META       = 0x24,  // client → server: save file+info to DB
     DB_SAVE_DATA       = 0x25,  // client → server: DB file data chunk
     DB_LIST            = 0x26,  // central → all: database file list
     DB_DOWNLOAD_REQ    = 0x27,  // client → central: request DB file download
     DB_DOWNLOAD_DATA   = 0x28,  // central → client: DB file data chunk
     DB_DELETE_REQ      = 0x29,  // client → central: delete DB file
-    REPORT_DELETE      = 0x2A,  // client → central: delete report
-    REPORT_UPDATE      = 0x2B,  // client → central: update report .info
     DIGI_LOG           = 0x2C,  // server → clients: digital decode text result
     DB_DOWNLOAD_INFO   = 0x2D,  // central → client: DB file .info contents (sent before DATA)
     DB_LIST_REQ        = 0x2E,  // client → central: request DB list refresh
-    REPORT_LIST_REQ    = 0x2F,  // client → central: request Report list refresh
     SCHED_SYNC         = 0x30,  // server → all clients: scheduled recording list snapshot
     BAND_PLAN_SYNC     = 0x31,  // host → all clients: band plan (frequency allocation overlay)
     BAND_ADD           = 0x32,  // any → host: add band segment
@@ -518,23 +514,13 @@ struct __attribute__((packed)) PktIqProgress {
     uint8_t  phase;  // 0=REC, 1=Transferring, 2=Done
 };
 
-// ── REPORT_LIST / REPORT_ADD ──────────────────────────────────────────────
-// v1.6.0+: info_summary[256] → info_data[512] (REPORT_UPDATE와 동일한 전체 .info)
-//          - 운영자가 적은 모든 필드 보존 → emitter 매칭 입력으로 사용.
-struct __attribute__((packed)) ReportFileEntry {
-    char     filename[128];
-    uint64_t size_bytes;
-    char     reporter[32];
-    char     info_data[512];    // full .info contents (used for emitter matching)
-};
-struct __attribute__((packed)) PktReportList {
-    uint16_t count;
-    // ReportFileEntry[count] follows
-};
+// ── REPORT_ADD ────────────────────────────────────────────────────────────
+// 운용사가 파일을 report → Central이 info_data를 파싱해 Signal Library에 ingest.
+// 디스크에 .info 저장은 하지 않음 (Library가 단일 진실 원천).
 struct __attribute__((packed)) PktReportAdd {
     char     filename[128];
     char     reporter[32];
-    char     info_data[512];    // full .info contents (was info_summary[256])
+    char     info_data[512];    // full .info contents (parsed into Sighting fields)
 };
 
 // ── DB_SAVE ──────────────────────────────────────────────────────────────
@@ -581,15 +567,6 @@ struct __attribute__((packed)) PktDbDownloadData {
 struct __attribute__((packed)) PktDbDownloadInfo {
     char     filename[128];
     char     info_data[512];
-};
-
-// ── REPORT_DELETE / REPORT_UPDATE ─────────────────────────────────────────
-struct __attribute__((packed)) PktReportDelete {
-    char     filename[128];
-};
-struct __attribute__((packed)) PktReportUpdate {
-    char     filename[128];
-    char     info_data[512];   // full .info contents
 };
 
 // ── DB_DELETE ─────────────────────────────────────────────────────────────

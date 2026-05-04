@@ -3248,13 +3248,6 @@ void run_streaming_viewer(){
         };
 
         // JOIN: HOST Public 파일 목록 수신 (filename, size_bytes, uploader)
-        // JOIN: Report 목록 수신
-        cli->on_report_list = [](const std::vector<ReportFileEntry>& entries){
-            extern std::vector<ReportFileEntry> g_report_list;
-            extern std::mutex g_report_list_mtx;
-            std::lock_guard<std::mutex> lk(g_report_list_mtx);
-            g_report_list = entries;
-        };
 
         // DB 목록 수신 (Central server)
         cli->on_db_list = [](const std::vector<DbFileEntry>& entries){
@@ -4422,7 +4415,7 @@ void run_streaming_viewer(){
         bool is_public=false; // Public 탭 파일 (소유자만 삭제)
         bool selected=false;  // 좌클릭 선택 상태
         // Del 키 처리 분기용 (좌클릭 시 셋팅)
-        enum Type : uint8_t { FT_LOCAL=0, FT_DB=1, FT_REPORT=2 } type = FT_LOCAL;
+        enum Type : uint8_t { FT_LOCAL=0, FT_DB=1 } type = FT_LOCAL;
         std::string operator_name; // FT_DB 권한 검사용
     } file_ctx;
 
@@ -5476,21 +5469,6 @@ void run_streaming_viewer(){
                     }
                     bewe_log_push(0,"[UI] DEL: DB '%s'\n", file_ctx.filename.c_str());
                     file_ctx.selected=false;
-                } else if(file_ctx.selected && file_ctx.type == FileCtxMenu::FT_REPORT){
-                    // Report 파일: cmd_report_delete
-                    if(v.net_cli){
-                        v.net_cli->cmd_report_delete(file_ctx.filename.c_str());
-                    } else if(v.net_srv && v.net_srv->cb.on_relay_broadcast){
-                        PktReportDelete rd{};
-                        strncpy(rd.filename, file_ctx.filename.c_str(), 127);
-                        auto pkt = make_packet(PacketType::REPORT_DELETE, &rd, sizeof(rd));
-                        v.net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
-                    }
-                    // Signal Library 캐시 갱신 — Central이 emitter broadcast를 보내지만
-                    // sightings 캐시도 다시 받도록 dirty 플래그 세움.
-                    v.sig_lib_dirty = true;
-                    bewe_log_push(0,"[UI] DEL: Report '%s'\n", file_ctx.filename.c_str());
-                    file_ctx.selected=false;
                 } else if(file_ctx.selected && !file_ctx.filepath.empty()){
                     // 선택된 로컬 파일 DEL 키로 삭제
                     bool can_delete = true;
@@ -6378,9 +6356,7 @@ void run_streaming_viewer(){
                     downloaded_files.insert(downloaded_files.end(), share_iq_files.begin(),    share_iq_files.end());
                     downloaded_files.insert(downloaded_files.end(), share_audio_files.begin(), share_audio_files.end());
 
-                    // Database/Report 로컬 스캔 (네트워크 소스 없을 때)
-                    extern std::vector<ReportFileEntry> g_report_list;
-                    extern std::mutex g_report_list_mtx;
+                    // Database 로컬 스캔 (네트워크 소스 없을 때)
                     bool has_net_db = (v.net_cli != nullptr) ||
                                       (v.net_srv && v.net_srv->cb.on_relay_broadcast);
                     if(!has_net_db){
@@ -6391,7 +6367,6 @@ void run_streaming_viewer(){
                             struct dirent* de;
                             while((de = readdir(top))){
                                 if(de->d_name[0]=='.') continue;
-                                // flat 구조: .wav 정규 파일만 수집 (_reports/ 등 디렉토리는 자동 제외)
                                 std::string fn(de->d_name);
                                 if(fn.size()<5 || fn.substr(fn.size()-4)!=".wav") continue;
                                 std::string fp = db_base + "/" + fn;
@@ -6418,47 +6393,6 @@ void run_streaming_viewer(){
                         }
                         { std::lock_guard<std::mutex> lk(g_db_list_mtx);
                           g_db_list = std::move(db_entries); }
-
-                        std::string rpt_dir = db_base + "/_reports";
-                        std::vector<ReportFileEntry> rpt_entries;
-                        DIR* rd = opendir(rpt_dir.c_str());
-                        if(rd){
-                            struct dirent* re2;
-                            while((re2 = readdir(rd))){
-                                if(re2->d_name[0]=='.') continue;
-                                std::string n(re2->d_name);
-                                if(n.size()<6 || n.substr(n.size()-5)!=".info") continue;
-                                ReportFileEntry re{};
-                                strncpy(re.filename, n.substr(0,n.size()-5).c_str(), 127);
-                                FILE* fi = fopen((rpt_dir+"/"+n).c_str(), "r");
-                                if(fi){
-                                    size_t nr = fread(re.info_data, 1, sizeof(re.info_data)-1, fi);
-                                    re.info_data[nr] = 0;
-                                    fclose(fi);
-                                    // Operator 라인 추출 (reporter 표시용)
-                                    const char* p = re.info_data;
-                                    while(*p){
-                                        if(strncmp(p, "Operator:", 9) == 0){
-                                            const char* v = p + 9;
-                                            while(*v == ' ' || *v == '\t') v++;
-                                            const char* eend = v;
-                                            while(*eend && *eend != '\n' && *eend != '\r') eend++;
-                                            size_t L = (size_t)(eend - v);
-                                            if(L > 31) L = 31;
-                                            memcpy(re.reporter, v, L);
-                                            re.reporter[L] = 0;
-                                            break;
-                                        }
-                                        while(*p && *p != '\n') p++;
-                                        if(*p == '\n') p++;
-                                    }
-                                }
-                                rpt_entries.push_back(re);
-                            }
-                            closedir(rd);
-                        }
-                        { std::lock_guard<std::mutex> lk(g_report_list_mtx);
-                          g_report_list = std::move(rpt_entries); }
                     }
                 }
             }
@@ -8240,89 +8174,6 @@ void run_streaming_viewer(){
                         for(auto& fn : priv_audio_files) draw_arch_file(BEWEPaths::private_audio_dir(), fn, 3);
                         if(priv_audio_files.empty()) ImGui::TextDisabled("  (empty)");
                         ImGui::TreePop();
-                    }
-                    ImGui::Unindent(8.f);
-                }
-                ImGui::Spacing();
-
-                // ── Report ───────────────────────────────────────────────
-                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                ImGui::SetNextItemAllowOverlap();
-                bool rpt_open = ImGui::CollapsingHeader("Report");
-                ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - 60.f);
-                if(ImGui::SmallButton("Reload##rpt")){
-                    if(v.net_cli) v.net_cli->cmd_request_report_list();
-                    else if(v.net_srv && v.net_srv->cb.on_relay_broadcast){
-                        auto pkt = make_packet(PacketType::REPORT_LIST_REQ, nullptr, 0);
-                        v.net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
-                    }
-                }
-                if(rpt_open){
-                    ImGui::Indent(8.f);
-                    // Central에서 수신한 Report 목록 표시
-                    extern std::vector<ReportFileEntry> g_report_list;
-                    extern std::mutex g_report_list_mtx;
-                    std::vector<ReportFileEntry> rpt_snap;
-                    { std::lock_guard<std::mutex> lk(g_report_list_mtx); rpt_snap = g_report_list; }
-                    if(rpt_snap.empty()){
-                        ImGui::TextDisabled("  (no reports)");
-                    } else {
-                        // Report 전용 우클릭 상태
-                        static struct { bool open=false; float x=0,y=0; std::string filename; } rpt_ctx;
-                        ImGui::Indent(12.f);
-                        for(auto& re : rpt_snap){
-                            float pw_r = ImGui::GetContentRegionAvail().x;
-                            float fn_wr = pw_r * 0.66f;
-                            bool is_sel_rpt = (file_ctx.type == FileCtxMenu::FT_REPORT &&
-                                               file_ctx.selected && file_ctx.filename == re.filename);
-                            ImGui::Selectable(re.filename, is_sel_rpt, 0, ImVec2(fn_wr, 0));
-                            bool rh = ImGui::IsItemHovered();
-                            if(re.reporter[0]){
-                                ImGui::SameLine(fn_wr + 8.f);
-                                ImGui::TextDisabled("by %s", re.reporter);
-                            }
-                            if(rh){
-                                if(re.info_data[0]) ImGui::SetTooltip("%s", re.info_data);
-                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
-                                    file_ctx.selected = true;
-                                    file_ctx.open     = false;
-                                    file_ctx.filepath = "";
-                                    file_ctx.filename = re.filename;
-                                    file_ctx.type     = FileCtxMenu::FT_REPORT;
-                                    file_ctx.is_public = false;
-                                }
-                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                                    rpt_ctx = {true, io.MousePos.x, io.MousePos.y, std::string(re.filename)};
-                                }
-                            }
-                        }
-                        ImGui::Unindent(12.f);
-                        // Report 우클릭 팝업
-                        if(rpt_ctx.open){
-                            ImGui::OpenPopup("##rpt_ctx_popup");
-                            rpt_ctx.open = false;
-                        }
-                        ImGui::SetNextWindowSize(ImVec2(120.f, 0.f));
-                        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
-                        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.f,6.f));
-                        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f,0.12f,0.18f,1.f));
-                        if(ImGui::BeginPopup("##rpt_ctx_popup")){
-                            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));
-                            if(ImGui::Selectable("Delete")){
-                                if(v.net_cli)
-                                    v.net_cli->cmd_report_delete(rpt_ctx.filename.c_str());
-                                else if(v.net_srv && v.net_srv->cb.on_relay_broadcast){
-                                    PktReportDelete rd{}; strncpy(rd.filename,rpt_ctx.filename.c_str(),127);
-                                    auto pkt=make_packet(PacketType::REPORT_DELETE,&rd,sizeof(rd));
-                                    v.net_srv->cb.on_relay_broadcast(pkt.data(),pkt.size(),true);
-                                }
-                                v.sig_lib_dirty = true;
-                            }
-                            ImGui::PopStyleColor();
-                            ImGui::EndPopup();
-                        }
-                        ImGui::PopStyleColor();
-                        ImGui::PopStyleVar(2);
                     }
                     ImGui::Unindent(8.f);
                 }

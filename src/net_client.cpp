@@ -637,19 +637,6 @@ void NetClient::handle_packet(PacketType type,
         break;
     }
 
-    case PacketType::REPORT_LIST: {
-        if(len < sizeof(PktReportList)) break;
-        auto* hdr = reinterpret_cast<const PktReportList*>(payload);
-        uint16_t cnt = hdr->count;
-        size_t expected = sizeof(PktReportList) + cnt * sizeof(ReportFileEntry);
-        if(len < expected) break;
-        const ReportFileEntry* entries = reinterpret_cast<const ReportFileEntry*>(
-            payload + sizeof(PktReportList));
-        std::vector<ReportFileEntry> list(entries, entries + cnt);
-        if(on_report_list) on_report_list(list);
-        break;
-    }
-
     case PacketType::EMITTER_LIST: {
         if(len < sizeof(PktEmitterList)) break;
         auto* hdr = reinterpret_cast<const PktEmitterList*>(payload);
@@ -920,20 +907,6 @@ bool NetClient::cmd_db_download(const char* filename, const char* operator_name)
 }
 bool NetClient::cmd_request_db_list(){
     return raw_send(PacketType::DB_LIST_REQ, nullptr, 0);
-}
-bool NetClient::cmd_request_report_list(){
-    return raw_send(PacketType::REPORT_LIST_REQ, nullptr, 0);
-}
-bool NetClient::cmd_report_delete(const char* filename){
-    PktReportDelete rd{};
-    strncpy(rd.filename, filename, 127);
-    return raw_send(PacketType::REPORT_DELETE, &rd, sizeof(rd));
-}
-bool NetClient::cmd_report_update(const char* filename, const char* info_data){
-    PktReportUpdate ru{};
-    strncpy(ru.filename, filename, 127);
-    strncpy(ru.info_data, info_data ? info_data : "", 511);
-    return raw_send(PacketType::REPORT_UPDATE, &ru, sizeof(ru));
 }
 bool NetClient::cmd_report_add(const char* filename, const char* info_data){
     PktReportAdd ra{};

@@ -305,12 +305,9 @@ public:
     bool cmd_lwf_delete_req(const char* filename);
     bool cmd_db_delete(const char* filename, const char* operator_name);
     bool cmd_db_download(const char* filename, const char* operator_name);
-    bool cmd_report_delete(const char* filename);
-    bool cmd_report_update(const char* filename, const char* info_data);
     bool cmd_report_add(const char* filename, const char* info_data);
     bool cmd_db_save(const char* filepath, const char* operator_name);
     bool cmd_request_db_list();           // JOIN → Central: refresh DB list
-    bool cmd_request_report_list();       // JOIN → Central: refresh Report list
 
     // ── Signal Library / Emitter DB (JOIN ↔ Central) ────────────────────
     bool cmd_emitter_list_req(uint16_t off, uint16_t lim);
@@ -320,8 +317,6 @@ public:
     bool cmd_sighting_link(const char* sighting_id, const char* emitter_uid,
                            uint8_t action, const char* editor);
 
-    // Report list received from HOST
-    std::function<void(const std::vector<ReportFileEntry>&)> on_report_list;
     // DB list received from Central
     std::function<void(const std::vector<DbFileEntry>&)> on_db_list;
     // DB download data from Central

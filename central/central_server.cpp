@@ -110,13 +110,8 @@ bool CentralServer::start(int port){
         schedules_json_path_ = base + "/schedules.json";
         load_schedules_from_json();
 
-        // Emitter DB: load existing _emitters/_sightings; if first run, migrate from _reports/.
+        // Emitter DB: load existing _emitters/_sightings.
         emitter_db_.load(base);
-        std::string rpt_dir = base + "/_reports";
-        if(emitter_db_.sighting_count() == 0){
-            printf("[Central] EmitterDb migration: scanning %s ...\n", rpt_dir.c_str());
-            emitter_db_.migrate_from_reports(rpt_dir);
-        }
         printf("[Central] EmitterDb: %zu emitters, %zu sightings loaded\n",
                emitter_db_.emitter_count(), emitter_db_.sighting_count());
     }
@@ -319,9 +314,8 @@ void CentralServer::host_mux_loop(std::shared_ptr<HostRoom> room){
     printf("[Central] host_mux_loop started room='%s' fd=%d\n",
            room->station_id.c_str(), room->fd);
 
-    // HOST 접속 시 DB + Report 목록 초기 전송
+    // HOST 접속 시 DB 목록 초기 전송 (Signal Library는 클라가 Refresh 시점에 요청)
     broadcast_db_list(room);
-    broadcast_report_list_central(room);
 
     // flush 전용 스레드: recv 블로킹과 분리하여 JOIN→HOST 패킷 지연 제거
     std::thread flush_thr([room](){
@@ -373,10 +367,9 @@ void CentralServer::host_mux_loop(std::shared_ptr<HostRoom> room){
         // ── HB ─────────────────────────────────────────────────────────────
         if(mux.type == 0x00){
             room->last_hb = std::chrono::steady_clock::now();
-            // 첫 HB 수신 시 DB+Report 목록 재전송 (HOST mux_loop 안정화 후)
+            // 첫 HB 수신 시 DB 목록 재전송 (HOST mux_loop 안정화 후)
             if(hb_count == 0){
                 broadcast_db_list(room);
-                broadcast_report_list_central(room);
             }
             hb_count++; win_hb++;
             win_hb_bytes += CENTRAL_MUX_HDR_SIZE + mux.len;
@@ -632,9 +625,8 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                 printf("[Central] sent %d cached packets to conn_id=%u\n", cache_count, conn_id);
                 // OPERATOR_LIST 갱신 (새 유저 반영)
                 build_and_broadcast_op_list(room);
-                // DB + Report 목록 전송
+                // DB 목록 전송 (Signal Library는 클라가 Refresh 시점에 요청)
                 broadcast_db_list(room);
-                broadcast_report_list_central(room);
                 return;
             }
         }
@@ -815,35 +807,15 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         return;
     }
 
-    // ── Report from HOST (REPORT_ADD/DELETE/UPDATE) ────────────────────
-    if(bewe_type == 0x23 || bewe_type == BEWE_TYPE_RPT_DELETE || bewe_type == BEWE_TYPE_RPT_UPDATE){
+    // ── REPORT_ADD from HOST: emitter DB ingest only (no .info disk) ──
+    if(bewe_type == 0x23){
         const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
         size_t plen = bewe_len - BEWE_HDR_SIZE;
-        const char* home = getenv("HOME");
-        std::string rpt_dir = home ? std::string(home)+"/BE_WE/DataBase/_reports" : "/tmp/BE_WE/DataBase/_reports";
-        mkdir(rpt_dir.c_str(), 0755);
-        if(bewe_type == 0x23 && plen >= sizeof(PktReportAdd)){
+        if(plen >= sizeof(PktReportAdd)){
             auto* ra = reinterpret_cast<const PktReportAdd*>(payload);
-            FILE* fi = fopen((rpt_dir+"/"+ra->filename+".info").c_str(), "w");
-            if(fi){ if(ra->info_data[0]) fprintf(fi,"%s",ra->info_data); else fprintf(fi,"Operator: %s\n",ra->reporter); fclose(fi); }
             printf("[Central] REPORT_ADD(HOST): '%s'\n", ra->filename);
             ingest_report_to_emitter_db(ra->filename, ra->reporter, ra->info_data);
-        } else if(bewe_type == BEWE_TYPE_RPT_DELETE && plen >= 128){
-            char fn[129]={}; memcpy(fn,payload,128);
-            remove((rpt_dir+"/"+fn+".info").c_str());
-            printf("[Central] REPORT_DELETE(HOST): '%s'\n", fn);
-            std::vector<std::string> aff, orp;
-            if(emitter_db_.delete_sighting_by_filename(fn, aff, orp)){
-                for(auto& uid : aff) broadcast_emitter_changed(uid);
-                for(auto& uid : orp) broadcast_emitter_changed(uid);
-            }
-        } else if(bewe_type == BEWE_TYPE_RPT_UPDATE && plen >= 128+512){
-            char fn[129]={}; memcpy(fn,payload,128);
-            FILE* fi = fopen((rpt_dir+"/"+fn+".info").c_str(), "w");
-            if(fi){ fwrite(payload+128,1,strnlen((const char*)(payload+128),511),fi); fclose(fi); }
-            printf("[Central] REPORT_UPDATE(HOST): '%s'\n", fn);
         }
-        broadcast_report_list_central(room);
         return;
     }
 
@@ -915,13 +887,9 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
         printf("[Central] intercept_join_cmd: bewe_type=0x%02x len=%zu conn_id=%u '%s'\n",
                bewe_type, bewe_len, je->conn_id, je->name);
 
-    // ── DB_LIST_REQ / REPORT_LIST_REQ: 즉시 재전송 ─────────────────
+    // ── DB_LIST_REQ: 즉시 재전송 ─────────────────────────────────
     if(bewe_type == BEWE_TYPE_DB_LIST_REQ){
         broadcast_db_list(room);
-        return true;
-    }
-    if(bewe_type == BEWE_TYPE_REPORT_LIST_REQ){
-        broadcast_report_list_central(room);
         return true;
     }
 
@@ -1119,68 +1087,16 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
         return true;
     }
 
-    // ── REPORT_ADD: Central _reports/ 에 .info 저장 ────────────────
+    // ── REPORT_ADD: emitter DB에 ingest (.info 디스크 저장 없음) ─────
     if(bewe_type == 0x23){ // REPORT_ADD
         const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
         size_t plen = bewe_len - BEWE_HDR_SIZE;
         if(plen >= sizeof(PktReportAdd)){
             auto* ra = reinterpret_cast<const PktReportAdd*>(payload);
-            const char* home = getenv("HOME");
-            std::string rpt_dir = home ? std::string(home)+"/BE_WE/DataBase/_reports" : "/tmp/BE_WE/DataBase/_reports";
-            mkdir(rpt_dir.c_str(), 0755);
-            std::string ip = rpt_dir + "/" + std::string(ra->filename) + ".info";
-            FILE* fi = fopen(ip.c_str(), "w");
-            if(fi){
-                if(ra->info_data[0]) fprintf(fi, "%s", ra->info_data);
-                else fprintf(fi, "Operator: %s\n", ra->reporter);
-                fclose(fi);
-            }
             printf("[Central] REPORT_ADD: '%s' by '%s'\n", ra->filename, ra->reporter);
             ingest_report_to_emitter_db(ra->filename, ra->reporter, ra->info_data);
-            broadcast_report_list_central(room);
         }
         return true; // HOST에 포워드 안 함
-    }
-
-    // ── REPORT_DELETE: Central _reports/ 에서 삭제 ───────────────
-    if(bewe_type == BEWE_TYPE_RPT_DELETE){
-        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
-        size_t plen = bewe_len - BEWE_HDR_SIZE;
-        if(plen >= 128){
-            char fn[129]={}; memcpy(fn, payload, 128);
-            const char* home = getenv("HOME");
-            std::string rpt_dir = home ? std::string(home)+"/BE_WE/DataBase/_reports" : "/tmp/BE_WE/DataBase/_reports";
-            std::string ip = rpt_dir + "/" + fn + ".info";
-            remove(ip.c_str());
-            printf("[Central] REPORT_DELETE: '%s'\n", fn);
-            std::vector<std::string> aff, orp;
-            if(emitter_db_.delete_sighting_by_filename(fn, aff, orp)){
-                for(auto& uid : aff) broadcast_emitter_changed(uid);
-                for(auto& uid : orp) broadcast_emitter_changed(uid);
-            }
-            broadcast_report_list_central(room);
-        }
-        return true;
-    }
-
-    // ── REPORT_UPDATE: Central _reports/ .info 갱신 ──────────────
-    if(bewe_type == BEWE_TYPE_RPT_UPDATE){
-        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
-        size_t plen = bewe_len - BEWE_HDR_SIZE;
-        if(plen >= 128+512){
-            char fn[129]={}; memcpy(fn, payload, 128);
-            const char* info = (const char*)(payload+128);
-            const char* home = getenv("HOME");
-            std::string rpt_dir = home ? std::string(home)+"/BE_WE/DataBase/_reports" : "/tmp/BE_WE/DataBase/_reports";
-            std::string ip = rpt_dir + "/" + fn + ".info";
-            FILE* fi = fopen(ip.c_str(), "w");
-            if(fi){ fwrite(info, 1, strnlen(info,511), fi); fclose(fi); }
-            printf("[Central] REPORT_UPDATE: '%s'\n", fn);
-            // .info 갱신 시에도 emitter_db 재 ingest (운영자 수정값 반영).
-            ingest_report_to_emitter_db(fn, "" /*reporter unknown — preserved by sighting_id*/, info);
-            broadcast_report_list_central(room);
-        }
-        return true;
     }
 
     // ── Signal Library / Emitter DB ─────────────────────────────────────
@@ -1238,7 +1154,6 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
             char ed[SIGHTING_REPORTER_LEN+1]={}; memcpy(ed, up->editor, SIGHTING_REPORTER_LEN);
             if(e.created_by.empty()) e.created_by = ed;
             emitter_db_.upsert_emitter(e);
-            broadcast_emitter_changed(e.emitter_uid);
             printf("[Central] EMITTER_UPSERT: '%s' by '%s'\n",
                    e.emitter_uid.c_str(), ed);
         }
@@ -1251,13 +1166,7 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
             auto* dp = reinterpret_cast<const PktEmitterDelete*>(payload);
             char tmp[EMITTER_UID_LEN+1]={}; memcpy(tmp, dp->emitter_uid, EMITTER_UID_LEN);
             std::string uid = tmp;
-            // 삭제 전 자식 sighting 목록을 미리 알아둠 → 변경 broadcast 위해.
-            BeweCentral::Emitter saved;
-            std::vector<std::string> children;
-            if(emitter_db_.find_emitter(uid, saved)) children = saved.member_sighting_ids;
             if(emitter_db_.delete_emitter(uid)){
-                broadcast_emitter_changed(uid); // count=0이지만 여기선 entry 빈 → 클라가 무시할 수 있음
-                for(auto& sid : children) broadcast_sighting_changed(sid);
                 printf("[Central] EMITTER_DELETE: '%s'\n", uid.c_str());
             }
         }
@@ -1270,19 +1179,7 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
             auto* lk = reinterpret_cast<const PktSightingLink*>(payload);
             char sid[SIGHTING_ID_LEN+1]={}; memcpy(sid, lk->sighting_id, SIGHTING_ID_LEN);
             char tuid[EMITTER_UID_LEN+1]={}; memcpy(tuid, lk->emitter_uid, EMITTER_UID_LEN);
-            // 링크 변경 전 sighting의 기존 emitter도 갱신해야 함.
-            BeweCentral::Sighting before;
-            std::string old_euid;
-            if(emitter_db_.find_sighting(sid, before)) old_euid = before.emitter_uid;
             if(emitter_db_.link_sighting(sid, tuid, lk->action)){
-                BeweCentral::Sighting after;
-                if(emitter_db_.find_sighting(sid, after)){
-                    if(!old_euid.empty() && old_euid != after.emitter_uid)
-                        broadcast_emitter_changed(old_euid);
-                    if(!after.emitter_uid.empty())
-                        broadcast_emitter_changed(after.emitter_uid);
-                    broadcast_sighting_changed(sid);
-                }
                 printf("[Central] SIGHTING_LINK: %s action=%u target=%s\n",
                        sid, (unsigned)lk->action, tuid);
             }
@@ -1354,76 +1251,6 @@ void CentralServer::build_and_broadcast_op_list(std::shared_ptr<HostRoom> room){
     printf("[Central] OP_LIST broadcast: %d operators room='%s'\n", count, room->station_id.c_str());
 }
 
-// ── REPORT_LIST broadcast (Central _reports/ 기반) ────────────────────────
-void CentralServer::broadcast_report_list_central(std::shared_ptr<HostRoom> room){
-    const char* home = getenv("HOME");
-    std::string rpt_dir = home ? std::string(home)+"/BE_WE/DataBase/_reports" : "/tmp/BE_WE/DataBase/_reports";
-    mkdir(rpt_dir.c_str(), 0755);
-
-    std::vector<ReportFileEntry> entries;
-    DIR* d = opendir(rpt_dir.c_str());
-    if(d){
-        struct dirent* de;
-        while((de = readdir(d))){
-            if(de->d_name[0]=='.') continue;
-            std::string n(de->d_name);
-            if(n.size()<6 || n.substr(n.size()-5)!=".info") continue;
-            // filename = .info 제거
-            std::string fn = n.substr(0, n.size()-5);
-            ReportFileEntry re{};
-            strncpy(re.filename, fn.c_str(), 127);
-            // .info 전체를 info_data에 보존, Operator만 reporter 필드로 추출.
-            std::string ip = rpt_dir + "/" + n;
-            FILE* fi = fopen(ip.c_str(), "r");
-            if(fi){
-                size_t nr = fread(re.info_data, 1, sizeof(re.info_data)-1, fi);
-                re.info_data[nr] = 0;
-                fclose(fi);
-                // Operator 라인 추출
-                const char* p = re.info_data;
-                while(*p){
-                    if(strncmp(p, "Operator:", 9) == 0){
-                        const char* v = p + 9;
-                        while(*v == ' ' || *v == '\t') v++;
-                        const char* eend = v;
-                        while(*eend && *eend != '\n' && *eend != '\r') eend++;
-                        size_t L = (size_t)(eend - v);
-                        if(L > 31) L = 31;
-                        memcpy(re.reporter, v, L);
-                        re.reporter[L] = 0;
-                        break;
-                    }
-                    while(*p && *p != '\n') p++;
-                    if(*p == '\n') p++;
-                }
-            }
-            entries.push_back(re);
-        }
-        closedir(d);
-    }
-
-    uint16_t cnt = (uint16_t)std::min(entries.size(), (size_t)200);
-    size_t payload_sz = sizeof(PktReportList) + cnt * sizeof(ReportFileEntry);
-    std::vector<uint8_t> payload(payload_sz, 0);
-    auto* hdr = reinterpret_cast<PktReportList*>(payload.data());
-    hdr->count = cnt;
-    if(cnt > 0) memcpy(payload.data()+sizeof(PktReportList), entries.data(), cnt*sizeof(ReportFileEntry));
-
-    std::vector<uint8_t> bewe(9 + payload_sz);
-    memcpy(bewe.data(), "BEWE", 4);
-    bewe[4] = 0x22; // REPORT_LIST
-    uint32_t plen = (uint32_t)payload_sz;
-    memcpy(bewe.data()+5, &plen, 4);
-    memcpy(bewe.data()+9, payload.data(), payload_sz);
-
-    enqueue_host_send(room, 0xFFFF, CentralMuxType::DATA, bewe.data(), (uint32_t)bewe.size());
-    std::lock_guard<std::mutex> jlk(room->joins_mtx);
-    for(auto& je : room->joins){
-        if(!je->alive.load() || je->fd < 0 || !je->authed) continue;
-        je->enqueue_ctrl(bewe.data(), bewe.size());
-    }
-    printf("[Central] REPORT_LIST broadcast: %u reports\n", cnt);
-}
 
 // ── DB_LIST broadcast ─────────────────────────────────────────────────────
 void CentralServer::broadcast_db_list(std::shared_ptr<HostRoom> room){
@@ -1996,9 +1823,6 @@ void CentralServer::ingest_report_to_emitter_db(const char* filename,
            s.filename.c_str(),
            mr.emitter_uid.empty() ? "<orphan>" : mr.emitter_uid.c_str(),
            (unsigned)mr.status, mr.score);
-    // Broadcast change.
-    if(!mr.emitter_uid.empty()) broadcast_emitter_changed(mr.emitter_uid);
-    broadcast_sighting_changed(s.sighting_id);
 }
 
 // 한 conn에 emitter 페이지 전송 (sender == je: JOIN으로 / je == nullptr + room: HOST에).
@@ -2052,76 +1876,3 @@ void CentralServer::send_sighting_list_page(std::shared_ptr<JoinEntry> je,
     }
 }
 
-// 모든 방의 모든 JOIN + HOST에 emitter 1개의 변경을 보냄 (single-entry list 형태).
-void CentralServer::broadcast_emitter_changed(const std::string& euid){
-    BeweCentral::Emitter e;
-    bool exists = emitter_db_.find_emitter(euid, e);
-    // 존재하지 않으면(= delete됨) count=0으로 보냄. 클라이언트는 uid 매칭으로 자체 캐시에서 삭제.
-    PktEmitterEntry entry{};
-    if(exists) emitter_to_wire(e, entry);
-    else copy_to_fixed(entry.emitter_uid, sizeof(entry.emitter_uid), euid);
-    size_t cnt = exists ? 1 : 0;
-    size_t payload_sz = sizeof(PktEmitterList) + (exists ? sizeof(PktEmitterEntry) : 0);
-    // delete의 경우 entry는 uid만 박아 전달하되 count=0이라 클라가 무시 → 클라가 별도 EMITTER_DELETE
-    // 패킷을 reflect 받아 처리하도록 함. 여기서는 delete된 uid 전파를 위해 count=1, 단 payload는
-    // 빈 entry. 더 단순하게: count=1로 보내되 클라가 freq=0 + name 빈 으로 인지 못함. → 그냥
-    // single-entry로 보내고, 클라는 uid가 자기 캐시에 있으면 갱신, 없으면 새로 추가.
-    cnt = 1;
-    payload_sz = sizeof(PktEmitterList) + sizeof(PktEmitterEntry);
-    std::vector<uint8_t> payload(payload_sz, 0);
-    auto* hdr = reinterpret_cast<PktEmitterList*>(payload.data());
-    hdr->total_count = (uint16_t)emitter_db_.emitter_count();
-    hdr->offset = 0;
-    hdr->count = (uint16_t)cnt;
-    auto* arr = reinterpret_cast<PktEmitterEntry*>(payload.data() + sizeof(PktEmitterList));
-    arr[0] = entry;
-
-    auto bewe = make_bewe_packet(BEWE_TYPE_EMITTER_LIST, payload.data(), (uint32_t)payload_sz);
-    std::lock_guard<std::mutex> lk(rooms_mtx_);
-    for(auto& room : rooms_){
-        // HOST에 (HOST의 NetClient/Server는 이를 받아 자체 캐시 업데이트)
-        enqueue_host_send(room, 0xFFFF, CentralMuxType::DATA, bewe.data(), (uint32_t)bewe.size());
-        std::lock_guard<std::mutex> jlk(room->joins_mtx);
-        for(auto& je : room->joins){
-            if(je->alive.load() && je->fd >= 0 && je->authed)
-                je->enqueue_ctrl(bewe.data(), bewe.size());
-        }
-    }
-}
-
-void CentralServer::broadcast_sighting_changed(const std::string& sid){
-    BeweCentral::Sighting s;
-    if(!emitter_db_.find_sighting(sid, s)) return;
-    PktSightingEntry entry{};
-    sighting_to_wire(s, entry);
-    size_t payload_sz = sizeof(PktSightingList) + sizeof(PktSightingEntry);
-    std::vector<uint8_t> payload(payload_sz, 0);
-    auto* hdr = reinterpret_cast<PktSightingList*>(payload.data());
-    hdr->total_count = (uint16_t)emitter_db_.sighting_count();
-    hdr->offset = 0;
-    hdr->count = 1;
-    memcpy(payload.data() + sizeof(PktSightingList), &entry, sizeof(entry));
-
-    auto bewe = make_bewe_packet(BEWE_TYPE_SIGHTING_LIST, payload.data(), (uint32_t)payload_sz);
-    std::lock_guard<std::mutex> lk(rooms_mtx_);
-    for(auto& room : rooms_){
-        enqueue_host_send(room, 0xFFFF, CentralMuxType::DATA, bewe.data(), (uint32_t)bewe.size());
-        std::lock_guard<std::mutex> jlk(room->joins_mtx);
-        for(auto& je : room->joins){
-            if(je->alive.load() && je->fd >= 0 && je->authed)
-                je->enqueue_ctrl(bewe.data(), bewe.size());
-        }
-    }
-}
-
-void CentralServer::broadcast_emitter_list_all(){
-    // 첫 페이지만 broadcast — 클라가 더 필요하면 EMITTER_LIST_REQ로 페이징.
-    std::lock_guard<std::mutex> lk(rooms_mtx_);
-    for(auto& room : rooms_){
-        std::lock_guard<std::mutex> jlk(room->joins_mtx);
-        for(auto& je : room->joins){
-            if(je->alive.load() && je->fd >= 0 && je->authed)
-                send_emitter_list_page(je, nullptr, 0, 0, MAX_EMITTERS_PER_PKT);
-        }
-    }
-}

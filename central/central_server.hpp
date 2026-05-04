@@ -307,7 +307,6 @@ private:
 
     // DB 파일 목록 스캔 → 모든 JOIN + HOST에 브로드캐스트
     void broadcast_db_list(std::shared_ptr<HostRoom> room);
-    void broadcast_report_list_central(std::shared_ptr<HostRoom> room);
 
     // BEWE 패킷 빌드 헬퍼 (magic + type + len + payload)
     static std::vector<uint8_t> make_bewe_packet(uint8_t type, const void* payload, uint32_t plen);
@@ -315,12 +314,10 @@ private:
     // ── Signal Library / Emitter DB ─────────────────────────────────────
     BeweCentral::EmitterDb emitter_db_;
     // 새 sighting을 emitter_db에 ingest (info_data 파싱 → Sighting → ingest_sighting).
-    // 결과: emitters/sightings 갱신 후 모든 방에 EMITTER_LIST + SIGHTING_LIST broadcast.
+    // 클라이언트는 EMITTER_LIST_REQ / SIGHTING_LIST_REQ로 Refresh 시점에 데이터 가져감.
     void ingest_report_to_emitter_db(const char* filename,
                                      const char* reporter,
                                      const char* info_data);
-    // 모든 방에 emitter 목록 페이지 1장(또는 전체) broadcast.
-    void broadcast_emitter_list_all();
     // 한 JOIN 또는 HOST에게 응답 형태로 페이지 송신.
     void send_emitter_list_page(std::shared_ptr<JoinEntry> je,
                                 std::shared_ptr<HostRoom> room,
@@ -330,9 +327,6 @@ private:
                                  uint16_t conn_id,
                                  const std::string& euid_filter,
                                  uint16_t off, uint16_t lim);
-    // emitter 1개의 변경(upsert/delete/sighting link)을 모든 방·JOIN에 broadcast.
-    void broadcast_emitter_changed(const std::string& euid);
-    void broadcast_sighting_changed(const std::string& sid);
 
     // ── Scheduled recording persistence ─────────────────────────────────
     // ~/BE_WE/DataBase/schedules.json 에 station_id 별 SCHED_SYNC 스냅샷 저장

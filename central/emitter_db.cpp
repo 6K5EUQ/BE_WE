@@ -785,40 +785,4 @@ size_t EmitterDb::sighting_count() const {
     return sightings_.size();
 }
 
-bool EmitterDb::migrate_from_reports(const std::string& reports_dir){
-    DIR* dir = opendir(reports_dir.c_str());
-    if(!dir) return false;
-    struct dirent* de;
-    int n = 0;
-    while((de = readdir(dir)) != nullptr){
-        std::string name = de->d_name;
-        if(name == "." || name == "..") continue;
-        if(name.size() < 5 || name.substr(name.size() - 5) != ".info") continue;
-        std::string path = reports_dir + "/" + name;
-        std::string text;
-        if(!read_file_all(path, text)) continue;
-        auto kv = InfoParse::parse(text);
-        Sighting s;
-        s.filename = kv.count("File Name") ? kv["File Name"] : name.substr(0, name.size()-5);
-        s.reporter = kv.count("Operator") ? kv["Operator"] : "";
-        s.station  = kv.count("Location") ? kv["Location"] : "";
-        if(kv.count("Frequency")) InfoParse::extract_freq_mhz(kv["Frequency"], s.freq_mhz);
-        if(kv.count("Bandwidth")) InfoParse::extract_bw_khz(kv["Bandwidth"], s.bw_khz);
-        s.modulation    = kv.count("Modulation") ? kv["Modulation"] : "";
-        s.protocol      = kv.count("Protocol") ? kv["Protocol"] : "";
-        s.target        = kv.count("Target") ? kv["Target"] : "";
-        s.operator_name = s.reporter;
-        s.tags          = kv.count("Tags") ? kv["Tags"] : "";
-        if(kv.count("Day") && kv.count("Up Time"))
-            InfoParse::extract_start_utc(kv["Day"], kv["Up Time"], s.start_utc);
-        if(kv.count("Duration")) InfoParse::extract_duration_s(kv["Duration"], s.duration_s);
-        s.sighting_id = sighting_id_from(s.filename, s.reporter);
-        ingest_sighting(s);
-        n++;
-    }
-    closedir(dir);
-    (void)n;
-    return true;
-}
-
 } // namespace BeweCentral

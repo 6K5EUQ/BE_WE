@@ -64,10 +64,6 @@ public:
     // base_dir = ~/BE_WE/DataBase. _emitters/, _sightings/ 자동 생성.
     bool load(const std::string& base_dir);
 
-    // _reports/ 안의 .info 파일을 모두 스캔해 ingest. 부팅 시 마이그레이션용.
-    // 이미 ingest된 sighting_id는 dedup.
-    bool migrate_from_reports(const std::string& reports_dir);
-
     struct MatchResult {
         std::string emitter_uid;        // 빈 = 매칭 실패(주파수 누락)
         float       score = 0.f;
