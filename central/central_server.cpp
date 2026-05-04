@@ -1,5 +1,6 @@
 #include "central_server.hpp"
 #include "../src/net_protocol.hpp"
+#include "../src/json_scan.hpp"
 #include "info_parse.hpp"
 #include <cstdio>
 #include <cstring>
@@ -831,6 +832,11 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
             char fn[129]={}; memcpy(fn,payload,128);
             remove((rpt_dir+"/"+fn+".info").c_str());
             printf("[Central] REPORT_DELETE(HOST): '%s'\n", fn);
+            std::vector<std::string> aff, orp;
+            if(emitter_db_.delete_sighting_by_filename(fn, aff, orp)){
+                for(auto& uid : aff) broadcast_emitter_changed(uid);
+                for(auto& uid : orp) broadcast_emitter_changed(uid);
+            }
         } else if(bewe_type == BEWE_TYPE_RPT_UPDATE && plen >= 128+512){
             char fn[129]={}; memcpy(fn,payload,128);
             FILE* fi = fopen((rpt_dir+"/"+fn+".info").c_str(), "w");
@@ -1147,6 +1153,11 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
             std::string ip = rpt_dir + "/" + fn + ".info";
             remove(ip.c_str());
             printf("[Central] REPORT_DELETE: '%s'\n", fn);
+            std::vector<std::string> aff, orp;
+            if(emitter_db_.delete_sighting_by_filename(fn, aff, orp)){
+                for(auto& uid : aff) broadcast_emitter_changed(uid);
+                for(auto& uid : orp) broadcast_emitter_changed(uid);
+            }
             broadcast_report_list_central(room);
         }
         return true;
@@ -1798,47 +1809,6 @@ void CentralServer::save_schedules_to_json(){
     if(fp){ fwrite(out.data(), 1, out.size(), fp); fclose(fp); }
     else printf("[Central] save_schedules_to_json: cannot open %s errno=%d\n",
                 schedules_json_path_.c_str(), errno);
-}
-
-// 매우 간단한 JSON scanner (고정 스키마용). 공백/개행만 스킵, 문법 검증 최소.
-namespace {
-struct JScan {
-    const char* p;
-    const char* end;
-    void skip_ws(){ while(p<end && (*p==' '||*p=='\n'||*p=='\r'||*p=='\t'||*p==',')) p++; }
-    bool consume(char c){ skip_ws(); if(p<end && *p==c){ p++; return true; } return false; }
-    bool peek(char c){ skip_ws(); return p<end && *p==c; }
-    bool read_string(std::string& out){
-        skip_ws();
-        if(p>=end || *p != '"') return false;
-        p++; out.clear();
-        while(p<end && *p != '"'){
-            if(*p == '\\' && p+1<end){ p++;
-                if(*p=='n') out+='\n';
-                else if(*p=='r') out+='\r';
-                else out += *p;
-                p++;
-            } else { out += *p++; }
-        }
-        if(p<end && *p=='"') p++;
-        return true;
-    }
-    bool read_number(double& v){
-        skip_ws();
-        const char* s = p;
-        while(p<end && (*p=='-'||*p=='+'||*p=='.'||(*p>='0'&&*p<='9')||*p=='e'||*p=='E')) p++;
-        if(s==p) return false;
-        std::string tmp(s, p-s);
-        v = atof(tmp.c_str());
-        return true;
-    }
-    bool read_key(std::string& k){
-        if(!read_string(k)) return false;
-        skip_ws();
-        if(p<end && *p==':'){ p++; return true; }
-        return false;
-    }
-};
 }
 
 void CentralServer::load_schedules_from_json(){

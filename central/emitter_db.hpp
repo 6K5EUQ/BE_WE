@@ -82,6 +82,13 @@ public:
     // emitter 삭제. 자식 sighting의 emitter_uid는 비우고 status=PENDING으로.
     bool delete_emitter(const std::string& uid);
 
+    // filename에 해당하는 모든 sighting을 삭제. 부모 emitter의 멤버에서 제거하고,
+    // 멤버가 0이면 emitter도 삭제. 변경된 emitter uid를 affected_out, 삭제된 uid를
+    // orphaned_out에 추가 (호출자가 broadcast_emitter_changed로 전파).
+    bool delete_sighting_by_filename(const std::string& filename,
+                                     std::vector<std::string>& affected_out,
+                                     std::vector<std::string>& orphaned_out);
+
     // action: 0=confirm, 1=reject, 2=move(target), 3=split_to_new
     bool link_sighting(const std::string& sighting_id,
                        const std::string& target_emitter_uid,

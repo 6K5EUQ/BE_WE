@@ -223,8 +223,6 @@ public:
     int64_t  tm_iq_chunk_sample_start=0;   // 현재 청크 샘플 시작
     bool     tm_iq_file_ready=false;
 
-    // REC N/A 표시 타이머
-    float    rec_na_timer=0.0f;  // (deprecated, kept for compat)
     // 영역 녹음 진행 상태
     enum RecState { REC_IDLE, REC_BUSY, REC_SUCCESS } rec_state=REC_IDLE;
     float    rec_anim_timer=0.0f;   // 점 애니메이션용

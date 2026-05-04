@@ -226,11 +226,11 @@ void FFTViewer::tm_update_display(){
 }
 
 bool FFTViewer::tm_rec_start(){
-    if(!tm_iq_file_ready||tm_iq_fd<0){ rec_na_timer=3.0f; return false; }
+    if(!tm_iq_file_ready||tm_iq_fd<0){ return false; }
     int disp_row=tm_display_fft_idx%MAX_FFTS_MEMORY;
-    if(!iq_row_avail[disp_row]){ rec_na_timer=3.0f; return false; }
+    if(!iq_row_avail[disp_row]){ return false; }
     int fi=selected_ch;
-    if(fi<0||!channels[fi].filter_active){ rec_na_timer=3.0f; return false; }
+    if(fi<0||!channels[fi].filter_active){ return false; }
     int64_t samp_offset=(int64_t)((double)header.sample_rate*tm_offset);
     int64_t read_pos=tm_iq_write_sample-samp_offset;
     if(read_pos<0) read_pos=tm_iq_total_samples+read_pos;

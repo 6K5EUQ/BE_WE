@@ -5296,9 +5296,7 @@ void run_streaming_viewer(){
                     if(v.remote_mode && v.net_cli){
                         // JOIN: HOST에 IQ 녹음 시작/중지 요청 (100kHz 이하만)
                         float bw_khz = fabsf(v.channels[ci].e - v.channels[ci].s) * 1000.f;
-                        if(bw_khz > 100.f){
-                            v.rec_na_timer = 3.0f; // "N/A" 표시
-                        } else {
+                        if(bw_khz <= 100.f){
                             if(v.channels[ci].iq_rec_on.load())
                                 v.net_cli->cmd_stop_iq_rec(ci);
                             else
@@ -5488,6 +5486,9 @@ void run_streaming_viewer(){
                         auto pkt = make_packet(PacketType::REPORT_DELETE, &rd, sizeof(rd));
                         v.net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
                     }
+                    // Signal Library 캐시 갱신 — Central이 emitter broadcast를 보내지만
+                    // sightings 캐시도 다시 받도록 dirty 플래그 세움.
+                    v.sig_lib_dirty = true;
                     bewe_log_push(0,"[UI] DEL: Report '%s'\n", file_ctx.filename.c_str());
                     file_ctx.selected=false;
                 } else if(file_ctx.selected && !file_ctx.filepath.empty()){
@@ -8054,8 +8055,11 @@ void run_streaming_viewer(){
                 // 파일 목록 렌더링 헬퍼: 파일명 + 크기 + WAV 시간
                 static std::unordered_map<std::string,std::string> arch_info_cache;
                 static std::unordered_map<std::string,std::string> arch_info_tip_cache;
+                // Multi-selection set for Ctrl-click. Key = full filepath, value = section
+                // (0=rec_iq, 1=rec_audio, 2=priv_iq, 3=priv_audio). Used by Del key bulk delete.
+                static std::unordered_map<std::string,int> arch_selected;
                 if(g_arch_cache_dirty){ arch_info_cache.clear(); arch_info_tip_cache.clear(); g_arch_cache_dirty=false; }
-                auto draw_arch_file = [&](const std::string& dir, const std::string& fn){
+                auto draw_arch_file = [&](const std::string& dir, const std::string& fn, int section){
                     std::string fp = dir + "/" + fn;
                     // 캐시된 정보 (크기+시간) — Duration 우선순위:
                     //   1) .info의 Duration 필드 (DB와 동일한 값 보장)
@@ -8141,7 +8145,8 @@ void run_streaming_viewer(){
                     }
                     float pw = ImGui::GetContentRegionAvail().x;
                     float fn_w = pw * 0.66f;
-                    bool sel = file_ctx.selected && file_ctx.filepath==fp;
+                    bool sel = (file_ctx.selected && file_ctx.filepath==fp)
+                             || arch_selected.count(fp) > 0;
                     ImGui::Selectable(fn.c_str(), sel, ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw, 0));
                     bool item_hov = ImGui::IsItemHovered();
                     if(!cached.empty()){
@@ -8171,8 +8176,15 @@ void run_streaming_viewer(){
                         if(tip.size() > 1) ImGui::SetTooltip("%s", tip.c_str());
 
                         if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
-                            file_ctx.selected=true; file_ctx.filepath=fp; file_ctx.filename=fn; file_ctx.is_public=false;
-                            file_ctx.type=FileCtxMenu::FT_LOCAL;
+                            if(ImGui::GetIO().KeyCtrl){
+                                auto it = arch_selected.find(fp);
+                                if(it != arch_selected.end()) arch_selected.erase(it);
+                                else arch_selected[fp] = section;
+                            } else {
+                                arch_selected.clear();
+                                file_ctx.selected=true; file_ctx.filepath=fp; file_ctx.filename=fn; file_ctx.is_public=false;
+                                file_ctx.type=FileCtxMenu::FT_LOCAL;
+                            }
                         }
                         if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
                             file_ctx={true,io.MousePos.x,io.MousePos.y,fp,fn}; file_ctx.selected=true;
@@ -8189,7 +8201,7 @@ void run_streaming_viewer(){
                     if(ImGui::TreeNode("IQ##rec")){
                         ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
                         ImGui::Separator(); ImGui::PopStyleColor();
-                        for(auto& fn : rec_iq_files) draw_arch_file(BEWEPaths::record_iq_dir(), fn);
+                        for(auto& fn : rec_iq_files) draw_arch_file(BEWEPaths::record_iq_dir(), fn, 0);
                         if(rec_iq_files.empty()) ImGui::TextDisabled("  (empty)");
                         ImGui::TreePop();
                     }
@@ -8199,7 +8211,7 @@ void run_streaming_viewer(){
                     if(ImGui::TreeNode("Audio##rec")){
                         ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
                         ImGui::Separator(); ImGui::PopStyleColor();
-                        for(auto& fn : rec_audio_files) draw_arch_file(BEWEPaths::record_audio_dir(), fn);
+                        for(auto& fn : rec_audio_files) draw_arch_file(BEWEPaths::record_audio_dir(), fn, 1);
                         if(rec_audio_files.empty()) ImGui::TextDisabled("  (empty)");
                         ImGui::TreePop();
                     }
@@ -8215,7 +8227,7 @@ void run_streaming_viewer(){
                     if(ImGui::TreeNode("IQ##priv")){
                         ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
                         ImGui::Separator(); ImGui::PopStyleColor();
-                        for(auto& fn : priv_iq_files) draw_arch_file(BEWEPaths::private_iq_dir(), fn);
+                        for(auto& fn : priv_iq_files) draw_arch_file(BEWEPaths::private_iq_dir(), fn, 2);
                         if(priv_iq_files.empty()) ImGui::TextDisabled("  (empty)");
                         ImGui::TreePop();
                     }
@@ -8225,7 +8237,7 @@ void run_streaming_viewer(){
                     if(ImGui::TreeNode("Audio##priv")){
                         ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
                         ImGui::Separator(); ImGui::PopStyleColor();
-                        for(auto& fn : priv_audio_files) draw_arch_file(BEWEPaths::private_audio_dir(), fn);
+                        for(auto& fn : priv_audio_files) draw_arch_file(BEWEPaths::private_audio_dir(), fn, 3);
                         if(priv_audio_files.empty()) ImGui::TextDisabled("  (empty)");
                         ImGui::TreePop();
                     }
@@ -8304,6 +8316,7 @@ void run_streaming_viewer(){
                                     auto pkt=make_packet(PacketType::REPORT_DELETE,&rd,sizeof(rd));
                                     v.net_srv->cb.on_relay_broadcast(pkt.data(),pkt.size(),true);
                                 }
+                                v.sig_lib_dirty = true;
                             }
                             ImGui::PopStyleColor();
                             ImGui::EndPopup();
@@ -8416,6 +8429,26 @@ void run_streaming_viewer(){
                         ImGui::TreePop();
                     }
                     ImGui::Unindent(8.f);
+                }
+
+                // ── Multi-select Del 키: arch_selected 일괄 unlink ──────
+                if(ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) &&
+                   ImGui::IsKeyPressed(ImGuiKey_Delete, false) &&
+                   !arch_selected.empty()){
+                    std::vector<std::pair<std::string,int>> targets(arch_selected.begin(), arch_selected.end());
+                    for(auto& [fp, sec] : targets){
+                        unlink(fp.c_str());
+                        unlink((fp + ".info").c_str());
+                        bewe_log_push(0, "[UI] DEL: Archive '%s'\n", fp.c_str());
+                    }
+                    arch_selected.clear();
+                    arch_info_cache.clear();
+                    arch_info_tip_cache.clear();
+                    g_arch_cache_dirty = true;
+                    if(file_ctx.selected){
+                        // 단일 선택이 삭제된 항목이었으면 해제
+                        for(auto& [fp, sec] : targets) if(file_ctx.filepath == fp){ file_ctx.selected = false; break; }
+                    }
                 }
 
                 ImGui::EndChild();

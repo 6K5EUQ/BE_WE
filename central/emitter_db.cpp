@@ -627,6 +627,42 @@ bool EmitterDb::delete_emitter(const std::string& uid){
     return true;
 }
 
+bool EmitterDb::delete_sighting_by_filename(const std::string& filename,
+                                            std::vector<std::string>& affected_out,
+                                            std::vector<std::string>& orphaned_out){
+    std::lock_guard<std::mutex> lk(mtx_);
+    std::vector<std::string> to_remove_sids;
+    for(auto& kv : sightings_){
+        if(kv.second.filename == filename) to_remove_sids.push_back(kv.first);
+    }
+    if(to_remove_sids.empty()) return false;
+
+    for(auto& sid : to_remove_sids){
+        auto sit = sightings_.find(sid);
+        if(sit == sightings_.end()) continue;
+        std::string euid = sit->second.emitter_uid;
+        sightings_.erase(sit);
+        if(euid.empty()) continue;
+        auto eit = emitters_.find(euid);
+        if(eit == emitters_.end()) continue;
+        auto& v = eit->second.member_sighting_ids;
+        v.erase(std::remove(v.begin(), v.end(), sid), v.end());
+        if(v.empty()){
+            emitters_.erase(eit);
+            if(std::find(orphaned_out.begin(), orphaned_out.end(), euid) == orphaned_out.end())
+                orphaned_out.push_back(euid);
+        } else {
+            recompute_emitter_aggregate_(eit->second);
+            if(std::find(affected_out.begin(), affected_out.end(), euid) == affected_out.end()
+               && std::find(orphaned_out.begin(), orphaned_out.end(), euid) == orphaned_out.end())
+                affected_out.push_back(euid);
+        }
+    }
+    save_sightings_atomic_unlocked_();
+    save_emitters_atomic_unlocked_();
+    return true;
+}
+
 bool EmitterDb::link_sighting(const std::string& sid,
                               const std::string& target_uid,
                               uint8_t action){
