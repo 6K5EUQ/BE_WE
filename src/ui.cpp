@@ -5114,12 +5114,13 @@ void run_streaming_viewer(){
                 // FFT 크기 변경 시 재초기화
                 if(fsz != v.fft_size){
                     v.fft_size = fsz;
-                    v.fft_input_size = fsz / FFT_PAD_FACTOR;
                     v.header.fft_size = (uint32_t)fsz;
                     v.fft_data.assign((size_t)MAX_FFTS_MEMORY * fsz, 0);
                     v.current_spectrum.assign(fsz, -80.f);
                     v.texture_needs_recreate = true;
                 }
+                // padded fft_size가 우연히 일치해도 input size는 다를 수 있어 매 프레임 동기화
+                v.fft_input_size = fsz / FFT_PAD_FACTOR;
                 v.header.center_frequency = frm.cf_hz;
                 v.header.sample_rate      = frm.sr;
                 v.header.power_min        = frm.pmin;
