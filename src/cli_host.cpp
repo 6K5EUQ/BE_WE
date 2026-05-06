@@ -861,6 +861,9 @@ void run_cli_host(){
     // 예약 녹음 완료 시 자동 DB 업로드: HOST가 로컬 파일을 central DB로 전송
     // on_relay_broadcast가 central_cli에 연결되어 있으면 그 경로로, 아니면 로컬 DB 폴더에 복사
     v.sched_db_upload_fn = [&, srv](const std::string& path, const std::string& op, const std::string& info){
+        // 동시에 여러 sched가 끝나면 Central의 room->db_fp 단일 슬롯이 META 도착 시
+        // 덮어써져 직전 업로드가 truncate됨. 같은 HOST의 업로드를 직렬화해 보호.
+        std::lock_guard<std::mutex> _ul(v.sched_db_upload_mtx);
         FILE* fp = fopen(path.c_str(), "rb");
         if(!fp){ bewe_log_push(0,"[SCHED-DB] open failed: %s\n", path.c_str()); return; }
         fseek(fp, 0, SEEK_END); long total = ftell(fp); fseek(fp, 0, SEEK_SET);

@@ -347,6 +347,16 @@ public:
     // 예약 녹음 완료 시 자동 DB 업로드 콜백 (cli_host/ui.cpp에서 설정)
     // args: (file_path, operator_name, info_text)
     std::function<void(const std::string& path, const std::string& op, const std::string& info)> sched_db_upload_fn;
+    // 동시에 여러 sched가 끝날 때 업로드를 직렬화 (Central 측 동일-룸 단일 db_fp 슬롯 보호)
+    std::mutex sched_db_upload_mtx;
+
+    // sched_begin_rec → start_iq_rec 핸드오프: 다음 IQ 녹음이 SCHED 형식 파일명을 쓰도록.
+    // sched_begin_rec에서 채워두고 start_iq_rec가 한 번 사용 후 active=false로 클리어.
+    struct PendingSchedMeta {
+        bool   active = false;
+        time_t start_utc = 0;
+        time_t end_utc   = 0;
+    } pending_sched_meta;
 
     // ── LOG 오버레이 (L키 토글) ──────────────────────────────────────────
     bool log_panel_open = false;

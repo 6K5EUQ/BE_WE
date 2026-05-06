@@ -1,5 +1,6 @@
 #include "fft_viewer.hpp"
 #include "login.hpp"
+#include "long_waterfall.hpp"
 #include <ctime>
 #include <algorithm>
 #include <chrono>
@@ -476,9 +477,34 @@ void FFTViewer::start_iq_rec(int ch_idx){
     char fn[512];
     std::string rec_dir=BEWEPaths::record_iq_dir();
     float cf_mhz=(ch.s+ch.e)/2.0f;
-    char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
-    snprintf(fn,sizeof(fn),"%s/IQ_%.3fMHz_%s.wav",
-             rec_dir.c_str(), cf_mhz, dts);
+    if(pending_sched_meta.active){
+        // SCHED 형식: SCHED_<station>_<MissCode><DD>_<MonDD>.<YYYY>_<HHMMSS>-<HHMMSS>_<F.F>MHz.wav
+        // 시간은 모두 UTC (Z타임), date code는 HIST와 동일 ('A'=Jan…'L'=Dec).
+        // station 이름은 파일시스템 안전 문자만 남김 (공백/괄호/슬래시 → '_').
+        std::string st = station_name;
+        for(auto& c : st){
+            unsigned char u = (unsigned char)c;
+            bool ok = (u>='0'&&u<='9') || (u>='A'&&u<='Z') || (u>='a'&&u<='z')
+                   || c=='-' || c=='_' || c=='.';
+            if(!ok) c = '_';
+        }
+        if(st.empty()) st = "host";
+        struct tm su; gmtime_r(&pending_sched_meta.start_utc, &su);
+        struct tm eu; gmtime_r(&pending_sched_meta.end_utc,   &eu);
+        snprintf(fn,sizeof(fn),
+                 "%s/SCHED_%s_%c%02d_%s%d.%04d_%02d%02d%02d-%02d%02d%02d_%.1fMHz.wav",
+                 rec_dir.c_str(), st.c_str(),
+                 LongWaterfall::mission_letter(su.tm_mon), su.tm_mday,
+                 LongWaterfall::month_abbr3(su.tm_mon),    su.tm_mday, 1900+su.tm_year,
+                 su.tm_hour, su.tm_min, su.tm_sec,
+                 eu.tm_hour, eu.tm_min, eu.tm_sec,
+                 cf_mhz);
+        pending_sched_meta.active = false;
+    } else {
+        char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
+        snprintf(fn,sizeof(fn),"%s/IQ_%.3fMHz_%s.wav",
+                 rec_dir.c_str(), cf_mhz, dts);
+    }
 
     FILE* fp=fopen(fn,"wb");
     if(!fp){ bewe_log("IQ REC: cannot open %s\n",fn); return; }

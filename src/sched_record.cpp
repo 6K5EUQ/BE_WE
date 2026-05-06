@@ -180,6 +180,10 @@ void FFTViewer::sched_begin_rec(int idx){
         broadcast_sched_list_locked();
         return;
     }
+    // SCHED 파일명 핸드오프: start_iq_rec이 IQ_ 대신 SCHED_ 포맷 사용하게.
+    pending_sched_meta.active    = true;
+    pending_sched_meta.start_utc = e.start_time;
+    pending_sched_meta.end_utc   = e.start_time + (time_t)e.duration_sec;
     start_iq_rec(slot);
     if(!channels[slot].iq_rec_on.load()){
         bewe_log_push(0, "[SCHED] REC start failed: CH%d\n", slot);
