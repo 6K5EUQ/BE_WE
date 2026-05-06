@@ -154,6 +154,7 @@ enum class CmdType : uint8_t {
     SET_ANTENNA     = 0x1D,  // bidirectional: set HOST antenna free text (char[32])
     ADD_SCHED       = 0x1E,  // JOIN → server: add scheduled IQ recording
     REMOVE_SCHED    = 0x1F,  // JOIN → server: remove own scheduled entry
+    SET_HW          = 0x21,  // JOIN → server: switch HOST SDR runtime ("bladerf"/"pluto"/"rtlsdr")
 };
 
 struct __attribute__((packed)) PktCmd {
@@ -189,6 +190,7 @@ struct __attribute__((packed)) PktCmd {
         struct { int64_t start_time; float duration_sec; float freq_mhz; float bw_khz;
                  char target[32]; }                                add_sched;
         struct { int64_t start_time; float freq_mhz; }             remove_sched;
+        struct { char    name[16]; }                       set_hw;
         uint8_t raw[64];
     };
 };

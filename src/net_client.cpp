@@ -773,6 +773,11 @@ bool NetClient::cmd_set_antenna(const char* antenna){
     strncpy(c.set_antenna.antenna, antenna ? antenna : "", sizeof(c.set_antenna.antenna)-1);
     return send_cmd(c);
 }
+bool NetClient::cmd_set_hw(const char* sdr_name){
+    PktCmd c{}; c.cmd=(uint8_t)CmdType::SET_HW;
+    strncpy(c.set_hw.name, sdr_name ? sdr_name : "", sizeof(c.set_hw.name)-1);
+    return send_cmd(c);
+}
 bool NetClient::cmd_add_sched(int64_t start_time, float duration_sec, float freq_mhz, float bw_khz,
                               const char* target){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::ADD_SCHED;

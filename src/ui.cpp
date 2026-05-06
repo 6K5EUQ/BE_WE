@@ -3963,6 +3963,13 @@ void run_streaming_viewer(){
                 strncpy(v.host_antenna, antenna?antenna:"", sizeof(v.host_antenna)-1);
                 v.host_antenna[sizeof(v.host_antenna)-1] = '\0';
             };
+            srv->cb.on_set_hw = [&](const char* who, const char* sdr_name){
+                bewe_log_push(0,"[CMD:%s] SDR switch > '%s'\n", who, sdr_name?sdr_name:"");
+                std::string nm = sdr_name ? sdr_name : "";
+                if(nm != "bladerf" && nm != "pluto" && nm != "rtlsdr") return;
+                { std::lock_guard<std::mutex> lk(v.pending_sdr_mtx); v.pending_sdr_name = nm; }
+                v.pending_sdr_switch.store(true);
+            };
             // ── 예약 녹음 (JOIN → HOST) ──────────────────────────────────
             srv->cb.on_add_sched = [&](uint8_t op_idx, const char* op_name,
                                         int64_t start_time, float duration_sec,
@@ -6177,7 +6184,29 @@ void run_streaming_viewer(){
                         ImGui::EndPopup();
                     }
                 } else {
-                    ImGui::TextUnformatted(rx_lbl);
+                    // JOIN: HOST에 SDR 종류 변경 명령 전송
+                    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0,0,0,0));
+                    ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0,0,0,0));
+                    if(ImGui::Selectable(rx_lbl, false, 0, ImVec2(320,0))){
+                        ImGui::OpenPopup("##rx_pop_join");
+                    }
+                    ImGui::PopStyleColor(2);
+                    if(ImGui::BeginPopup("##rx_pop_join")){
+                        struct Opt { const char* nm; const char* pretty; uint8_t hw; };
+                        static const Opt opts[] = {
+                            {"bladerf", "BladeRF 2.0 micro xA9", 0},
+                            {"pluto",   "ADALM-Pluto",           2},
+                            {"rtlsdr",  "RTL-SDR v4",            1},
+                        };
+                        uint8_t cur_hw = vv.net_cli ? vv.net_cli->remote_hw.load() : 255;
+                        for(auto& o : opts){
+                            bool cur = (cur_hw == o.hw);
+                            if(ImGui::Selectable(o.pretty, cur) && !cur){
+                                if(vv.net_cli) vv.net_cli->cmd_set_hw(o.nm);
+                            }
+                        }
+                        ImGui::EndPopup();
+                    }
                 }
                 ImGui::PopStyleColor();
                 ImGui::PopID();

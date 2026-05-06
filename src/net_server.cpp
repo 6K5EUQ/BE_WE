@@ -317,6 +317,9 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
                 if(cb.on_remove_sched) cb.on_remove_sched(c->op_index, c->name,
                     cmd->remove_sched.start_time, cmd->remove_sched.freq_mhz);
                 break;
+            case CmdType::SET_HW:
+                if(cb.on_set_hw) cb.on_set_hw(c->name, cmd->set_hw.name);
+                break;
             default: break;
         }
         // ACK

@@ -289,6 +289,7 @@ public:
     bool cmd_set_fft_size(uint32_t size); // JOIN → HOST: FFT 크기 변경
     bool cmd_set_sr(float msps);          // JOIN → HOST: SR 변경
     bool cmd_set_antenna(const char* antenna);  // bidirectional: antenna text
+    bool cmd_set_hw(const char* sdr_name);       // JOIN → server: switch HOST SDR runtime
     bool cmd_add_sched(int64_t start_time, float duration_sec, float freq_mhz, float bw_khz,
                        const char* target);
     bool cmd_remove_sched(int64_t start_time, float freq_mhz);

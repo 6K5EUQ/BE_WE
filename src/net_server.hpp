@@ -195,6 +195,8 @@ struct ServerCallbacks {
     std::function<void(const char* who, const char* antenna)> on_set_antenna;
     // JOIN이 public 파일 삭제 요청: op_name, filename (소유자 검증은 ui.cpp에서)
     std::function<void(const char* op_name, const char* filename)> on_pub_delete_req;
+    // SET_HW: JOIN이 HOST SDR 종류 변경 요청 ("bladerf"/"pluto"/"rtlsdr")
+    std::function<void(const char* who, const char* sdr_name)> on_set_hw;
     // DB save: JOIN/HOST가 파일을 Central DB에 저장 요청
     std::function<void(uint8_t op_idx, const char* op_name, const PktDbSaveMeta* meta, const uint8_t* data, uint32_t len)> on_db_save;
     // DB delete: JOIN이 Central DB에서 파일 삭제 요청

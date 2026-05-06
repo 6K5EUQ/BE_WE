@@ -785,6 +785,13 @@ void run_cli_host(){
         strncpy(v.host_antenna, antenna?antenna:"", sizeof(v.host_antenna)-1);
         v.host_antenna[sizeof(v.host_antenna)-1] = '\0';
     };
+    srv->cb.on_set_hw = [&](const char* who, const char* sdr_name){
+        bewe_log_push(0, "[CMD:%s] SDR switch > '%s'\n", who, sdr_name?sdr_name:"");
+        std::string nm = sdr_name ? sdr_name : "";
+        if(nm != "bladerf" && nm != "pluto" && nm != "rtlsdr") return;
+        { std::lock_guard<std::mutex> lk(v.pending_sdr_mtx); v.pending_sdr_name = nm; }
+        v.pending_sdr_switch.store(true);
+    };
 
     // ── 예약 녹음 (JOIN → HOST) ───────────────────────────────────────────
     srv->cb.on_add_sched = [&](uint8_t op_idx, const char* op_name,
