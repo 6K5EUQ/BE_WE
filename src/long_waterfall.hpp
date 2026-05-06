@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cmath>
 #include <ctime>
 #include <string>
 #include <functional>
@@ -98,39 +99,54 @@ inline float byte_to_db(uint8_t b, float dmin, float dmax){
     return dmin + (dmax - dmin) * (b / 255.0f);
 }
 
+// ── Station coord formatter (single source of truth) ─────────────────────
+// globe.pick stores east-longitude as negative — same convention preserved
+// through .bewehist headers. Always render with this helper to keep tooltip,
+// info bar, and globe-click label consistent.
+inline std::string fmt_lat_lon(float lat, float lon){
+    char b[48];
+    snprintf(b, sizeof(b), "%.4f%c %.4f%c",
+        fabsf(lat), lat>=0 ? 'N' : 'S',
+        fabsf(lon), lon>=0 ? 'W' : 'E');
+    return b;
+}
+
 // ── Mission-code filename helpers (host + JOIN 공용) ──────────────────────
 // 양식: <MissCode><DD>_<Mon><DD>.<YYYY>_<F.F>MHz_<HHMM>-LIVE.bewehist
 // 종료 시 -LIVE → -<HHMM>Z 로 rename.
 // MissCode: A=Jan, B=Feb, ..., L=Dec (alphabet, 'I' 포함).
+// HHMM/날짜는 host TZ 기준 — viewer 상단 Start/Stop 표시와 일치.
 inline char mission_letter(int mon0_11){ return (char)('A' + mon0_11); }
 inline const char* month_abbr3(int mon0_11){
     static const char* m[] = {"Jan","Feb","Mar","Apr","May","Jun",
                                "Jul","Aug","Sep","Oct","Nov","Dec"};
     return m[mon0_11];
 }
-inline std::string build_hist_filename_live(uint64_t start_utc, uint64_t cf_hz){
-    time_t st = (time_t)start_utc;
-    struct tm tm_utc; gmtime_r(&st, &tm_utc);
+inline std::string build_hist_filename_live(uint64_t start_utc, uint64_t cf_hz,
+                                             int utc_offset_hours){
+    time_t st = (time_t)start_utc + (time_t)utc_offset_hours * 3600;
+    struct tm tm_loc; gmtime_r(&st, &tm_loc);  // shifted UTC == host local
     double cf_mhz = (double)cf_hz / 1e6;
     char buf[96];
     snprintf(buf, sizeof(buf),
         "%c%02d_%s%02d.%04d_%.1fMHz_%02d%02d-LIVE.bewehist",
-        mission_letter(tm_utc.tm_mon), tm_utc.tm_mday,
-        month_abbr3(tm_utc.tm_mon), tm_utc.tm_mday, 1900 + tm_utc.tm_year,
-        cf_mhz, tm_utc.tm_hour, tm_utc.tm_min);
+        mission_letter(tm_loc.tm_mon), tm_loc.tm_mday,
+        month_abbr3(tm_loc.tm_mon), tm_loc.tm_mday, 1900 + tm_loc.tm_year,
+        cf_mhz, tm_loc.tm_hour, tm_loc.tm_min);
     return buf;
 }
 // Returns finalized basename when given a "...-LIVE.bewehist" basename + end_utc.
 // If input doesn't match, returns input unchanged.
 inline std::string build_hist_filename_finalize(const std::string& live_name,
-                                                 uint64_t end_utc){
+                                                 uint64_t end_utc,
+                                                 int utc_offset_hours){
     auto pos = live_name.rfind("-LIVE.bewehist");
     if(pos == std::string::npos) return live_name;
-    time_t et = (time_t)end_utc;
-    struct tm tm_utc; gmtime_r(&et, &tm_utc);
+    time_t et = (time_t)end_utc + (time_t)utc_offset_hours * 3600;
+    struct tm tm_loc; gmtime_r(&et, &tm_loc);
     char tail[24];
     snprintf(tail, sizeof(tail), "-%02d%02dZ.bewehist",
-             tm_utc.tm_hour, tm_utc.tm_min);
+             tm_loc.tm_hour, tm_loc.tm_min);
     return live_name.substr(0, pos) + tail;
 }
 

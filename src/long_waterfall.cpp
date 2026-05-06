@@ -81,7 +81,8 @@ void close_file_locked(){
             auto slash = g_cur_path.find_last_of('/');
             std::string dir  = (slash == std::string::npos) ? "" : g_cur_path.substr(0, slash+1);
             std::string base = (slash == std::string::npos) ? g_cur_path : g_cur_path.substr(slash+1);
-            std::string fin  = build_hist_filename_finalize(base, (uint64_t)time(nullptr));
+            std::string fin  = build_hist_filename_finalize(base, (uint64_t)time(nullptr),
+                                                             (int)g_hdr_cur.utc_offset_hours);
             if(fin != base){
                 std::string final_full = dir + fin;
                 if(rename(g_cur_path.c_str(), final_full.c_str()) == 0){
@@ -116,7 +117,13 @@ bool open_new_file(uint64_t cf_hz, uint64_t sr_hz, uint32_t fft_size,
     mkdir(dir.c_str(), 0755);
 
     uint64_t now_utc = (uint64_t)time(nullptr);
-    std::string fname = build_hist_filename_live(now_utc, cf_hz);
+    int32_t off_h_now = 0;
+    {
+        time_t now = (time_t)now_utc;
+        struct tm lt; localtime_r(&now, &lt);
+        off_h_now = (int32_t)(lt.tm_gmtoff / 3600);
+    }
+    std::string fname = build_hist_filename_live(now_utc, cf_hz, (int)off_h_now);
     // 같은 분에 두 번 시작될 가능성 — 충돌 회피 suffix
     std::string full = dir + "/" + fname;
     for(int n=2; access(full.c_str(), F_OK)==0 && n<100; ++n){
@@ -144,11 +151,7 @@ bool open_new_file(uint64_t cf_hz, uint64_t sr_hz, uint32_t fft_size,
     h.start_utc_unix = now_utc;
     h.station_lon    = station_lon;
     h.fft_input_size = fft_input_size;
-    {
-        time_t now = (time_t)now_utc;
-        struct tm lt; localtime_r(&now, &lt);
-        h.utc_offset_hours = (int32_t)(lt.tm_gmtoff / 3600);
-    }
+    h.utc_offset_hours = off_h_now;
     // v3 fields
     h.station_lat = station_lat;
     if(station_name) strncpy(h.station_name, station_name, sizeof(h.station_name)-1);

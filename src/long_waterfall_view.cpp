@@ -166,10 +166,9 @@ static void hist_row_tooltip(const char* station_name, float station_lat, float 
     };
     if(!ImGui::BeginTooltip()) return;
     if(station_name && station_name[0]){
-        ImGui::Text("Station   : %s (%.4f%c %.4f%c)",
+        ImGui::Text("Station   : %s (%s)",
             station_name,
-            fabsf(station_lat), station_lat>=0 ? 'N' : 'S',
-            fabsf(station_lon), station_lon>=0 ? 'E' : 'W');
+            LongWaterfall::fmt_lat_lon(station_lat, station_lon).c_str());
     } else {
         ImGui::TextDisabled("Station   : ?");
     }
@@ -578,7 +577,8 @@ void register_dl_callbacks_once(NetClient* cli){
             if(!g_live.filename.empty()){
                 std::string old_full = BEWEPaths::hist_live_dir() + "/" + g_live.filename;
                 std::string fin = LongWaterfall::build_hist_filename_finalize(
-                    g_live.filename, (uint64_t)time(nullptr));
+                    g_live.filename, (uint64_t)time(nullptr),
+                    (int)g_live.hdr.utc_offset_hours);
                 if(fin != g_live.filename){
                     std::string new_full = BEWEPaths::hist_live_dir() + "/" + fin;
                     rename(old_full.c_str(), new_full.c_str());
@@ -590,9 +590,10 @@ void register_dl_callbacks_once(NetClient* cli){
         mkdir(BEWEPaths::hist_dir().c_str(), 0755);
         mkdir(dir.c_str(), 0755);
         // JOIN local wall-clock 기반 — 파일명은 mission-code 양식, start_utc도 wall-clock으로 덮음 (시간 보정).
+        // HHMM은 host TZ로 통일 (s.utc_offset_hours).
         time_t now_t = time(nullptr);
         std::string fname = LongWaterfall::build_hist_filename_live(
-            (uint64_t)now_t, s.center_freq_hz);
+            (uint64_t)now_t, s.center_freq_hz, (int)s.utc_offset_hours);
         std::string out = dir + "/" + fname;
         for(int n=2; access(out.c_str(), F_OK)==0 && n<100; ++n){
             auto pos = fname.rfind("-LIVE.bewehist");
@@ -650,7 +651,8 @@ void register_dl_callbacks_once(NetClient* cli){
             if(!g_live.filename.empty()){
                 std::string old_full = BEWEPaths::hist_live_dir() + "/" + g_live.filename;
                 std::string fin = LongWaterfall::build_hist_filename_finalize(
-                    g_live.filename, (uint64_t)time(nullptr));
+                    g_live.filename, (uint64_t)time(nullptr),
+                    (int)g_live.hdr.utc_offset_hours);
                 if(fin != g_live.filename){
                     std::string new_full = BEWEPaths::hist_live_dir() + "/" + fin;
                     rename(old_full.c_str(), new_full.c_str());
@@ -815,11 +817,9 @@ void draw_modal(FFTViewer& v, NetClient* cli){
             fmt_duration_hms(dur_sec).c_str(),
             g_open.total_size / 1048576.0);
         if(h.station_name[0]){
-            // station_lon은 globe.pick의 W↔E 반전 부호로 저장됨 → 표시할 때 라벨 뒤집어 보정.
-            ImGui::Text("Station : %s (%.4f%c %.4f%c)",
+            ImGui::Text("Station : %s (%s)",
                 h.station_name,
-                fabsf(h.station_lat), h.station_lat>=0 ? 'N' : 'S',
-                fabsf(h.station_lon), h.station_lon>=0 ? 'W' : 'E');
+                LongWaterfall::fmt_lat_lon(h.station_lat, h.station_lon).c_str());
         }
         ImGui::Text("Start : %s", fmt_local_time(h.start_utc_unix, off_h).c_str());
         ImGui::Text("Stop  : %s", fmt_local_time(stop_utc, off_h).c_str());
@@ -1150,7 +1150,8 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                         if(!g_live.filename.empty()){
                             std::string old_full = BEWEPaths::hist_live_dir() + "/" + g_live.filename;
                             std::string fin = LongWaterfall::build_hist_filename_finalize(
-                                g_live.filename, (uint64_t)time(nullptr));
+                                g_live.filename, (uint64_t)time(nullptr),
+                                (int)g_live.hdr.utc_offset_hours);
                             if(fin != g_live.filename){
                                 std::string new_full = BEWEPaths::hist_live_dir() + "/" + fin;
                                 rename(old_full.c_str(), new_full.c_str());

@@ -2460,10 +2460,8 @@ void run_streaming_viewer(){
                 float alpha = (coord_timer < 0.5f) ? coord_timer / 0.5f : 1.f;
                 ImU32 col_text = IM_COL32(220, 255, 180, (int)(220*alpha));
                 ImU32 col_bg   = IM_COL32(10,  30,  10,  (int)(180*alpha));
-                char cbuf[48];
-                snprintf(cbuf, sizeof(cbuf), "%.4f°%s  %.4f°%s",
-                         fabsf(coord_lat), coord_lat >= 0.f ? "N" : "S",
-                         fabsf(coord_lon), coord_lon >= 0.f ? "W" : "E");
+                std::string cstr = LongWaterfall::fmt_lat_lon(coord_lat, coord_lon);
+                const char* cbuf = cstr.c_str();
                 ImVec2 tsz = ImGui::CalcTextSize(cbuf);
                 float cx = coord_sx + 14.f;
                 float cy = coord_sy - 22.f;
