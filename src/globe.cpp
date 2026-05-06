@@ -232,16 +232,17 @@ void GlobeRenderer::on_drag(float mx, float my) {
 
     float nw, nx, ny, nz;
 
-    // 줌 5단계별 드래그 속도 계산
-    // zoom_ 범위: 1.5(최대 확대) ~ 8.0(최대 축소)
-    // 단계: 1=가장 멀리(wide), 5=가장 가까이(close)
+    // 줌 단계별 드래그 속도 계산
+    // zoom_ 범위: 1.05(최대 확대) ~ 8.0(최대 축소)
     // 멀리 볼수록 빠르게, 가까이 볼수록 느리게
     float drag_scale;
-    if      (zoom_ >= 6.5f) drag_scale = 2.2f;  // 단계1: 가장 멀리 — 빠르게
-    else if (zoom_ >= 5.0f) drag_scale = 1.6f;  // 단계2
-    else if (zoom_ >= 3.5f) drag_scale = 1.0f;  // 단계3: 기본 (zoom_=3.5)
-    else if (zoom_ >= 2.5f) drag_scale = 0.55f; // 단계4
-    else                    drag_scale = 0.28f;  // 단계5: 가장 가까이 — 느리게
+    if      (zoom_ >= 6.5f) drag_scale = 2.2f;
+    else if (zoom_ >= 5.0f) drag_scale = 1.6f;
+    else if (zoom_ >= 3.5f) drag_scale = 1.0f;
+    else if (zoom_ >= 2.5f) drag_scale = 0.55f;
+    else if (zoom_ >= 1.5f) drag_scale = 0.28f;
+    else if (zoom_ >= 1.2f) drag_scale = 0.10f;  // 근접 구간 (1.2~1.5)
+    else                    drag_scale = 0.04f;  // 최대 확대 (1.05~1.2)
 
     if (fabsf(ddx) > 0.f) {
         // Horizontal → rotate around world Y axis
@@ -279,9 +280,16 @@ void GlobeRenderer::on_drag(float mx, float my) {
 }
 
 void GlobeRenderer::on_scroll(float delta) {
-    zoom_ -= delta * 0.3f;
-    if (zoom_ < 1.5f) zoom_ = 1.5f;
-    if (zoom_ > 8.f)  zoom_ = 8.f;
+    // Step shrinks as we approach the surface so the extended close-up range
+    // (zoom_ < 1.5 .. 1.05) gives ~10 fine zoom-in clicks beyond the previous max.
+    float step;
+    if      (zoom_ >= 3.5f) step = 0.30f;
+    else if (zoom_ >= 2.0f) step = 0.15f;
+    else if (zoom_ >= 1.5f) step = 0.08f;
+    else                    step = 0.04f;
+    zoom_ -= delta * step;
+    if (zoom_ < 1.05f) zoom_ = 1.05f;
+    if (zoom_ > 8.f)   zoom_ = 8.f;
 }
 
 // ── Picking ───────────────────────────────────────────────────────────────
@@ -478,7 +486,11 @@ void GlobeRenderer::get_mvp(float* mvp) const {
 
     float fovy = 45.f * (float)M_PI / 180.f;
     float aspect = (float)vp_w_ / (float)vp_h_;
-    mat4_perspective(proj, fovy, aspect, 0.1f, 100.f);
+    // Near plane은 카메라-구체-앞면 거리 (zoom_ - 1)에 비례시켜 가까이 줌인해도
+    // 앞면이 잘려 뒷면이 비치는 현상 방지. zoom_=1.05 → near≈0.015, zoom_=8 → near≈2.1.
+    float near_z = (zoom_ - 1.0f) * 0.3f;
+    if (near_z < 0.01f) near_z = 0.01f;
+    mat4_perspective(proj, fovy, aspect, near_z, 100.f);
 
     // Model rotation from quaternion
     mat4_from_quat(rot, qw_, qx_, qy_, qz_);
