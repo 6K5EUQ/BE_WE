@@ -1,5 +1,6 @@
 #include "fft_viewer.hpp"
 #include "ais_decode.hpp"
+#include "iq_filename.hpp"
 #include "login.hpp"
 #include "net_server.hpp"
 #include "net_client.hpp"
@@ -3257,7 +3258,7 @@ void run_streaming_viewer(){
         cli->on_db_download_info = [](const PktDbDownloadInfo* di){
             if(!di) return;
             char fn[129]={}; strncpy(fn, di->filename, 128);
-            bool is_iq = (strncmp(fn,"IQ_",3)==0||strncmp(fn,"sa_",3)==0);
+            bool is_iq = (is_iq_filename(fn));
             std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
             mkdir(dir.c_str(), 0755);
             std::string ipath = dir + "/" + fn + ".info";
@@ -3276,7 +3277,7 @@ void run_streaming_viewer(){
         cli->on_db_download_data = [&](const PktDbDownloadData* d, const uint8_t* data, uint32_t data_len){
             static uint64_t db_dl_recv = 0;
             if(d->is_first){
-                bool is_iq = (strncmp(d->filename,"IQ_",3)==0||strncmp(d->filename,"sa_",3)==0);
+                bool is_iq = (is_iq_filename(d->filename));
                 std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
                 mkdir(dir.c_str(), 0755);
                 db_dl_path = dir + "/" + d->filename;
@@ -3321,7 +3322,7 @@ void run_streaming_viewer(){
                         }
                 }
                 // record 목록에 추가
-                bool is_iq = (strncmp(d->filename,"IQ_",3)==0||strncmp(d->filename,"sa_",3)==0);
+                bool is_iq = (is_iq_filename(d->filename));
                 std::string fn2(d->filename);
                 if(is_iq){
                     bool dup=false; for(auto& s:rec_iq_files) if(s==fn2){dup=true;break;}
@@ -3382,8 +3383,7 @@ void run_streaming_viewer(){
                 return dir;
             }
             // Public 다운로드: IQ/Audio 구분
-            bool is_iq = (filename.size()>3 && filename.substr(0,3)=="IQ_")
-                      || (filename.size()>3 && filename.substr(0,3)=="sa_");
+            bool is_iq = is_iq_filename(filename);
             std::string dir = is_iq ? BEWEPaths::share_iq_dir() : BEWEPaths::share_audio_dir();
             struct stat sd{}; if(stat(dir.c_str(),&sd)!=0) mkdir(dir.c_str(),0755);
             return dir;
@@ -3867,7 +3867,7 @@ void run_streaming_viewer(){
             srv->cb.on_share_download_req = [&](uint8_t op_idx, const char* filename){
                 // IQ/Audio 구분하여 올바른 폴더에서 찾기
                 std::string fn(filename);
-                bool is_iq = (fn.size()>3 && fn.substr(0,3)=="IQ_") || (fn.size()>3 && fn.substr(0,3)=="sa_");
+                bool is_iq = is_iq_filename(fn);
                 std::string path = (is_iq ? BEWEPaths::public_iq_dir() : BEWEPaths::public_audio_dir()) + "/" + fn;
                 struct stat st{};
                 if(stat(path.c_str(),&st)!=0){ fprintf(stderr,"share_download: file not found: %s\n",path.c_str()); return; }
@@ -3900,8 +3900,7 @@ void run_streaming_viewer(){
                 // "bewe_up_" 접두사 제거
                 if(strncmp(fn,"bewe_up_",8)==0) fn+=8;
                 // IQ/Audio 구분
-                bool is_iq = (strlen(fn)>3 && strncmp(fn,"IQ_",3)==0)
-                          || (strlen(fn)>3 && strncmp(fn,"sa_",3)==0);
+                bool is_iq = is_iq_filename(fn);
                 std::string pub_dir = is_iq ? BEWEPaths::public_iq_dir() : BEWEPaths::public_audio_dir();
                 struct stat sd{}; if(stat(pub_dir.c_str(),&sd)!=0) mkdir(pub_dir.c_str(),0755);
                 std::string dst = pub_dir + "/" + fn;
@@ -3929,7 +3928,7 @@ void run_streaming_viewer(){
                 {
                     std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
                     for(auto& sf : shared_files){
-                        bool siq = (sf.size()>3&&sf.substr(0,3)=="IQ_")||(sf.size()>3&&sf.substr(0,3)=="sa_");
+                        bool siq = is_iq_filename(sf);
                         std::string sfp = (siq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+sf;
                         struct stat sst{}; uint64_t fsz=0;
                         if(stat(sfp.c_str(),&sst)==0) fsz=(uint64_t)sst.st_size;
@@ -4040,7 +4039,7 @@ void run_streaming_viewer(){
                 auto oit = pub_owners.find(fname);
                 if(oit == pub_owners.end() || oit->second != std::string(op_name)) return;
                 // 실제 파일 삭제
-                bool is_iq = (fname.size()>3&&fname.substr(0,3)=="IQ_")||(fname.size()>3&&fname.substr(0,3)=="sa_");
+                bool is_iq = is_iq_filename(fname);
                 std::string fp = (is_iq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+fname;
                 remove(fp.c_str());
                 remove((fp + ".info").c_str());
@@ -4054,7 +4053,7 @@ void run_streaming_viewer(){
                 // 갱신된 목록 브로드캐스트
                 std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
                 for(auto& sf : shared_files){
-                    bool siq2 = (sf.size()>3&&sf.substr(0,3)=="IQ_")||(sf.size()>3&&sf.substr(0,3)=="sa_");
+                    bool siq2 = is_iq_filename(sf);
                     std::string sfp = (siq2?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+sf;
                     struct stat sst{}; uint64_t fsz=0;
                     if(stat(sfp.c_str(),&sst)==0) fsz=(uint64_t)sst.st_size;
@@ -4266,7 +4265,7 @@ void run_streaming_viewer(){
                                 if(len < 9 + sizeof(PktDbDownloadInfo)) return;
                                 const auto* di = reinterpret_cast<const PktDbDownloadInfo*>(pkt + 9);
                                 char fn[129]={}; strncpy(fn, di->filename, 128);
-                                bool is_iq = (strncmp(fn,"IQ_",3)==0||strncmp(fn,"sa_",3)==0);
+                                bool is_iq = (is_iq_filename(fn));
                                 std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
                                 mkdir(dir.c_str(), 0755);
                                 std::string ipath = dir + "/" + fn + ".info";
@@ -4287,7 +4286,7 @@ void run_streaming_viewer(){
                                 const uint8_t* data = pkt + 9 + sizeof(PktDbDownloadData);
                                 uint32_t data_len = d->chunk_bytes;
                                 if(d->is_first){
-                                    bool is_iq = (strncmp(d->filename,"IQ_",3)==0||strncmp(d->filename,"sa_",3)==0);
+                                    bool is_iq = (is_iq_filename(d->filename));
                                     std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
                                     mkdir(dir.c_str(), 0755);
                                     host_db_dl_path = dir + "/" + d->filename;
@@ -5508,7 +5507,7 @@ void run_streaming_viewer(){
                         if(v.net_srv && file_ctx.is_public){
                             std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
                             for(auto& sf : shared_files){
-                                bool siq = (sf.size()>3&&sf.substr(0,3)=="IQ_")||(sf.size()>3&&sf.substr(0,3)=="sa_");
+                                bool siq = is_iq_filename(sf);
                                 std::string sfp = (siq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+sf;
                                 struct stat sst{}; uint64_t fsz=0;
                                 if(stat(sfp.c_str(),&sst)==0) fsz=(uint64_t)sst.st_size;
@@ -7289,7 +7288,7 @@ void run_streaming_viewer(){
                                 std::vector<int> jiq_idx, jaudio_idx;
                                 for(int si=0;si<(int)join_share_files.size();si++){
                                     const auto& jse = join_share_files[si];
-                                    if(jse.filename.size()>3 && jse.filename.substr(0,3)=="IQ_")
+                                    if(is_iq_filename(jse.filename))
                                         jiq_idx.push_back(si);
                                     else
                                         jaudio_idx.push_back(si);
@@ -8170,7 +8169,7 @@ void run_streaming_viewer(){
                     ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.4f,0.3f));
                     ImGui::Separator(); ImGui::PopStyleColor();
                     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                    if(ImGui::TreeNode("Audio##rec")){
+                    if(ImGui::TreeNode("Demod##rec")){
                         ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
                         ImGui::Separator(); ImGui::PopStyleColor();
                         for(auto& fn : rec_audio_files) draw_arch_file(BEWEPaths::record_audio_dir(), fn, 1);
@@ -8196,7 +8195,7 @@ void run_streaming_viewer(){
                     ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.4f,0.3f));
                     ImGui::Separator(); ImGui::PopStyleColor();
                     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                    if(ImGui::TreeNode("Audio##priv")){
+                    if(ImGui::TreeNode("Demod##priv")){
                         ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
                         ImGui::Separator(); ImGui::PopStyleColor();
                         for(auto& fn : priv_audio_files) draw_arch_file(BEWEPaths::private_audio_dir(), fn, 3);
@@ -8227,7 +8226,7 @@ void run_streaming_viewer(){
                     {
                         std::lock_guard<std::mutex> lk(g_db_list_mtx);
                         for(auto& e : g_db_list){
-                            bool iq = (strncmp(e.filename,"IQ_",3)==0 || strncmp(e.filename,"sa_",3)==0);
+                            bool iq = (is_iq_filename(e.filename));
                             if(iq) db_iq.push_back(e); else db_audio.push_back(e);
                         }
                     }
@@ -8281,7 +8280,7 @@ void run_streaming_viewer(){
                             if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
                                 db_ctx = {true, io.MousePos.x, io.MousePos.y,
                                           std::string(e.filename), std::string(e.operator_name),
-                                          (strncmp(e.filename,"IQ_",3)==0||strncmp(e.filename,"sa_",3)==0),
+                                          (is_iq_filename(e.filename)),
                                           true};
                                 bewe_log_push(0,"[UI] DB right-click: '%s'\n", e.filename);
                             }
@@ -8300,7 +8299,7 @@ void run_streaming_viewer(){
                     ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.4f,0.3f));
                     ImGui::Separator(); ImGui::PopStyleColor();
                     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                    if(ImGui::TreeNode("Audio##db")){
+                    if(ImGui::TreeNode("Demod##db")){
                         ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
                         ImGui::Separator(); ImGui::PopStyleColor();
                         for(auto& e : db_audio) draw_db_entry(e);
@@ -9804,7 +9803,7 @@ void run_streaming_viewer(){
                     if(v.net_srv && file_ctx.is_public){
                         std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
                         for(auto& sf : shared_files){
-                            bool siq = (sf.size()>3&&sf.substr(0,3)=="IQ_")||(sf.size()>3&&sf.substr(0,3)=="sa_");
+                            bool siq = is_iq_filename(sf);
                             std::string sfp = (siq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+sf;
                             struct stat sst{}; uint64_t fsz=0;
                             if(stat(sfp.c_str(),&sst)==0) fsz=(uint64_t)sst.st_size;

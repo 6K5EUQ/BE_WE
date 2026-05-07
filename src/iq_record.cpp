@@ -478,7 +478,8 @@ void FFTViewer::start_iq_rec(int ch_idx){
     std::string rec_dir=BEWEPaths::record_iq_dir();
     float cf_mhz=(ch.s+ch.e)/2.0f;
     if(pending_sched_meta.active){
-        // SCHED 형식: SCHED_<station>_<MissCode><DD>_<MonDD>.<YYYY>_<HHMMSS>-<HHMMSS>_<F.F>MHz.wav
+        // SCHED 형식: SCHED_IQ_<station>_<MissCode><DD>_<MonDD>.<YYYY>_<HHMMSS>-<HHMMSS>_<F.F>MHz.wav
+        // "IQ" 포함시켜 분류 헬퍼(is_iq_filename)가 IQ로 인식하도록.
         // 시간은 모두 UTC (Z타임), date code는 HIST와 동일 ('A'=Jan…'L'=Dec).
         // station 이름은 파일시스템 안전 문자만 남김 (공백/괄호/슬래시 → '_').
         std::string st = station_name;
@@ -492,7 +493,7 @@ void FFTViewer::start_iq_rec(int ch_idx){
         struct tm su; gmtime_r(&pending_sched_meta.start_utc, &su);
         struct tm eu; gmtime_r(&pending_sched_meta.end_utc,   &eu);
         snprintf(fn,sizeof(fn),
-                 "%s/SCHED_%s_%c%02d_%s%d.%04d_%02d%02d%02d-%02d%02d%02d_%.1fMHz.wav",
+                 "%s/SCHED_IQ_%s_%c%02d_%s%d.%04d_%02d%02d%02d-%02d%02d%02d_%.1fMHz.wav",
                  rec_dir.c_str(), st.c_str(),
                  LongWaterfall::mission_letter(su.tm_mon), su.tm_mday,
                  LongWaterfall::month_abbr3(su.tm_mon),    su.tm_mday, 1900+su.tm_year,

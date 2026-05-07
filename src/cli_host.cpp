@@ -3,6 +3,7 @@
 // GLFW/OpenGL/ImGui 의존성 없음
 
 #include "fft_viewer.hpp"
+#include "iq_filename.hpp"
 #include "login.hpp"
 #include "bewe_paths.hpp"
 #include "central_client.hpp"
@@ -726,7 +727,7 @@ void run_cli_host(){
     // Share download
     srv->cb.on_share_download_req = [&](uint8_t op_idx, const char* filename){
         std::string fn(filename);
-        bool is_iq = (fn.size()>3 && fn.substr(0,3)=="IQ_") || (fn.size()>3 && fn.substr(0,3)=="sa_");
+        bool is_iq = is_iq_filename(fn);
         std::string path = (is_iq ? BEWEPaths::public_iq_dir() : BEWEPaths::public_audio_dir()) + "/" + fn;
         struct stat st{};
         if(stat(path.c_str(),&st)!=0) return;
@@ -742,8 +743,7 @@ void run_cli_host(){
     srv->cb.on_share_upload_done = [&](uint8_t, const char* op_name, const char* tmp_path){
         const char* fn = strrchr(tmp_path, '/'); fn = fn ? fn+1 : tmp_path;
         if(strncmp(fn,"bewe_up_",8)==0) fn+=8;
-        bool is_iq = (strlen(fn)>3 && strncmp(fn,"IQ_",3)==0)
-                  || (strlen(fn)>3 && strncmp(fn,"sa_",3)==0);
+        bool is_iq = is_iq_filename(fn);
         std::string pub_dir = is_iq ? BEWEPaths::public_iq_dir() : BEWEPaths::public_audio_dir();
         struct stat sd{}; if(stat(pub_dir.c_str(),&sd)!=0) mkdir(pub_dir.c_str(),0755);
         std::string dst = pub_dir + "/" + fn;
@@ -759,7 +759,7 @@ void run_cli_host(){
         // Broadcast updated list
         std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
         for(auto& sf : shared_files){
-            bool siq = (sf.size()>3&&sf.substr(0,3)=="IQ_")||(sf.size()>3&&sf.substr(0,3)=="sa_");
+            bool siq = is_iq_filename(sf);
             std::string sfp = (siq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+sf;
             struct stat sst{}; uint64_t fsz=0;
             if(stat(sfp.c_str(),&sst)==0) fsz=(uint64_t)sst.st_size;
@@ -927,7 +927,7 @@ void run_cli_host(){
         std::string fname(filename);
         auto oit = pub_owners.find(fname);
         if(oit == pub_owners.end() || oit->second != std::string(op_name)) return;
-        bool is_iq = (fname.size()>3&&fname.substr(0,3)=="IQ_")||(fname.size()>3&&fname.substr(0,3)=="sa_");
+        bool is_iq = is_iq_filename(fname);
         std::string fp = (is_iq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+fname;
         remove(fp.c_str());
         auto rm_from = [&](std::vector<std::string>& vec){
@@ -937,7 +937,7 @@ void run_cli_host(){
         pub_owners.erase(fname); pub_listeners.erase(fname);
         std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
         for(auto& sf : shared_files){
-            bool siq2 = (sf.size()>3&&sf.substr(0,3)=="IQ_")||(sf.size()>3&&sf.substr(0,3)=="sa_");
+            bool siq2 = is_iq_filename(sf);
             std::string sfp = (siq2?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+sf;
             struct stat sst{}; uint64_t fsz=0;
             if(stat(sfp.c_str(),&sst)==0) fsz=(uint64_t)sst.st_size;
@@ -1071,7 +1071,7 @@ void run_cli_host(){
                     if(len < 9 + sizeof(PktDbDownloadInfo)) return;
                     const auto* di = reinterpret_cast<const PktDbDownloadInfo*>(pkt + 9);
                     char fn[129]={}; strncpy(fn, di->filename, 128);
-                    bool is_iq = (strncmp(fn,"IQ_",3)==0||strncmp(fn,"sa_",3)==0);
+                    bool is_iq = (is_iq_filename(fn));
                     std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
                     mkdir(dir.c_str(), 0755);
                     std::string ipath = dir + "/" + fn + ".info";
@@ -1093,7 +1093,7 @@ void run_cli_host(){
                     const uint8_t* data = pkt + 9 + sizeof(PktDbDownloadData);
                     uint32_t data_len = d->chunk_bytes;
                     if(d->is_first){
-                        bool is_iq = (strncmp(d->filename,"IQ_",3)==0||strncmp(d->filename,"sa_",3)==0);
+                        bool is_iq = (is_iq_filename(d->filename));
                         std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
                         mkdir(dir.c_str(), 0755);
                         host_db_dl_path = dir + "/" + d->filename;
