@@ -3,12 +3,16 @@
 #include "bewe_paths.hpp"
 extern void bewe_log_push(int col, const char* fmt, ...);
 #include <GL/glew.h>
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <cstdio>
 #include <vector>
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#include <stb/stb_image_resize.h>
 
 // ── Shader sources ────────────────────────────────────────────────────────
 
@@ -727,9 +731,44 @@ bool GlobeRenderer::load_earth_texture() {
             r[opp*3]=tmp[0];   r[opp*3+1]=tmp[1];     r[opp*3+2]=tmp[2];
         }
     }
+    // GL_MAX_TEXTURE_SIZE 초과 시 GPU가 GL_INVALID_VALUE → 빈 텍스처 → 오버레이 안 뜸.
+    // 한계 넘으면 stb_image_resize로 비율 유지하며 다운스케일.
+    GLint max_tex = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_tex);
+    if (max_tex <= 0) max_tex = 8192; // safety fallback
+    if (w > max_tex || h > max_tex) {
+        float s = std::min((float)max_tex / (float)w, (float)max_tex / (float)h);
+        int nw = (int)(w * s), nh = (int)(h * s);
+        if (nw < 1) nw = 1; if (nh < 1) nh = 1;
+        unsigned char* resized = (unsigned char*)malloc((size_t)nw * nh * 3);
+        if (resized && stbir_resize_uint8(data, w, h, 0, resized, nw, nh, 0, 3)) {
+            bewe_log_push(1,"[Globe] earth %dx%d > GL_MAX_TEXTURE_SIZE %d, resized to %dx%d\n",
+                          w, h, (int)max_tex, nw, nh);
+            stbi_image_free(data);
+            data = resized;
+            w = nw; h = nh;
+        } else {
+            if (resized) free(resized);
+            bewe_log_push(0,"[Globe] earth %dx%d exceeds GL_MAX_TEXTURE_SIZE %d and resize failed\n",
+                          w, h, (int)max_tex);
+            stbi_image_free(data);
+            return false;
+        }
+    }
     glGenTextures(1, &tex_earth_);
     glBindTexture(GL_TEXTURE_2D, tex_earth_);
+    while (glGetError() != GL_NO_ERROR) {} // flush prior errors
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+    GLenum tex_err = glGetError();
+    if (tex_err != GL_NO_ERROR) {
+        bewe_log_push(0,"[Globe] glTexImage2D failed (%dx%d, GL err 0x%x); earth texture disabled\n",
+                      w, h, (unsigned)tex_err);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glDeleteTextures(1, &tex_earth_);
+        tex_earth_ = 0;
+        stbi_image_free(data);  // both stbi_load and resized buffer use plain free()
+        return false;
+    }
     glGenerateMipmap(GL_TEXTURE_2D);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
