@@ -429,8 +429,8 @@ void run_cli_host(){
     };
     srv->cb.on_set_ch_mode= [&](const char* who, int idx, int mode){
         if(idx<0||idx>=MAX_CHANNELS) return;
-        static const char* mn[]={"NONE","AM","FM","MAGIC"};
-        bewe_log_push(0, "[CMD:%s] CH%d mode > %s\n", who, idx, mn[mode<4?mode:0]);
+        static const char* mn[]={"NONE","AM","FM"};
+        bewe_log_push(0, "[CMD:%s] CH%d mode > %s\n", who, idx, mn[mode<3?mode:0]);
         v.stop_dem(idx);
         auto dm=(Channel::DemodMode)mode;
         v.channels[idx].mode=dm;

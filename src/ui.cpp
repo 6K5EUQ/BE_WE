@@ -6618,8 +6618,9 @@ void run_streaming_viewer(){
                                     v.selected_ch=ci; v.channels[ci].selected=true;
                                 }
                             }
-                            // Del 키 (선택된 채널)
-                            if(ch.selected && ImGui::IsKeyPressed(ImGuiKey_Delete,false)){
+                            // Del 키 (선택된 채널) — 모달 오버레이(HIST/EID/LOG/LIB) 떠있으면 차단.
+                            // STATUS 사이드 패널은 비모달이라 평소 동작하되, 모달이 위에 있으면 그 창 단축키가 우선.
+                            if(ch.selected && main_kbd_active && ImGui::IsKeyPressed(ImGuiKey_Delete,false)){
                                 if(v.rec_on.load() && v.rec_ch==ci) v.stop_rec();
                                 if(v.channels[ci].audio_rec_on.load()){
                                     if(v.remote_mode && v.net_cli) v.stop_join_audio_rec(ci);
