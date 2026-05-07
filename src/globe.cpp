@@ -427,6 +427,43 @@ bool GlobeRenderer::project(float lat_deg, float lon_deg,
     return true;
 }
 
+bool GlobeRenderer::project_world(float x, float y, float z,
+                                   float& sx, float& sy) const {
+    // Perspective occlusion: ray from camera C to P is blocked by globe iff
+    // it intersects the unit sphere at some t∈(0,1) before reaching P.
+    // Camera world pos: cam_dir * zoom_ (see get_view_inv()).
+    float qx=qx_, qy=qy_, qz=qz_, qw=qw_;
+    float cam_dx = 2*(qx*qz + qw*qy);
+    float cam_dy = 2*(qy*qz - qw*qx);
+    float cam_dz = 1 - 2*(qx*qx + qy*qy);
+    float Cx = cam_dx * zoom_, Cy = cam_dy * zoom_, Cz = cam_dz * zoom_;
+    float Dx = x - Cx, Dy = y - Cy, Dz = z - Cz;
+    float OD = Cx*Dx + Cy*Dy + Cz*Dz;        // O·D where O = C
+    float DD = Dx*Dx + Dy*Dy + Dz*Dz;        // |D|²
+    float OO_m1 = zoom_*zoom_ - 1.f;         // |C|² − 1
+    float disc = OD*OD - DD*OO_m1;
+    if (disc > 0.f) {
+        float t_near = (-OD - sqrtf(disc)) / DD;
+        if (t_near > 0.f && t_near < 1.f) return false;
+    }
+
+    float mvp[16];
+    get_mvp(mvp);
+
+    float cx = mvp[0]*x + mvp[4]*y + mvp[8]*z  + mvp[12];
+    float cy = mvp[1]*x + mvp[5]*y + mvp[9]*z  + mvp[13];
+    float cw = mvp[3]*x + mvp[7]*y + mvp[11]*z + mvp[15];
+
+    if (cw <= 0.f) return false;
+
+    float ndcx = cx / cw;
+    float ndcy = cy / cw;
+
+    sx = (ndcx + 1.f) * 0.5f * vp_w_;
+    sy = (1.f - ndcy) * 0.5f * vp_h_;
+    return true;
+}
+
 // ── Math implementation ───────────────────────────────────────────────────
 
 void GlobeRenderer::mat4_identity(float* M) const {

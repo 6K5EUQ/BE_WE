@@ -5,6 +5,7 @@
 #include "net_client.hpp"
 #include "bewe_paths.hpp"
 #include "globe.hpp"
+#include "sat_view.hpp"
 #include "central_client.hpp"
 #include "host_band_plan.hpp"
 #include "host_band_categories.hpp"
@@ -2272,6 +2273,7 @@ void run_streaming_viewer(){
     // ── Globe-based station discovery ─────────────────────────────────────
     GlobeRenderer globe;
     bool globe_ok = globe.init();
+    if(globe_ok) sat_view_init();
 
     // Relay 클라이언트: Relay 주소가 설정돼 있으면 인터넷 스테이션 폴링
     CentralClient central_cli;
@@ -2370,8 +2372,9 @@ void run_streaming_viewer(){
             if(io.MouseWheel != 0.f)
                 globe.on_scroll(io.MouseWheel);
 
-            // Click (not drag) > pick lat/lon
-            if(ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !was_dragging){
+            // Click (not drag) > satellite first, then pick lat/lon
+            if(ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !was_dragging
+               && !sat_view_handle_click(globe, io.MousePos.x, io.MousePos.y)){
                 float plat, plon;
                 if(globe.pick(io.MousePos.x, io.MousePos.y, plat, plon)){
                     // Check if a station marker was clicked (20px radius)
@@ -2439,6 +2442,11 @@ void run_streaming_viewer(){
                                  IM_COL32(160,200,220,200), ubuf);
                 }
             }
+        }
+
+        // ── Satellite markers + selected orbit ────────────────────────────
+        if(globe_ok){
+            sat_view_draw(globe, io, time(nullptr));
         }
 
         // ── Click coordinate display ──────────────────────────────────────

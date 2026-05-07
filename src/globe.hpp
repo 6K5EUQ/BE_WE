@@ -43,6 +43,10 @@ public:
     // Project lat/lon → screen pixels; false if behind camera
     bool project(float lat_deg, float lon_deg, float& sx, float& sy) const;
 
+    // Project arbitrary world-space point (unit sphere = radius 1; r>1 for
+    // satellites). Returns false if hidden by earth horizon or behind camera.
+    bool project_world(float x, float y, float z, float& sx, float& sy) const;
+
     float get_zoom() const { return zoom_; }
 
 private:
