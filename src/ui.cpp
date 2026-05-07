@@ -1503,7 +1503,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         if(!any_ovl && !in_band_bar) handle_new_channel_drag(gx,gw);
     }
     int sel_before = selected_ch;
-    bool any_ovl_b = eid_panel_open || log_panel_open || lwf_modal_open;
+    bool any_ovl_b = eid_panel_open || log_panel_open || lwf_modal_open || sig_lib_panel_open;
     if(!region.active && !any_ovl_b) handle_channel_interactions(gx,gw,gy,gh);
 
     // ── 좌클릭 토글 > Max Hold (채널 위가 아닌 빈 영역 클릭에서만) ──────
@@ -1718,10 +1718,10 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
         // 마우스가 워터폴 영역 안에 있을 때만 채널 드래그 시작 허용 (band bar 우클릭 보호)
         ImVec2 _mp = ImGui::GetIO().MousePos;
         bool in_wf_area = (_mp.y >= gy && _mp.y <= gy + gh);
-        bool any_ovl_w = eid_panel_open || log_panel_open || lwf_modal_open;
+        bool any_ovl_w = eid_panel_open || log_panel_open || lwf_modal_open || sig_lib_panel_open;
         if(!any_ovl_w && in_wf_area) handle_new_channel_drag(gx,gw);
     }
-    bool any_ovl_w2 = eid_panel_open || log_panel_open || lwf_modal_open;
+    bool any_ovl_w2 = eid_panel_open || log_panel_open || lwf_modal_open || sig_lib_panel_open;
     if(!region.active && !any_ovl_w2) handle_channel_interactions(gx,gw,gy,gh);
 
     // ── Ctrl+우클릭 드래그: 영역 IQ 녹음 선택 ────────────────────────────
@@ -5174,9 +5174,14 @@ void run_streaming_viewer(){
         ImGuiIO& io=ImGui::GetIO();
         bool editing=ImGui::IsAnyItemActive();
         int sci=v.selected_ch;
+        // 메인페이지(워터폴+스펙트럼) 단축키가 활성인지: 모달 오버레이(EID/LOG/HIST/LIB)가
+        // 없을 때만 true. 우측 사이드 패널은 비모달이라 메인 단축키와 공존 허용.
+        // 다른 모달이 떠있으면 그 창의 단축키만 동작.
+        bool main_kbd_active = !v.eid_panel_open && !v.log_panel_open
+                            && !v.lwf_modal_open && !v.sig_lib_panel_open;
 
         // ── Keyboard shortcuts ────────────────────────────────────────────
-        if(!editing && !v.eid_panel_open){
+        if(!editing && main_kbd_active){
             if(ImGui::IsKeyPressed(ImGuiKey_R,false)){
                 if(v.remote_mode && v.net_cli){
                     if(v.region.active){
@@ -5328,10 +5333,8 @@ void run_streaming_viewer(){
                     v.tm_active.store(true);
                 }
             }
-            // 오버레이(EID/LOG/DIGI/HIST) 활성 시엔 채널 demod 키 (A/F/M/D 등) 무시
-            bool any_ovl_demod = v.eid_panel_open || v.log_panel_open
-                              || v.lwf_modal_open;
-            if(!any_ovl_demod && sci>=0 && v.channels[sci].filter_active){
+            // 오버레이(EID/LOG/HIST/LIB) 활성 시엔 채널 demod 키 (A/F 등) 무시
+            if(main_kbd_active && sci>=0 && v.channels[sci].filter_active){
                 auto set_mode=[&](Channel::DemodMode m){
                     if(v.remote_mode && v.net_cli){
                         // CONNECT 모드: 서버에 CMD 전송
@@ -5368,13 +5371,13 @@ void run_streaming_viewer(){
                 if(ImGui::IsKeyPressed(ImGuiKey_UpArrow,false))    arrow_set_out(sci, 1); // L+R
                 if(ImGui::IsKeyPressed(ImGuiKey_DownArrow,false))  arrow_set_out(sci, 3); // M(뮤트)
             }
-            if(ImGui::IsKeyPressed(ImGuiKey_O,false) && !editing){
+            if(main_kbd_active && ImGui::IsKeyPressed(ImGuiKey_O,false) && !editing){
                 ops_open = !ops_open;
             }
-            if(ImGui::IsKeyPressed(ImGuiKey_Escape,false)){
+            if(main_kbd_active && ImGui::IsKeyPressed(ImGuiKey_Escape,false)){
                 if(sci>=0){ v.channels[sci].selected=false; v.selected_ch=-1; }
             }
-            if(ImGui::IsKeyPressed(ImGuiKey_Delete,false) && !v.eid_panel_open){
+            if(main_kbd_active && ImGui::IsKeyPressed(ImGuiKey_Delete,false)){
                 if(sci>=0&&v.channels[sci].filter_active){
                     // IQ 녹음 중이면 중지
                     if(v.channels[sci].iq_rec_on.load())
@@ -5490,16 +5493,17 @@ void run_streaming_viewer(){
             return g_overlay_stack.empty() ? 0 : g_overlay_stack.back();
         };
         {
-            static bool prev_eid=false, prev_log=false, prev_side=false, prev_lib=false;
+            static bool prev_eid=false, prev_log=false, prev_lwf=false,
+                        prev_side=false, prev_lib=false;
             bool side_now = v.right_panel_ratio > 0.01f;
             if(v.eid_panel_open != prev_eid){ v.eid_panel_open ? push_ov(1) : pop_ov(1); prev_eid=v.eid_panel_open; }
             if(v.log_panel_open != prev_log){ v.log_panel_open ? push_ov(2) : pop_ov(2); prev_log=v.log_panel_open; }
+            if(v.lwf_modal_open != prev_lwf){ v.lwf_modal_open ? push_ov(3) : pop_ov(3); prev_lwf=v.lwf_modal_open; }
             if(side_now != prev_side){ side_now ? push_ov(4) : pop_ov(4); prev_side=side_now; }
             if(v.sig_lib_panel_open != prev_lib){ v.sig_lib_panel_open ? push_ov(5) : pop_ov(5); prev_lib=v.sig_lib_panel_open; }
         }
-
-        // S키: 메인 STATUS 패널 토글. EID/HIST 활성 시엔 그쪽 모달이 S 키 소비 (중복 토글 방지).
-        if(!v.eid_panel_open && !v.lwf_modal_open
+        // S키: 메인 STATUS 패널 토글. 다른 오버레이 활성 시엔 그쪽이 S 키 소비.
+        if(main_kbd_active
            && ImGui::IsKeyPressed(ImGuiKey_S, false) && !ImGui::GetIO().WantTextInput){
             if(v.right_panel_ratio > 0.01f){
                 // 열려있음 > 저장 후 닫기
