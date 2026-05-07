@@ -406,7 +406,7 @@ void run_cli_host(){
         if(idx<0||idx>=MAX_CHANNELS) return;
         bewe_log_push(0, "[CMD:%s] CH%d create s=%.4f e=%.4f bw=%.4f\n",
                       creator?creator:"?", idx, s, e, fabsf(e-s));
-        v.stop_dem(idx); v.stop_digi(idx);
+        v.stop_dem(idx);
         v.channels[idx].reset_slot();
         v.channels[idx].s=s; v.channels[idx].e=e;
         v.channels[idx].filter_active=true;
@@ -422,7 +422,7 @@ void run_cli_host(){
         bewe_log_push(0, "[CMD:%s] CH%d deleted\n", who, idx);
         if(v.channels[idx].audio_rec_on.load())
             v.stop_audio_rec(idx);
-        v.stop_dem(idx); v.stop_digi(idx); v.digi_panel_on[idx]=false;
+        v.stop_dem(idx);
         v.channels[idx].reset_slot();
         v.local_ch_out[idx] = 1;
         srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
@@ -540,28 +540,6 @@ void run_cli_host(){
         }
     };
 
-    // Digital demod start/stop from JOIN
-    srv->cb.on_start_digi = [&](const char* who, uint8_t ch_idx, uint8_t mode, uint8_t demod_type, float baud_rate){
-        if(ch_idx >= MAX_CHANNELS) return;
-        Channel& ch = v.channels[ch_idx];
-        if(!ch.filter_active){ bewe_log_push(0,"[CMD:%s] DIGI ch%d not active\n",who,ch_idx); return; }
-        if(ch.digi_run.load()){ v.stop_digi(ch_idx); }
-        auto dm = (Channel::DigitalMode)mode;
-        if(dm == Channel::DIGI_DEMOD){
-            ch.digi_demod_type = demod_type;
-            ch.digi_baud_rate  = baud_rate;
-        }
-        v.start_digi(ch_idx, dm);
-        bewe_log_push(0,"[CMD:%s] DIGI start ch%d mode=%d\n",who,ch_idx,mode);
-        srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
-    };
-    srv->cb.on_stop_digi = [&](const char* who, uint8_t ch_idx){
-        if(ch_idx >= MAX_CHANNELS) return;
-        if(!v.channels[ch_idx].digi_run.load()) return;
-        v.stop_digi(ch_idx);
-        bewe_log_push(0,"[CMD:%s] DIGI stop ch%d\n",who,ch_idx);
-        srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
-    };
 
     // Region IQ request from JOIN
     srv->cb.on_request_region = [&](uint8_t op_idx, const char* op_name,
@@ -1357,7 +1335,6 @@ void run_cli_host(){
                         auto& d = st.channels[cnt++];
                         d.active = 1;
                         d.mode = (uint8_t)c.mode;
-                        d.digital_mode = (uint8_t)c.digital_mode;
                         d.iq_rec_on = c.iq_rec_on.load() ? 1 : 0;
                         d.audio_rec_on = c.audio_rec_on.load() ? 1 : 0;
                         d.dem_run = c.dem_run.load() ? 1 : 0;
@@ -1574,7 +1551,7 @@ void run_cli_host(){
             { std::lock_guard<std::mutex> lk(v.pending_sdr_mtx); new_sdr = v.pending_sdr_name; }
             bewe_log_push(0, "[CLI][SDR] switching to %s ...\n", new_sdr.c_str());
             float cur_cf = (float)(v.header.center_frequency / 1e6);
-            for(int ci=0; ci<MAX_CHANNELS; ci++){ v.stop_digi(ci); v.stop_dem(ci); }
+            for(int ci=0; ci<MAX_CHANNELS; ci++){ v.stop_dem(ci); }
             v.is_running = false;
             v.sdr_stream_error.store(true);
             if(cap.joinable()) cap.join();
@@ -1973,7 +1950,6 @@ void run_cli_host(){
     if(v.dev_rtl){ rtlsdr_close(v.dev_rtl); v.dev_rtl=nullptr; }
     v.sa_cleanup();
     v.eid_cleanup();
-    v.ais_pipe_stop();
 
     // record/ > private/ 이동: .wav + 동명의 .info 동반 이동
     auto move_dir = [](const std::string& src_dir, const std::string& dst_dir){

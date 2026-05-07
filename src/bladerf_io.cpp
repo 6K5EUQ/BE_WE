@@ -313,7 +313,7 @@ void FFTViewer::capture_and_process(){
             // IQ Ring write: 전체 청크를 한 번에 ring에 추가
             bool need_ring=rec_on.load(std::memory_order_relaxed);
             if(!need_ring) for(int i=0;i<MAX_CHANNELS;i++){
-                if(channels[i].dem_run.load()||channels[i].digi_run.load()){need_ring=true;break;}
+                if(channels[i].dem_run.load()){need_ring=true;break;}
             }
             bool need_tm=!sc8_mode&&tm_iq_on.load(std::memory_order_relaxed)&&(warmup_cnt>=WARMUP_FFTS);
             if(need_ring||need_tm){

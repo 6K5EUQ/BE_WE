@@ -1,6 +1,5 @@
 #pragma once
 #include "config.hpp"
-#include "auto_id.hpp"
 #include <fftw3.h>
 #include <cstdint>
 #include <cstdio>
@@ -80,16 +79,9 @@ struct Channel {
     bool  selected=false;
     char  owner[32]={};   // creator ID (empty = unknown)
 
-    // Demodulation mode
-    enum DemodMode{ DM_NONE=0, DM_AM, DM_FM, DM_MAGIC } mode=DM_NONE;
+    // Demodulation mode (analog only)
+    enum DemodMode{ DM_NONE=0, DM_AM, DM_FM } mode=DM_NONE;
 
-    // Digital decode mode (D키로 토글, 음성 복조와 독립)
-    enum DigitalMode{ DIGI_NONE=0, DIGI_AIS, DIGI_ADSB, DIGI_DEMOD, DIGI_AUTO_ID } digital_mode=DIGI_NONE;
-    int    digi_demod_type = 0;   // 0=ASK, 1=FSK, 2=BPSK
-    float  digi_baud_rate = 1200; // user-specified baud rate
-
-    // Magic mode: detected modulation (0=analyzing, 1=AM, 2=FM, 3=DSB, 4=SSB, 5=CW)
-    std::atomic<int> magic_det{0};
     int   pan=0;   // -1=L  0=both  1=R
     // audio_mask: bit0=host local, bit_i=operator_i gets audio
     std::atomic<uint32_t> audio_mask{0x1};  // default: host only
@@ -107,15 +99,6 @@ struct Channel {
     std::atomic<bool>   iq_only_stop_req{false};
     std::thread         iq_only_thr;
     std::atomic<size_t> iq_only_rp{0};
-
-    // Digital decode thread (AIS 등)
-    std::atomic<bool>   digi_run{false};
-    std::atomic<bool>   digi_stop_req{false};
-    std::thread         digi_thr;
-    std::atomic<size_t> digi_rp{0};
-
-    // Auto-ID result (populated by auto_id_worker, read by UI)
-    AutoIdResult auto_id;
 
     // Per-channel audio ring (float mono)
     static constexpr size_t AR_SZ   = 16384;
@@ -317,17 +300,12 @@ struct Channel {
         selected=false;
         memset(owner, 0, sizeof(owner));
         mode=DM_NONE;
-        digital_mode=DIGI_NONE;
-        digi_demod_type=0;
-        digi_baud_rate=1200;
-        magic_det.store(0);
         pan=0;
         audio_mask.store(0x1);
-        // demod/digi 스레드는 호출 전에 stop_dem/stop_digi로 정리할 것
+        // demod 스레드는 호출 전에 stop_dem로 정리할 것
         dem_rp.store(0);
         dem_paused.store(false);
         dem_paused_mode=DM_NONE;
-        digi_rp.store(0);
         iq_only_rp.store(0);
         // audio ring
         ar_wp.store(0);

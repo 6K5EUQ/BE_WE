@@ -49,48 +49,6 @@ void bewe_log_push(int col, const char* fmt, ...){
     else fputs(buf, stdout);
 }
 
-// FFTViewer::digi_log_push - DIGITAL DECODE overlay buffer
-void FFTViewer::digi_log_push(int tab, const char* fmt, ...){
-    if(tab < 0 || tab > 3) tab = 0;
-    char raw[960];
-    va_list ap; va_start(ap, fmt);
-    vsnprintf(raw, sizeof(raw), fmt, ap);
-    va_end(ap);
-    size_t len = strlen(raw);
-    while(len > 0 && (raw[len-1]=='\n'||raw[len-1]=='\r')) raw[--len]='\0';
-    std::lock_guard<std::mutex> lk(digi_log_mtx);
-    DigiLogEntry e{}; strncpy(e.msg, raw, 1023);
-    if(digi_log_buf[tab].size() >= (size_t)DIGI_LOG_MAX)
-        digi_log_buf[tab].erase(digi_log_buf[tab].begin());
-    digi_log_buf[tab].push_back(e);
-    digi_log_scroll[tab] = true;
-}
-
-void FFTViewer::digi_log_push_ch(int tab, int ch_idx, const char* msg){
-    digi_log_push(tab, "%s", msg);
-    // HOST → non-muted JOINs broadcast
-    if(net_srv && ch_idx >= 0 && ch_idx < MAX_CHANNELS){
-        uint32_t mask = channels[ch_idx].audio_mask.load();
-        net_srv->broadcast_digi_log((uint8_t)tab, (uint8_t)ch_idx, msg, mask);
-    }
-}
-
-void bewe_digi_push(int tab, const char* fmt, ...){
-    char buf[1024];
-    va_list ap; va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    if(g_log_viewer) g_log_viewer->digi_log_push(tab, "%s", buf);
-}
-
-void bewe_digi_push_ch(int tab, int ch_idx, const char* fmt, ...){
-    char buf[1024];
-    va_list ap; va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    if(g_log_viewer) g_log_viewer->digi_log_push_ch(tab, ch_idx, buf);
-}
-
 // ── Jet colormap LUT (COLORMAP_LUT_SIZE entry, 한 번만 계산) ────────────
 static uint32_t g_jet_lut[COLORMAP_LUT_SIZE];
 static bool g_jet_init=false;
@@ -259,7 +217,6 @@ FFTViewer::~FFTViewer(){
     sa_playing.store(false);
     sa_computing.store(false);
     eid_computing.store(false);
-    ais_pipe_reader_stop.store(true);
 
     auto join_if = [](std::thread& t){ if(t.joinable()) t.join(); };
     join_if(mix_thr);
@@ -268,10 +225,9 @@ FFTViewer::~FFTViewer(){
     join_if(sa_thread);
     join_if(sa_play_thread);
     join_if(eid_thread);
-    join_if(ais_pipe_reader_thr);
     for(int i = 0; i < MAX_CHANNELS; ++i){
         join_if(channels[i].dem_thr);
-        join_if(channels[i].digi_thr);
+        join_if(channels[i].iq_only_thr);
     }
 }
 

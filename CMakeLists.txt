@@ -36,10 +36,6 @@ if(CLI)
         src/eid_compute.cpp
         src/rtlsdr_io.cpp
         src/hw_detect.cpp
-        src/ais.cpp
-        src/digi_demod.cpp
-        src/auto_id.cpp
-        src/proto_decode.cpp
         src/login.cpp
         src/net_server.cpp
         src/net_client.cpp
@@ -48,7 +44,6 @@ if(CLI)
         src/host_band_plan.cpp
         src/host_band_categories.cpp
         src/long_waterfall.cpp
-        src/lora_demod.cpp
         src/pluto_io.cpp
     )
 
@@ -116,10 +111,6 @@ else()
         src/eid_compute.cpp
         src/rtlsdr_io.cpp
         src/hw_detect.cpp
-        src/ais.cpp
-        src/digi_demod.cpp
-        src/auto_id.cpp
-        src/proto_decode.cpp
         src/login.cpp
         src/net_server.cpp
         src/net_client.cpp
@@ -131,7 +122,6 @@ else()
         src/long_waterfall.cpp
         src/long_waterfall_view.cpp
         src/sig_lib_view.cpp
-        src/lora_demod.cpp
         src/pluto_io.cpp
         ${IMGUI_SOURCES}
     )

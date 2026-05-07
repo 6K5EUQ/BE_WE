@@ -44,8 +44,6 @@ extern void bewe_log(const char* fmt, ...);
 extern void bewe_log_push(int col, const char* fmt, ...);
 
 // ── DIGITAL DECODE 오버레이용 글로벌 로그 (tab: 0=AIS, 1=ADS-B, 2=UAV) ──
-extern void bewe_digi_push(int tab, const char* fmt, ...);
-extern void bewe_digi_push_ch(int tab, int ch_idx, const char* fmt, ...);
 
 // ── 녹음 .info 자동 생성 (이미 존재하면 덮어쓰지 않음) ─────────────────────
 // source_type: "IQ Recording" / "Audio Recording" / "Region IQ" / "Scheduled IQ"
@@ -367,33 +365,6 @@ public:
     bool log_scroll[3] = {true,true,true};
     void log_push(int col, const char* fmt, ...);
 
-    // ── DIGITAL DECODE 오버레이 (Q키 토글) ─────────────────────────────────
-    bool digi_decode_panel_open = false;
-    struct DigiLogEntry { char msg[1024]; };
-    static constexpr int DIGI_LOG_MAX = 200;
-    std::vector<DigiLogEntry> digi_log_buf[4];  // 0=AIS, 1=ADS-B, 2=UAV, 3=DEMOD
-    std::mutex digi_log_mtx;
-    bool digi_log_scroll[4] = {true,true,true,true};
-    void digi_log_push(int tab, const char* fmt, ...);
-    void digi_log_push_ch(int tab, int ch_idx, const char* msg); // with network broadcast
-
-    // ── AIS Python 파이프 ─────────────────────────────────────────────────
-    struct AisPipe {
-        pid_t pid = -1;
-        int   fd_to_py   = -1;   // C++ → Python stdin
-        int   fd_from_py = -1;   // Python stdout → C++
-        std::atomic<bool> alive{false};
-        std::mutex write_mtx;    // 다중 채널 직렬화
-    };
-    AisPipe ais_pipe;
-    std::thread ais_pipe_reader_thr;
-    std::atomic<bool> ais_pipe_reader_stop{false};
-
-    void ais_pipe_start();
-    void ais_pipe_stop();
-    void ais_pipe_send_frame(const uint8_t* bits, int nbits, int ch_idx);
-    void ais_pipe_reader_loop();
-
     // ── EID (Emitter ID / RF Fingerprint) 패널 ─────────────────────────────
     bool              eid_panel_open = false;
     std::atomic<bool> eid_computing  {false};
@@ -494,13 +465,6 @@ public:
     int    eid_bits_scroll = 0;      // 스크롤 위치 (줄 단위)
     float  eid_bits_zoom = 1.0f;    // 줌 배율 (1.0 = 기본, Ctrl+휠로 조절)
     float  eid_bits_hscroll = 0.0f; // 수평 스크롤 (픽셀 단위)
-    int    eid_decode_mode = 0;      // 0=none, 1=AIS, 2=ADS-B, 3=UAV
-    int    eid_decode_scroll = 0;    // 디코더 결과 스크롤 위치
-
-    // LoRa CSS 복조 결과 (Raw 심볼 → 비트 시퀀스)
-    std::vector<uint8_t> eid_decoded_bits;
-    std::string          eid_decoded_label;
-    std::atomic<bool>    eid_lora_busy{false};
 
     // 스펙트로그램 통합 뷰 히스토리
     struct SaViewEntry { float x0,x1,y0,y1; bool had_bpf; };
@@ -636,7 +600,6 @@ public:
     int  local_ch_out[MAX_CHANNELS] = {1,1,1,1,1,1,1,1,1,1}; // 기본: L+R
     bool ch_created_by_me[MAX_CHANNELS] = {}; // JOIN: 내가 생성한 채널 여부
     bool ch_pending_create[MAX_CHANNELS] = {}; // JOIN: CMD_CREATE_CH 송신 후 HOST 확인 전 (stale sync 무시용)
-    bool digi_panel_on[MAX_CHANNELS] = {};   // 채널별 디지털 버튼 패널 표시 여부 (D키 토글)
     // JOIN: 서버에서 수신한 전체 audio_mask (리스너 표시용)
     uint32_t srv_audio_mask[MAX_CHANNELS] = {};
     // JOIN: 오디오 녹음 시작 전 뮤트 상태 저장 (녹음 후 복원용)
@@ -776,12 +739,6 @@ public:
     void start_dem(int ch_idx, Channel::DemodMode mode);
     void stop_dem(int ch_idx);
 
-    // ── ais.cpp ───────────────────────────────────────────────────────────
-    void ais_worker(int ch_idx);
-    void digi_demod_worker(int ch_idx);
-    void auto_id_worker(int ch_idx);
-    void start_digi(int ch_idx, Channel::DigitalMode mode);
-    void stop_digi(int ch_idx);
     void stop_all_dem();
     void update_dem_by_freq(float new_cf_mhz); // 주파수 변경 시 복조 pause/resume
 

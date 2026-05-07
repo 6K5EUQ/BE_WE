@@ -45,7 +45,6 @@ enum class PacketType : uint8_t {
     DB_DOWNLOAD_REQ    = 0x27,  // client → central: request DB file download
     DB_DOWNLOAD_DATA   = 0x28,  // central → client: DB file data chunk
     DB_DELETE_REQ      = 0x29,  // client → central: delete DB file
-    DIGI_LOG           = 0x2C,  // server → clients: digital decode text result
     DB_DOWNLOAD_INFO   = 0x2D,  // central → client: DB file .info contents (sent before DATA)
     DB_LIST_REQ        = 0x2E,  // client → central: request DB list refresh
     SCHED_SYNC         = 0x30,  // server → all clients: scheduled recording list snapshot
@@ -149,8 +148,6 @@ enum class CmdType : uint8_t {
     RX_START        = 0x18,  // JOIN → server: /rx start
     START_IQ_REC    = 0x19,  // JOIN → server: start per-ch IQ recording
     STOP_IQ_REC     = 0x1A,  // JOIN → server: stop per-ch IQ recording + transfer
-    START_DIGI      = 0x1B,  // JOIN → server: start digital demod
-    STOP_DIGI       = 0x1C,  // JOIN → server: stop digital demod
     SET_ANTENNA     = 0x1D,  // bidirectional: set HOST antenna free text (char[32])
     ADD_SCHED       = 0x1E,  // JOIN → server: add scheduled IQ recording
     REMOVE_SCHED    = 0x1F,  // JOIN → server: remove own scheduled entry
@@ -184,8 +181,6 @@ struct __attribute__((packed)) PktCmd {
         struct { float msps; }                             set_sr;
         struct { uint8_t idx; }                            start_iq_rec;
         struct { uint8_t idx; }                            stop_iq_rec;
-        struct { uint8_t idx; uint8_t mode; uint8_t demod_type; uint8_t pad; float baud_rate; } start_digi;
-        struct { uint8_t idx; }                            stop_digi;
         struct { char    antenna[32]; }                    set_antenna;
         struct { int64_t start_time; float duration_sec; float freq_mhz; float bw_khz;
                  char target[32]; }                                add_sched;
@@ -253,20 +248,6 @@ struct __attribute__((packed)) ChSyncEntry {
     uint8_t  iq_rec_on;       // IQ 녹음 활성 (0/1)
     uint8_t  audio_rec_on;    // 오디오 녹음 활성 (0/1)
     uint8_t  _pad3[2];
-    // ── 디지털 복조 상태 ──
-    uint8_t  digital_mode;     // Channel::DigitalMode (0-4)
-    uint8_t  digi_run;         // 1=running
-    uint8_t  digi_demod_type;  // 0=ASK, 1=FSK, 2=BPSK
-    uint8_t  _pad_digi;
-    float    digi_baud_rate;
-    // Auto-ID 결과
-    uint8_t  auto_id_state;    // 0=IDLE ~ 4=DECODING
-    uint8_t  auto_id_mod;      // ModType
-    uint8_t  _pad_auto[2];
-    float    auto_id_baud;
-    float    auto_id_conf;
-    float    auto_id_snr;
-    char     auto_id_proto[32];
 };
 
 struct __attribute__((packed)) PktChannelSync {
@@ -275,7 +256,7 @@ struct __attribute__((packed)) PktChannelSync {
 
 // 중앙 릴레이(central_proto.hpp)의 CH_SYNC_ENTRY_SIZE와 반드시 일치해야 함.
 // 이 값이 바뀌면 central도 같이 고쳐야 함.
-static_assert(sizeof(ChSyncEntry) == 136, "ChSyncEntry size must match central/central_proto.hpp CH_SYNC_ENTRY_SIZE");
+static_assert(sizeof(ChSyncEntry) == 80, "ChSyncEntry size must match central/central_proto.hpp CH_SYNC_ENTRY_SIZE");
 
 // ── SCHED_SYNC: 예약 녹음 리스트 전체 스냅샷 (server → all) ───────────────
 static constexpr int MAX_SCHED_ENTRIES = 32;
@@ -398,14 +379,6 @@ struct __attribute__((packed)) PktLwfLiveRowHdr {
 };
 struct __attribute__((packed)) PktLwfLiveStop {
     char     filename[64];
-};
-
-// ── DIGI_LOG ─────────────────────────────────────────────────────────────
-struct __attribute__((packed)) PktDigiLog {
-    uint8_t  tab;       // 0=AIS, 1=ADS-B, 2=UAV, 3=DEMOD
-    uint8_t  ch_idx;
-    uint16_t msg_len;   // strlen of message
-    // char msg[msg_len] follows (variable length)
 };
 
 // ── WF_EVENT ──────────────────────────────────────────────────────────────

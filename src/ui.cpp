@@ -1,5 +1,4 @@
 #include "fft_viewer.hpp"
-#include "ais_decode.hpp"
 #include "iq_filename.hpp"
 #include "login.hpp"
 #include "net_server.hpp"
@@ -7,7 +6,6 @@
 #include "bewe_paths.hpp"
 #include "globe.hpp"
 #include "central_client.hpp"
-#include "lora_demod.hpp"
 #include "host_band_plan.hpp"
 #include "host_band_categories.hpp"
 #include "long_waterfall.hpp"
@@ -64,7 +62,6 @@ static void register_host_state_fn(CentralClient& cli, FFTViewer& v){
             auto& d = st.channels[cnt++];
             d.active = 1;
             d.mode = (uint8_t)c.mode;
-            d.digital_mode = (uint8_t)c.digital_mode;
             d.iq_rec_on    = c.iq_rec_on.load() ? 1 : 0;
             d.audio_rec_on = c.audio_rec_on.load() ? 1 : 0;
             d.dem_run      = c.dem_run.load() ? 1 : 0;
@@ -388,7 +385,7 @@ void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float 
             }
             if(channels[ci].iq_rec_on.load()) stop_iq_rec(ci);
             // 로컬 즉시 반영 (서버 sync가 확인해줌)
-            stop_dem(ci); stop_digi(ci); digi_panel_on[ci]=false;
+            stop_dem(ci);
             channels[ci].reset_slot();
             if(net_cli) net_cli->audio[ci].clear();
             local_ch_out[ci] = 1;
@@ -480,10 +477,6 @@ void FFTViewer::draw_all_channels(ImDrawList* dl, float gx, float gw, float gy, 
             // 녹음 중: 빨간색
             bord=IM_COL32(255, 60, 60,220);
             fill=IM_COL32(255, 60, 60, ch.selected?70:30);
-        } else if(ch.digi_run.load()){
-            // 디지털 복조 활성: 보라색
-            bord=IM_COL32(160, 60,255,220);
-            fill=IM_COL32(160, 60,255, ch.selected?70:25);
         } else if(!dem || ch.mode==Channel::DM_NONE){
             // 복조 없음: 회색 투명
             bord=IM_COL32(160,160,160,160);
@@ -496,10 +489,6 @@ void FFTViewer::draw_all_channels(ImDrawList* dl, float gx, float gw, float gy, 
             // FM: 노란색
             bord=IM_COL32(255,220, 50,220);
             fill=IM_COL32(255,220, 50, ch.selected?70:25);
-        } else if(ch.mode==Channel::DM_MAGIC){
-            // 매직: 보라색
-            bord=IM_COL32(180, 80,255,220);
-            fill=IM_COL32(180, 80,255, ch.selected?70:25);
         } else {
             bord=CH_BORD[i];
             fill=ch.selected?CH_SFIL[i]:CH_FILL[i];
@@ -1446,7 +1435,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         ImVec2 mp = ImGui::GetIO().MousePos;
         bool ctrl = ImGui::GetIO().KeyCtrl;
         bool in_sp = (mp.x>=gx && mp.x<=gx+gw && mp.y>=gy && mp.y<=gy+gh);
-        if(!eid_panel_open && !log_panel_open && !digi_decode_panel_open && !lwf_modal_open
+        if(!eid_panel_open && !log_panel_open && !lwf_modal_open
            && ctrl && in_sp &&
            ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
             notch_drag.selecting = true;
@@ -1510,11 +1499,11 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         ImVec2 _mp = ImGui::GetIO().MousePos;
         bool in_band_bar = band_bar_active &&
                            _mp.y >= band_bar_y && _mp.y <= band_bar_y + BAND_BAR_H;
-        bool any_ovl = eid_panel_open || log_panel_open || digi_decode_panel_open || lwf_modal_open;
+        bool any_ovl = eid_panel_open || log_panel_open || lwf_modal_open;
         if(!any_ovl && !in_band_bar) handle_new_channel_drag(gx,gw);
     }
     int sel_before = selected_ch;
-    bool any_ovl_b = eid_panel_open || log_panel_open || digi_decode_panel_open || lwf_modal_open;
+    bool any_ovl_b = eid_panel_open || log_panel_open || lwf_modal_open;
     if(!region.active && !any_ovl_b) handle_channel_interactions(gx,gw,gy,gh);
 
     // ── 좌클릭 토글 > Max Hold (채널 위가 아닌 빈 영역 클릭에서만) ──────
@@ -1729,10 +1718,10 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
         // 마우스가 워터폴 영역 안에 있을 때만 채널 드래그 시작 허용 (band bar 우클릭 보호)
         ImVec2 _mp = ImGui::GetIO().MousePos;
         bool in_wf_area = (_mp.y >= gy && _mp.y <= gy + gh);
-        bool any_ovl_w = eid_panel_open || log_panel_open || digi_decode_panel_open || lwf_modal_open;
+        bool any_ovl_w = eid_panel_open || log_panel_open || lwf_modal_open;
         if(!any_ovl_w && in_wf_area) handle_new_channel_drag(gx,gw);
     }
-    bool any_ovl_w2 = eid_panel_open || log_panel_open || digi_decode_panel_open || lwf_modal_open;
+    bool any_ovl_w2 = eid_panel_open || log_panel_open || lwf_modal_open;
     if(!region.active && !any_ovl_w2) handle_channel_interactions(gx,gw,gy,gh);
 
     // ── Ctrl+우클릭 드래그: 영역 IQ 녹음 선택 ────────────────────────────
@@ -1743,7 +1732,7 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
         bool in_wf=(mp.x>=gx&&mp.x<=gx+gw&&mp.y>=gy&&mp.y<=gy+gh);
 
         // ── 신규 선택: Ctrl+우클릭 드래그 ──────────────────────────────
-        if(!eid_panel_open&&!log_panel_open&&!digi_decode_panel_open&&!lwf_modal_open
+        if(!eid_panel_open&&!log_panel_open&&!lwf_modal_open
            &&ctrl&&ImGui::IsMouseClicked(ImGuiMouseButton_Right)&&in_wf&&(tm_iq_file_ready||remote_mode)){
             region.selecting=true; region.active=false;
             region.edit_mode=RegionSel::EDIT_NONE;
@@ -2732,11 +2721,6 @@ void run_streaming_viewer(){
         { std::lock_guard<std::mutex> wlk(v.wf_events_mtx); v.wf_events.clear(); }
         v.last_tagged_sec = -1;
 
-        // 디지털 복조 로그 콜백
-        cli->on_digi_log = [&](uint8_t tab, uint8_t ch_idx, const char* msg){
-            v.digi_log_push(tab, "%s", msg);
-        };
-
         // 채널 sync 콜백 등록
         cli->on_channel_sync = [&](const PktChannelSync& sync){
             for(int i=0;i<MAX_CHANNELS;i++){
@@ -2796,18 +2780,6 @@ void run_streaming_viewer(){
                 // 오디오는 AUDIO_FRAME 수신으로 net_cli->audio 링 통해 출력
                 // (dem_run은 실행하지 않음)
 
-                // 디지털 복조 상태 동기화
-                v.channels[i].digital_mode    = (Channel::DigitalMode)sync.ch[i].digital_mode;
-                v.channels[i].digi_run.store(sync.ch[i].digi_run != 0);
-                v.channels[i].digi_demod_type = sync.ch[i].digi_demod_type;
-                v.channels[i].digi_baud_rate  = sync.ch[i].digi_baud_rate;
-                v.channels[i].auto_id.state.store(sync.ch[i].auto_id_state);
-                v.channels[i].auto_id.mod_type.store(sync.ch[i].auto_id_mod);
-                v.channels[i].auto_id.baud_rate.store(sync.ch[i].auto_id_baud);
-                v.channels[i].auto_id.confidence.store(sync.ch[i].auto_id_conf);
-                v.channels[i].auto_id.snr_est.store(sync.ch[i].auto_id_snr);
-                strncpy(v.channels[i].auto_id.protocol_name, sync.ch[i].auto_id_proto, 31);
-
                 // ── 채널 활성화 전이 처리 ──────────────────────────────
                 if(!was_active && now_active){
                     // 채널 생성: HOST의 sq_threshold를 이미 CH_SYNC로 받으므로
@@ -2815,7 +2787,6 @@ void run_streaming_viewer(){
                     v.channels[i].sq_calibrated.store(true);
                     v.channels[i].sq_calib_cnt = 0;
                     v.channels[i].sq_gate_hold = 0;
-                    v.channels[i].magic_det.store(0);
                     cli->audio[i].clear();
                     if(!v.ch_created_by_me[i]){
                         // 내가 만들지 않은 채널 > 초기 M(Mute) 적용
@@ -3581,7 +3552,7 @@ void run_streaming_viewer(){
             srv->cb.on_create_ch  = [&](int idx, float s, float e, const char* creator){
                 if(idx<0||idx>=MAX_CHANNELS) return;
                 bewe_log_push(0, "[CH%d] Created by '%s' (%.4f-%.4f MHz)\n", idx, creator?creator:"?", s, e);
-                v.stop_dem(idx); v.stop_digi(idx);
+                v.stop_dem(idx);
                 v.channels[idx].reset_slot();
                 v.channels[idx].s=s; v.channels[idx].e=e;
                 v.channels[idx].filter_active=true;
@@ -3595,7 +3566,7 @@ void run_streaming_viewer(){
                 bewe_log_push(0, "[CMD:%s] CH%d deleted\n", who, idx);
                 if(v.channels[idx].audio_rec_on.load())
                     v.stop_audio_rec(idx);
-                v.stop_dem(idx); v.stop_digi(idx); v.digi_panel_on[idx]=false;
+                v.stop_dem(idx);
                 v.channels[idx].reset_slot();
                 v.local_ch_out[idx] = 1;
                 srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
@@ -4733,7 +4704,7 @@ void run_streaming_viewer(){
             bewe_log_push(0, "[SDR] switching to %s ...\n", new_sdr.c_str());
             float cur_cf = (float)(v.header.center_frequency / 1e6);
             // 모든 디지털/오디오 워커 중지
-            for(int ci=0; ci<MAX_CHANNELS; ci++){ v.stop_digi(ci); v.stop_dem(ci); }
+            for(int ci=0; ci<MAX_CHANNELS; ci++){ v.stop_dem(ci); }
             v.is_running = false;
             v.sdr_stream_error.store(true);
             if(cap.joinable()) cap.join();
@@ -5359,7 +5330,7 @@ void run_streaming_viewer(){
             }
             // 오버레이(EID/LOG/DIGI/HIST) 활성 시엔 채널 demod 키 (A/F/M/D 등) 무시
             bool any_ovl_demod = v.eid_panel_open || v.log_panel_open
-                              || v.digi_decode_panel_open || v.lwf_modal_open;
+                              || v.lwf_modal_open;
             if(!any_ovl_demod && sci>=0 && v.channels[sci].filter_active){
                 auto set_mode=[&](Channel::DemodMode m){
                     if(v.remote_mode && v.net_cli){
@@ -5377,32 +5348,6 @@ void run_streaming_viewer(){
                 };
                 if(ImGui::IsKeyPressed(ImGuiKey_A,false)) set_mode(Channel::DM_AM);
                 if(ImGui::IsKeyPressed(ImGuiKey_F,false)) set_mode(Channel::DM_FM);
-                if(ImGui::IsKeyPressed(ImGuiKey_D,false)){
-                    // D키: 선택된 채널의 디지털 버튼 패널 show/hide 토글
-                    v.digi_panel_on[sci] = !v.digi_panel_on[sci];
-                    // 패널 닫으면 실행 중인 디지털 복조도 정지
-                    if(!v.digi_panel_on[sci] && v.channels[sci].digi_run.load()){
-                        if(v.remote_mode && v.net_cli)
-                            v.net_cli->cmd_stop_digi(sci);
-                        else
-                            v.stop_digi(sci);
-                    }
-                }
-                if(ImGui::IsKeyPressed(ImGuiKey_M,false)){
-                    if(v.remote_mode && v.net_cli){
-                        int nm=(v.channels[sci].mode==Channel::DM_MAGIC)?0:(int)Channel::DM_MAGIC;
-                        v.net_cli->cmd_set_ch_mode(sci, nm);
-                    } else {
-                        Channel& ch=v.channels[sci];
-                        if(ch.dem_run.load()&&ch.mode==Channel::DM_MAGIC){ v.stop_dem(sci); }
-                        else {
-                            v.stop_dem(sci);
-                            ch.magic_det.store(0,std::memory_order_relaxed);
-                            v.start_dem(sci,Channel::DM_MAGIC);
-                        }
-                        if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
-                    }
-                }
                 // ── 방향키: 로컬 오디오 출력 전환 (L/R/L+R/M) ──────────
                 auto arrow_set_out = [&](int ci, int lco){
                     int prev=v.local_ch_out[ci]; v.local_ch_out[ci]=lco;
@@ -5455,7 +5400,7 @@ void run_streaming_viewer(){
                     if(v.remote_mode && v.net_cli){
                         v.net_cli->cmd_delete_ch(sci);
                     } else {
-                        v.stop_dem(sci); v.stop_digi(sci); v.digi_panel_on[sci]=false;
+                        v.stop_dem(sci);
                         v.channels[sci].reset_slot();
                         if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
                     }
@@ -5545,11 +5490,10 @@ void run_streaming_viewer(){
             return g_overlay_stack.empty() ? 0 : g_overlay_stack.back();
         };
         {
-            static bool prev_eid=false, prev_log=false, prev_digi=false, prev_side=false, prev_lib=false;
+            static bool prev_eid=false, prev_log=false, prev_side=false, prev_lib=false;
             bool side_now = v.right_panel_ratio > 0.01f;
             if(v.eid_panel_open != prev_eid){ v.eid_panel_open ? push_ov(1) : pop_ov(1); prev_eid=v.eid_panel_open; }
             if(v.log_panel_open != prev_log){ v.log_panel_open ? push_ov(2) : pop_ov(2); prev_log=v.log_panel_open; }
-            if(v.digi_decode_panel_open != prev_digi){ v.digi_decode_panel_open ? push_ov(3) : pop_ov(3); prev_digi=v.digi_decode_panel_open; }
             if(side_now != prev_side){ side_now ? push_ov(4) : pop_ov(4); prev_side=side_now; }
             if(v.sig_lib_panel_open != prev_lib){ v.sig_lib_panel_open ? push_ov(5) : pop_ov(5); prev_lib=v.sig_lib_panel_open; }
         }
@@ -5749,14 +5693,6 @@ void run_streaming_viewer(){
                             } else {
                             v.pending_sr_msps = sr_list[i];
                             v.sr_change_req   = true;
-                            // SR 변경 시 digi 워커 재시작 (새 SR 파라미터로)
-                            for(int ci=0;ci<MAX_CHANNELS;ci++){
-                                if(v.channels[ci].digi_run.load()){
-                                    Channel::DigitalMode dm=v.channels[ci].digital_mode;
-                                    v.stop_digi(ci);
-                                    // SR 실제 적용은 다음 프레임이므로 지연 재시작은 사용자가 버튼 재클릭
-                                }
-                            }
                             } // end local/host branch
                         }
                     }
@@ -5928,10 +5864,9 @@ void run_streaming_viewer(){
         // 한 번에 하나만 활성. 다른 게 켜져 있으면 새로 켜는 동작은 무시.
         // 끄기는 언제나 허용.
         auto any_other_overlay_open = [&](int self) -> bool {
-            // self: 0=EID, 1=LOG, 2=DIGI, 3=HIST, 4=SIG_LIB
+            // self: 0=EID, 1=LOG, 3=HIST, 4=SIG_LIB
             if(self != 0 && v.eid_panel_open) return true;
             if(self != 1 && v.log_panel_open) return true;
-            if(self != 2 && v.digi_decode_panel_open) return true;
             if(self != 3 && v.lwf_modal_open) return true;
             if(self != 4 && v.sig_lib_panel_open) return true;
             return false;
@@ -5952,10 +5887,6 @@ void run_streaming_viewer(){
         }
         // ── LOG 토글 ─── 독립 오버레이 ────
         // (L key reassigned to Signal Library)
-        // ── DIGITAL DECODE 토글 (Q키) ─── 독립 오버레이 ────
-        if(ImGui::IsKeyPressed(ImGuiKey_Q, false) && !io.WantTextInput){
-            try_toggle(2, v.digi_decode_panel_open);
-        }
         // ── HIST (Long Waterfall history) 토글 (H키) ────
         if(ImGui::IsKeyPressed(ImGuiKey_H, false) && !io.WantTextInput){
             try_toggle(3, v.lwf_modal_open);
@@ -6668,12 +6599,11 @@ void run_streaming_viewer(){
                                     }
                                     if(v.channels[ci].iq_rec_on.load()) v.stop_iq_rec(ci);
                                     if(v.net_cli) v.net_cli->cmd_delete_ch(ci);
-                                    v.stop_dem(ci); v.stop_digi(ci);
+                                    v.stop_dem(ci);
                                     v.channels[ci].reset_slot();
                                     if(v.net_cli) v.net_cli->audio[ci].clear();
                                     v.local_ch_out[ci]=1;
                                     v.ch_created_by_me[ci] = false; v.ch_pending_create[ci] = false;
-                                    v.digi_panel_on[ci]=false;
                                     if(v.selected_ch==ci) v.selected_ch=-1;
                                     if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
                                 };
@@ -6693,12 +6623,11 @@ void run_streaming_viewer(){
                                 }
                                 if(v.channels[ci].iq_rec_on.load()) v.stop_iq_rec(ci);
                                 if(v.net_cli) v.net_cli->cmd_delete_ch(ci);
-                                v.stop_dem(ci); v.stop_digi(ci);
+                                v.stop_dem(ci);
                                 v.channels[ci].reset_slot();
                                 if(v.net_cli) v.net_cli->audio[ci].clear();
                                 v.local_ch_out[ci]=1;
                                 v.ch_created_by_me[ci] = false; v.ch_pending_create[ci] = false;
-                                v.digi_panel_on[ci]=false;
                                 if(v.selected_ch==ci) v.selected_ch=-1;
                                 if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
                                 ImGui::PopID();
@@ -6719,80 +6648,6 @@ void run_streaming_viewer(){
                             }
 
 
-                            // ── 디지털 모드 버튼 (D키로 패널 열었을 때만 표시) ──
-                            if(v.digi_panel_on[ci]){
-                                ImGui::SameLine(0,10);
-                                ImGui::TextDisabled("|");
-                                ImGui::SameLine(0,4);
-                                struct DigiBtn { const char* lbl; Channel::DigitalMode mode; };
-                                static const DigiBtn dbtn[]={
-                                    {"ADS-B", Channel::DIGI_ADSB},
-                                    {"AIS",   Channel::DIGI_AIS},
-                                    {"DEMOD", Channel::DIGI_DEMOD},
-                                    {"AUTO",  Channel::DIGI_AUTO_ID},
-                                };
-                                for(int di=0;di<4;di++){
-                                    Channel::DigitalMode dm = dbtn[di].mode;
-                                    bool dactive = (ch.digital_mode==dm && ch.digi_run.load());
-                                    if(dactive)
-                                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f,0.2f,0.9f,1.f));
-                                    else
-                                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f,0.15f,0.2f,1.f));
-                                    if(ImGui::SmallButton(dbtn[di].lbl)){
-                                        if(v.remote_mode && v.net_cli){
-                                            if(dactive){
-                                                v.net_cli->cmd_stop_digi(ci);
-                                            } else {
-                                                if(dm == Channel::DIGI_AIS || dm == Channel::DIGI_DEMOD || dm == Channel::DIGI_AUTO_ID)
-                                                    v.net_cli->cmd_start_digi(ci, (int)dm, ch.digi_demod_type, ch.digi_baud_rate);
-                                            }
-                                        } else {
-                                            if(dactive){
-                                                v.stop_digi(ci);
-                                            } else {
-                                                v.stop_digi(ci);
-                                                if(dm == Channel::DIGI_AIS || dm == Channel::DIGI_DEMOD || dm == Channel::DIGI_AUTO_ID)
-                                                    v.start_digi(ci, dm);
-                                            }
-                                        }
-                                    }
-                                    ImGui::PopStyleColor();
-                                    if(di<3) ImGui::SameLine(0,2);
-                                }
-                                // DEMOD config (when DEMOD active or selected)
-                                if(ch.digital_mode==Channel::DIGI_DEMOD || (!ch.digi_run.load() && false)){
-                                    ImGui::SameLine(0,6);
-                                    static const char* mod_names[]={"ASK","FSK","BPSK"};
-                                    ImGui::SetNextItemWidth(50);
-                                    if(ImGui::BeginCombo("##dmod",mod_names[ch.digi_demod_type%3])){
-                                        for(int m=0;m<3;m++){
-                                            if(ImGui::Selectable(mod_names[m],ch.digi_demod_type==m))
-                                                ch.digi_demod_type=m;
-                                        }
-                                        ImGui::EndCombo();
-                                    }
-                                    ImGui::SameLine(0,2);
-                                    ImGui::SetNextItemWidth(60);
-                                    ImGui::InputFloat("##baud",&ch.digi_baud_rate,0,0,"%.0f");
-                                    ImGui::SameLine(0,2);
-                                    ImGui::TextDisabled("bd");
-                                }
-                                // AUTO mode status display
-                                if(ch.digital_mode==Channel::DIGI_AUTO_ID && ch.digi_run.load()){
-                                    ImGui::SameLine(0,8);
-                                    int st = ch.auto_id.state.load();
-                                    if(st <= (int)AutoIdState::ANALYZING){
-                                        ImGui::TextColored(ImVec4(1,1,0,1),"Analyzing...");
-                                    } else {
-                                        ModType m = (ModType)ch.auto_id.mod_type.load();
-                                        float baud2 = ch.auto_id.baud_rate.load();
-                                        float conf = ch.auto_id.confidence.load();
-                                        ImGui::TextColored(ImVec4(0,1,0.5f,1),"%s %s %.0fbd (%.0f%%)",
-                                            ch.auto_id.protocol_name,
-                                            mod_type_name(m), baud2, conf*100);
-                                    }
-                                }
-                            }
                             ImGui::PopID();
                     }; // end render_channel_row
 
@@ -6986,7 +6841,7 @@ void run_streaming_viewer(){
                                                                 else v.stop_audio_rec(ci);
                                                             }
                                                             if(v.net_cli) v.net_cli->cmd_delete_ch(ci);
-                                                            v.stop_dem(ci); v.stop_digi(ci);
+                                                            v.stop_dem(ci);
                                                             v.channels[ci].reset_slot();
                                                             if(v.selected_ch==ci) v.selected_ch=-1;
                                                         }
@@ -8950,7 +8805,6 @@ void run_streaming_viewer(){
                         switch(ch.mode){
                             case Channel::DM_AM:    mode_str="AM";    break;
                             case Channel::DM_FM:    mode_str="FM";    break;
-                            case Channel::DM_MAGIC: mode_str="MAGIC"; break;
                             default: break;
                         }
                         // 복조 실행 중 여부
@@ -9468,7 +9322,6 @@ void run_streaming_viewer(){
             auto bar_other_open = [&](int self) -> bool {
                 if(self != 0 && v.eid_panel_open) return true;
                 if(self != 1 && v.log_panel_open) return true;
-                if(self != 2 && v.digi_decode_panel_open) return true;
                 if(self != 3 && v.lwf_modal_open) return true;
                 if(self != 4 && v.sig_lib_panel_open) return true;
                 return false;
@@ -9487,9 +9340,6 @@ void run_streaming_viewer(){
             }
             if(click_ind_left(lx, "LOG", ov_st(v.log_panel_open, 2))){
                 bar_try_toggle(1, v.log_panel_open);
-            }
-            if(click_ind_left(lx, "DIGI", ov_st(v.digi_decode_panel_open, 3))){
-                bar_try_toggle(2, v.digi_decode_panel_open);
             }
             if(click_ind_left(lx, "BAND", v.band_show ? 1 : 0)){
                 v.band_show = !v.band_show;
@@ -12199,10 +12049,7 @@ void run_streaming_viewer(){
                             float baseline=v.eid_baseline_val;
 
                             std::vector<uint8_t> bits;
-                            // LoRa CSS 복조 결과가 있으면 그 비트열을 우선 사용
-                            if(!v.eid_decoded_bits.empty()){
-                                bits = v.eid_decoded_bits;
-                            } else {
+                            {
                                 double first_edge = v.eid_baud_s0;
                                 while(first_edge - interval >= 0) first_edge -= interval;
                                 for(double edge = first_edge; edge + interval <= (double)total; edge += interval){
@@ -12225,14 +12072,9 @@ void run_streaming_viewer(){
                                 if(sig_len_s >= 1.0) snprintf(sig_len_str,sizeof(sig_len_str),"%.1f s",sig_len_s);
                                 else snprintf(sig_len_str,sizeof(sig_len_str),"%.1f ms",sig_len_s*1000.0);
                                 char hdr[320];
-                                if(!v.eid_decoded_label.empty()){
-                                    snprintf(hdr,sizeof(hdr), "%s | Bits: %d",
-                                        v.eid_decoded_label.c_str(), n_bits);
-                                } else {
-                                    snprintf(hdr,sizeof(hdr),
-                                        "Baud: %.0f | Bits: %d | Bytes: %d | %s",
-                                        baud_rate, n_bits, n_bits/8, sig_len_str);
-                                }
+                                snprintf(hdr,sizeof(hdr),
+                                    "Baud: %.0f | Bits: %d | Bytes: %d | %s",
+                                    baud_rate, n_bits, n_bits/8, sig_len_str);
                                 fg->AddText(ImVec2(ea_x0, ca_y0+4), IM_COL32(160,160,180,220), hdr);
                                 if(!v.sa_temp_path.empty()){
                                     const char* fn=v.sa_temp_path.c_str();
@@ -12376,90 +12218,29 @@ void run_streaming_viewer(){
                                 // 헤더: [AIS] [ADS-B] [UAV] 디코더 버튼
                                 float cy = data_y0 + 2.f;
                                 {
-                                    float bx_btn = cx;
-                                    const char* dec_btns[] = {"AIS","ADS-B","UAV"};
-                                    for(int di=0;di<3;di++){
-                                        ImVec2 dsz = bfnt->CalcTextSizeA(bfh, FLT_MAX, -1.f, dec_btns[di]);
-                                        bool dsel = (v.eid_decode_mode == di+1);
-                                        bool dhov = io.MousePos.x>=bx_btn && io.MousePos.x<=bx_btn+dsz.x &&
-                                                    io.MousePos.y>=cy && io.MousePos.y<=cy+bfh;
-                                        ImU32 dcol = dsel ? IM_COL32(80,255,140,255) :
-                                                     dhov ? IM_COL32(255,255,255,255) : IM_COL32(140,180,220,255);
-                                        fg->AddText(bfnt,bfh,ImVec2(bx_btn,cy),dcol,dec_btns[di]);
-                                        if(dhov && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-                                            v.eid_decode_mode = dsel ? 0 : (di+1);
-                                        bx_btn += dsz.x + 24.f;
-                                    }
                                     // BIN / HEX / BITMAP (우측 정렬)
-                                    {
-                                        const char* fmt_btns[] = {"BIN","HEX","BITMAP"};
-                                        float rx = ea_x1 - 8.f;
-                                        for(int fi2=2;fi2>=0;fi2--){
-                                            ImVec2 fsz2 = bfnt->CalcTextSizeA(bfh, FLT_MAX, -1.f, fmt_btns[fi2]);
-                                            float bx2 = rx - fsz2.x;
-                                            bool fsel = (v.eid_bits_view == fi2 && v.eid_decode_mode == 0);
-                                            bool fhov = io.MousePos.x>=bx2 && io.MousePos.x<=bx2+fsz2.x &&
-                                                        io.MousePos.y>=cy && io.MousePos.y<=cy+bfh;
-                                            ImU32 fcol = fsel ? IM_COL32(80,255,140,255) :
-                                                         fhov ? IM_COL32(255,255,255,255) : IM_COL32(140,180,220,255);
-                                            fg->AddText(bfnt,bfh,ImVec2(bx2,cy),fcol,fmt_btns[fi2]);
-                                            if(fhov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
-                                                v.eid_bits_view = fi2;
-                                                v.eid_decode_mode = 0;
-                                            }
-                                            rx = bx2 - 20.f;
+                                    const char* fmt_btns[] = {"BIN","HEX","BITMAP"};
+                                    float rx = ea_x1 - 8.f;
+                                    for(int fi2=2;fi2>=0;fi2--){
+                                        ImVec2 fsz2 = bfnt->CalcTextSizeA(bfh, FLT_MAX, -1.f, fmt_btns[fi2]);
+                                        float bx2 = rx - fsz2.x;
+                                        bool fsel = (v.eid_bits_view == fi2);
+                                        bool fhov = io.MousePos.x>=bx2 && io.MousePos.x<=bx2+fsz2.x &&
+                                                    io.MousePos.y>=cy && io.MousePos.y<=cy+bfh;
+                                        ImU32 fcol = fsel ? IM_COL32(80,255,140,255) :
+                                                     fhov ? IM_COL32(255,255,255,255) : IM_COL32(140,180,220,255);
+                                        fg->AddText(bfnt,bfh,ImVec2(bx2,cy),fcol,fmt_btns[fi2]);
+                                        if(fhov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                                            v.eid_bits_view = fi2;
                                         }
+                                        rx = bx2 - 20.f;
                                     }
                                 }
                                 cy+=line_h;
                                 fg->AddLine(ImVec2(ea_x0+4,cy-1),ImVec2(ea_x1-4,cy-1),IM_COL32(50,50,70,255));
 
-                                if(v.eid_decode_mode == 1){
-                                    // ══════ AIS 디코더 모드 (Python 호출) ══════
-                                    auto ais_r = ais_decode::decode(bits, bit_off);
-                                    if(ais_r.ok && !ais_r.lines.empty()){
-                                        int total_lines = (int)ais_r.lines.size();
-                                        int vis_lines = (int)((ea_y1 - cy) / line_h);
-                                        if(vis_lines < 1) vis_lines = 1;
-                                        int max_scroll = std::max(0, total_lines - vis_lines);
-                                        if(mouse_in_bits && io.MouseWheel != 0)
-                                            v.eid_decode_scroll -= (int)(io.MouseWheel * 3);
-                                        v.eid_decode_scroll = std::max(0, std::min(v.eid_decode_scroll, max_scroll));
-
-                                        // 스크롤바
-                                        if(total_lines > vis_lines){
-                                            float sb_x = ea_x1 - 6.f;
-                                            float sb_h = ea_y1 - cy;
-                                            float thumb_h = std::max(20.f, sb_h * (float)vis_lines / (float)total_lines);
-                                            float thumb_y = cy + (sb_h - thumb_h) * (float)v.eid_decode_scroll / (float)max_scroll;
-                                            fg->AddRectFilled(ImVec2(sb_x,cy),ImVec2(sb_x+4,ea_y1),IM_COL32(30,30,45,255));
-                                            fg->AddRectFilled(ImVec2(sb_x,thumb_y),ImVec2(sb_x+4,thumb_y+thumb_h),
-                                                              IM_COL32(80,80,120,255),2.f);
-                                        }
-
-                                        fg->PushClipRect(ImVec2(ea_x0,cy),ImVec2(ea_x1,ea_y1),true);
-                                        for(int li=v.eid_decode_scroll; li<total_lines && cy<ea_y1-line_h; li++){
-                                            auto& ln = ais_r.lines[li];
-                                            ImU32 lc = (ln.find("===")!=std::string::npos || ln.find("---")!=std::string::npos)
-                                                       ? IM_COL32(100,100,130,255)
-                                                       : IM_COL32(200,220,255,255);
-                                            fg->AddText(bfnt,bfh,ImVec2(cx,cy),lc,ln.c_str());
-                                            cy+=line_h;
-                                        }
-                                        fg->PopClipRect();
-                                    } else {
-                                        fg->PushClipRect(ImVec2(ea_x0,cy),ImVec2(ea_x1,ea_y1),true);
-                                        const char* msg = ais_r.error.empty() ? "No valid AIS frame found" : ais_r.error.c_str();
-                                        fg->AddText(bfnt,bfh,ImVec2(cx,cy),IM_COL32(255,100,100,255),msg);
-                                        fg->PopClipRect();
-                                    }
-                                } else if(v.eid_decode_mode >= 2){
-                                    // ══════ ADS-B / UAV — 추후 구현 ══════
-                                    fg->PushClipRect(ImVec2(ea_x0,cy),ImVec2(ea_x1,ea_y1),true);
-                                    fg->AddText(bfnt,bfh,ImVec2(cx,cy),IM_COL32(180,180,100,255),"Not implemented yet");
-                                    fg->PopClipRect();
-                                } else {
-                                    // ══════ 기본 Binary+Hex 뷰 ══════
+                                {
+                                    // ══════ Binary+Hex 뷰 ══════
                                     int vis_rows = (int)((ea_y1 - cy) / line_h);
                                     if(vis_rows < 1) vis_rows = 1;
                                     int max_scroll = std::max(0, total_rows - vis_rows);
@@ -12601,27 +12382,13 @@ void run_streaming_viewer(){
                                     float bfh2 = bfnt->LegacySize;
                                     float cy_hdr = data_y0 + 2.f;
                                     float cx_hdr = ea_x0 + 8.f;
-                                    // AIS/ADS-B/UAV (좌측)
-                                    const char* dec_btns[] = {"AIS","ADS-B","UAV"};
-                                    for(int di=0;di<3;di++){
-                                        ImVec2 dsz = bfnt->CalcTextSizeA(bfh2, FLT_MAX, -1.f, dec_btns[di]);
-                                        bool dsel = (v.eid_decode_mode == di+1);
-                                        bool dhov = io.MousePos.x>=cx_hdr && io.MousePos.x<=cx_hdr+dsz.x &&
-                                                    io.MousePos.y>=cy_hdr && io.MousePos.y<=cy_hdr+bfh2;
-                                        ImU32 dcol = dsel ? IM_COL32(80,255,140,255) :
-                                                     dhov ? IM_COL32(255,255,255,255) : IM_COL32(140,180,220,255);
-                                        fg->AddText(bfnt,bfh2,ImVec2(cx_hdr,cy_hdr),dcol,dec_btns[di]);
-                                        if(dhov && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-                                            v.eid_decode_mode = dsel ? 0 : (di+1);
-                                        cx_hdr += dsz.x + 24.f;
-                                    }
                                     // BIN/HEX/BITMAP (우측)
                                     const char* fmt_btns[] = {"BIN","HEX","BITMAP"};
                                     float rx2 = ea_x1 - 8.f;
                                     for(int fi2=2;fi2>=0;fi2--){
                                         ImVec2 fsz2 = bfnt->CalcTextSizeA(bfh2, FLT_MAX, -1.f, fmt_btns[fi2]);
                                         float bx2 = rx2 - fsz2.x;
-                                        bool fsel = (v.eid_bits_view == fi2 && v.eid_decode_mode == 0);
+                                        bool fsel = (v.eid_bits_view == fi2);
                                         bool fhov = io.MousePos.x>=bx2 && io.MousePos.x<=bx2+fsz2.x &&
                                                     io.MousePos.y>=cy_hdr && io.MousePos.y<=cy_hdr+bfh2;
                                         ImU32 fcol = fsel ? IM_COL32(80,255,140,255) :
@@ -12629,10 +12396,10 @@ void run_streaming_viewer(){
                                         fg->AddText(bfnt,bfh2,ImVec2(bx2,cy_hdr),fcol,fmt_btns[fi2]);
                                         if(fhov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
                                             v.eid_bits_view = fi2;
-                                            v.eid_decode_mode = 0;
                                         }
                                         rx2 = bx2 - 20.f;
                                     }
+                                    (void)cx_hdr;
                                 }
 
                                 float avail_w = ea_w - 8.f;
@@ -12789,59 +12556,6 @@ void run_streaming_viewer(){
                         v.eid_pending_active=false;
                         eid_tag_ctx.open=false;
                     }
-                    // LoRa CSS 복조: Freq 탭(mode 2)에서만 표시
-                    if(v.eid_view_mode == 2){
-                    ImGui::Separator();
-                    if(ImGui::Selectable("  Demod LoRa CSS")){
-                        int64_t s0 = (int64_t)ctx_s0;
-                        int64_t s1 = (int64_t)ctx_s1;
-                        if(s0 > s1) std::swap(s0, s1);
-                        if(s0 < 0) s0 = 0;
-                        if(s1 > v.eid_total_samples) s1 = v.eid_total_samples;
-                        int64_t n = s1 - s0;
-                        uint32_t sr = v.eid_sample_rate;
-                        if(n < 4096 || sr == 0){
-                            bewe_log_push(2,"[LoRa] 선택 영역이 너무 짧음 (n=%lld, sr=%u)\n", (long long)n, sr);
-                        } else if(v.eid_lora_busy.load()){
-                            bewe_log_push(2,"[LoRa] 이미 복조 중입니다\n");
-                        } else {
-                            v.eid_lora_busy.store(true);
-                            v.eid_decoded_bits.clear();
-                            v.eid_decoded_label = "Decoding LoRa CSS...";
-                            v.eid_pending_active = false;
-                            std::thread([&v, s0, s1, n, sr](){
-                                // eid_ch_i/q 접근은 mutex로 보호
-                                std::vector<float> local_i, local_q;
-                                {
-                                    std::lock_guard<std::mutex> lk(v.eid_data_mtx);
-                                    if((int64_t)v.eid_ch_i.size() < s1 || (int64_t)v.eid_ch_q.size() < s1){
-                                        v.eid_lora_busy.store(false);
-                                        v.eid_decoded_label.clear();
-                                        bewe_log_push(2,"[LoRa] eid IQ 버퍼 부족\n");
-                                        return;
-                                    }
-                                    local_i.assign(v.eid_ch_i.begin()+s0, v.eid_ch_i.begin()+s1);
-                                    local_q.assign(v.eid_ch_q.begin()+s0, v.eid_ch_q.begin()+s1);
-                                }
-                                LoraDemodResult info;
-                                std::vector<uint8_t> bits;
-                                bool ok = lora_demod_auto(local_i.data(), local_q.data(),
-                                                          n, sr, bits, info);
-                                if(ok){
-                                    v.eid_decoded_bits = std::move(bits);
-                                    v.eid_decoded_label = info.detail;
-                                    bewe_log_push(0,"[LoRa] %s\n", info.detail.c_str());
-                                } else {
-                                    v.eid_decoded_bits.clear();
-                                    v.eid_decoded_label = std::string("LoRa decode FAIL: ") + info.detail;
-                                    bewe_log_push(2,"[LoRa] decode failed: %s\n", info.detail.c_str());
-                                }
-                                v.eid_lora_busy.store(false);
-                            }).detach();
-                        }
-                        eid_tag_ctx.open = false;
-                    }
-                    } // end if(eid_view_mode == 2)
                     ImGui::Separator();
                     if(ImGui::Selectable("  Select Samples")){
                         v.eid_push_undo();
@@ -12970,95 +12684,6 @@ void run_streaming_viewer(){
         // ╔══════════════════════════════════════════════════════════════════╗
         // ║  DIGITAL DECODE 오버레이 (Q키 토글)                              ║
         // ╚══════════════════════════════════════════════════════════════════╝
-        if(v.digi_decode_panel_open){
-            ImGui::SetNextWindowPos(ImVec2(0,0));
-            ImGui::SetNextWindowSize(ImVec2(disp_w, disp_h - TOPBAR_H));
-            if(top_ov() == 3) ImGui::SetNextWindowFocus();
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
-            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.03f,0.03f,0.05f,0.97f));
-            ImGui::Begin("##digi_overlay", nullptr,
-                ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
-                ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar);
-
-            ImDrawList* dfg = ImGui::GetWindowDrawList();
-            const float DB_H = 22.f;
-
-            // 서브바 배경
-            dfg->AddRectFilled(ImVec2(0,0), ImVec2(disp_w, DB_H), IM_COL32(25,25,35,255));
-            dfg->AddLine(ImVec2(0,DB_H-1), ImVec2(disp_w,DB_H-1), IM_COL32(50,50,65,255));
-
-            // 타이틀
-            dfg->AddText(ImVec2(8, 3), IM_COL32(200,200,220,255), "DIGITAL DECODE");
-
-            // 탭 바
-            float tab_y = DB_H;
-            static int digi_tab = 0;  // 0=AIS, 1=ADS-B, 2=UAV, 3=DEMOD
-            static const char* tab_names[] = {"AIS", "ADS-B", "UAV", "DEMOD"};
-            static const ImU32 tab_colors[] = {
-                IM_COL32(80,220,255,255),   // AIS: 시안
-                IM_COL32(255,160,80,255),   // ADS-B: 주황
-                IM_COL32(120,255,120,255),  // UAV: 녹색
-                IM_COL32(255,100,200,255),  // DEMOD: 핑크
-            };
-
-            float tab_w = disp_w / 4.0f;
-            for(int t = 0; t < 4; t++){
-                float tx0 = t * tab_w;
-                float tx1 = tx0 + tab_w;
-                bool selected = (t == digi_tab);
-                ImU32 bg = selected ? IM_COL32(35,35,50,255) : IM_COL32(18,18,25,255);
-                dfg->AddRectFilled(ImVec2(tx0, tab_y), ImVec2(tx1, tab_y+24), bg);
-                if(selected)
-                    dfg->AddLine(ImVec2(tx0, tab_y+23), ImVec2(tx1, tab_y+23), tab_colors[t], 2.f);
-                ImVec2 tsz = ImGui::CalcTextSize(tab_names[t]);
-                dfg->AddText(ImVec2(tx0 + (tab_w-tsz.x)/2, tab_y+4),
-                    selected ? tab_colors[t] : IM_COL32(100,100,120,255), tab_names[t]);
-                // 클릭 감지
-                if(ImGui::IsMouseClicked(0)){
-                    ImVec2 mp = ImGui::GetMousePos();
-                    if(mp.x >= tx0 && mp.x < tx1 && mp.y >= tab_y && mp.y < tab_y+24)
-                        digi_tab = t;
-                }
-            }
-
-            // 콘텐츠 영역
-            float content_y = tab_y + 26;
-            float content_h = (disp_h - TOPBAR_H) - content_y;
-
-            ImGui::SetCursorScreenPos(ImVec2(0, content_y));
-            ImGui::BeginChild("##digi_content", ImVec2(disp_w, content_h), false);
-            {
-                std::lock_guard<std::mutex> lk(v.digi_log_mtx);
-                if(v.digi_log_buf[digi_tab].empty()){
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f,0.4f,0.5f,1.f));
-                    if(digi_tab == 0) ImGui::TextWrapped("  AIS: No decoded messages yet. Set channel filter and press D > AIS to start.");
-                    else if(digi_tab == 1) ImGui::TextWrapped("  ADS-B decoder: not implemented");
-                    else if(digi_tab == 2) ImGui::TextWrapped("  UAV decoder: not implemented");
-                    else ImGui::TextWrapped("  DEMOD: No data yet. Set channel filter, press D > DEMOD, select modulation and baud rate.");
-                    ImGui::PopStyleColor();
-                } else {
-                    for(auto& e : v.digi_log_buf[digi_tab]){
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.75f,0.85f,0.9f,1.f));
-                        ImGui::Selectable(e.msg, false, ImGuiSelectableFlags_AllowDoubleClick);
-                        ImGui::PopStyleColor();
-                        // 우클릭으로 복사
-                        if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(1)){
-                            ImGui::SetClipboardText(e.msg);
-                        }
-                    }
-                }
-            }
-            if(v.digi_log_scroll[digi_tab]){
-                ImGui::SetScrollHereY(1.f);
-                v.digi_log_scroll[digi_tab] = false;
-            }
-            ImGui::EndChild();
-
-            ImGui::End();
-            ImGui::PopStyleColor();
-            ImGui::PopStyleVar();
-        } // end DIGITAL DECODE overlay
-
         // ╔══════════════════════════════════════════════════════════════════╗
         // ║  LOG 오버레이 (L키 토글)                                        ║
         // ╚══════════════════════════════════════════════════════════════════╝
@@ -13233,7 +12858,6 @@ void run_streaming_viewer(){
     if(v.waterfall_texture) glDeleteTextures(1,&v.waterfall_texture);
     v.sa_cleanup();
     v.eid_cleanup();      // eid_thread join 보장
-    v.ais_pipe_stop();    // ais_pipe_reader_thr + python 자식 정리 (no-op if not alive)
 
     // ── record/ > private/ 이동 (세션 종료 시) ─────────────────────────
     {

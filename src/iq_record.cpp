@@ -158,7 +158,6 @@ static const char* dem_mode_name(Channel::DemodMode m){
     switch(m){
         case Channel::DM_AM:    return "AM";
         case Channel::DM_FM:    return "FM";
-        case Channel::DM_MAGIC: return "MAGIC";
         default:                return "";
     }
 }

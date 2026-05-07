@@ -177,15 +177,12 @@ static constexpr uint8_t BEWE_CMD_DELETE_CH    = 0x04;
 // → ch_idx is at BEWE payload offset 0
 static constexpr int BEWE_AUDIO_HDR_SIZE = 6;
 
-// CHANNEL_SYNC: ChSyncEntry[10], each 136 bytes (MUST match sizeof(ChSyncEntry) in src/net_protocol.hpp)
+// CHANNEL_SYNC: ChSyncEntry[10] (MUST match sizeof(ChSyncEntry) in src/net_protocol.hpp)
 // Layout: idx[1] active[1] s[4] e[4] mode[1] pan[1] audio_mask[4] sq_threshold[4] sq_sig[4]
 //         sq_gate[1] dem_paused[1] _pad2[2] owner_name[32]
 //         iq_rec_secs[4] audio_rec_secs[4] sq_active_secs[4] sq_total_secs[4]
 //         iq_rec_on[1] audio_rec_on[1] _pad3[2]
-//         digital_mode[1] digi_run[1] digi_demod_type[1] _pad_digi[1] digi_baud_rate[4]
-//         auto_id_state[1] auto_id_mod[1] _pad_auto[2] auto_id_baud[4] auto_id_conf[4] auto_id_snr[4]
-//         auto_id_proto[32]
-static constexpr int CH_SYNC_ENTRY_SIZE = 136;
+static constexpr int CH_SYNC_ENTRY_SIZE = 80;
 static constexpr int CH_SYNC_MASK_OFFSET = 12;  // audio_mask offset within ChSyncEntry
 static constexpr int CH_SYNC_OWNER_OFFSET = 28; // owner_name offset within ChSyncEntry
 static constexpr int MAX_CHANNELS_RELAY = 10;
@@ -223,12 +220,11 @@ static constexpr int CENTRAL_HSTATE_MAX_CHANNELS = 10;
 // Per-channel snapshot embedded inside CentralHostStateFull.
 struct __attribute__((packed)) CentralHostStateChannel {
     uint8_t  active;          // 1 if slot is in use
-    uint8_t  mode;            // demod mode (0=NONE, 1=AM, 2=FM, 3=MAGIC, ...)
-    uint8_t  digital_mode;    // digital decoder type (0=NONE, 1=AIS, 2=ADS-B, 3=AUTO_ID)
+    uint8_t  mode;            // demod mode (0=NONE, 1=AM, 2=FM)
     uint8_t  iq_rec_on;
     uint8_t  audio_rec_on;
     uint8_t  dem_run;         // demod thread running
-    uint8_t  _pad[2];
+    uint8_t  _pad[3];
     float    s_mhz, e_mhz;    // filter range in MHz (absolute)
     char     owner[32];       // channel owner login
 };

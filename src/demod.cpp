@@ -5,11 +5,6 @@
 #include <vector>
 #include <chrono>
 
-// forward declaration
-static int magic_classify(const std::vector<float>&, const std::vector<float>&,
-                          const std::vector<float>&, const std::vector<float>&,
-                          uint32_t);
-
 void FFTViewer::dem_worker(int ch_idx){
     Channel& ch=channels[ch_idx];
     Channel::DemodMode mode=ch.mode;
@@ -29,20 +24,6 @@ void FFTViewer::dem_worker(int ch_idx){
     uint32_t actual_asr=actual_inter/actual_ad;
     bewe_log("DEM[%d]: mode=%d  cf=%.4fMHz  off=%.0fHz  cap_dec=%u  asr=%u\n",
            ch_idx,(int)mode,(ch.s+ch.e)/2.0f,off_hz,cap_decim,actual_asr);
-
-    // ── Magic mode state ──────────────────────────────────────────────────
-    const int MAGIC_ANALYZE_SAMP=(int)(actual_inter*0.6f); // 600ms analysis window
-    std::vector<float> mg_env, mg_freq, mg_ibuf, mg_qbuf;
-    int  magic_det_mode=0;      // 0=analyzing, 1~5=detected
-    bool magic_analyzed=false;
-    Channel::DemodMode magic_active_mode=Channel::DM_NONE;
-    if(mode==Channel::DM_MAGIC){
-        mg_env.reserve(MAGIC_ANALYZE_SAMP);
-        mg_freq.reserve(MAGIC_ANALYZE_SAMP);
-        mg_ibuf.reserve(MAGIC_ANALYZE_SAMP);
-        mg_qbuf.reserve(MAGIC_ANALYZE_SAMP);
-        ch.magic_det.store(0,std::memory_order_relaxed);
-    }
 
     // ── DSP state ─────────────────────────────────────────────────────────
     Oscillator osc; osc.set_freq((double)off_hz,(double)msr);
@@ -112,74 +93,7 @@ void FFTViewer::dem_worker(int ch_idx){
             ch.maybe_rec_iq(fi, fq, gate_open);
 
             // ── Demodulate ────────────────────────────────────────────────
-            if(mode==Channel::DM_MAGIC){
-                // ── Phase 1: analysis ─────────────────────────────────────
-                if(!magic_analyzed){
-                    float env=sqrtf(p_inst);
-                    float cross=fi*prev_q-fq*prev_i, dot=fi*prev_i+fq*prev_q;
-                    float inst_f=atan2f(cross,dot+1e-12f);
-                    prev_i=fi; prev_q=fq;
-                    mg_env.push_back(env);
-                    mg_freq.push_back(inst_f);
-                    mg_ibuf.push_back(fi);
-                    mg_qbuf.push_back(fq);
-                    if((int)mg_env.size()>=MAGIC_ANALYZE_SAMP){
-                        magic_det_mode=magic_classify(mg_env,mg_freq,mg_ibuf,mg_qbuf,actual_asr);
-                        magic_analyzed=true;
-                        ch.magic_det.store(magic_det_mode,std::memory_order_relaxed);
-                        mg_env.clear(); mg_freq.clear(); mg_ibuf.clear(); mg_qbuf.clear();
-                        // Map detected mode
-                        switch(magic_det_mode){
-                            case 1: magic_active_mode=Channel::DM_AM;  break;
-                            case 3: magic_active_mode=Channel::DM_AM;  break; // DSB: AM demod
-                            case 4: magic_active_mode=Channel::DM_FM;  break; // SSB: FM demod (approx)
-                            default: magic_active_mode=Channel::DM_FM; break; // FM, CW
-                        }
-                        // Reset DSP state for clean demod start
-                        lpi.s=lpq.s=alf.s=0; prev_i=prev_q=0; am_dc=0;
-                        aac=0; acnt=0; agc_rms=0.01f;
-                        bewe_log("MAGIC[%d]: detected=%d\n",ch_idx,magic_det_mode);
-                    }
-                    // During analysis: silence
-                    acnt++;
-                    if(acnt>=(int)actual_ad){ acnt=0; ch.push_audio(0.0f); }
-                } else {
-                    // ── Phase 2: demodulate with detected mode ────────────
-                    float samp=0;
-                    if(magic_active_mode==Channel::DM_AM){
-                        float env2=sqrtf(p_inst);
-                        am_dc+=am_dc_alpha*(env2-am_dc);
-                        float audio=alf.p(env2-am_dc);
-                        float rms_in=audio*audio;
-                        if(rms_in>agc_rms) agc_rms+=(rms_in-agc_rms)*AGC_ATTACK;
-                        else               agc_rms+=(rms_in-agc_rms)*AGC_RELEASE;
-                        float gain=(agc_rms>1e-9f)?(AGC_TARGET/sqrtf(agc_rms)):100.0f;
-                        gain=std::min(gain,1000.0f);
-                        samp=std::max(-1.0f,std::min(1.0f,audio*gain));
-                    } else {
-                        float cross=fi*prev_q-fq*prev_i, dot=fi*prev_i+fq*prev_q;
-                        float d=atan2f(cross,dot+1e-12f); prev_i=fi; prev_q=fq;
-                        samp=alf.p(d)*4.0f;
-                    }
-                    aac+=samp; acnt++;
-                    if(acnt>=(int)actual_ad){
-                        float raw_out=std::max(-1.0f,std::min(1.0f,(float)(aac/acnt)));
-                        float out=gate_open?raw_out:0.0f;
-                        aac=0; acnt=0;
-                        ch.maybe_rec_audio(raw_out, gate_open);
-                        ch.push_audio(out);
-                        // ── 네트워크 오디오 전송 (스컬치 초과 시만) ────────────────────
-                        if(net_srv && gate_open){
-                            net_audio_buf.push_back(out);
-                            if((int)net_audio_buf.size()>=NET_AUDIO_BATCH){
-                                net_srv->broadcast_audio_all((uint8_t)ch_idx,(int8_t)ch.pan,
-                                    net_audio_buf.data(),(uint32_t)net_audio_buf.size());
-                                net_audio_buf.clear();
-                            }
-                        }
-                    }
-                }
-            } else {
+            {
                 float samp=0;
                 if(mode==Channel::DM_AM){
                     // AM: envelope detection + AGC
@@ -231,7 +145,7 @@ void FFTViewer::start_dem(int ch_idx, Channel::DemodMode mode){
     ch.dem_stop_req.store(false);
     ch.dem_run.store(true);
     ch.dem_thr=std::thread(&FFTViewer::dem_worker,this,ch_idx);
-    const char* n[]={"NONE","AM","FM","MAGIC"};
+    const char* n[]={"NONE","AM","FM"};
     bewe_log("DEM[%d] start: %s  %.4f-%.4f MHz\n",ch_idx,n[(int)mode],ch.s,ch.e);
 }
 
@@ -247,82 +161,7 @@ void FFTViewer::stop_dem(int ch_idx){
 void FFTViewer::stop_all_dem(){
     for(int i=0;i<MAX_CHANNELS;i++){
         stop_dem(i);
-        stop_digi(i);
     }
-}
-
-// ── Magic mode: modulation classifier ────────────────────────────────────
-// Returns: 1=AM, 2=FM, 3=DSB, 4=SSB, 5=CW
-static int magic_classify(
-    const std::vector<float>& env_buf,   // envelope samples
-    const std::vector<float>& freq_buf,  // inst frequency samples
-    const std::vector<float>& i_buf,     // decimated I
-    const std::vector<float>& q_buf,     // decimated Q
-    uint32_t asr)                        // audio sample rate
-{
-    size_t N=env_buf.size(); if(N<64) return 1;
-
-    // ── 1. Envelope statistics ────────────────────────────────────────────
-    double env_mean=0;
-    for(float v:env_buf) env_mean+=v;
-    env_mean/=N;
-
-    double env_var=0;
-    for(float v:env_buf){ double d=v-env_mean; env_var+=d*d; }
-    env_var/=N;
-
-    double env_norm_var=(env_mean>1e-6f)? env_var/(env_mean*env_mean) : 0.0;
-
-    // ── 2. Instantaneous frequency statistics ─────────────────────────────
-    double freq_mean=0;
-    for(float v:freq_buf) freq_mean+=v;
-    freq_mean/=N;
-
-    double freq_var=0;
-    for(float v:freq_buf){ double d=v-freq_mean; freq_var+=d*d; }
-    freq_var/=N;
-
-    // ── 3. Spectral asymmetry (SSB detection) ─────────────────────────────
-    // Simple: compare power of upper vs lower half of spectrum via sign of
-    // mean instantaneous frequency deviation
-    size_t pos_cnt=0;
-    for(float v:freq_buf) if(v>0) pos_cnt++;
-    double freq_asym=((double)pos_cnt/N)-0.5; // [-0.5, +0.5], |>0.3| = SSB
-
-    // ── 4. CW detection: envelope bimodality ─────────────────────────────
-    // Histogram env into low/high bins around mean
-    size_t low_cnt=0, hi_cnt=0;
-    double thresh=env_mean*0.5;
-    for(float v:env_buf){
-        if(v<thresh) low_cnt++;
-        else         hi_cnt++;
-    }
-    double bimodal_ratio=(double)low_cnt/N; // CW: lots of near-zero (key-up)
-
-    // ── 5. Carrier presence (AM vs DSB) ──────────────────────────────────
-    // AM has strong carrier → envelope mean >> envelope AC component
-    // Normalized: env_norm_var < 0.3 suggests strong carrier presence
-    // (DSB suppressed carrier → higher normalized variance)
-    double carrier_score = 1.0 - std::min(1.0, env_norm_var / 1.5);
-
-    // ── Decision tree ─────────────────────────────────────────────────────
-    // FM: low envelope variance, high freq variance
-    if(env_norm_var < 0.15 && freq_var > 0.05)
-        return 2; // FM
-
-    // CW: bimodal envelope (many near-zero samples), low freq_var
-    if(bimodal_ratio > 0.35 && freq_var < 0.1 && env_norm_var > 0.3)
-        return 5; // CW
-
-    // SSB: strong spectral asymmetry
-    if(fabs(freq_asym) > 0.28 && env_norm_var > 0.1)
-        return 4; // SSB
-
-    // AM vs DSB: carrier score
-    if(carrier_score > 0.5)
-        return 1; // AM (carrier present)
-    else
-        return 3; // DSB (suppressed carrier)
 }
 
 // ── 주파수 변경 시 채널 복조 pause / resume ──────────────────────────────

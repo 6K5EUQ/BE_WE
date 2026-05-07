@@ -184,8 +184,6 @@ struct ServerCallbacks {
                        const char* target)> on_add_sched;
     std::function<void(uint8_t op_idx, const char* op_name,
                        int64_t start_time, float freq_mhz)> on_remove_sched;
-    std::function<void(const char* who, uint8_t ch_idx, uint8_t mode, uint8_t demod_type, float baud_rate)> on_start_digi;
-    std::function<void(const char* who, uint8_t ch_idx)> on_stop_digi;
     std::function<void(const char* who)> on_chassis_reset;
     std::function<void(const char* who)> on_net_reset;
     std::function<void(const char* who)> on_rx_stop;
@@ -296,7 +294,6 @@ public:
     void send_lwf_live_start_to_op(int op_index, const PktLwfLiveStart& s);
 
     // Digital decode log → clients with audio_mask bit set
-    void broadcast_digi_log(uint8_t tab, uint8_t ch_idx, const char* msg, uint32_t audio_mask);
 
     // Heartbeat → all clients
     // host_state: 0=OK, 1=CHASSIS_RESETTING, 2=SPECTRUM_PAUSED
