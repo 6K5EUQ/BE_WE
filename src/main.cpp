@@ -5,6 +5,10 @@
 #include <cstdio>
 #include <string>
 
+#ifndef BEWE_HEADLESS
+#include "sat_view.hpp"
+#endif
+
 static void parse_sdr_flag(int argc, char** argv){
     for(int i = 1; i < argc; i++){
         if(std::strcmp(argv[i], "--sdr") == 0 && i+1 < argc){
@@ -40,6 +44,7 @@ int main(int argc, char** argv){
     setenv("QT_IM_MODULE","none",1);
     setenv("XMODIFIERS","@im=none",1);
     setenv("GLFW_IM_MODULE","none",1);
+    sat_tle_fetch();           // refresh sot_tle.txt + starlink_tle.txt from celestrak.org
     run_streaming_viewer();
     return 0;
 }

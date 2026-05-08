@@ -54,6 +54,7 @@ private:
     GLuint prog_sphere_ = 0;
     GLuint prog_lines_  = 0;
     GLuint prog_land_   = 0;
+    GLuint prog_sky_    = 0;
     GLuint vao_sphere_  = 0;
     GLuint vbo_sphere_  = 0;
     GLuint ebo_sphere_  = 0;

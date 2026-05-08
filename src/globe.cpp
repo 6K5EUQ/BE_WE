@@ -94,6 +94,65 @@ void main(){
 }
 )GLSL";
 
+// ── Sky background ────────────────────────────────────────────────────────
+// Reuses vao_sphere_. The unit sphere is scaled up (×100) and pushed to the
+// far plane (gl_Position.z = w) so it always sits behind the globe regardless
+// of zoom. Only camera rotation is applied → sky tumbles with viewpoint.
+static const char* SKY_VERT = R"GLSL(
+#version 330 core
+layout(location=0) in vec3 aPos;
+uniform mat4 uProj;
+uniform mat4 uViewRot;
+out vec3 vDir;
+void main(){
+    vDir = aPos;
+    vec4 v = uViewRot * vec4(aPos * 100.0, 0.0);
+    vec4 c = uProj    * vec4(v.xyz, 1.0);
+    gl_Position = c.xyww;          // depth = 1 (always farthest)
+}
+)GLSL";
+
+static const char* SKY_FRAG = R"GLSL(
+#version 330 core
+in  vec3 vDir;
+out vec4 FragColor;
+
+float hash3(vec3 p){
+    p = fract(p * vec3(0.3183099, 0.36700, 0.27300) + 0.1);
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+void main(){
+    vec3 d = normalize(vDir);
+
+    // Galactic plane band (chosen normal for visual appeal)
+    vec3 gN = normalize(vec3(0.45, 0.78, 0.43));
+    float ang  = abs(dot(d, gN));
+    float band = smoothstep(0.55, 0.0, ang);
+
+    // Faint dark-blue base + soft milky-way glow
+    vec3 base = vec3(0.025, 0.035, 0.075);
+    vec3 mw   = base + band * vec3(0.06, 0.05, 0.10);
+
+    // Cloudy variation along the band
+    float cn = hash3(floor(d * 14.0));
+    mw += band * vec3(0.04, 0.03, 0.06) * (cn - 0.4);
+
+    // Stars: denser inside the band
+    vec3  cell = floor(d * 280.0);
+    float s1   = hash3(cell);
+    float thr  = mix(0.998, 0.991, band);
+    float star = 0.0;
+    if (s1 > thr) {
+        float s2 = hash3(cell + 7.13);
+        star = (s1 - thr) / (1.0 - thr) * (0.5 + 0.5 * s2);
+    }
+
+    FragColor = vec4(mw + vec3(star) * 0.7, 1.0);
+}
+)GLSL";
+
 // ── Static helpers ────────────────────────────────────────────────────────
 
 static void latlon_to_xyz(float lat_deg, float lon_deg,
@@ -114,7 +173,8 @@ bool GlobeRenderer::init() {
     prog_sphere_ = compile_shader(GLOBE_VERT, GLOBE_FRAG);
     prog_lines_  = compile_shader(LINES_VERT, LINES_FRAG);
     prog_land_   = compile_shader(LAND_VERT,  LAND_FRAG);
-    if (!prog_sphere_ || !prog_lines_ || !prog_land_) return false;
+    prog_sky_    = compile_shader(SKY_VERT,   SKY_FRAG);
+    if (!prog_sphere_ || !prog_lines_ || !prog_land_ || !prog_sky_) return false;
     build_sphere(64, 128);
     build_land();
     build_map_lines();
@@ -143,6 +203,7 @@ void GlobeRenderer::destroy() {
     if (prog_sphere_){ glDeleteProgram(prog_sphere_); prog_sphere_=0; }
     if (prog_lines_) { glDeleteProgram(prog_lines_); prog_lines_=0; }
     if (prog_land_)  { glDeleteProgram(prog_land_); prog_land_=0; }
+    if (prog_sky_)   { glDeleteProgram(prog_sky_); prog_sky_=0; }
     seg_starts_.clear(); seg_counts_.clear();
 }
 
@@ -151,6 +212,30 @@ void GlobeRenderer::set_viewport(int w, int h) {
 }
 
 void GlobeRenderer::render() {
+    // 0. Sky background (procedural starfield + Milky Way) — drawn first,
+    //    rotates with the camera quaternion so it tumbles with viewpoint.
+    {
+        float fovy = 45.f * (float)M_PI / 180.f;
+        float aspect = (float)vp_w_ / (float)vp_h_;
+        float proj[16], rot[16], view_rot[16];
+        mat4_perspective(proj, fovy, aspect, 0.1f, 1000.f);
+        mat4_from_quat(rot, qw_, qx_, qy_, qz_);
+        mat4_identity(view_rot);
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 3; c++)
+                view_rot[c*4 + r] = rot[r*4 + c];   // transpose
+        glUseProgram(prog_sky_);
+        glUniformMatrix4fv(glGetUniformLocation(prog_sky_, "uProj"),    1, GL_FALSE, proj);
+        glUniformMatrix4fv(glGetUniformLocation(prog_sky_, "uViewRot"), 1, GL_FALSE, view_rot);
+        GLboolean cull_was = glIsEnabled(GL_CULL_FACE);
+        glDisable(GL_CULL_FACE);
+        glDepthMask(GL_FALSE);
+        glBindVertexArray(vao_sphere_);
+        glDrawElements(GL_TRIANGLES, idx_count_, GL_UNSIGNED_INT, 0);
+        glDepthMask(GL_TRUE);
+        if (cull_was) glEnable(GL_CULL_FACE);
+    }
+
     float mvp[16];
     get_mvp(mvp);
 
@@ -287,13 +372,14 @@ void GlobeRenderer::on_scroll(float delta) {
     // Step shrinks as we approach the surface so the extended close-up range
     // (zoom_ < 1.5 .. 1.05) gives ~10 fine zoom-in clicks beyond the previous max.
     float step;
-    if      (zoom_ >= 3.5f) step = 0.30f;
+    if      (zoom_ >= 8.0f) step = 1.20f;   // far range for MEO/GEO satellites
+    else if (zoom_ >= 3.5f) step = 0.30f;
     else if (zoom_ >= 2.0f) step = 0.15f;
     else if (zoom_ >= 1.5f) step = 0.08f;
     else                    step = 0.04f;
     zoom_ -= delta * step;
     if (zoom_ < 1.05f) zoom_ = 1.05f;
-    if (zoom_ > 8.f)   zoom_ = 8.f;
+    if (zoom_ > 25.f)  zoom_ = 25.f;        // GPS r≈4.16, GEO r≈6.6 — fits comfortably
 }
 
 // ── Picking ───────────────────────────────────────────────────────────────
