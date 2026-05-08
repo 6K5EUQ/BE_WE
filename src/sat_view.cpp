@@ -22,7 +22,7 @@ namespace {
     std::vector<TleElem> g_sats;
     std::set<int>        g_soi_ids;       // catalog_nums listed in SOI_tle.txt
     int                  g_selected = -1;
-    int                  g_mode     = SAT_ALL;
+    int                  g_mode     = SAT_SOI;
     const double         R_EARTH_KM = 6378.137;
 
     // Cached propagator output, reused while the UTC second is unchanged.
@@ -218,13 +218,28 @@ void sat_view_draw(GlobeRenderer& globe, ImGuiIO& io, time_t now_utc) {
         ImVec2 ds = io.DisplaySize;
         ImGui::SetNextWindowPos(ImVec2(8, ds.y - 8),
                                 ImGuiCond_Always, ImVec2(0.f, 1.f));
+        ImGui::SetNextWindowSize(ImVec2(200, 0), ImGuiCond_Always);
         ImGui::SetNextWindowBgAlpha(0.55f);
         ImGui::Begin("##sat_ctrl", nullptr,
             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-            ImGuiWindowFlags_NoMove     | ImGuiWindowFlags_NoSavedSettings |
-            ImGuiWindowFlags_AlwaysAutoResize);
-        ImGui::TextUnformatted("Sat");
-        ImGui::SameLine();
+            ImGuiWindowFlags_NoMove     | ImGuiWindowFlags_NoSavedSettings);
+        // Title centered
+        const char* title = "Satellite Tracker";
+        ImVec2 ts = ImGui::CalcTextSize(title);
+        float avail = ImGui::GetContentRegionAvail().x;
+        if (avail > ts.x)
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - ts.x) * 0.5f);
+        ImGui::TextUnformatted(title);
+        ImGui::Separator();
+        // Center the radio row.
+        float frame_h    = ImGui::GetFrameHeight();
+        float inner_sp   = ImGui::GetStyle().ItemInnerSpacing.x;
+        float item_sp    = ImGui::GetStyle().ItemSpacing.x;
+        float label_w    = ImGui::CalcTextSize("ALL").x;     // ALL/SOI/OFF same width
+        float row_w      = (frame_h + inner_sp + label_w) * 3 + item_sp * 2;
+        float avail_w    = ImGui::GetContentRegionAvail().x;
+        if (avail_w > row_w)
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail_w - row_w) * 0.5f);
         ImGui::RadioButton("ALL", &g_mode, SAT_ALL); ImGui::SameLine();
         ImGui::RadioButton("SOI", &g_mode, SAT_SOI); ImGui::SameLine();
         ImGui::RadioButton("OFF", &g_mode, SAT_OFF);
@@ -294,8 +309,10 @@ void sat_view_draw(GlobeRenderer& globe, ImGuiIO& io, time_t now_utc) {
         fdl->AddCircleFilled(ImVec2(sx, sy), 0.75f * scale,
                              IM_COL32(255, 255, 255, 230), selected ? 16 : 8);
 
+        // Show label on hover, while selected, or always under SOI mode
+        // (SOI list is small enough that labels never crowd the screen).
         float dx = sx - io.MousePos.x, dy = sy - io.MousePos.y;
-        if (dx*dx + dy*dy < 196.f) {
+        if (g_mode == SAT_SOI || selected || dx*dx + dy*dy < 196.f) {
             const TleElem& e = g_sats[i];
             fdl->AddText(ImVec2(sx + 12, sy - 8),
                          IM_COL32(255, 240, 200, 255), e.name.c_str());
