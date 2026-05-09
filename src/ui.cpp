@@ -11,6 +11,8 @@
 #include "host_band_categories.hpp"
 #include "long_waterfall.hpp"
 #include "sig_lib_view.hpp"
+#include "session_args.hpp"
+#include "session_spawn.hpp"
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <algorithm>
@@ -26,6 +28,7 @@
 #include <mutex>
 #include <cstdarg>
 #include <dirent.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -2319,6 +2322,34 @@ void run_streaming_viewer(){
     char  new_station_name[64] = {};
     bool  was_dragging = false;
 
+    // ── Multi-window: parent-globe tracks JOIN/HOST children spawned from
+    // this loop. Static so /reset preserves the list. Children themselves
+    // never enter this loop (they jump to operation mode below) so this
+    // stays empty in child processes. ────────────────────────────────────
+    static std::vector<ChildSession> child_sessions;
+    static pid_t                     active_host_pid = 0;
+    static std::string               session_toast_msg;
+    static float                     session_toast_timer = 0.f;
+
+    // ── Child-process boot: skip globe / mode-selection entirely if launched
+    // with --session-mode=host|join. JOIN takes the existing auto-rejoin path
+    // at the bottom of this function via s_central_join_station_id. ───────
+    if(g_session_args.mode_set){
+        if(g_session_args.mode == "host"){
+            v.station_name         = g_session_args.station_name;
+            v.station_lat          = g_session_args.station_lat;
+            v.station_lon          = g_session_args.station_lon;
+            v.station_location_set = true;
+            mode_sel  = 1;
+        } else if(g_session_args.mode == "join"){
+            s_central_join_station_id = g_session_args.station_id;
+            pending_join.name         = g_session_args.station_name;
+            pending_join.station_id   = g_session_args.station_id;
+            mode_sel  = 2;
+        }
+        mode_done = true;
+    }
+
     // 클릭 좌표 표시 상태
     bool  show_coord     = false;
     float coord_lat      = 0.f, coord_lon = 0.f;
@@ -2328,6 +2359,8 @@ void run_streaming_viewer(){
     glfwSwapInterval(1); // VSync ON - globe loop는 무거운 연산 없음
     while(!mode_done && !glfwWindowShouldClose(win)){
         glfwPollEvents();
+        // Reap any child sessions that have exited (non-blocking).
+        reap_finished_children(child_sessions, active_host_pid);
         int fw,fh; glfwGetFramebufferSize(win,&fw,&fh);
         glViewport(0,0,fw,fh);
         glClearColor(0.03f,0.05f,0.10f,1.0f);
@@ -2530,6 +2563,62 @@ void run_streaming_viewer(){
             ImGui::PopStyleVar();
         }
 
+        // ── Open Sessions panel (lists JOIN/HOST children spawned from
+        // this globe). Rendered only when at least one child is alive. ─
+        if(!child_sessions.empty()){
+            const float SW   = 280.f;
+            const float row_h = 22.f;
+            const float SH   = 30.f + row_h * (float)child_sessions.size();
+            ImGui::SetNextWindowPos(ImVec2((float)fw - SW - 16.f,
+                                            (float)fh - SH - 16.f));
+            ImGui::SetNextWindowSize(ImVec2(SW, SH));
+            ImGui::SetNextWindowBgAlpha(0.85f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.06f,0.10f,0.16f,1.f));
+            ImGui::Begin("##open_sessions", nullptr,
+                ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
+                ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar|
+                ImGuiWindowFlags_NoNav);
+            ImGui::TextColored(ImVec4(0.55f,0.80f,1.f,1.f), "Open Sessions");
+            ImGui::Separator();
+            pid_t close_pid = 0;
+            for(const auto& cs : child_sessions){
+                ImVec4 mode_col = (cs.mode == "host")
+                    ? ImVec4(0.30f,0.85f,0.40f,1.f)
+                    : ImVec4(0.40f,0.70f,1.00f,1.f);
+                ImGui::TextColored(mode_col, "%-4s", cs.mode.c_str());
+                ImGui::SameLine();
+                ImGui::Text("%-14s", cs.station_name.c_str());
+                ImGui::SameLine();
+                ImGui::TextDisabled("%d", (int)cs.pid);
+                ImGui::SameLine();
+                char btn_id[32];
+                snprintf(btn_id, sizeof(btn_id), "X##cs%d", (int)cs.pid);
+                if(ImGui::SmallButton(btn_id)) close_pid = cs.pid;
+            }
+            if(close_pid > 0) kill(close_pid, SIGTERM);
+            ImGui::End();
+            ImGui::PopStyleColor();
+            ImGui::PopStyleVar();
+        }
+
+        // ── Session-action toast (HOST cap rejection, spawn failure) ──
+        if(session_toast_timer > 0.f){
+            session_toast_timer -= io.DeltaTime;
+            float a = (session_toast_timer < 0.5f) ? session_toast_timer / 0.5f : 1.f;
+            if(a < 0.f) a = 0.f;
+            ImVec2 tsz = ImGui::CalcTextSize(session_toast_msg.c_str());
+            ImDrawList* fdl = ImGui::GetForegroundDrawList();
+            float bx = ((float)fw - tsz.x) * 0.5f;
+            float by = 60.f;
+            fdl->AddRectFilled(ImVec2(bx-10, by-6),
+                               ImVec2(bx+tsz.x+10, by+tsz.y+6),
+                               IM_COL32(40,12,12,(int)(220*a)), 5.f);
+            fdl->AddText(ImVec2(bx, by),
+                         IM_COL32(255,200,200,(int)(255*a)),
+                         session_toast_msg.c_str());
+        }
+
         // ── HOST placement popup ──────────────────────────────────────────
         if(pop_state == POP_HOST){
             const float PW=330.f, PH=110.f;
@@ -2558,11 +2647,28 @@ void run_streaming_viewer(){
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14f,0.40f,0.14f,1.f));
             if(!can_host) ImGui::BeginDisabled();
             if(ImGui::Button("Host##sh", ImVec2(btn_host_w,26))){
-                v.station_name = new_station_name;
-                v.station_lat  = pending_lat;
-                v.station_lon  = pending_lon;
-                v.station_location_set = true;
-                mode_sel=1; pop_state=POP_NONE; mode_done=true;
+                if(active_host_pid > 0){
+                    char tmsg[80];
+                    snprintf(tmsg, sizeof(tmsg),
+                             "HOST already running (pid %d)", (int)active_host_pid);
+                    session_toast_msg   = tmsg;
+                    session_toast_timer = 3.f;
+                } else {
+                    pid_t cpid = spawn_session_child("host", "", new_station_name,
+                                                    pending_lat, pending_lon);
+                    if(cpid > 0){
+                        ChildSession cs;
+                        cs.pid          = cpid;
+                        cs.mode         = "host";
+                        cs.station_name = new_station_name;
+                        child_sessions.push_back(cs);
+                        active_host_pid = cpid;
+                    } else {
+                        session_toast_msg   = "spawn failed (HOST)";
+                        session_toast_timer = 3.f;
+                    }
+                }
+                pop_state = POP_NONE;
             }
             if(!can_host) ImGui::EndDisabled();
             ImGui::PopStyleColor();
@@ -2634,40 +2740,23 @@ void run_streaming_viewer(){
             if(!tier_ok) ImGui::BeginDisabled();
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14f,0.30f,0.60f,1.f));
             if(ImGui::Button("Join##jb", ImVec2(btn_join_w,28))){
-                { std::lock_guard<std::mutex> lk(join_share_mtx); join_share_files.clear(); }
-                cli = new NetClient();
-                bool join_ok = false;
-
-                if(!pending_join.station_id.empty() && s_central_host[0] != '\0'){
-                    // ── Central Server 경유 JOIN ──────────────────────────────
-                    int rfd = central_cli.join_room(s_central_host, s_central_port,
-                                                  pending_join.station_id);
-                    if(rfd >= 0){
-                        cli->stat_room_id = pending_join.station_id;
-                        join_ok = cli->connect_fd(rfd, login_get_id(), login_get_pw(),
-                                                  (uint8_t)login_get_tier());
-                        if(!join_ok) close(rfd);
-                    }
-                }
-
-                if(join_ok){
-                    strncpy(connect_host, pending_join.ip.c_str(), sizeof(connect_host)-1);
-                    connect_port = (int)pending_join.tcp_port;
-                    strncpy(connect_id, login_get_id(), 31); connect_id[31]='\0';
-                    strncpy(connect_pw, login_get_pw(), 63); connect_pw[63]='\0';
-                    connect_tier = (uint8_t)login_get_tier();
-                    // 외부 Central Server 경유 JOIN이면 station_id 보존 (재연결용)
-                    if(!pending_join.station_id.empty() && s_central_host[0] != '\0')
-                        s_central_join_station_id = pending_join.station_id;
-                    else
-                        s_central_join_station_id.clear();
-                    mode_sel=2; pop_state=POP_NONE; mode_done=true;
+                // Multi-window: spawn a child to operate this JOIN session
+                // independently. The globe parent stays in this loop.
+                pid_t cpid = spawn_session_child("join", pending_join.station_id,
+                                                 pending_join.name,
+                                                 pending_join.lat, pending_join.lon);
+                if(cpid > 0){
+                    ChildSession cs;
+                    cs.pid          = cpid;
+                    cs.mode         = "join";
+                    cs.station_name = pending_join.name;
+                    cs.station_id   = pending_join.station_id;
+                    child_sessions.push_back(cs);
                 } else {
-                    delete cli; cli=nullptr;
-                    mode_err_msg="Connection failed";
-                    mode_err_timer=3.f;
-                    pop_state=POP_NONE;
+                    session_toast_msg   = "spawn failed (JOIN)";
+                    session_toast_timer = 3.f;
                 }
+                pop_state = POP_NONE;
             }
             ImGui::PopStyleColor();
             if(!tier_ok) ImGui::EndDisabled();
@@ -2697,6 +2786,10 @@ void run_streaming_viewer(){
     globe.destroy();
 
     if(glfwWindowShouldClose(win)){
+        // Parent globe is shutting down: terminate any spawned session children.
+        kill_all_children(child_sessions);
+        child_sessions.clear();
+        active_host_pid = 0;
         if(cli){ cli->disconnect(); delete cli; }
         ImGui_ImplOpenGL3_Shutdown(); ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext(); glfwDestroyWindow(win); glfwTerminate();
@@ -2704,6 +2797,10 @@ void run_streaming_viewer(){
     }
 
     if(do_logout){
+        // On logout, also kill spawned children so the next login starts clean.
+        kill_all_children(child_sessions);
+        child_sessions.clear();
+        active_host_pid = 0;
         if(cli){ cli->disconnect(); delete cli; cli=nullptr; }
     }
     if(!do_logout){

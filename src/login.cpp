@@ -103,17 +103,21 @@ bool draw_login_screen(int win_w, int win_h){
     static bool auto_checked =false;
     init_bg_paths();
 
-    // /restart로 재실행된 경우: 환경변수로 자동 로그인
+    // /restart 또는 자식 세션 spawn으로 재실행된 경우: 환경변수로 자동 로그인
     if(!auto_checked){
         auto_checked = true;
-        const char* a_id   = getenv("BEWE_AUTO_ID");
-        const char* a_pw   = getenv("BEWE_AUTO_PW");
-        const char* a_tier = getenv("BEWE_AUTO_TIER");
+        const char* a_id     = getenv("BEWE_AUTO_ID");
+        const char* a_pw     = getenv("BEWE_AUTO_PW");
+        const char* a_tier   = getenv("BEWE_AUTO_TIER");
+        const char* a_server = getenv("BEWE_AUTO_SERVER");
         if(a_id && a_id[0]){
             strncpy(g_login_id, a_id, 63);
             strncpy(g_login_pw, a_pw ? a_pw : "", 63);
             g_login_tier = a_tier ? atoi(a_tier) : 3;
-            unsetenv("BEWE_AUTO_ID"); unsetenv("BEWE_AUTO_PW"); unsetenv("BEWE_AUTO_TIER");
+            if(a_server && a_server[0])
+                strncpy(g_login_server, a_server, 127);
+            unsetenv("BEWE_AUTO_ID"); unsetenv("BEWE_AUTO_PW");
+            unsetenv("BEWE_AUTO_TIER"); unsetenv("BEWE_AUTO_SERVER");
             return true; // 로그인 화면 건너뜀
         }
     }

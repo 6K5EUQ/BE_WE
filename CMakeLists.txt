@@ -45,6 +45,7 @@ if(CLI)
         src/host_band_categories.cpp
         src/long_waterfall.cpp
         src/pluto_io.cpp
+        src/session_spawn.cpp
     )
 
     target_compile_definitions(BE_WE PRIVATE BEWE_HEADLESS=1)
@@ -125,6 +126,7 @@ else()
         src/long_waterfall_view.cpp
         src/sig_lib_view.cpp
         src/pluto_io.cpp
+        src/session_spawn.cpp
         ${IMGUI_SOURCES}
     )
 
