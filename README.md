@@ -1,17 +1,19 @@
 # BE_WE
 
-> Multi-user SDR spectrum analyzer with real-time network streaming, signal analysis, and 3D station discovery.
+> Multi-station collaborative SDR — every operator sees the same waterfall, share channels and recordings live across continents.
 
-![Main Interface](assets/BEWE.png)
+![Globe with SOI satellite overlay and station markers](assets/globe_sat_soi.png)
 
 ---
 
 ## Table of Contents
 
 - [What is BE_WE](#what-is-be_we)
-- [Feature Tour](#feature-tour)
-- [Signal Analyzer (SA)](#signal-analyzer-sa)
-- [Signal Library (LIB)](#signal-library-lib)
+- [Discover & Connect](#discover--connect)
+- [Operate](#operate)
+- [Deep Inspect](#deep-inspect)
+- [Collaboration](#collaboration)
+- [Headless CLI HOST](#headless-cli-host)
 - [Supported Hardware](#supported-hardware)
 - [Build & Quick Start](#build--quick-start)
 - [Key Bindings](#key-bindings)
@@ -22,18 +24,40 @@
 
 ## What is BE_WE
 
-A Linux-native SDR app where **one HOST captures RF and many JOIN clients watch the same live spectrum together** — create channels, demodulate, chat, and share recordings from separate machines. A headless **CLI HOST** build turns a Raspberry Pi 5 into a remote base station indistinguishable from a GUI HOST.
+A Linux-native SDR app where **one HOST captures RF and many JOIN clients watch the same live spectrum together** — drop demodulator channels, share recordings, chat, all from separate machines anywhere. A headless **CLI HOST** build turns a Raspberry Pi 5 into a remote base station indistinguishable from a GUI HOST.
 
-- **Multi-user** — every operator sees the same waterfall; channels, chat, and file sharing are live
-- **3D Globe discovery** — click a station marker, no IP addresses
+- **Multi-station collaboration** — every operator sees the same waterfall; channels, chat, file sharing live
+- **3D Globe + satellite overlay** — find stations and SOI satellites on a real Earth, no IP addresses
+- **Multi-window operations** — keep the globe open as mission control, run several stations at once on separate monitors
 - **Time Machine** — 60-second IQ rewind; recover the signal you just missed
-- **Signal Analyzer (SA)** — offline multi-domain inspection and RF fingerprinting
-- **Signal Library (LIB)** — cross-session emitter DB; reports auto-aggregate by frequency, operator confirms matches
-- **Central relay** — single port (7700), no LAN/WAN configuration
+- **Signal Library** — cross-session emitter DB; sightings auto-aggregate by frequency, operators confirm matches
+- **Single-port relay** — Central handles HOST/JOIN/Library on port 7700, no LAN/WAN configuration
 
 ---
 
-## Feature Tour
+## Discover & Connect
+
+### 3D Globe Station Discovery
+
+Stations broadcast their lat/lon to Central; you see them as glowing markers on the Earth. Click a marker, hit **Join**. No IP addresses, no port forwarding. Hover anywhere for live coordinates; click an empty spot to **Host** a new station at that location.
+
+### Satellite Overlay
+
+Toggle **ALL / SOI / OFF** in the bottom-left **Satellite Tracker** panel. ALL shows every catalog satellite (Starlink, GNSS, GEO); SOI shows only your custom watch list. Click any satellite to draw its orbit trace — past arc solid, future dotted, color-coded by altitude band (LEO / MEO / GEO).
+
+The 4-tier TLE catalog (**Starlink / SOT / ETC / SOI**) auto-fetches from celestrak.org on startup and caches under `assets/tle/`. Your SOI list lives in `assets/tle/SOI_tle.txt` and is never overwritten.
+
+### Multi-Window Sessions
+
+Click **Join** or **Host** on a station marker — a **separate OS window** opens with that station's operation panel. The globe stays open as your mission-control view. Drag windows to other monitors; one user can run several JOIN sessions in parallel.
+
+The globe's bottom-right **Open Sessions** panel lists each live child (mode, station name, PID) with a per-window close button. HOST is capped at 1 per machine (the SDR is exclusive); JOIN has no cap.
+
+![Multi-window sessions](assets/multiwindow.png)
+
+---
+
+## Operate
 
 ### Spectrum + Waterfall
 
@@ -49,13 +73,13 @@ Click the power axis to cycle through peak-holding modes. Sweep a band once and 
 
 ### Band Plan Overlay
 
-Toggle **BAND** in the bottom bar to see allocation segments above the spectrum (AIR / Amateur / Marine / TV·DAB / …). Right-click any band to edit label, frequency range, category, and description in place. Categories are user-defined with custom colors, and each HOST owns its own `band_plan.json` — edits are broadcast to all JOINs automatically.
+Toggle **BAND** in the bottom bar to see allocation segments above the spectrum (AIR / Amateur / Marine / TV·DAB / …). Right-click any band to edit label, frequency range, category, and description in place. Categories are user-defined with custom colors, and each HOST owns its own `band_plan.json` — edits broadcast to all JOINs automatically.
 
 ![Band Plan](assets/band_plan.png)
 
 ### Channels, Holding List, and Notch Filters
 
-Up to 10 demodulator channels at once (AM / FM / MAGIC, AIS, LoRa). Retune away from a channel and it slides into the **Holding** list with its squelch timer intact — come back and it rejoins automatically. Unwanted carriers can be killed with a global **Notch filter pool** that persists across sample-rate changes.
+Up to 10 demodulator channels at once (**AM / FM**). Retune away from a channel and it slides into the **Holding** list with its squelch timer intact — come back and it rejoins automatically. Unwanted carriers can be killed with a global **Notch filter pool** that persists across sample-rate changes.
 
 ![Channels + Holding + Notch](assets/channels_holding.png)
 
@@ -67,7 +91,7 @@ Press `T` for a 60-second rolling IQ buffer, `Space` to freeze and scroll back, 
 
 ### HISTORY — Long-Term Waterfall Archive
 
-Press `H` to open the long-waterfall archive. Every HOST keeps a continuous record of what its receiver saw, with mission-coded filenames and a header that embeds station name, lat/lon, and UTC range. Frequency changes auto-rotate to a fresh segment so each file is single-CF. `Ctrl+Right-drag` marks any region for a `BW / Duration` measurement; opt-in live streaming lets a JOIN watch the archive grow row-by-row, and remote delete cleans up from either side. Multi-GB archives stay smooth — the viewer is mmap-backed so pan and zoom touch only resident pages, and the color range follows the main spectrum's dB window so what you see live is what you see in history.
+Press `H` to open the long-waterfall archive. Every HOST keeps a continuous record of what its receiver saw, with mission-coded filenames and a header that embeds station name, lat/lon, and UTC range. Frequency changes auto-rotate to a fresh segment so each file is single-CF. `Ctrl+Right-drag` marks any region for a `BW / Duration` measurement; opt-in live streaming lets a JOIN watch the archive grow row-by-row, and remote delete cleans up from either side. Multi-GB archives stay smooth — the viewer is mmap-backed so pan and zoom touch only resident pages.
 
 ![HISTORY](assets/history.png)
 
@@ -77,42 +101,36 @@ Per-channel IQ capture is squelch-gated — press `I` and stop thinking about it
 
 ![File Info modal](assets/file_info.png)
 
-### Collaboration
-
-Real-time chat, file sharing, tier-based permissions, per-channel audio routing to specific operators. JOINs can re-tune the HOST, change FFT size, and control gain when permitted.
-
-### Headless CLI HOST
-
-Compile with `-DCLI=ON` for a zero-GPU build. Interactive prompt-based startup; `/status`, `/clients`, `/shutdown` commands; free text broadcasts as chat.
-
 ---
 
-## Signal Analyzer (SA)
+## Deep Inspect
+
+### Signal Analyzer (SA)
 
 Open any WAV/IQ file for offline inspection. Tabs across the top switch domains:
-`Spectrogram · Amp · Freq · Phase · I/Q · Const · Audio · Power · Bits`. Press `1`–`9` to flip between domains (or `B` for Bits when the SA overlay is open). Built-in band-pass filter, arrow-key carrier sweep (`←/→` ±1 Hz, `↑/↓` ±10 Hz), and percentile-based auto-scaling so different files compare fairly.
+`Spectrogram · Amp · Freq · Phase · I/Q · Const · Audio · Power · Bits`. Press `1`–`9` to flip between domains (or `B` for Bits when SA is open). Built-in band-pass filter, arrow-key carrier sweep (`←/→` ±1 Hz, `↑/↓` ±10 Hz), and percentile-based auto-scaling so different files compare fairly.
 
 SA doubles as an **emitter-ID workbench** — verify transmitter identity, detect spoofed or cloned radios, and characterize oscillator stability via per-domain RF fingerprints (envelope, I/Q, instantaneous phase / frequency, constellation, M-th power spectrum).
 
-### Spectrogram
+#### Spectrogram
 
 Jet-colored FFT-vs-time with region select, zoom/pan, and selectable window (Hann / Blackman-Harris).
 
 ![Spectrogram](assets/analyzer_spectrogram.png)
 
-### Freq — Preamble Detection + PRI / PRF
+#### Freq — Preamble Detection + PRI / PRF
 
 Instantaneous frequency view auto-detects a repeating preamble and reports **PRI / PRF / Pulse Duration / Baud** — characterize an unknown FSK or pulsed signal in seconds.
 
 ![Freq + PRI](assets/analyzer_freq_pri.png)
 
-### Bits — BIN / HEX / BITMAP + Protocol Decoders
+#### Bits — BIN / HEX / BITMAP
 
-Demodulated bit stream rendered as a 2D bitmap — frame sync patterns and scramblers become visually obvious. One-click decoders for **AIS / ADS-B / UAV**.
+Demodulated bit stream rendered as a 2D bitmap — frame sync patterns, scramblers, and periodicity become visually obvious at a glance.
 
 ![Bits view](assets/analyzer_bits.png)
 
-### Other Tabs
+#### Other Tabs
 
 - **Amp** — envelope (bursts, keying, pulse timing)
 - **Phase** — instantaneous phase with `←/→` / `↑/↓` carrier offset sweep
@@ -121,17 +139,27 @@ Demodulated bit stream rendered as a 2D bitmap — frame sync patterns and scram
 - **Audio** — demodulated WAV playback inside the analyzer
 - **Power** — M-th power spectrum (M = 1 / 2 / 4 / 8) for cyclostationary analysis
 
----
+### Signal Library (LIB)
 
-## Signal Library (LIB)
+Press `L` to open the Library overlay. Whenever an operator presses **Report** on a recording, the full `.info` file is shipped to Central, which aggregates sightings into a single **emitter record** keyed by **operator-entered fields** — frequency (within tolerance), modulation, protocol, and explicit ID tokens (e.g. `MMSI:...`, `callsign:...`) typed into Tags.
 
-Press `L` to open the Library overlay. Every time an operator presses **Report** on a recording, the full `.info` file is shipped to Central, which auto-aggregates sightings by **operator-entered fields only** — frequency (within tolerance), modulation, protocol, and explicit ID tokens (e.g. `MMSI:...`, `callsign:...`) typed into Tags. Auto-decoder outputs (AIS / ADS-B / auto-id) are deliberately **not** trusted for matching; if the operator wants those signals to count they copy them into `.info` themselves.
+If a report lacks identifying tags, frequency alone caps the match score and the sighting drops into a **Pending** queue for human Confirm / Reject — no silent merges. Confirmed sightings accumulate across all stations and sessions: `first_seen`, `last_seen`, contributing-station list, and operator notes live on one record. The overlay has a sortable table (Name / Freq / Mod / Count / Last seen), full-text filter, an editable detail pane, and a sightings timeline with per-row Confirm / Reject / Split actions.
 
-If `.info` lacks operator-entered fields, frequency alone caps the match score and the sighting lands in a **Pending** queue for human Confirm / Reject — no silent merges. Confirmed sightings accumulate across all stations and sessions: `first_seen`, `last_seen`, contributing-station list, and operator notes are kept on a single emitter record. The overlay has a sortable table (Name / Freq / Mod / Count / Last seen), full-text filter, an editable detail pane (display name, tags ID, notes), and a sightings timeline with per-row Confirm / Reject / Split actions.
-
-The result: a station that missed a transmission gets it filled in by another station that caught it, and the tribal knowledge ("that 405.10 FM repeater", "the 437.85 sat uplink") stops living in one operator's head.
+The result: a station that missed a transmission gets it filled in by another that caught it, and "that 405.10 FM repeater" stops living in one operator's head.
 
 ![Signal Library](assets/signal_library.png)
+
+---
+
+## Collaboration
+
+Real-time chat, file sharing, tier-based permissions, per-channel audio routing to specific operators. JOINs can re-tune the HOST, change FFT size, and swap the HOST's SDR via the **Receiver** popup when permitted.
+
+---
+
+## Headless CLI HOST
+
+Compile with `-DCLI=ON` for a zero-GPU build. Interactive prompt-based startup; `/status`, `/clients`, `/shutdown` commands; free text broadcasts as chat.
 
 ---
 
@@ -143,7 +171,7 @@ The result: a station that missed a transmission gets it filled in by another st
 | **ADALM-Pluto** | 70 MHz – 6 GHz | 0 – 71 dB |
 | **RTL-SDR** | 500 kHz – 1.766 GHz | 0 – 49.6 dB |
 
-Auto-detected at startup (priority: BladeRF → Pluto → RTL-SDR) and switchable at runtime — click the Receiver field to swap without restarting. With no SDR connected you can still JOIN a remote HOST.
+Auto-detected at startup (priority: BladeRF → Pluto → RTL-SDR) and switchable at runtime — click the **Receiver** field to swap without restarting. With no SDR connected you can still JOIN a remote HOST.
 
 ---
 
@@ -211,8 +239,8 @@ cmake .. && make -j
 ### First Run
 
 1. Log in with ID / password — `Ctrl+1 / 2 / 3` picks the tier
-2. Click your location on the 3D globe and press **HOST** (or click a station marker and press **JOIN**)
-3. Live spectrum + waterfall appear — right-click in the waterfall to drop demodulator channels
+2. On the globe, click your location and press **HOST** (or click an existing station marker and press **JOIN**) — a new operation window opens, the globe stays for more sessions
+3. In the operation window, right-click in the waterfall to drop demodulator channels
 
 ---
 
@@ -228,7 +256,6 @@ Overlays are mutually exclusive — opening one closes whichever is currently up
 | `Scroll` | Zoom frequency axis |
 | `I` | Start/stop per-channel IQ recording |
 | `E` | Toggle Signal Analyzer (SA) overlay |
-| `Q` | Toggle Digital Decode (DIGI) overlay |
 | `H` | Toggle HISTORY overlay (long-waterfall archive) |
 | `L` | Toggle Signal Library (LIB) overlay |
 | `B` | Toggle BAND overlay — or jump to the Bits tab when SA is open |
