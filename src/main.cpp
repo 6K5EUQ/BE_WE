@@ -74,7 +74,7 @@ int main(int argc, char** argv){
     setenv("QT_IM_MODULE","none",1);
     setenv("XMODIFIERS","@im=none",1);
     setenv("GLFW_IM_MODULE","none",1);
-    sat_tle_fetch();           // refresh sot_tle.txt + starlink_tle.txt from celestrak.org
+    // TLE fetch is now lazy: only when the user picks ALL in the sat tracker.
     run_streaming_viewer();
     return 0;
 }

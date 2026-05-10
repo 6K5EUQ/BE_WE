@@ -21,6 +21,8 @@ namespace {
 
     std::vector<TleElem> g_sats;
     std::set<int>        g_soi_ids;       // catalog_nums listed in SOI_tle.txt
+    std::set<int>        g_seen_ids;      // catalog_nums already in g_sats (dedupe)
+    bool                 g_all_loaded = false; // starlink+etc loaded yet?
     int                  g_selected = -1;
     int                  g_mode     = SAT_SOI;
     const double         R_EARTH_KM = 6378.137;
@@ -164,55 +166,71 @@ void sat_view_init() {
     g_sats.clear();
     g_pos_cache.clear();
     g_soi_ids.clear();
+    g_seen_ids.clear();
+    g_all_loaded = false;
     g_selected = -1;
     orbit_cache_clear();
 
+    // SOI-only fast startup. starlink + etc (the big sets) are loaded
+    // lazily when the user picks ALL — see ensure_all_loaded().
     std::string dir = BEWEPaths::assets_dir() + "/tle";
 
-    std::vector<TleElem> starlink, sot, etc, soi;
-    tle_load(dir + "/starlink_tle.txt", starlink);
-    tle_load(dir + "/sot_tle.txt",      sot);
-    tle_load(dir + "/etc_tle.txt",      etc);
-    tle_load(dir + "/SOI_tle.txt",      soi);
+    std::vector<TleElem> sot, soi;
+    tle_load(dir + "/sot_tle.txt", sot);
+    tle_load(dir + "/SOI_tle.txt", soi);
 
-    for (auto& e : starlink) e.is_starlink = true;
-    for (auto& e : soi)      g_soi_ids.insert(e.catalog_num);
+    for (auto& e : soi) g_soi_ids.insert(e.catalog_num);
 
-    // Dedupe by catalog_num. Priority: starlink → sot → etc → SOI.
-    // SOI-only entries still get added so SOI mode never shows fewer than
-    // its membership list.
-    std::set<int> seen;
-    g_sats.reserve(starlink.size() + sot.size() + etc.size() + soi.size());
-    for (auto& e : starlink) {
-        if (seen.insert(e.catalog_num).second) g_sats.push_back(std::move(e));
-    }
-    int sot_kept = 0, etc_kept = 0, soi_kept = 0;
+    g_sats.reserve(sot.size() + soi.size());
+    int sot_kept = 0, soi_kept = 0;
     for (auto& e : sot) {
-        if (seen.insert(e.catalog_num).second) {
+        if (g_seen_ids.insert(e.catalog_num).second) {
             g_sats.push_back(std::move(e)); sot_kept++;
         }
     }
-    for (auto& e : etc) {
-        if (seen.insert(e.catalog_num).second) {
-            g_sats.push_back(std::move(e)); etc_kept++;
-        }
-    }
     for (auto& e : soi) {
-        if (seen.insert(e.catalog_num).second) {
+        if (g_seen_ids.insert(e.catalog_num).second) {
             g_sats.push_back(std::move(e)); soi_kept++;
         }
     }
 
     g_pos_cache.assign(g_sats.size(), PosCache{});
-    fprintf(stderr, "[sat_view] %zu starlink + %d sot + %d etc + %d SOI-only "
-                    "added; %zu in SOI set; %zu total\n",
-            starlink.size(), sot_kept, etc_kept, soi_kept,
-            g_soi_ids.size(), g_sats.size());
+    fprintf(stderr, "[sat_view] init: %d sot + %d SOI-only; %zu in SOI set; %zu total\n",
+            sot_kept, soi_kept, g_soi_ids.size(), g_sats.size());
+}
+
+namespace {
+    void ensure_all_loaded() {
+        if (g_all_loaded) return;
+        g_all_loaded = true;
+
+        sat_tle_fetch();   // refresh starlink+etc if cache is stale (>1 week)
+
+        std::string dir = BEWEPaths::assets_dir() + "/tle";
+        std::vector<TleElem> starlink, etc;
+        tle_load(dir + "/starlink_tle.txt", starlink);
+        tle_load(dir + "/etc_tle.txt",      etc);
+        for (auto& e : starlink) e.is_starlink = true;
+
+        g_sats.reserve(g_sats.size() + starlink.size() + etc.size());
+        int sl_kept = 0, etc_kept = 0;
+        for (auto& e : starlink) {
+            if (g_seen_ids.insert(e.catalog_num).second) {
+                g_sats.push_back(std::move(e)); sl_kept++;
+            }
+        }
+        for (auto& e : etc) {
+            if (g_seen_ids.insert(e.catalog_num).second) {
+                g_sats.push_back(std::move(e)); etc_kept++;
+            }
+        }
+        g_pos_cache.assign(g_sats.size(), PosCache{});
+        fprintf(stderr, "[sat_view] ALL: +%d starlink +%d etc; %zu total\n",
+                sl_kept, etc_kept, g_sats.size());
+    }
 }
 
 void sat_view_draw(GlobeRenderer& globe, ImGuiIO& io, time_t now_utc) {
-    if (g_sats.empty()) return;
-
     // ── Bottom-left control: ALL / SOI / OFF ─────────────────────────────
     {
         ImVec2 ds = io.DisplaySize;
@@ -240,12 +258,14 @@ void sat_view_draw(GlobeRenderer& globe, ImGuiIO& io, time_t now_utc) {
         float avail_w    = ImGui::GetContentRegionAvail().x;
         if (avail_w > row_w)
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail_w - row_w) * 0.5f);
-        ImGui::RadioButton("ALL", &g_mode, SAT_ALL); ImGui::SameLine();
+        if (ImGui::RadioButton("ALL", &g_mode, SAT_ALL)) ensure_all_loaded();
+        ImGui::SameLine();
         ImGui::RadioButton("SOI", &g_mode, SAT_SOI); ImGui::SameLine();
         ImGui::RadioButton("OFF", &g_mode, SAT_OFF);
         ImGui::End();
     }
     if (g_mode == SAT_OFF) return;
+    if (g_sats.empty()) return;
 
     ImDrawList* fdl = ImGui::GetForegroundDrawList();
 
