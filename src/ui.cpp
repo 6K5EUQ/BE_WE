@@ -2506,8 +2506,8 @@ void run_streaming_viewer(){
             }
         }
 
-        // ── Hover coordinate display (bottom-right) ───────────────────────
-        // 지구본 위에 마우스 올리면 해당 lat/lon을 화면 우하단에 박스로 표시.
+        // ── Hover coordinate display (bottom-center) ─────────────────────
+        // 지구본 위에 마우스 올리면 해당 lat/lon을 화면 중앙 하단에 박스로 표시.
         // 드래그(회전) 중엔 숨김 — 회전 중 빠르게 바뀌어 가독성 떨어짐.
         // 마우스가 globe 밖이거나 화면 밖일 때는 마지막 유효 좌표를 유지.
         static float last_hlat = 0.f, last_hlon = 0.f;
@@ -2527,7 +2527,7 @@ void run_streaming_viewer(){
                      fabsf(last_hlon), last_hlon >= 0.f ? "W" : "E");
             ImVec2 tsz = ImGui::CalcTextSize(hbuf);
             const float pad = 6.f, margin = 12.f;
-            float bx0 = (float)fw - tsz.x - pad*2.f - margin;
+            float bx0 = ((float)fw - tsz.x - pad*2.f) * 0.5f;
             float by0 = (float)fh - tsz.y - pad*2.f - margin;
             ImDrawList* fdl = ImGui::GetForegroundDrawList();
             fdl->AddRectFilled(ImVec2(bx0, by0),
@@ -3354,52 +3354,56 @@ void run_streaming_viewer(){
             }
         };
 
-        // DB 다운로드 데이터 수신 → private/ 폴더에 저장
-        static FILE* db_dl_fp = nullptr;
-        static std::string db_dl_path;
+        // DB 다운로드 데이터 수신 → private/ 폴더에 저장 (파일별 독립 핸들 — 동시 다운로드 지원)
+        struct ActiveDl { FILE* fp=nullptr; std::string path; uint64_t recv=0; };
+        static std::map<std::string, ActiveDl> db_dl_active;
         cli->on_db_download_data = [&](const PktDbDownloadData* d, const uint8_t* data, uint32_t data_len){
-            static uint64_t db_dl_recv = 0;
+            std::string key(d->filename);
             if(d->is_first){
                 bool is_iq = (is_iq_filename(d->filename));
                 std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
                 mkdir(dir.c_str(), 0755);
-                db_dl_path = dir + "/" + d->filename;
-                if(db_dl_fp) fclose(db_dl_fp);
-                db_dl_fp = fopen(db_dl_path.c_str(), "wb");
-                db_dl_recv = 0;
+                ActiveDl dl;
+                dl.path = dir + "/" + key;
+                if(db_dl_active.count(key) && db_dl_active[key].fp) fclose(db_dl_active[key].fp);
+                dl.fp = fopen(dl.path.c_str(), "wb");
+                dl.recv = 0;
+                db_dl_active[key] = dl;
                 bewe_log_push(2,"[DB] Download start: %s (%.1fMB)\n", d->filename, d->total_bytes/1048576.0);
                 // 진행률 표시용 file_xfers 등록
                 std::lock_guard<std::mutex> lk(v.file_xfer_mtx);
                 FFTViewer::FileXfer xf{};
-                xf.filename = d->filename;
+                xf.filename = key;
                 xf.total_bytes = d->total_bytes;
                 xf.done_bytes = 0;
                 xf.dir = FFTViewer::FileXfer::DIR_DOWNLOAD;
                 v.file_xfers.push_back(xf);
             }
-            if(db_dl_fp && data_len > 0){
-                fwrite(data, 1, data_len, db_dl_fp);
-                db_dl_recv += data_len;
+            auto it = db_dl_active.find(key);
+            if(it != db_dl_active.end() && it->second.fp && data_len > 0){
+                fwrite(data, 1, data_len, it->second.fp);
+                it->second.recv += data_len;
                 // 진행률 갱신
                 std::lock_guard<std::mutex> lk(v.file_xfer_mtx);
                 for(auto& x : v.file_xfers)
-                    if(x.filename == d->filename && !x.finished){
-                        x.done_bytes = db_dl_recv;
+                    if(x.filename == key && !x.finished){
+                        x.done_bytes = it->second.recv;
                         if(x.total_bytes == 0) x.total_bytes = d->total_bytes;
                         break;
                     }
             }
-            if(d->is_last && db_dl_fp){
-                fclose(db_dl_fp);
-                db_dl_fp = nullptr;
-                bewe_log_push(2,"[DB] Download done: %s\n", db_dl_path.c_str());
+            if(d->is_last && it != db_dl_active.end() && it->second.fp){
+                fclose(it->second.fp);
+                std::string done_path = it->second.path;
+                db_dl_active.erase(it);
+                bewe_log_push(2,"[DB] Download done: %s\n", done_path.c_str());
                 // 완료 표시
                 {
                     std::lock_guard<std::mutex> lk(v.file_xfer_mtx);
                     for(auto& x : v.file_xfers)
-                        if(x.filename == d->filename && !x.finished){
+                        if(x.filename == key && !x.finished){
                             x.finished = true;
-                            x.local_path = db_dl_path;
+                            x.local_path = done_path;
                             x.done_bytes = x.total_bytes;
                             break;
                         }
@@ -3414,7 +3418,6 @@ void run_streaming_viewer(){
                     bool dup=false; for(auto& s:rec_audio_files) if(s==fn2){dup=true;break;}
                     if(!dup) rec_audio_files.push_back(fn2);
                 }
-                db_dl_path.clear();
                 // 캐시 무효화: 다운로드 진행중 stat()으로 캐싱된 작은 size 폐기
                 g_arch_cache_dirty = true;
                 g_arch_rescan.store(true);

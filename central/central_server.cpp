@@ -1050,7 +1050,7 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
                     uint32_t blen = (uint32_t)pkt_len;
                     memcpy(bewe.data()+5, &blen, 4);
                     memcpy(bewe.data()+9, buf.data(), pkt_len);
-                    je->enqueue_ctrl(bewe.data(), bewe.size());
+                    je->enqueue_file(bewe.data(), bewe.size());
                     if(n == 0 || last) break;
                 }
                 fclose(fp);
