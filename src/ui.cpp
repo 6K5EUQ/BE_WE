@@ -4491,7 +4491,6 @@ void run_streaming_viewer(){
 
     bool  ops_open     = false;
     bool  stat_open    = false;
-    bool  board_open   = false;
     bool  archive_open = false;
     int   last_fft_seq = -1;  // CONNECT 모드 FFT 시퀀스 추적
     bool  chat_scroll_bottom = false;
@@ -5627,17 +5626,16 @@ void run_streaming_viewer(){
             }
         }
 
-        // ── 숫자키 1/2/3/4: STATUS/ARCHIVE/BOARD/SCHED 탭 전환 ─────────────
+        // ── 숫자키 1/2/3: STATUS/ARCHIVE/SCHED 탭 전환 ─────────────
         // 우측 패널이 "가장 상단 오버레이"일 때만 숫자키 전환 적용 (EID/LOG/DIGI이 위면 무시)
         if(top_ov() == 4 && v.right_panel_ratio > 0.01f && !ImGui::GetIO().WantTextInput){
             auto sel = [&](int n){
                 stat_open = (n==1); archive_open = (n==2);
-                board_open = (n==3); v.sched_panel_open = (n==4);
+                v.sched_panel_open = (n==3);
             };
             if(ImGui::IsKeyPressed(ImGuiKey_1, false)) sel(1);
             else if(ImGui::IsKeyPressed(ImGuiKey_2, false)) sel(2);
             else if(ImGui::IsKeyPressed(ImGuiKey_3, false)) sel(3);
-            else if(ImGui::IsKeyPressed(ImGuiKey_4, false)) sel(4);
         }
 
         // ── 채팅창 토글 / 빠른 명령 입력 (항상 우선 처리, editing 무관) ─────
@@ -6153,7 +6151,7 @@ void run_streaming_viewer(){
 
             // 패널이 열릴 때: 마지막 활성 탭 복원 (없으면 STATUS)
             if(!prev_right_visible_outer){
-                if(!stat_open && !board_open && !v.sched_panel_open && !archive_open)
+                if(!stat_open && !v.sched_panel_open && !archive_open)
                     stat_open = true;
             }
             prev_right_visible_outer = true;
@@ -6176,7 +6174,7 @@ void run_streaming_viewer(){
                 return hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
             };
 
-            // 공통: 시스템 상태 + 안테나 렌더링 (BOARD, STATUS 양쪽에서 호출)
+            // 공통: 시스템 상태 + 안테나 렌더링 (STATUS에서 호출)
             auto draw_system_status = [&](FFTViewer& vv, const char* tag){
                 // Receiver : SDR 이름 [온도°C]  — HOST/LOCAL은 클릭하면 변경 가능
                 const char* sdr_name = "Unknown";
@@ -6267,7 +6265,7 @@ void run_streaming_viewer(){
                     } else {
                         memcpy(cur, vv.host_antenna, 32);
                     }
-                    // 편집 상태: 탭/패널당 고유한 키 필요 (BOARD/STATUS 충돌 방지)
+                    // 편집 상태: 탭/패널당 고유한 키 (현재는 STATUS만)
                     static std::string s_edit_tag;    // 현재 편집 중인 tag
                     static char        s_edit_buf[32];
                     bool editing_here = (s_edit_tag == tag);
@@ -6335,28 +6333,21 @@ void run_streaming_viewer(){
             float btn_x = rpx + 6;
             if(subbar_btn(btn_x, "STATUS", stat_open, IM_COL32(80,255,160,255))){
                 stat_open = !stat_open;
-                if(stat_open){ archive_open=false; v.sched_panel_open=false; board_open=false; }
+                if(stat_open){ archive_open=false; v.sched_panel_open=false; }
             }
 
             // ── ARCHIVE 버튼 ─────────────────────────────────────────────
             float arch_btn_x = btn_x + 56;
             if(subbar_btn(arch_btn_x, "ARCHIVE", archive_open, IM_COL32(180,140,255,255))){
                 archive_open = !archive_open;
-                if(archive_open){ stat_open=false; v.sched_panel_open=false; board_open=false; }
-            }
-
-            // ── BOARD 버튼 ───────────────────────────────────────────────
-            float board_btn_x = arch_btn_x + 64;
-            if(subbar_btn(board_btn_x, "BOARD", board_open, IM_COL32(255,200,80,255))){
-                board_open = !board_open;
-                if(board_open){ stat_open=false; archive_open=false; v.sched_panel_open=false; }
+                if(archive_open){ stat_open=false; v.sched_panel_open=false; }
             }
 
             // ── SCHED 버튼 ───────────────────────────────────────────────
-            float sched_btn_x = board_btn_x + 56;
+            float sched_btn_x = arch_btn_x + 64;
             if(subbar_btn(sched_btn_x, "SCHED", v.sched_panel_open, IM_COL32(255,100,100,255))){
                 v.sched_panel_open = !v.sched_panel_open;
-                if(v.sched_panel_open){ stat_open=false; archive_open=false; board_open=false; }
+                if(v.sched_panel_open){ stat_open=false; archive_open=false; }
             }
 
             // ── 패널 콘텐츠 영역 ─────────────────────────────────────────
@@ -8826,273 +8817,6 @@ void run_streaming_viewer(){
                 }
             }
 
-            // ── BOARD 패널 ────────────────────────────────────────────────
-            if(board_open){
-                float px=rpx, py=rp_content_y, pw=disp_w-rpx, ph=rp_content_h;
-                ImGui::SetNextWindowPos(ImVec2(px,py));
-                ImGui::SetNextWindowSize(ImVec2(pw,ph));
-                ImGui::SetNextWindowBgAlpha(0.0f);
-                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8,8));
-                ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0,0,0,0));
-                ImGui::Begin("##board_panel", nullptr,
-                    ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
-                    ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar|
-                    ImGuiWindowFlags_NoDecoration);
-
-                ImGui::PushStyleColor(ImGuiCol_Tab,       ImVec4(0.12f,0.12f,0.16f,1.f));
-                ImGui::PushStyleColor(ImGuiCol_TabHovered,ImVec4(0.20f,0.30f,0.45f,1.f));
-                ImGui::PushStyleColor(ImGuiCol_TabActive, ImVec4(0.15f,0.40f,0.65f,1.f));
-                if(ImGui::BeginTabBar("##board_tabs")){
-                    if(ImGui::BeginTabItem("BOARD")) ImGui::EndTabItem();
-                    ImGui::EndTabBar();
-                }
-                ImGui::PopStyleColor(3);
-
-                ImGui::BeginChild("##board_scroll", ImVec2(0,0), false,
-                    ImGuiWindowFlags_HorizontalScrollbar);
-
-                // ── 0. System Status ──────────────────────────────────────
-                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                if(ImGui::CollapsingHeader("System Status##board")){
-                    ImGui::Indent(6.f);
-                    draw_system_status(v, "board");
-                    ImGui::Unindent(6.f);
-                }
-                ImGui::Spacing();
-
-                // ── 1. Operators ─────────────────────────────────────────
-                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                if(ImGui::CollapsingHeader("Operators")){
-                    ImGui::Indent(6.f);
-                    if(v.net_srv){
-                        // HOST 모드: 자기 자신 먼저, 그 뒤 JOINs
-                        ImGui::TextColored(ImVec4(0.4f,0.85f,1.f,1.f),
-                            "[HOST] %s  [T%d]", login_get_id(), login_get_tier());
-                        std::lock_guard<std::mutex> lk(s_relay_op_mtx);
-                        int join_count = 0;
-                        for(int i = 0; i < (int)s_relay_op_list.count; i++){
-                            auto& op = s_relay_op_list.ops[i];
-                            if(op.index == 0) continue;
-                            ImGui::TextColored(ImVec4(0.7f,0.92f,0.7f,1.f),
-                                "[JOIN] %s  [T%d]", op.name, op.tier);
-                            join_count++;
-                        }
-                        if(s_relay_op_list.count == 0){
-                            auto ops = v.net_srv->get_operators();
-                            for(auto& op : ops){
-                                ImGui::TextColored(ImVec4(0.7f,0.92f,0.7f,1.f),
-                                    "[JOIN] %s  [T%d]", op.name, op.tier);
-                                join_count++;
-                            }
-                        }
-                        if(join_count == 0) ImGui::TextDisabled("  (no operators)");
-                    } else if(v.net_cli){
-                        // JOIN 모드: 서버 op_list 그대로 (HOST 먼저, JOINs 이후)
-                        std::lock_guard<std::mutex> lk(v.net_cli->op_mtx);
-                        for(int i=0;i<(int)v.net_cli->op_list.count;i++){
-                            auto& op = v.net_cli->op_list.ops[i];
-                            bool is_host = (op.index==0);
-                            ImVec4 oc = is_host ? ImVec4(0.4f,0.85f,1.f,1.f)
-                                                : ImVec4(0.7f,0.92f,0.7f,1.f);
-                            ImGui::TextColored(oc, "%s %s  [T%d]",
-                                is_host?"[HOST]":"[JOIN]", op.name, op.tier);
-                        }
-                    } else {
-                        // LOCAL 모드
-                        ImGui::TextColored(ImVec4(0.4f,0.85f,1.f,1.f),
-                            "[LOCAL] %s", login_get_id());
-                    }
-                    ImGui::Unindent(6.f);
-                }
-                ImGui::Spacing();
-
-                // ── 2. Channels ───────────────────────────────────────────
-                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                if(ImGui::CollapsingHeader("Channels")){
-                    ImGui::Indent(6.f);
-                    bool any_ch = false;
-                    for(int ci=0;ci<MAX_CHANNELS;ci++){
-                        const Channel& ch = v.channels[ci];
-                        if(!ch.filter_active) continue;
-                        any_ch = true;
-                        float cf = (ch.s + ch.e) * 0.5f;
-                        float bw = fabsf(ch.e - ch.s) * 1000.f; // kHz
-                        // 모드 문자열
-                        const char* mode_str = "NONE";
-                        switch(ch.mode){
-                            case Channel::DM_AM:    mode_str="AM";    break;
-                            case Channel::DM_FM:    mode_str="FM";    break;
-                            default: break;
-                        }
-                        // 복조 실행 중 여부
-                        bool dem_active = ch.dem_run.load();
-                        ImU32 col = dem_active ? IM_COL32(80,220,80,255) : IM_COL32(160,160,160,255);
-                        ImGui::PushID(ci+40000);
-                        ImGui::PushStyleColor(ImGuiCol_Text, col);
-                        char ch_line[80];
-                        snprintf(ch_line,sizeof(ch_line),"CH%d  %.4f MHz  %.0f kHz  [%s]",
-                                 v.freq_sorted_display_num(ci), (double)cf, (double)bw, mode_str);
-                        ImGui::TextUnformatted(ch_line);
-                        ImGui::PopStyleColor();
-                        // 생성자
-                        if(ch.owner[0]){
-                            ImGui::SameLine(0,6);
-                            ImGui::TextDisabled("by %s", ch.owner);
-                        }
-                        // 복조 중이면 수신 중인 오퍼레이터 표시
-                        if(dem_active){
-                            uint32_t mask = v.net_srv
-                                ? ch.audio_mask.load()
-                                : v.srv_audio_mask[ci];
-                            if(mask){
-                                char recv_str[64] = "  Recv:";
-                                if(mask & 0x1) strncat(recv_str," HOST",sizeof(recv_str)-strlen(recv_str)-1);
-                                if(v.net_srv){
-                                    auto ops2 = v.net_srv->get_operators();
-                                    for(auto& op2 : ops2){
-                                        if(mask & (1u<<op2.index))
-                                            strncat(recv_str, (" "+std::string(op2.name)).c_str(),
-                                                    sizeof(recv_str)-strlen(recv_str)-1);
-                                    }
-                                }
-                                ImGui::TextDisabled("%s", recv_str);
-                            }
-                        }
-                        ImGui::PopID();
-                    }
-                    if(!any_ch) ImGui::TextDisabled("  (no active channels)");
-                    ImGui::Unindent(6.f);
-                }
-                ImGui::Spacing();
-
-                // ── 3. Signal Activity ────────────────────────────────────
-                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                if(ImGui::CollapsingHeader("Signal Activity")){
-                    ImGui::Indent(6.f);
-                    bool any_sig = false;
-                    for(int ci=0;ci<MAX_CHANNELS;ci++){
-                        Channel& ch = v.channels[ci];
-                        if(!ch.filter_active) continue;
-                        if(!ch.dem_run.load()) continue;
-                        any_sig = true;
-                        // 오디오 링버퍼에 데이터가 있으면 신호 있음
-                        bool has_signal = (ch.audio_avail() > 0);
-                        ImU32 sig_col = has_signal ? IM_COL32(80,255,100,255) : IM_COL32(100,100,100,200);
-                        const char* sig_str = has_signal ? "SIG" : "---";
-                        ImGui::PushID(ci+41000);
-                        ImGui::PushStyleColor(ImGuiCol_Text, sig_col);
-                        ImGui::Text("CH%d  [%s]  %.4f MHz", v.freq_sorted_display_num(ci), sig_str, (double)(ch.s+ch.e)*0.5f);
-                        ImGui::PopStyleColor();
-                        ImGui::PopID();
-                    }
-                    if(!any_sig) ImGui::TextDisabled("  (no demod running)");
-                    ImGui::Unindent(6.f);
-                }
-                ImGui::Spacing();
-
-                // ── 4. Recordings (완료 파일 카운트만; 진행중은 STATUS Record) ─
-                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                if(ImGui::CollapsingHeader("Recordings")){
-                    ImGui::Indent(6.f);
-                    // Record 폴더 파일 수
-                    int rec_iq_cnt   = (int)rec_iq_files.size();
-                    int rec_aud_cnt  = (int)rec_audio_files.size();
-                    int priv_iq_cnt  = (int)priv_iq_files.size();
-                    int priv_aud_cnt = (int)priv_audio_files.size();
-                    int pub_cnt2     = (int)shared_files.size();
-                    int shr_cnt      = (int)downloaded_files.size();
-                    ImGui::Spacing();
-                    ImGui::TextDisabled("  Record   IQ:%d  Audio:%d", rec_iq_cnt,  rec_aud_cnt);
-                    ImGui::TextDisabled("  Private  IQ:%d  Audio:%d", priv_iq_cnt, priv_aud_cnt);
-                    ImGui::TextDisabled("  Public   %d",  pub_cnt2);
-                    ImGui::TextDisabled("  Share    %d",  shr_cnt);
-                    if(rec_iq_cnt+rec_aud_cnt==0)
-                        ImGui::TextDisabled("  (no recordings)");
-                    ImGui::Unindent(6.f);
-                }
-                ImGui::Spacing();
-
-                // ── 5. Report Feed ────────────────────────────────────────
-                ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                if(ImGui::CollapsingHeader("Report Feed")){
-                    ImGui::Indent(6.f);
-                    // report/ 폴더의 파일 수
-                    static std::vector<std::string> board_report_files;
-                    static float board_rpt_timer = 0;
-                    board_rpt_timer -= io.DeltaTime;
-                    if(board_rpt_timer <= 0){
-                        board_rpt_timer = 3.0f;
-                        board_report_files.clear();
-                        auto scan_rpt = [](const std::string& dir, std::vector<std::string>& out){
-                            DIR* d = opendir(dir.c_str()); if(!d) return;
-                            struct dirent* e;
-                            while((e = readdir(d))){
-                                if(e->d_name[0]=='.') continue;
-                                std::string n(e->d_name);
-                                if(n.size()>4 && n.substr(n.size()-4)==".wav")
-                                    out.push_back(n);
-                            }
-                            closedir(d);
-                        };
-                        scan_rpt(BEWEPaths::report_iq_dir(), board_report_files);
-                        scan_rpt(BEWEPaths::report_audio_dir(), board_report_files);
-                        std::sort(board_report_files.rbegin(), board_report_files.rend());
-                    }
-                    if(board_report_files.empty()){
-                        ImGui::TextDisabled("  (no reports)");
-                    } else {
-                        int show = std::min(10, (int)board_report_files.size());
-                        for(int ri2=0; ri2<show; ri2++){
-                            auto& fn2 = board_report_files[ri2];
-                            // .info 요약 읽기
-                            std::string ip2 = BEWEPaths::report_iq_dir()+"/"+fn2+".info";
-                            if(access(ip2.c_str(), F_OK)!=0)
-                                ip2 = BEWEPaths::report_audio_dir()+"/"+fn2+".info";
-                            char info_line[128] = "";
-                            FILE* fi2 = fopen(ip2.c_str(), "r");
-                            if(fi2){
-                                char line[256];
-                                while(fgets(line, sizeof(line), fi2)){
-                                    char k[64]={}, val[128]={};
-                                    if(sscanf(line, "%63[^:]: %127[^\n]", k, val)>=1){
-                                        if(strcmp(k,"Operator")==0 && val[0])
-                                            snprintf(info_line, sizeof(info_line), "by %s", val);
-                                    }
-                                }
-                                fclose(fi2);
-                            }
-                            ImGui::TextColored(ImVec4(1.f,0.8f,0.4f,1.f), "%s", fn2.c_str());
-                            if(info_line[0]){
-                                ImGui::SameLine(0,6);
-                                ImGui::TextDisabled("%s", info_line);
-                            }
-                        }
-                    }
-                    ImGui::Unindent(6.f);
-                }
-                ImGui::Spacing();
-
-                // ── 6. Event Log ──────────────────────────────────────────
-                ImGui::SetNextItemOpen(false, ImGuiCond_Once);
-                if(ImGui::CollapsingHeader("Event Log")){
-                    ImGui::Indent(6.f);
-                    // 최근 bewe_log 메시지 표시 (v.log_buf[0])
-                    if(!v.log_buf[0].empty()){
-                        int cnt = 0;
-                        for(int li=(int)v.log_buf[0].size()-1; li>=0 && cnt<30; li--,cnt++){
-                            ImGui::TextDisabled("%s", v.log_buf[0][li].msg);
-                        }
-                    } else {
-                        ImGui::TextDisabled("  (no events)");
-                    }
-                    ImGui::Unindent(6.f);
-                }
-
-                ImGui::EndChild();
-                ImGui::End();
-                ImGui::PopStyleColor();
-                ImGui::PopStyleVar();
-            }
         }
 
         // ── Bottom bar ────────────────────────────────────────────────────
