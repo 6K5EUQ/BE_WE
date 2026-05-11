@@ -235,10 +235,12 @@ void sat_view_draw(GlobeRenderer& globe, ImGuiIO& io, time_t now_utc) {
     // ── Bottom-left control: ALL / SOI / OFF ─────────────────────────────
     {
         ImVec2 ds = io.DisplaySize;
-        ImGui::SetNextWindowPos(ImVec2(8, ds.y - 8),
+        ImGui::SetNextWindowPos(ImVec2(16, ds.y - 16),
                                 ImGuiCond_Always, ImVec2(0.f, 1.f));
         ImGui::SetNextWindowSize(ImVec2(200, 0), ImGuiCond_Always);
-        ImGui::SetNextWindowBgAlpha(0.55f);
+        ImGui::SetNextWindowBgAlpha(0.85f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.06f,0.10f,0.16f,1.f));
         ImGui::Begin("##sat_ctrl", nullptr,
             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
             ImGuiWindowFlags_NoMove     | ImGuiWindowFlags_NoSavedSettings);
@@ -264,6 +266,8 @@ void sat_view_draw(GlobeRenderer& globe, ImGuiIO& io, time_t now_utc) {
         ImGui::RadioButton("SOI", &g_mode, SAT_SOI); ImGui::SameLine();
         ImGui::RadioButton("OFF", &g_mode, SAT_OFF);
         ImGui::End();
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar();
     }
     if (g_mode == SAT_OFF) return;
     if (g_sats.empty()) return;

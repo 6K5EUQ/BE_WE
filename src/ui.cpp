@@ -2566,7 +2566,7 @@ void run_streaming_viewer(){
         // ── Open Sessions panel (lists JOIN/HOST children spawned from
         // this globe). Rendered only when at least one child is alive. ─
         if(!child_sessions.empty()){
-            const float SW   = 280.f;
+            const float SW   = 200.f;
             const float row_h = 22.f;
             const float SH   = 30.f + row_h * (float)child_sessions.size();
             ImGui::SetNextWindowPos(ImVec2((float)fw - SW - 16.f,
@@ -2579,7 +2579,13 @@ void run_streaming_viewer(){
                 ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
                 ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar|
                 ImGuiWindowFlags_NoNav);
-            ImGui::TextColored(ImVec4(0.55f,0.80f,1.f,1.f), "Open Sessions");
+            {
+                const char* hdr = "Open Sessions";
+                ImVec2 hsz = ImGui::CalcTextSize(hdr);
+                float avail = ImGui::GetContentRegionAvail().x;
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - hsz.x) * 0.5f);
+                ImGui::TextColored(ImVec4(0.55f,0.80f,1.f,1.f), "%s", hdr);
+            }
             ImGui::Separator();
             pid_t close_pid = 0;
             for(const auto& cs : child_sessions){
@@ -2589,8 +2595,6 @@ void run_streaming_viewer(){
                 ImGui::TextColored(mode_col, "%-4s", cs.mode.c_str());
                 ImGui::SameLine();
                 ImGui::Text("%-14s", cs.station_name.c_str());
-                ImGui::SameLine();
-                ImGui::TextDisabled("%d", (int)cs.pid);
                 ImGui::SameLine();
                 char btn_id[32];
                 snprintf(btn_id, sizeof(btn_id), "X##cs%d", (int)cs.pid);
