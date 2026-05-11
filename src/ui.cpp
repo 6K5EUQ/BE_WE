@@ -6018,10 +6018,10 @@ void run_streaming_viewer(){
                 v.sig_lib_dirty = true;
             }
         }
-        // ── BAND 토글 (B키) — SA overlay 열려있으면 Bits 뷰로, 아니면 BAND 토글 ────
+        // ── BAND 토글 (B키) — SA overlay 열려있으면 baud-mode(노란 비트 구분선) 토글, 아니면 BAND 토글 ────
         if(ImGui::IsKeyPressed(ImGuiKey_B, false) && !io.WantTextInput){
             if(v.eid_panel_open)
-                v.eid_view_mode = 7; // Bits
+                v.eid_baud_mode = !v.eid_baud_mode;
             else
                 v.band_show = !v.band_show;
         }
@@ -8743,7 +8743,7 @@ void run_streaming_viewer(){
                         if(ImGui::IsKeyPressed(ImGuiKey_7, false)) v.eid_view_mode = 8; // Audio
                         if(ImGui::IsKeyPressed(ImGuiKey_8, false)) v.eid_view_mode = 6; // Power
                         if(ImGui::IsKeyPressed(ImGuiKey_9, false)) v.eid_view_mode = 7; // Bits
-                        if(ImGui::IsKeyPressed(ImGuiKey_B, false)) v.eid_view_mode = 7; // Bits
+                        // B(baud-mode toggle)는 위쪽 키 핸들러(6022)에서 처리 — 여기서 중복 호출하지 말 것
                         // 좌우 방향키: 현재 화면 폭만큼 팬
                         if(!io.WantTextInput){
                             double span = vt1 - vt0;
