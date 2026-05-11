@@ -58,7 +58,8 @@ namespace {
                             float& x, float& y, float& z) {
         double r   = 1.0 + alt_km / R_EARTH_KM;
         double lat = -lat_deg * M_PI / 180.0;
-        double lon = lon_deg * M_PI / 180.0;
+        // lon 반전: globe 텍스처 매핑 컨벤션에 맞추기 (East가 음수 자리에 그려짐)
+        double lon = -lon_deg * M_PI / 180.0;
         x = (float)(r * cos(lat) * cos(lon));
         y = (float)(r * sin(lat));
         z = (float)(r * cos(lat) * sin(lon));
