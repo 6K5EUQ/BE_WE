@@ -1,5 +1,8 @@
 #include "login.hpp"
 #include "bewe_paths.hpp"
+#include "central_client.hpp"
+#include "../central/central_proto.hpp"
+#include <unistd.h>
 extern void bewe_log_push(int col, const char* fmt, ...);
 #include <cstring>
 #include <cstdio>
@@ -96,6 +99,7 @@ bool draw_login_screen(int win_w, int win_h){
     static int  tier        =1;
     static bool failed      =false;
     static float fail_timer =0.0f;
+    static const char* fail_msg = "ID cannot be empty.";
     static bool bg_tried[3] ={false,false,false};
     static int  prev_ti     =0;
     static float fade_alpha =1.0f;
@@ -235,7 +239,7 @@ bool draw_login_screen(int win_w, int win_h){
     if(failed){
         fail_timer-=ImGui::GetIO().DeltaTime;
         if(fail_timer<=0.0f) failed=false;
-        ImGui::TextColored(ImVec4(1.0f,0.35f,0.35f,1.0f),"ID cannot be empty.");
+        ImGui::TextColored(ImVec4(1.0f,0.35f,0.35f,1.0f),"%s",fail_msg);
     } else {
         ImGui::Dummy(ImVec2(0,13));
     }
@@ -243,14 +247,29 @@ bool draw_login_screen(int win_w, int win_h){
     ImGui::SetCursorPosX((PW_-110.0f)*0.5f);
     bool do_login=ImGui::Button("LOGIN",ImVec2(110,26))||enter_pw;
     if(do_login){
-        if(id_buf[0]=='\0'){ failed=true; fail_timer=2.5f; }
-        else if(!is_t3 && pw_buf[0]=='\0'){ failed=true; fail_timer=2.5f; }
+        if(id_buf[0]=='\0'){
+            failed=true; fail_timer=2.5f; fail_msg="ID cannot be empty.";
+        }
+        else if(!is_t3 && pw_buf[0]=='\0'){
+            failed=true; fail_timer=2.5f; fail_msg="PW cannot be empty.";
+        }
+        else if(server_buf[0]=='\0'){
+            failed=true; fail_timer=2.5f; fail_msg="Central server cannot be empty.";
+        }
         else {
-            strncpy(g_login_id,     id_buf,     63);
-            strncpy(g_login_pw,     pw_buf,     63);
-            strncpy(g_login_server, server_buf, 127);
-            g_login_tier=tier;
-            login_done=true;
+            // Probe Central server with a 3s non-blocking TCP connect.
+            int fd = CentralClient::tcp_connect(server_buf, CENTRAL_PORT);
+            if(fd < 0){
+                failed=true; fail_timer=3.5f;
+                fail_msg="Cannot reach Central server.";
+            } else {
+                ::close(fd);
+                strncpy(g_login_id,     id_buf,     63);
+                strncpy(g_login_pw,     pw_buf,     63);
+                strncpy(g_login_server, server_buf, 127);
+                g_login_tier=tier;
+                login_done=true;
+            }
         }
     }
 
