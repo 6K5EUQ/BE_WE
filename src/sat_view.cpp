@@ -111,14 +111,14 @@ namespace {
     }
 }
 
-void sat_tle_fetch() {
+void sat_tle_fetch(bool force) {
     const time_t WEEK = 7 * 86400;
     std::string dir = BEWEPaths::assets_dir() + "/tle";
 
     // sot_tle.txt + SOI_tle.txt are user-managed (never auto-fetched).
     // starlink_tle.txt = GROUP=starlink. etc_tle.txt = GROUP=gnss + GROUP=geo.
-    bool starlink_fresh = file_age_under(dir + "/starlink_tle.txt", WEEK);
-    bool etc_fresh      = file_age_under(dir + "/etc_tle.txt",      WEEK);
+    bool starlink_fresh = !force && file_age_under(dir + "/starlink_tle.txt", WEEK);
+    bool etc_fresh      = !force && file_age_under(dir + "/etc_tle.txt",      WEEK);
     if (starlink_fresh && etc_fresh) {
         fprintf(stderr, "[sat_tle] cached files <1 week old, skipping fetch\n");
         return;
@@ -135,8 +135,14 @@ void sat_tle_fetch() {
             tmp_path.c_str(), group,
             tmp_path.c_str(), final_path.c_str(),
             tmp_path.c_str());
+        fprintf(stderr, "[sat_tle] fetching GROUP=%s ...\n", group);
         int rc = system(cmd);
-        fprintf(stderr, "[sat_tle] fetch GROUP=%s rc=%d\n", group, rc);
+        if (rc == 0)
+            fprintf(stderr, "[sat_tle] update complete: %s (GROUP=%s)\n",
+                    fname, group);
+        else
+            fprintf(stderr, "[sat_tle] update FAILED: %s (GROUP=%s, rc=%d)\n",
+                    fname, group, rc);
     };
 
     auto fetch_combined = [&](const char* g1, const char* g2, const char* fname) {
@@ -155,15 +161,71 @@ void sat_tle_fetch() {
             t1.c_str(), t2.c_str(), final_path.c_str(),
             t1.c_str(), t2.c_str(),
             t1.c_str(), t2.c_str());
+        fprintf(stderr, "[sat_tle] fetching GROUP=%s+%s ...\n", g1, g2);
         int rc = system(cmd);
-        fprintf(stderr, "[sat_tle] fetch GROUP=%s+%s rc=%d\n", g1, g2, rc);
+        if (rc == 0)
+            fprintf(stderr, "[sat_tle] update complete: %s (GROUP=%s+%s)\n",
+                    fname, g1, g2);
+        else
+            fprintf(stderr, "[sat_tle] update FAILED: %s (GROUP=%s+%s, rc=%d)\n",
+                    fname, g1, g2, rc);
     };
 
     if (!starlink_fresh) fetch_single  ("starlink",       "starlink_tle.txt");
     if (!etc_fresh)      fetch_combined("gnss", "geo",    "etc_tle.txt");
 }
 
+// Refresh SOI_tle.txt every 24h via per-satellite CATNR queries (parallel).
+// NORAD updates LEO 1–3×/day, so 24h granularity is the practical sweet spot.
+void sat_tle_refresh_soi(bool force) {
+    const time_t DAY = 24 * 3600;
+    std::string dir = BEWEPaths::assets_dir() + "/tle";
+    std::string soi_path = dir + "/SOI_tle.txt";
+    struct stat st;
+    if (!force && stat(soi_path.c_str(), &st) == 0 &&
+        (time(nullptr) - st.st_mtime) < DAY) {
+        fprintf(stderr, "[sat_tle] SOI <24h old, skipping refresh\n");
+        return;
+    }
+    std::vector<TleElem> existing;
+    if (!tle_load(soi_path, existing) || existing.empty()) {
+        fprintf(stderr, "[sat_tle] SOI missing/empty, skip refresh\n");
+        return;
+    }
+    // Build a single shell command: parallel curl -Z, then cat & mv.
+    std::string cmd = "curl --max-time 30 -fsS -A 'Mozilla/5.0' -Z";
+    std::vector<std::string> tmp;
+    for (size_t i = 0; i < existing.size(); i++) {
+        char buf[64];
+        snprintf(buf, sizeof buf, "%s/.soi_%zu.tmp", dir.c_str(), i);
+        tmp.emplace_back(buf);
+        char part[512];
+        snprintf(part, sizeof part,
+            " -o '%s' 'https://celestrak.org/NORAD/elements/"
+            "gp.php?CATNR=%d&FORMAT=tle'",
+            tmp.back().c_str(), existing[i].catalog_num);
+        cmd += part;
+    }
+    std::string out_tmp = soi_path + ".new";
+    cmd += " && cat";
+    for (auto& t : tmp) cmd += " '" + t + "'";
+    cmd += " > '" + out_tmp + "' && mv '" + out_tmp + "' '" + soi_path + "'";
+    cmd += "; rm -f";
+    for (auto& t : tmp) cmd += " '" + t + "'";
+    cmd += " '" + out_tmp + "'";
+    fprintf(stderr, "[sat_tle] refreshing SOI list (%zu sats) ...\n",
+            existing.size());
+    int rc = system(cmd.c_str());
+    if (rc == 0)
+        fprintf(stderr, "[sat_tle] update complete: SOI_tle.txt (%zu sats)\n",
+                existing.size());
+    else
+        fprintf(stderr, "[sat_tle] update FAILED: SOI_tle.txt (rc=%d)\n", rc);
+}
+
 void sat_view_init() {
+    // No auto-fetch on startup — user triggers via the Update button in the
+    // bottom-left panel. Loads whatever TLE files currently exist on disk.
     g_sats.clear();
     g_pos_cache.clear();
     g_soi_ids.clear();
@@ -204,9 +266,7 @@ namespace {
     void ensure_all_loaded() {
         if (g_all_loaded) return;
         g_all_loaded = true;
-
-        sat_tle_fetch();   // refresh starlink+etc if cache is stale (>1 week)
-
+        // No auto-fetch — load whatever starlink+etc files already exist.
         std::string dir = BEWEPaths::assets_dir() + "/tle";
         std::vector<TleElem> starlink, etc;
         tle_load(dir + "/starlink_tle.txt", starlink);
@@ -265,6 +325,19 @@ void sat_view_draw(GlobeRenderer& globe, ImGuiIO& io, time_t now_utc) {
         ImGui::SameLine();
         ImGui::RadioButton("SOI", &g_mode, SAT_SOI); ImGui::SameLine();
         ImGui::RadioButton("OFF", &g_mode, SAT_OFF);
+
+        // Manual TLE update button, centered on its own row.
+        const char* btn = "Update TLE";
+        float btn_w = ImGui::CalcTextSize(btn).x
+                    + ImGui::GetStyle().FramePadding.x * 2.f;
+        if (avail_w > btn_w)
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail_w - btn_w) * 0.5f);
+        if (ImGui::SmallButton(btn)) {
+            sat_tle_fetch(true);
+            sat_tle_refresh_soi(true);
+            sat_view_init();
+            if (g_mode == SAT_ALL) ensure_all_loaded();
+        }
         ImGui::End();
         ImGui::PopStyleColor();
         ImGui::PopStyleVar();

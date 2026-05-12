@@ -119,7 +119,15 @@ bool        g_info_modal_open = false;
 std::string g_info_path;            // file shown in Info modal
 
 // JOIN download progress
-struct DlState { std::string filename; uint64_t total=0, recv=0; FILE* fp=nullptr; };
+struct DlState {
+    std::string filename;
+    uint64_t total=0, recv=0;
+    FILE* fp=nullptr;
+    // 렌더링용 EWMA 속도 필드 (Archive와 동일 로직 재사용)
+    int64_t last_done_bytes = 0;
+    int64_t last_steady_us  = 0;
+    double  bps_ewma        = 0.0;
+};
 DlState  g_dl;
 std::mutex g_dl_mtx;
 
@@ -535,6 +543,9 @@ void register_dl_callbacks_once(NetClient* cli){
             g_dl.filename = name;
             g_dl.total = total;
             g_dl.recv = 0;
+            g_dl.last_done_bytes = 0;
+            g_dl.last_steady_us  = 0;
+            g_dl.bps_ewma        = 0.0;
             return;   // HIST 파일은 Archive 패널에 노출되지 않게 chain 차단
         }
         if(prev_meta) prev_meta(name, total);
@@ -1497,15 +1508,25 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                 std::sort(g_join_files.begin(), g_join_files.end(),
                     [](const HistFileEntry& a, const HistFileEntry& b){ return a.start_utc > b.start_utc; });
             }
-            // 진행 중인 다운로드 표시
+            // 진행 중인 다운로드 표시 (Archive와 동일 렌더링 — bytes + % + 속도)
             {
                 std::lock_guard<std::mutex> lk(g_dl_mtx);
                 if(g_dl.total > 0 && g_dl.recv < g_dl.total){
+                    FFTViewer::FileXfer x{};
+                    x.filename    = g_dl.filename;
+                    x.total_bytes = g_dl.total;
+                    x.done_bytes  = g_dl.recv;
+                    x.dir         = FFTViewer::FileXfer::DIR_DOWNLOAD;
+                    x.last_done_bytes = g_dl.last_done_bytes;
+                    x.last_steady_us  = g_dl.last_steady_us;
+                    x.bps_ewma        = g_dl.bps_ewma;
                     ImGui::Indent(8.f);
-                    ImGui::Text("DL %s", g_dl.filename.c_str());
-                    float frac = g_dl.total ? (float)g_dl.recv / (float)g_dl.total : 0.f;
-                    ImGui::ProgressBar(frac, ImVec2(-1, 0));
+                    FFTViewer::render_file_xfer_row(x);
                     ImGui::Unindent(8.f);
+                    // EWMA 상태 다시 저장
+                    g_dl.last_done_bytes = x.last_done_bytes;
+                    g_dl.last_steady_us  = x.last_steady_us;
+                    g_dl.bps_ewma        = x.bps_ewma;
                 }
             }
 

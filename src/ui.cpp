@@ -7914,56 +7914,7 @@ void run_streaming_viewer(){
                     if(any_active){
                         for(auto& x : v.file_xfers){
                             if(x.finished) continue;
-                            const char* dir_label =
-                                (x.dir == FFTViewer::FileXfer::DIR_UPLOAD)   ? "Upload" :
-                                (x.dir == FFTViewer::FileXfer::DIR_DOWNLOAD) ? "Download" :
-                                                                                "Transfer";
-                            ImVec4 col = (x.dir == FFTViewer::FileXfer::DIR_UPLOAD)
-                                ? ImVec4(1.0f, 0.85f, 0.4f, 1.f)    // 노란색 계열 = Upload
-                                : ImVec4(0.5f, 0.95f, 1.0f, 1.f);   // 청록색 계열 = Download
-                            ImGui::PushStyleColor(ImGuiCol_Text, col);
-                            ImGui::Text("%s", dir_label);
-                            ImGui::PopStyleColor();
-                            float frac = (x.total_bytes > 0)
-                                ? (float)((double)x.done_bytes / (double)x.total_bytes) : 0.f;
-                            if(frac < 0.f) frac = 0.f;
-                            if(frac > 1.f) frac = 1.f;
-                            char buf[128];
-                            auto fmt_sz = [](uint64_t b, char* o, size_t sz){
-                                if(b < 1024)               snprintf(o,sz,"%llu B",(unsigned long long)b);
-                                else if(b < 1024*1024)     snprintf(o,sz,"%.1f KB",(double)b/1024);
-                                else if(b < 1024ULL*1024*1024) snprintf(o,sz,"%.1f MB",(double)b/(1024*1024));
-                                else                       snprintf(o,sz,"%.2f GB",(double)b/(1024ULL*1024*1024));
-                            };
-                            char dn[32], tn[32];
-                            fmt_sz(x.done_bytes, dn, sizeof(dn));
-                            fmt_sz(x.total_bytes, tn, sizeof(tn));
-                            // EWMA 속도: 200ms 이상 경과 시만 갱신 (지터 완화)
-                            int64_t now_us = (int64_t)std::chrono::duration_cast<std::chrono::microseconds>(
-                                std::chrono::steady_clock::now().time_since_epoch()).count();
-                            if(x.last_steady_us == 0){
-                                x.last_steady_us = now_us; x.last_done_bytes = (int64_t)x.done_bytes;
-                            } else if(now_us - x.last_steady_us >= 200000){
-                                int64_t db = (int64_t)x.done_bytes - x.last_done_bytes;
-                                double  dt = (now_us - x.last_steady_us) / 1e6;
-                                if(dt > 0){
-                                    double inst_bps = (db > 0) ? (double)db / dt : 0.0;
-                                    x.bps_ewma = (x.bps_ewma == 0.0) ? inst_bps
-                                                                     : x.bps_ewma * 0.7 + inst_bps * 0.3;
-                                }
-                                x.last_steady_us  = now_us;
-                                x.last_done_bytes = (int64_t)x.done_bytes;
-                            }
-                            char sn[24] = "";
-                            if(x.bps_ewma > 0.0){
-                                if(x.bps_ewma < 1024)               snprintf(sn,sizeof(sn)," (%.0f B/s)", x.bps_ewma);
-                                else if(x.bps_ewma < 1024*1024)     snprintf(sn,sizeof(sn)," (%.1f KB/s)", x.bps_ewma/1024);
-                                else if(x.bps_ewma < 1024.0*1024*1024) snprintf(sn,sizeof(sn)," (%.2f MB/s)", x.bps_ewma/(1024*1024));
-                                else                                snprintf(sn,sizeof(sn)," (%.2f GB/s)", x.bps_ewma/(1024.0*1024*1024));
-                            }
-                            snprintf(buf,sizeof(buf),"%s / %s%s  %.0f%%", dn, tn, sn, frac*100.f);
-                            ImGui::ProgressBar(frac, ImVec2(-1, 0), buf);
-                            ImGui::TextDisabled("  %s", x.filename.c_str());
+                            FFTViewer::render_file_xfer_row(x);
                         }
                         // 완료된 항목은 약 5초 후 정리
                         static double last_purge = 0;
