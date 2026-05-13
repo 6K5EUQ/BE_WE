@@ -623,6 +623,27 @@ public:
     std::mutex            file_xfer_mtx;
     std::atomic<uint8_t>  next_transfer_id{1};
 
+    // 파일 리스트 한 줄 정보 포맷 — "HH:MM:SS ###.#M" / "HH:MM:SS ###.#G".
+    // M/G 모두 5글자 폭으로 통일되어 컬럼 정렬됨.
+    // Archive / HIST / DB Archive 공통 사용.
+    static inline std::string format_file_info(double sec, uint64_t bytes){
+        char tbuf[16] = "";
+        if(sec > 0){
+            uint64_t s = (uint64_t)sec;
+            snprintf(tbuf, sizeof(tbuf), "%02llu:%02llu:%02llu",
+                (unsigned long long)(s/3600),
+                (unsigned long long)((s/60)%60),
+                (unsigned long long)(s%60));
+        }
+        char sbuf[16];
+        if(bytes < (1ULL<<30)) snprintf(sbuf, sizeof(sbuf), "%5.1fM", bytes/1048576.0);
+        else                   snprintf(sbuf, sizeof(sbuf), "%5.1fG", bytes/(1024.0*1024.0*1024.0));
+        char buf[40];
+        if(tbuf[0]) snprintf(buf, sizeof(buf), "%s %s", tbuf, sbuf);
+        else        snprintf(buf, sizeof(buf), "         %s", sbuf);
+        return buf;
+    }
+
     // 단일 전송 항목 렌더링 (Archive / HIST 공통 사용).
     // x의 EWMA 속도 필드(last_*, bps_ewma)는 호출마다 갱신됨.
     static inline void render_file_xfer_row(FileXfer& x){

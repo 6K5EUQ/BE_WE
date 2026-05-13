@@ -837,7 +837,11 @@ void NetServer::send_file_to(int op_index, const char* path, uint8_t transfer_id
         if(n==0) break;
         PktFileData* d = reinterpret_cast<PktFileData*>(buf.data());
         d->transfer_id  = transfer_id;
-        d->is_last      = feof(fp) ? 1 : 0;
+        // feof()는 fread가 EOF를 만났을 때만 set — 파일 크기가 CHUNK의 정확한 배수면
+        // 마지막 정상 chunk에서 feof()=0이고 다음 iteration에서 n=0으로 break되어
+        // is_last=1이 절대 전송되지 않음 → client가 99%(또는 100%)에서 done 처리 못 함.
+        // 총 크기를 알고 있으니 offset 기반으로 정확히 판정.
+        d->is_last      = (offset + n >= total) ? 1 : 0;
         d->chunk_bytes  = (uint32_t)n;
         d->offset       = offset;
         offset += n;

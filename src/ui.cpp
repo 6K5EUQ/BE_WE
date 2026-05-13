@@ -6660,8 +6660,12 @@ void run_streaming_viewer(){
                             char label[96];
                             int dn=v.freq_sorted_display_num(ci);
                             int act_s=(int)ch.sq_active_time, tot_s=(int)ch.sq_total_time;
-                            snprintf(label,sizeof(label),"[%2d] %-3s %10.3f MHz %6.0fkHz  [%4d/%5ds]",
-                                dn,mnames[mi],cf_mhz,bw_khz,act_s,tot_s);
+                            if(act_s<0) act_s=0; if(tot_s<0) tot_s=0;
+                            snprintf(label,sizeof(label),
+                                "[%2d] %-3s %10.3f MHz %6.0fkHz  [%02d:%02d:%02d/%02d:%02d:%02d]",
+                                dn,mnames[mi],cf_mhz,bw_khz,
+                                act_s/3600,(act_s/60)%60,act_s%60,
+                                tot_s/3600,(tot_s/60)%60,tot_s%60);
                             ImGui::PushID(ci*1000+700);
                             ImGui::PushStyleColor(ImGuiCol_Text,tc_v);
                             // gate open 또는 최근 활동이면 볼드 효과 (1px offset)
@@ -8031,8 +8035,10 @@ void run_streaming_viewer(){
                                     fclose(wf);
                                 }
                             }
-                            if(sec > 0) snprintf(info,sizeof(info),"%4.0fs %6.1fM",sec,mb);
-                            else        snprintf(info,sizeof(info),"     %6.1fM",mb);
+                            {
+                                std::string s = FFTViewer::format_file_info(sec, (uint64_t)st.st_size);
+                                snprintf(info, sizeof(info), "%s", s.c_str());
+                            }
                         }
                         cached = info;
                     }
@@ -8043,7 +8049,8 @@ void run_streaming_viewer(){
                     ImGui::Selectable(fn.c_str(), sel, ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw, 0));
                     bool item_hov = ImGui::IsItemHovered();
                     if(!cached.empty()){
-                        ImGui::SameLine(fn_w + 8.f);
+                        float tw = ImGui::CalcTextSize(cached.c_str()).x;
+                        ImGui::SameLine(pw - tw - 4.f);
                         ImGui::TextDisabled("%s", cached.c_str());
                     }
                     if(item_hov){
@@ -8178,9 +8185,12 @@ void run_streaming_viewer(){
                                 if(dur_sec < 0) dur_sec += 86400;
                             }
                         }
-                        char info2[32];
-                        if(dur_sec > 0) snprintf(info2,sizeof(info2),"%4ds %6.1fM",dur_sec,mb);
-                        else            snprintf(info2,sizeof(info2),"     %6.1fM",mb);
+                        char info2[40];
+                        {
+                            std::string s = FFTViewer::format_file_info((double)dur_sec, (uint64_t)e.size_bytes);
+                            snprintf(info2, sizeof(info2), "%s", s.c_str());
+                        }
+                        (void)mb;
                         bool is_sel_db = (file_ctx.type == FileCtxMenu::FT_DB &&
                                           file_ctx.selected && file_ctx.filename == e.filename);
                         ImGui::Selectable(e.filename, is_sel_db, ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw2, 0));
@@ -8217,8 +8227,11 @@ void run_streaming_viewer(){
                                 bewe_log_push(0,"[UI] DB right-click: '%s'\n", e.filename);
                             }
                         }
-                        ImGui::SameLine(fn_w2 + 8.f);
-                        ImGui::TextDisabled("%s", info2);
+                        {
+                            float tw = ImGui::CalcTextSize(info2).x;
+                            ImGui::SameLine(pw2 - tw - 4.f);
+                            ImGui::TextDisabled("%s", info2);
+                        }
                     };
                     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                     if(ImGui::TreeNode("IQ##db")){

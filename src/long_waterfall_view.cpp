@@ -1118,15 +1118,11 @@ void draw_modal(FFTViewer& v, NetClient* cli){
         }
         ImGui::PopStyleColor(3);
 
-        // ARCHIVE의 draw_arch_file 동일 포맷 — "%4.0fs %6.1fM" (sec=0이면 size만 padding).
+        // Archive / DB Archive와 동일 포맷 — FFTViewer::format_file_info 헬퍼 재사용
         auto fmt_arch_info = [](uint32_t rows, float row_rate, uint64_t bytes) -> std::string {
             if(row_rate < 0.5f) row_rate = 5.0f;
             double sec = (double)rows / row_rate;
-            double mb  = bytes / 1048576.0;
-            char buf[40];
-            if(sec > 0) snprintf(buf, sizeof(buf), "%4.0fs %6.1fM", sec, mb);
-            else        snprintf(buf, sizeof(buf), "     %6.1fM", mb);
-            return buf;
+            return FFTViewer::format_file_info(sec, bytes);
         };
 
         // ── LIVE section (JOIN only — opt-in stream from host) ───────
@@ -1264,8 +1260,11 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                         hist_row_tooltip(hh.station_name, hh.station_lat, hh.station_lon,
                                          hh.center_freq_hz, hh.start_utc_unix, end_utc, is_active);
                     }
-                    ImGui::SameLine(fn_w + 8.f);
-                    ImGui::TextDisabled("%s", info.c_str());
+                    {
+                        float tw = ImGui::CalcTextSize(info.c_str()).x;
+                        ImGui::SameLine(pw - tw - 4.f);
+                        ImGui::TextDisabled("%s", info.c_str());
+                    }
                     if(item_hov_l && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
                         g_ctx_path = e.path; g_sel_path = e.path;
                         ImGui::OpenPopup("##lwf_live_ctx");
@@ -1434,8 +1433,11 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                     hist_row_tooltip(r.station_name, r.station_lat, r.station_lon,
                                      r.cf_hz, r.start_utc, end_utc, r.is_live);
                 }
-                ImGui::SameLine(fn_w + 8.f);
-                ImGui::TextDisabled("%s", info.c_str());
+                {
+                    float tw = ImGui::CalcTextSize(info.c_str()).x;
+                    ImGui::SameLine(pw - tw - 4.f);
+                    ImGui::TextDisabled("%s", info.c_str());
+                }
                 if(item_hov_h && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
                     g_ctx_path = r.id; g_sel_path = r.id;
                     ImGui::OpenPopup("##lwf_host_ctx");
@@ -1554,8 +1556,11 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                     hist_row_tooltip(hh.station_name, hh.station_lat, hh.station_lon,
                                      hh.center_freq_hz, hh.start_utc_unix, end_utc, false);
                 }
-                ImGui::SameLine(fn_w + 8.f);
-                ImGui::TextDisabled("%s", info.c_str());
+                {
+                    float tw = ImGui::CalcTextSize(info.c_str()).x;
+                    ImGui::SameLine(pw - tw - 4.f);
+                    ImGui::TextDisabled("%s", info.c_str());
+                }
                 if(item_hov_j && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
                     g_ctx_path = e.path; g_sel_path = e.path;
                     ImGui::OpenPopup("##lwf_local_ctx");
