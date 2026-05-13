@@ -221,6 +221,12 @@ public:
     void set_state_fn(std::function<void(CentralHostStateFull&)> cb){
         state_fn_ = std::move(cb);
     }
+    // status page v2 — HIST live recording snapshot. Return true to attach
+    // CentralHostHistInfo as a trailer on HOST_STATE; false to omit (no live).
+    void set_hist_state_fn(std::function<bool(CentralHostHistInfo&)> cb){
+        hist_state_fn_ = std::move(cb);
+    }
 private:
-    std::function<void(CentralHostStateFull&)> state_fn_;
+    std::function<void(CentralHostStateFull&)>         state_fn_;
+    std::function<bool(CentralHostHistInfo&)>          hist_state_fn_;
 };

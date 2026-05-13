@@ -247,6 +247,10 @@ struct HostRoom {
     std::mutex                state_mtx;
     bool                      has_state = false;
     CentralHostStateFull      state{};
+    // Optional HIST live-recording snapshot carried as trailer after the
+    // CentralHostStateFull in HOST_STATE. has_hist_info=false → no LIVE.
+    bool                      has_hist_info = false;
+    CentralHostHistInfo       hist_info{};
 
     // 인증/오퍼레이터 관리 (릴레이가 중앙 관리)
     uint8_t                   next_op_idx = 1;

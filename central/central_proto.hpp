@@ -279,7 +279,39 @@ static_assert(sizeof(CentralStationV2) == sizeof(CentralStation) + 48,
 struct __attribute__((packed)) CentralStationDetailReq {
     char station_id[32];
 };
-// STATION_DETAIL_RESP payload = CentralHostStateFull (or empty if station unknown)
+// STATION_DETAIL_RESP payload = CentralHostStateFull (or empty if station unknown).
+// Optional trailer after CentralHostStateFull (web-status only, opt-in by length):
+//   uint8_t  njoins
+//   CentralJoinSummary joins[njoins]
+//   uint8_t  has_hist
+//   CentralHostHistInfo hist_info    (only if has_hist == 1)
+//   uint8_t  nsched
+//   SchedSyncEntry      scheds[nsched]   (88 B each, from net_protocol.hpp)
+// Old parsers reading exactly sizeof(CentralHostStateFull) bytes still work.
+// Each section is opt-in: a parser may stop reading after any field it doesn't
+// understand, since each section starts with a length byte.
+struct __attribute__((packed)) CentralJoinSummary {
+    char     name[32];   // operator login (empty if not yet authed)
+    uint8_t  tier;       // operator tier (1=highest)
+    uint8_t  authed;     // 0/1
+    uint16_t conn_id;    // central-assigned identifier
+};
+static_assert(sizeof(CentralJoinSummary) == 36, "CentralJoinSummary must be 36 bytes");
+
+// HIST live recording snapshot — sent by HOST as an optional trailer on the
+// HOST_STATE MUX message (after CentralHostStateFull). Subset of
+// PktLwfLiveStart (net_protocol.hpp), excluding rendering-only fields.
+struct __attribute__((packed)) CentralHostHistInfo {
+    char     filename[64];
+    uint64_t start_utc_unix;     // seconds since epoch
+    uint64_t center_freq_hz;
+    uint32_t sample_rate_hz;
+    uint32_t fft_size;
+    float    row_rate_hz;        // rows per second
+    uint8_t  _pad[4];
+};
+static_assert(sizeof(CentralHostHistInfo) == 96,
+              "CentralHostHistInfo must be 96 bytes");
 
 // ── Wire helpers ───────────────────────────────────────────────────────────
 #include <vector>

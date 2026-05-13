@@ -74,6 +74,17 @@ static void register_host_state_fn(CentralClient& cli, FFTViewer& v){
         }
         st.channel_count = (uint8_t)cnt;
     });
+    cli.set_hist_state_fn([](CentralHostHistInfo& hi) -> bool {
+        PktLwfLiveStart lst{};
+        if(!LongWaterfall::snapshot_live_start(lst)) return false;
+        memcpy(hi.filename, lst.filename, sizeof(hi.filename));
+        hi.start_utc_unix = lst.start_utc_unix;
+        hi.center_freq_hz = lst.center_freq_hz;
+        hi.sample_rate_hz = (uint32_t)lst.sample_rate_hz;
+        hi.fft_size       = lst.fft_size;
+        hi.row_rate_hz    = lst.row_rate_hz;
+        return true;
+    });
 }
 
 static std::string fmt_filesize(const std::string& dir, const std::string& fname){

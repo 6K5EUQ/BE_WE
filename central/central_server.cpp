@@ -402,6 +402,16 @@ void CentralServer::host_mux_loop(std::shared_ptr<HostRoom> room){
                     std::lock_guard<std::mutex> slk(room->state_mtx);
                     memcpy(&room->state, buf.data(), sizeof(CentralHostStateFull));
                     room->has_state = true;
+                    // Optional HIST trailer (web status page)
+                    if(mux.len >= sizeof(CentralHostStateFull) + sizeof(CentralHostHistInfo)){
+                        memcpy(&room->hist_info,
+                               buf.data() + sizeof(CentralHostStateFull),
+                               sizeof(CentralHostHistInfo));
+                        room->has_hist_info = true;
+                    } else {
+                        // HOST sent a HOST_STATE without HIST trailer → no live recording.
+                        room->has_hist_info = false;
+                    }
                 }
             }
             continue;
@@ -1460,15 +1470,88 @@ void CentralServer::handle_list_req_v2(int fd){
 void CentralServer::handle_station_detail_req(int fd, const CentralStationDetailReq& req){
     std::string sid(req.station_id, strnlen(req.station_id, sizeof(req.station_id)));
     auto room = find_room(sid);
+    if(!room){
+        central_send_pkt(fd, CentralPktType::STATION_DETAIL_RESP, nullptr, 0);
+        return;
+    }
+
     CentralHostStateFull out{};
     bool has = false;
-    if(room){
+    {
         std::lock_guard<std::mutex> slk(room->state_mtx);
         if(room->has_state){ out = room->state; has = true; }
     }
-    central_send_pkt(fd, CentralPktType::STATION_DETAIL_RESP,
-                     has ? &out : nullptr,
-                     has ? sizeof(out) : 0);
+    if(!has){
+        central_send_pkt(fd, CentralPktType::STATION_DETAIL_RESP, nullptr, 0);
+        return;
+    }
+
+    // Snapshot joins for the trailer (web status page only).
+    std::vector<CentralJoinSummary> joins;
+    {
+        std::lock_guard<std::mutex> jlk(room->joins_mtx);
+        joins.reserve(room->joins.size());
+        for(auto& je : room->joins){
+            if(!je || !je->alive.load()) continue;
+            CentralJoinSummary js{};
+            memcpy(js.name, je->name, sizeof(js.name));
+            js.tier    = je->tier;
+            js.authed  = je->authed ? 1 : 0;
+            js.conn_id = je->conn_id;
+            joins.push_back(js);
+            if(joins.size() >= 255) break; // njoins is uint8_t
+        }
+    }
+
+    // HIST live-recording snapshot (optional).
+    bool has_hist = false;
+    CentralHostHistInfo hist{};
+    {
+        std::lock_guard<std::mutex> slk(room->state_mtx);
+        if(room->has_hist_info){ hist = room->hist_info; has_hist = true; }
+    }
+
+    // Schedule entries (extracted from cached SCHED_SYNC packet).
+    std::vector<SchedSyncEntry> scheds;
+    {
+        std::lock_guard<std::mutex> clk(room->cache_mtx);
+        const auto& cs = room->cached_sched_sync;
+        // BEWE packet: magic[4] + type[1] + len[4] + PktSchedSync payload.
+        if(cs.size() >= BEWE_HDR_SIZE + sizeof(PktSchedSync)){
+            const auto* ps = reinterpret_cast<const PktSchedSync*>(cs.data() + BEWE_HDR_SIZE);
+            for(int i = 0; i < MAX_SCHED_ENTRIES; i++){
+                if(!ps->entries[i].valid) continue;
+                scheds.push_back(ps->entries[i]);
+                if(scheds.size() >= 255) break; // nsched is uint8_t
+            }
+        }
+    }
+
+    uint32_t plen = sizeof(CentralHostStateFull) +
+                    1 + (uint32_t)joins.size() * sizeof(CentralJoinSummary) +
+                    1 + (has_hist ? (uint32_t)sizeof(CentralHostHistInfo) : 0u) +
+                    1 + (uint32_t)scheds.size() * sizeof(SchedSyncEntry);
+    std::vector<uint8_t> payload(plen);
+    size_t off = 0;
+    memcpy(payload.data() + off, &out, sizeof(out));            off += sizeof(out);
+    payload[off++] = (uint8_t)joins.size();
+    if(!joins.empty()){
+        memcpy(payload.data() + off, joins.data(),
+               joins.size() * sizeof(CentralJoinSummary));
+        off += joins.size() * sizeof(CentralJoinSummary);
+    }
+    payload[off++] = has_hist ? 1 : 0;
+    if(has_hist){
+        memcpy(payload.data() + off, &hist, sizeof(hist));
+        off += sizeof(hist);
+    }
+    payload[off++] = (uint8_t)scheds.size();
+    if(!scheds.empty()){
+        memcpy(payload.data() + off, scheds.data(),
+               scheds.size() * sizeof(SchedSyncEntry));
+        off += scheds.size() * sizeof(SchedSyncEntry);
+    }
+    central_send_pkt(fd, CentralPktType::STATION_DETAIL_RESP, payload.data(), plen);
 }
 
 // ── Persistent LIST polling: 한 connection에서 LIST_REQ 반복 처리 ───────────

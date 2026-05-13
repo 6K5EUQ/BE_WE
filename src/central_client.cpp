@@ -376,13 +376,28 @@ void CentralClient::mux_loop(int central_fd,
                 last_state = now;
                 CentralHostStateFull st{};
                 state_fn_(st);
+                // Optional HIST trailer (live waterfall recording info)
+                CentralHostHistInfo hi{};
+                bool has_hi = hist_state_fn_ && hist_state_fn_(hi);
                 CentralMuxHdr smh{}; smh.conn_id = 0xFFFF;
                 smh.type = static_cast<uint8_t>(CentralMuxType::HOST_STATE);
-                smh.len  = sizeof(st);
-                uint64_t st_tot = CENTRAL_MUX_HDR_SIZE + sizeof(st);
-                stat_tx_total_bytes.fetch_add(st_tot, std::memory_order_relaxed);
-                stat_tx_hb_bytes.fetch_add(st_tot, std::memory_order_relaxed);
-                enqueue_central(&smh, CENTRAL_MUX_HDR_SIZE, &st, sizeof(st));
+                if(has_hi){
+                    std::vector<uint8_t> payload(sizeof(st) + sizeof(hi));
+                    memcpy(payload.data(), &st, sizeof(st));
+                    memcpy(payload.data() + sizeof(st), &hi, sizeof(hi));
+                    smh.len = (uint32_t)payload.size();
+                    uint64_t st_tot = CENTRAL_MUX_HDR_SIZE + payload.size();
+                    stat_tx_total_bytes.fetch_add(st_tot, std::memory_order_relaxed);
+                    stat_tx_hb_bytes.fetch_add(st_tot, std::memory_order_relaxed);
+                    enqueue_central(&smh, CENTRAL_MUX_HDR_SIZE,
+                                    payload.data(), payload.size());
+                } else {
+                    smh.len = sizeof(st);
+                    uint64_t st_tot = CENTRAL_MUX_HDR_SIZE + sizeof(st);
+                    stat_tx_total_bytes.fetch_add(st_tot, std::memory_order_relaxed);
+                    stat_tx_hb_bytes.fetch_add(st_tot, std::memory_order_relaxed);
+                    enqueue_central(&smh, CENTRAL_MUX_HDR_SIZE, &st, sizeof(st));
+                }
             }
             continue;
         }
