@@ -110,6 +110,10 @@ bool CentralServer::start(int port){
         schedules_json_path_ = base + "/schedules.json";
         load_schedules_from_json();
 
+        // Mission 영속화 (Phase E)
+        missions_json_path_ = base + "/missions.json";
+        load_missions_from_json();
+
         // Emitter DB: load existing _emitters/_sightings.
         emitter_db_.load(base);
         printf("[Central] EmitterDb: %zu emitters, %zu sightings loaded\n",
@@ -232,6 +236,25 @@ void CentralServer::handshake(int fd){
                                   saved.data(), (uint32_t)saved.size());
                 printf("[Central] replayed SCHED_SYNC to HOST '%s' (%zu bytes)\n",
                        room->station_id.c_str(), saved.size());
+            }
+        }
+        // 저장된 미션 스냅샷도 HOST에 복원 전송 (lifecycle replay 트리거)
+        {
+            std::vector<uint8_t> saved_m;
+            {
+                std::lock_guard<std::mutex> jlk(missions_json_mtx_);
+                auto it = missions_by_station_.find(room->station_id);
+                if(it != missions_by_station_.end()) saved_m = it->second;
+            }
+            if(!saved_m.empty()){
+                {
+                    std::lock_guard<std::mutex> clk(room->cache_mtx);
+                    room->cached_mission_sync = saved_m;
+                }
+                enqueue_host_send(room, 0xFFFF, CentralMuxType::DATA,
+                                  saved_m.data(), (uint32_t)saved_m.size());
+                printf("[Central] replayed MISSION_SYNC to HOST '%s' (%zu bytes)\n",
+                       room->station_id.c_str(), saved_m.size());
             }
         }
         // (band plan: now host-owned. Host pushes BAND_PLAN_SYNC on each CONN_OPEN.)
@@ -620,10 +643,11 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                     c_ch = room->cached_ch_sync;
                     c_op = room->cached_op_list;
                 }
-                std::vector<uint8_t> c_sched;
+                std::vector<uint8_t> c_sched, c_mission;
                 {
                     std::lock_guard<std::mutex> clk(room->cache_mtx);
-                    c_sched = room->cached_sched_sync;
+                    c_sched   = room->cached_sched_sync;
+                    c_mission = room->cached_mission_sync;
                 }
                 int cache_count = 0;
                 if(!c_hb.empty()){ target->enqueue_ctrl(c_hb.data(), c_hb.size()); cache_count++; }
@@ -631,6 +655,7 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                 if(!c_ch.empty()){ target->enqueue_ctrl(c_ch.data(), c_ch.size()); cache_count++; }
                 if(!c_op.empty()){ target->enqueue_ctrl(c_op.data(), c_op.size()); cache_count++; }
                 if(!c_sched.empty()){ target->enqueue_ctrl(c_sched.data(), c_sched.size()); cache_count++; }
+                if(!c_mission.empty()){ target->enqueue_ctrl(c_mission.data(), c_mission.size()); cache_count++; }
                 // (band plan: host pushes via CONN_OPEN trigger, no cached send here.)
                 printf("[Central] sent %d cached packets to conn_id=%u\n", cache_count, conn_id);
                 // OPERATOR_LIST 갱신 (새 유저 반영)
@@ -665,6 +690,20 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         }
         save_schedules_to_json();
         // JOIN들에게 그대로 전달 (아래 공통 경로로 fall-through)
+    }
+
+    // ── MISSION_SYNC 인터셉트: 같은 패턴, JSON 영속화 + 모든 client 전파
+    if(bewe_type == BEWE_TYPE_MISSION_SYNC){
+        {
+            std::lock_guard<std::mutex> clk(room->cache_mtx);
+            room->cached_mission_sync.assign(bewe_pkt, bewe_pkt + bewe_len);
+        }
+        {
+            std::lock_guard<std::mutex> jlk(missions_json_mtx_);
+            missions_by_station_[room->station_id].assign(bewe_pkt, bewe_pkt + bewe_len);
+        }
+        save_missions_to_json();
+        // fall-through to dispatch_to_joins
     }
 
     // ── CHANNEL_SYNC 인터셉트: 캐시 저장 → audio_mask 재작성 후 broadcast
@@ -1667,6 +1706,188 @@ static std::vector<uint8_t> pkt_sched_sync_from_entries(
     memcpy(bewe.data()+5, &plen, 4);
     memcpy(bewe.data()+BEWE_HDR_SIZE, &pkt, sizeof(PktSchedSync));
     return bewe;
+}
+
+// ── Mission persistence ──────────────────────────────────────────────────
+// 형식:
+//   {"stations":[
+//     {"station_id":"...","missions":[
+//       {"state":N,"op_index":N,"rollover":N,"year":N,"code":"A03",
+//        "start_utc":N,"end_utc":N,"name":"...","purpose":"...",
+//        "target":"...","started_by":"...","notes":"..."},
+//       ...
+//     ]}
+//   ]}
+
+static void mission_entry_to_json(std::string& out, const MissionSyncEntry& e){
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+        "{\"state\":%u,\"op_index\":%u,\"rollover\":%u,\"year\":%u,\"code\":\"",
+        (unsigned)e.state, (unsigned)e.op_index,
+        (unsigned)e.rollover, (unsigned)e.year);
+    out += buf;
+    char code[9]={}; memcpy(code, e.code, 8);
+    json_escape(out, code);
+    snprintf(buf, sizeof(buf), "\",\"start_utc\":%lld,\"end_utc\":%lld,\"name\":\"",
+             (long long)e.start_utc, (long long)e.end_utc);
+    out += buf;
+    char nm[65]={}; memcpy(nm, e.name, 64); json_escape(out, nm);
+    out += "\",\"purpose\":\"";
+    char ps[129]={}; memcpy(ps, e.purpose, 128); json_escape(out, ps);
+    out += "\",\"target\":\"";
+    char tg[65]={}; memcpy(tg, e.target, 64); json_escape(out, tg);
+    out += "\",\"started_by\":\"";
+    char sb[33]={}; memcpy(sb, e.started_by, 32); json_escape(out, sb);
+    out += "\",\"notes\":\"";
+    char nt[257]={}; memcpy(nt, e.notes, 256); json_escape(out, nt);
+    out += "\"}";
+}
+
+void CentralServer::save_missions_to_json(){
+    std::lock_guard<std::mutex> lk(missions_json_mtx_);
+    std::string out = "{\n  \"stations\": [\n";
+    bool first_st = true;
+    for(auto& kv : missions_by_station_){
+        const auto& sid = kv.first;
+        const auto& bewe = kv.second;
+        if(bewe.size() < BEWE_HDR_SIZE + sizeof(PktMissionSync)) continue;
+        const PktMissionSync* pkt =
+            reinterpret_cast<const PktMissionSync*>(bewe.data()+BEWE_HDR_SIZE);
+
+        if(!first_st) out += ",\n";
+        first_st = false;
+        out += "    {\"station_id\":\"";
+        json_escape(out, sid.c_str());
+        out += "\",\"missions\":[";
+        bool first_m = true;
+        if(pkt->active_valid){
+            mission_entry_to_json(out, pkt->active);
+            first_m = false;
+        }
+        int cnt = std::min<int>(pkt->history_count, MAX_MISSION_HISTORY_PER_PKT);
+        for(int i = 0; i < cnt; ++i){
+            if(!pkt->entries[i].valid) continue;
+            if(!first_m) out += ",";
+            first_m = false;
+            mission_entry_to_json(out, pkt->entries[i]);
+        }
+        out += "]}";
+    }
+    out += "\n  ]\n}\n";
+    FILE* fp = fopen(missions_json_path_.c_str(), "w");
+    if(fp){ fwrite(out.data(), 1, out.size(), fp); fclose(fp); }
+    else printf("[Central] save_missions_to_json: cannot open %s errno=%d\n",
+                missions_json_path_.c_str(), errno);
+}
+
+// 간단 JSON 파서 (schedule 패턴 미러).
+static bool parse_str(const char*& p, char* dst, size_t cap){
+    while(*p && *p != '"') p++;
+    if(!*p) return false;
+    p++;
+    size_t i = 0;
+    while(*p && *p != '"'){
+        if(*p == '\\' && p[1]){ p++; }
+        if(i < cap-1) dst[i++] = *p;
+        p++;
+    }
+    if(!*p) return false;
+    p++;
+    dst[i] = 0;
+    return true;
+}
+
+void CentralServer::load_missions_from_json(){
+    std::lock_guard<std::mutex> lk(missions_json_mtx_);
+    FILE* fp = fopen(missions_json_path_.c_str(), "r");
+    if(!fp){
+        printf("[Central] missions.json not present (%s) — starting fresh\n",
+               missions_json_path_.c_str());
+        return;
+    }
+    fseek(fp, 0, SEEK_END); long sz = ftell(fp); fseek(fp, 0, SEEK_SET);
+    std::vector<char> buf(sz + 1, 0);
+    if((long)fread(buf.data(), 1, sz, fp) != sz){ fclose(fp); return; }
+    fclose(fp);
+
+    missions_by_station_.clear();
+    const char* p = buf.data();
+    size_t total = 0;
+    while((p = strstr(p, "\"station_id\"")) != nullptr){
+        p += 12;
+        char sid[64] = {};
+        if(!parse_str(p, sid, sizeof(sid))) break;
+        const char* missions_key = strstr(p, "\"missions\"");
+        const char* next_station = strstr(p, "\"station_id\"");
+        if(!missions_key || (next_station && next_station < missions_key)) continue;
+        p = missions_key + 10;
+        while(*p && *p != '[') p++;
+        if(!*p) break;
+        p++;
+
+        PktMissionSync pkt{};
+        int hist_n = 0;
+        bool first_active = true;
+        while(*p){
+            while(*p && (*p == ',' || *p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')) p++;
+            if(*p == ']') break;
+            if(*p != '{') break;
+            p++;
+            MissionSyncEntry e{};
+            e.valid = 1;
+            while(*p && *p != '}'){
+                while(*p && (*p == ',' || *p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')) p++;
+                if(*p == '}') break;
+                char key[32] = {};
+                if(!parse_str(p, key, sizeof(key))) break;
+                while(*p && *p != ':') p++;
+                if(!*p) break;
+                p++;
+                while(*p == ' ' || *p == '\t') p++;
+                if(*p == '"'){
+                    char val[512] = {};
+                    parse_str(p, val, sizeof(val));
+                    if      (!strcmp(key,"code"))       memcpy(e.code,       val, sizeof(e.code));
+                    else if (!strcmp(key,"name"))       memcpy(e.name,       val, sizeof(e.name));
+                    else if (!strcmp(key,"purpose"))    memcpy(e.purpose,    val, sizeof(e.purpose));
+                    else if (!strcmp(key,"target"))     memcpy(e.target,     val, sizeof(e.target));
+                    else if (!strcmp(key,"started_by")) memcpy(e.started_by, val, sizeof(e.started_by));
+                    else if (!strcmp(key,"notes"))      memcpy(e.notes,      val, sizeof(e.notes));
+                } else {
+                    long long v = strtoll(p, (char**)&p, 10);
+                    if      (!strcmp(key,"state"))     e.state    = (uint8_t)v;
+                    else if (!strcmp(key,"op_index"))  e.op_index = (uint8_t)v;
+                    else if (!strcmp(key,"rollover"))  e.rollover = (uint8_t)v;
+                    else if (!strcmp(key,"year"))      e.year     = (uint16_t)v;
+                    else if (!strcmp(key,"start_utc")) e.start_utc= (int64_t)v;
+                    else if (!strcmp(key,"end_utc"))   e.end_utc  = (int64_t)v;
+                }
+                while(*p && (*p == ' ' || *p == '\t' || *p == '\n')) p++;
+            }
+            if(*p == '}') p++;
+            // active (end_utc=0)인 경우 active 슬롯에 배치, 그 외엔 history
+            if(e.end_utc == 0 && first_active){
+                pkt.active = e;
+                pkt.active_valid = 1;
+                first_active = false;
+            } else if(hist_n < MAX_MISSION_HISTORY_PER_PKT){
+                pkt.entries[hist_n++] = e;
+            }
+            total++;
+        }
+        pkt.history_count = (uint16_t)hist_n;
+        if(pkt.active_valid || hist_n > 0){
+            std::vector<uint8_t> bewe(BEWE_HDR_SIZE + sizeof(PktMissionSync));
+            memcpy(bewe.data(), "BEWE", 4);
+            bewe[4] = BEWE_TYPE_MISSION_SYNC;
+            uint32_t plen = sizeof(PktMissionSync);
+            memcpy(bewe.data()+5, &plen, 4);
+            memcpy(bewe.data()+BEWE_HDR_SIZE, &pkt, sizeof(PktMissionSync));
+            missions_by_station_[sid] = std::move(bewe);
+        }
+    }
+    printf("[Central] loaded %zu mission entries across %zu stations\n",
+           total, missions_by_station_.size());
 }
 
 void CentralServer::save_schedules_to_json(){

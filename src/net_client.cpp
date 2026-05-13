@@ -368,6 +368,13 @@ void NetClient::handle_packet(PacketType type,
         break;
     }
 
+    case PacketType::MISSION_SYNC: {
+        if(len < sizeof(PktMissionSync)) break;
+        auto* sync = reinterpret_cast<const PktMissionSync*>(payload);
+        if(on_mission_sync) on_mission_sync(*sync);
+        break;
+    }
+
     case PacketType::BAND_PLAN_SYNC: {
         // 가변 크기: 4(count+pad) + count * sizeof(PktBandEntry)
         if(len < 4) break;
@@ -930,6 +937,30 @@ bool NetClient::cmd_sighting_link(const char* sighting_id, const char* emitter_u
     l.action = action;
     strncpy(l.editor, editor ? editor : my_name, SIGHTING_REPORTER_LEN-1);
     return raw_send(PacketType::SIGHTING_LINK, &l, sizeof(l));
+}
+
+// ── SIGINT Mission requests (JOIN → Central → HOST) ─────────────────────
+bool NetClient::send_mission_start(const char* name, const char* purpose,
+                                   const char* target){
+    PktMissionStart s{};
+    if(name)    strncpy(s.name,    name,    sizeof(s.name)    - 1);
+    if(purpose) strncpy(s.purpose, purpose, sizeof(s.purpose) - 1);
+    if(target)  strncpy(s.target,  target,  sizeof(s.target)  - 1);
+    strncpy(s.started_by, my_name, sizeof(s.started_by) - 1);
+    s.op_index = 0;   // central에서 채움
+    return raw_send(PacketType::MISSION_START, &s, sizeof(s));
+}
+bool NetClient::send_mission_end(){
+    PktMissionEnd e{};
+    e.op_index = 0;
+    return raw_send(PacketType::MISSION_END, &e, sizeof(e));
+}
+bool NetClient::send_mission_update(const PktMissionUpdate& up){
+    return raw_send(PacketType::MISSION_UPDATE, &up, sizeof(up));
+}
+bool NetClient::send_mission_list_req(){
+    PktMissionListReq r{};
+    return raw_send(PacketType::MISSION_LIST_REQ, &r, sizeof(r));
 }
 bool NetClient::cmd_db_save(const char* filepath, const char* operator_name){
     FILE* fp = fopen(filepath, "rb");

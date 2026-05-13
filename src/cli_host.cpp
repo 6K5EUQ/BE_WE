@@ -335,6 +335,14 @@ void run_cli_host(){
     // ── Long Waterfall worker (post-FFT image accumulator) ──────────────
     LongWaterfall::start_worker(&v);
 
+    // ── SIGINT Mission: load history + start UTC0 rollover worker ───────
+    v.mission_load_history();
+    if(v.mission_state == Mission::State::ACTIVE){
+        // 부팅 후 즉시 broadcast: Central이 캐시 갱신 + JOIN들이 sync 받음
+        v.mission_broadcast_sync();
+    }
+    Mission::start_utc0_worker(&v);
+
     // ── NetServer ────────────────────────────────────────────────────────
     NetServer* srv = new NetServer();
     int host_port = 0;
@@ -1247,6 +1255,41 @@ void run_cli_host(){
                     if(v.net_srv) v.net_srv->send_lwf_list_to_op(op_index, list);
                 };
 
+                // ── SIGINT Mission System ──────────────────────────────
+                // JOIN이 보낸 미션 명령을 HOST가 실행 (op_name으로 started_by 채움).
+                srv->cb.on_mission_start = [&v](int op_index, const char* who,
+                                                const PktMissionStart& s){
+                    char nm[64]={}, pp[128]={}, tg[64]={};
+                    memcpy(nm, s.name,    sizeof(s.name));
+                    memcpy(pp, s.purpose, sizeof(s.purpose));
+                    memcpy(tg, s.target,  sizeof(s.target));
+                    v.mission_start(nm, pp, tg, who ? who : "join",
+                                    (uint8_t)op_index, /*rollover=*/false);
+                };
+                srv->cb.on_mission_end = [&v](int op_index, const char* who){
+                    (void)op_index; (void)who;
+                    v.mission_end();
+                };
+                srv->cb.on_mission_update = [&v](int op_index, const char* who,
+                                                 const PktMissionUpdate& u){
+                    (void)op_index; (void)who;
+                    bool changed = false;
+                    {
+                        std::lock_guard<std::mutex> lk(v.mission_mtx);
+                        if(v.mission_state == Mission::State::ACTIVE){
+                            memcpy(v.mission_name,    u.name,    sizeof(v.mission_name));
+                            memcpy(v.mission_purpose, u.purpose, sizeof(v.mission_purpose));
+                            memcpy(v.mission_target,  u.target,  sizeof(v.mission_target));
+                            memcpy(v.mission_notes,   u.notes,   sizeof(v.mission_notes));
+                            changed = true;
+                        }
+                    }
+                    if(changed){
+                        v.mission_save_meta_to_disk();
+                        v.mission_broadcast_sync();
+                    }
+                };
+
                 // 새 JOIN이 Central을 통해 들어오면 cached band plan + category 즉시 푸시
                 central_cli.set_on_central_conn_open([&v, &central_cli](uint16_t cid){
                     std::vector<uint8_t> bp_pkt;
@@ -1644,6 +1687,7 @@ void run_cli_host(){
                 v.mix_stop.store(true);
                 if(v.mix_thr.joinable()) v.mix_thr.join();
                 if(cap.joinable()) cap.join();
+                Mission::stop_utc0_worker();
                 LongWaterfall::stop_worker();
                 if(v.fft_plan){ fftwf_destroy_plan(v.fft_plan); v.fft_plan=nullptr; }
                 if(v.fft_in)  { fftwf_free(v.fft_in);   v.fft_in=nullptr; }

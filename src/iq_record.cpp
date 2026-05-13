@@ -225,7 +225,12 @@ void FFTViewer::start_rec(){
 
     time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
     char fn[512];
-    std::string rec_dir=BEWEPaths::record_iq_dir();
+    std::string rec_dir=active_iq_dir();
+    if(rec_dir.empty()){
+        bewe_log_push(1, "[REC] blocked - no active mission (Start a mission first)\n");
+        MissionView::show_toast("No active mission - Start a mission first (M key)");
+        return;
+    }
     char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
     snprintf(fn,sizeof(fn),"%s/IQ_%.3fMHz_%s.wav",rec_dir.c_str(),
              rec_cf_mhz, dts);
@@ -283,7 +288,12 @@ void FFTViewer::start_audio_rec(int ch_idx){
 
     time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
     char fn[512];
-    std::string rec_dir=BEWEPaths::record_audio_dir();
+    std::string rec_dir=active_audio_dir();
+    if(rec_dir.empty()){
+        bewe_log_push(1, "[Audio REC] blocked - no active mission (Start a mission first)\n");
+        MissionView::show_toast("No active mission - Start a mission first (M key)");
+        return;
+    }
     float cf_mhz=(ch.s+ch.e)/2.0f;
     char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
     snprintf(fn,sizeof(fn),"%s/Audio_%.3fMHz_%s.wav",
@@ -474,7 +484,12 @@ void FFTViewer::start_iq_rec(int ch_idx){
 
     time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
     char fn[512];
-    std::string rec_dir=BEWEPaths::record_iq_dir();
+    std::string rec_dir=active_iq_dir();
+    if(rec_dir.empty()){
+        bewe_log_push(1, "[IQ REC ch%d] blocked - no active mission (Start a mission first)\n", ch_idx);
+        MissionView::show_toast("No active mission - Start a mission first (M key)");
+        return;
+    }
     float cf_mhz=(ch.s+ch.e)/2.0f;
     if(pending_sched_meta.active){
         // SCHED 형식: SCHED_IQ_<station>_<MissCode><DD>_<MonDD>.<YYYY>_<HHMMSS>-<HHMMSS>_<F.F>MHz.wav
@@ -607,7 +622,12 @@ void FFTViewer::start_join_audio_rec(int ch_idx){
 
     time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
     char fn[512];
-    std::string rec_dir=BEWEPaths::record_audio_dir();
+    std::string rec_dir=active_audio_dir();
+    if(rec_dir.empty()){
+        bewe_log_push(1, "[JOIN Audio REC ch%d] blocked - no active mission (Start a mission first)\n", ch_idx);
+        MissionView::show_toast("No active mission - Start a mission first (M key)");
+        return;
+    }
     float cf_mhz=(ch.s+ch.e)/2.0f;
     char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
     snprintf(fn,sizeof(fn),"%s/Audio_%.3fMHz_%s.wav",rec_dir.c_str(),cf_mhz,dts);

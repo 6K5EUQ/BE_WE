@@ -6,6 +6,7 @@
 #include "hw_config.hpp"
 #include "channel.hpp"
 #include "audio_playback.hpp"
+#include "mission.hpp"
 
 #ifndef BEWE_HEADLESS
   #include <GL/glew.h>
@@ -165,6 +166,54 @@ public:
     bool                            sig_lib_show_pending = true;
     bool                            sig_lib_show_auto = true;
     bool                            sig_lib_show_confirmed = true;
+    // ── SIGINT Mission System ─────────────────────────────────────────
+    // 'A03' (월+일) 코드, UTC 0시 자동 rollover, 신규 녹음은 미션 dir로 라우팅
+    struct MissionEntry {
+        int      year       = 0;
+        char     code[8]    = {};       // "A03"
+        time_t   start_utc  = 0;
+        time_t   end_utc    = 0;        // 0 = open
+        char     name[64]   = {};
+        char     purpose[128]={};
+        char     target[64] = {};
+        char     started_by[32] = {};
+        uint8_t  op_index   = 0;        // 0=HOST, 1..N=JOIN
+        uint8_t  rollover   = 0;        // 1 = UTC0 자동 시작
+        char     notes[256] = {};
+    };
+    mutable std::mutex mission_mtx;
+    Mission::State mission_state = Mission::State::IDLE;
+    int            mission_year = 0;
+    char           mission_code[8]        = {};
+    char           mission_name[64]       = {};
+    char           mission_purpose[128]   = {};
+    char           mission_target[64]     = {};
+    char           mission_started_by[32] = {};
+    uint8_t        mission_op_index       = 0;
+    char           mission_notes[256]     = {};
+    time_t         mission_start_utc      = 0;
+    time_t         mission_end_utc        = 0;
+    std::vector<MissionEntry> mission_history;
+    bool           mission_modal_open       = false;
+    bool           mission_start_modal_open = false;
+    bool           mission_end_confirm_open = false;
+    char           start_input_name[64]    = {};
+    char           start_input_purpose[128]= {};
+    char           start_input_target[64]  = {};
+
+    // Mission lifecycle (mission.cpp에 정의, thread-safe)
+    bool mission_start(const char* name, const char* purpose, const char* target,
+                       const char* started_by, uint8_t op_index, bool rollover);
+    bool mission_end();
+    void mission_rollover_utc0();
+    void mission_load_history();
+    void mission_save_meta_to_disk();
+    void mission_broadcast_sync();
+    // 현재 활성 미션 디렉토리. IDLE이면 빈 문자열 (호출자가 차단).
+    std::string active_iq_dir() const;
+    std::string active_audio_dir() const;
+    std::string active_hist_dir() const;
+
     // ── Long Waterfall (24h+ FFT magnitude image) ─────────────────────
     bool              lwf_modal_open = false;     // IMG 버튼 토글 → viewer 모달
     std::atomic<int>  lwf_rotate_seq{0};          // SR/CF/fft_size/IQ on-off 변경 시 ++ → worker가 새 파일

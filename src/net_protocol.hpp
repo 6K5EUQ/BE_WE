@@ -73,6 +73,12 @@ enum class PacketType : uint8_t {
     SIGHTING_LIST_REQ  = 0x45,  // client → central: sighting 목록 (특정 emitter 또는 전체)
     SIGHTING_LIST      = 0x46,  // central → caller: sighting 목록 응답
     SIGHTING_LINK      = 0x47,  // client → central: confirm/reject/move/split sighting
+    // ── SIGINT Mission System ────────────────────────────────────────────
+    MISSION_SYNC       = 0x48,  // host → central → all: 미션 전체 스냅샷 (active + history)
+    MISSION_START      = 0x49,  // any → host: 미션 시작 요청 (relay via central)
+    MISSION_END        = 0x4A,  // any → host: 활성 미션 종료 요청
+    MISSION_UPDATE     = 0x4B,  // any → host: 미션 메타데이터 업데이트 (notes 등)
+    MISSION_LIST_REQ   = 0x4C,  // any → central: MISSION_SYNC 재발송 요청
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────
@@ -652,6 +658,68 @@ struct __attribute__((packed)) PktSightingLink {
     uint8_t  action;                       // 0=confirm 1=reject 2=move 3=split_to_new
     uint8_t  _pad[3];
     char     editor[SIGHTING_REPORTER_LEN];
+};
+
+// ── SIGINT Mission System ────────────────────────────────────────────────
+static constexpr int MAX_MISSION_HISTORY_PER_PKT = 32;
+
+// 한 미션의 wire-form representation (~584 bytes, fixed POD)
+struct __attribute__((packed)) MissionSyncEntry {
+    uint8_t  valid;        // 1=유효, 0=빈 슬롯
+    uint8_t  state;        // Mission::State (0=IDLE,1=ACTIVE,2=CLOSING)
+    uint8_t  op_index;     // 0=HOST, 1..N=JOIN
+    uint8_t  rollover;     // 1=UTC0 자동 시작
+    uint16_t year;
+    uint16_t _pad;
+    char     code[8];      // "A03"
+    int64_t  start_utc;
+    int64_t  end_utc;      // 0 = open
+    char     name[64];
+    char     purpose[128];
+    char     target[64];
+    char     started_by[32];
+    char     notes[256];
+};
+
+// Central → all clients (handshake replay + broadcast)
+struct __attribute__((packed)) PktMissionSync {
+    uint8_t          active_valid;       // 1 = active entry below is meaningful
+    uint8_t          _pad[3];
+    uint16_t         history_count;      // entries[]의 유효 개수
+    uint16_t         _pad2;
+    MissionSyncEntry active;             // 현재 ACTIVE 미션 (없으면 valid=0)
+    MissionSyncEntry entries[MAX_MISSION_HISTORY_PER_PKT];
+};
+
+// JOIN/HOST → Central → HOST (relay)
+struct __attribute__((packed)) PktMissionStart {
+    char    name[64];
+    char    purpose[128];
+    char    target[64];
+    char    started_by[32];   // 빈 문자열이면 HOST가 op_name 채움
+    uint8_t op_index;         // central이 채움 (JOIN op_index)
+    uint8_t _pad[3];
+};
+
+struct __attribute__((packed)) PktMissionEnd {
+    uint8_t op_index;
+    uint8_t _pad[3];
+};
+
+struct __attribute__((packed)) PktMissionUpdate {
+    char    code[8];
+    uint16_t year;
+    uint8_t  _pad[2];
+    char    name[64];
+    char    purpose[128];
+    char    target[64];
+    char    notes[256];
+    uint8_t op_index;
+    uint8_t _pad2[3];
+};
+
+struct __attribute__((packed)) PktMissionListReq {
+    uint8_t _pad[4];
 };
 
 // ── Wire helpers ──────────────────────────────────────────────────────────

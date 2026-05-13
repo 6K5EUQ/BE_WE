@@ -111,10 +111,13 @@ bool open_new_file(uint64_t cf_hz, uint64_t sr_hz, uint32_t fft_size,
                    float dmin, float dmax,
                    float station_lon, float station_lat,
                    const char* station_name){
-    std::string dir = BEWEPaths::hist_host_dir();
+    // 미션 활성 시 그 미션의 hist 디렉토리 사용. IDLE이면 빈 문자열 → silently
+    // 파일 생성 건너뜀 (worker_loop가 500ms마다 재시도, 다음 mission_start
+    // request_rotate 호출 시 다시 들어옴).
+    std::string dir;
+    if(g_v) dir = g_v->active_hist_dir();
+    if(dir.empty()) return false;
     mkdir(BEWEPaths::recordings_dir().c_str(), 0755);
-    mkdir(BEWEPaths::hist_dir().c_str(), 0755);
-    mkdir(dir.c_str(), 0755);
 
     uint64_t now_utc = (uint64_t)time(nullptr);
     int32_t off_h_now = 0;

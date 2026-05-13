@@ -167,6 +167,9 @@ public:
     std::function<void(const PktLwfLiveRowHdr&, const uint8_t* /*row*/, uint32_t /*bytes*/)> on_lwf_live_row;
     std::function<void(const PktLwfLiveStop&)>  on_lwf_live_stop;
 
+    // ── SIGINT Mission System ────────────────────────────────────────────
+    std::function<void(const PktMissionSync&)> on_mission_sync;
+
     // 콜백 등록 전에 도착한 BAND_PLAN_SYNC / BAND_CAT_SYNC 보관 (race 방지)
     std::mutex                     band_plan_pending_mtx;
     std::unique_ptr<PktBandPlan>   band_plan_pending;
@@ -314,6 +317,12 @@ public:
     bool cmd_sighting_list_req(const char* emitter_uid_filter, uint16_t off, uint16_t lim);
     bool cmd_sighting_link(const char* sighting_id, const char* emitter_uid,
                            uint8_t action, const char* editor);
+
+    // ── SIGINT Mission ──────────────────────────────────────────────────
+    bool send_mission_start(const char* name, const char* purpose, const char* target);
+    bool send_mission_end();
+    bool send_mission_update(const PktMissionUpdate& up);
+    bool send_mission_list_req();
 
     // DB list received from Central
     std::function<void(const std::vector<DbFileEntry>&)> on_db_list;

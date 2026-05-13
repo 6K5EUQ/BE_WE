@@ -28,6 +28,7 @@ if(CLI)
         src/demod.cpp
         src/iq_record.cpp
         src/sched_record.cpp
+        src/mission.cpp
         src/audio.cpp
         src/audio_playback.cpp
         src/timemachine.cpp
@@ -103,6 +104,7 @@ else()
         src/demod.cpp
         src/iq_record.cpp
         src/sched_record.cpp
+        src/mission.cpp
         src/audio.cpp
         src/audio_playback.cpp
         src/ui.cpp
@@ -125,6 +127,7 @@ else()
         src/long_waterfall.cpp
         src/long_waterfall_view.cpp
         src/sig_lib_view.cpp
+        src/mission_view.cpp
         src/pluto_io.cpp
         src/session_spawn.cpp
         ${IMGUI_SOURCES}

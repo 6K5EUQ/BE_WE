@@ -477,6 +477,24 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
         break;
     }
 
+    case PacketType::MISSION_START: {
+        if(!c->authed || len < sizeof(PktMissionStart)) break;
+        const auto* req = reinterpret_cast<const PktMissionStart*>(payload);
+        if(cb.on_mission_start) cb.on_mission_start(c->op_index, c->name, *req);
+        break;
+    }
+    case PacketType::MISSION_END: {
+        if(!c->authed) break;
+        if(cb.on_mission_end) cb.on_mission_end(c->op_index, c->name);
+        break;
+    }
+    case PacketType::MISSION_UPDATE: {
+        if(!c->authed || len < sizeof(PktMissionUpdate)) break;
+        const auto* req = reinterpret_cast<const PktMissionUpdate*>(payload);
+        if(cb.on_mission_update) cb.on_mission_update(c->op_index, c->name, *req);
+        break;
+    }
+
     default: break;
     }
 }
@@ -650,6 +668,19 @@ void NetServer::broadcast_sched_sync(const PktSchedSync& sync){
     auto pkt = make_packet(PacketType::SCHED_SYNC, &sync, sizeof(sync));
     if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
+    std::lock_guard<std::mutex> lk(clients_mtx_);
+    for(auto& c : clients_){
+        if(c->is_relay || !c->authed || !c->alive.load()) continue;
+        c->enqueue(pkt, false);
+    }
+}
+
+// ── Broadcast mission snapshot → all clients (LAN + relay) ─────────────
+// Central은 이 패킷을 가로채 station 캐시 + missions.json 영속화 (D5).
+void NetServer::broadcast_mission_sync(const PktMissionSync& sync){
+    auto pkt = make_packet(PacketType::MISSION_SYNC, &sync, sizeof(sync));
+    if(cb.on_relay_broadcast)
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), true /*no_drop*/);
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
         if(c->is_relay || !c->authed || !c->alive.load()) continue;

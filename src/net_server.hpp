@@ -224,6 +224,15 @@ struct ServerCallbacks {
     std::function<void(int /*op_index*/, const char* /*who*/, const char* /*filename*/)> on_lwf_dl_req;
     std::function<void(int /*op_index*/, const char* /*who*/)>          on_lwf_live_req;
     std::function<void(int /*op_index*/, const char* /*who*/, const char* /*filename*/)> on_lwf_delete_req;
+
+    // ── SIGINT Mission System ────────────────────────────────────────────
+    // JOIN → Central → HOST relay. cb 콜백은 HOST 측 cli_host/ui에서 등록해
+    // FFTViewer.mission_start/end/update를 호출.
+    std::function<void(int /*op_index*/, const char* /*who*/,
+                       const PktMissionStart&)> on_mission_start;
+    std::function<void(int /*op_index*/, const char* /*who*/)> on_mission_end;
+    std::function<void(int /*op_index*/, const char* /*who*/,
+                       const PktMissionUpdate&)> on_mission_update;
 };
 
 // ── NetServer ─────────────────────────────────────────────────────────────
@@ -278,6 +287,10 @@ public:
 
     // Scheduled recording list snapshot → all clients
     void broadcast_sched_sync(const PktSchedSync& pkt);
+
+    // Mission state snapshot → all clients (via central relay).
+    // HOST가 미션 상태 변화 시 호출.
+    void broadcast_mission_sync(const PktMissionSync& pkt);
     void broadcast_band_plan(const PktBandPlan& pkt);
     void broadcast_band_categories(const PktBandCatSync& pkt);
 

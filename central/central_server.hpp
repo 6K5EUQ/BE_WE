@@ -240,6 +240,7 @@ struct HostRoom {
     std::vector<uint8_t>      cached_ch_sync;
     std::vector<uint8_t>      cached_op_list;     // 릴레이가 빌드
     std::vector<uint8_t>      cached_sched_sync;  // 예약 리스트 (JSON에 영속화)
+    std::vector<uint8_t>      cached_mission_sync; // 미션 스냅샷 (JSON에 영속화)
 
     // Status page v2 — host periodic state cache (CentralHostStateFull).
     // Updated whenever a HOST_STATE MUX message arrives. has_state_ false
@@ -340,6 +341,13 @@ private:
     std::unordered_map<std::string, std::vector<uint8_t>> sched_by_station_;
     void load_schedules_from_json();
     void save_schedules_to_json();   // 모든 station 스냅샷을 JSON으로 덤프
+
+    // ── Mission persistence (station_id → BEWE 패킷 캐시) ────────────────
+    std::mutex                missions_json_mtx_;
+    std::string               missions_json_path_;
+    std::unordered_map<std::string, std::vector<uint8_t>> missions_by_station_;
+    void load_missions_from_json();
+    void save_missions_to_json();
 
     // (band plan: now host-owned. Central just relays BAND_PLAN_SYNC and BAND_ADD/UPDATE/REMOVE.)
 

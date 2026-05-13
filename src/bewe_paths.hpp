@@ -113,6 +113,33 @@ static inline std::string hist_live_dir() { return hist_dir()+"/live"; }
 // (legacy 호환: 이전 코드의 long_waterfall_dir = hist_host_dir)
 static inline std::string long_waterfall_dir(){ return hist_host_dir(); }
 
+// ── SIGINT Missions ──────────────────────────────────────────────────────
+// recordings/missions/<YYYY>/<code>/{iq,audio,hist}/  + mission.info
+// 활성 미션이 있을 때만 신규 녹음이 이 디렉토리로 라우팅됨.
+static inline std::string missions_root(){ return recordings_dir()+"/missions"; }
+static inline std::string missions_year_dir(int year){
+    char b[16]; snprintf(b, sizeof(b), "/%04d", year);
+    return missions_root()+b;
+}
+static inline std::string mission_dir(int year, const std::string& code){
+    return missions_year_dir(year)+"/"+code;
+}
+static inline std::string mission_iq_dir(int year, const std::string& code){
+    return mission_dir(year,code)+"/iq";
+}
+static inline std::string mission_audio_dir(int year, const std::string& code){
+    return mission_dir(year,code)+"/audio";
+}
+static inline std::string mission_hist_dir(int year, const std::string& code){
+    return mission_dir(year,code)+"/hist";
+}
+static inline std::string mission_info_path(int year, const std::string& code){
+    return mission_dir(year,code)+"/mission.info";
+}
+static inline std::string missions_json_path(){
+    return missions_root()+"/missions.json";
+}
+
 // 디렉터리 없으면 자동 생성
 static inline void ensure_dirs(){
     auto mk=[](const std::string& p){ mkdir(p.c_str(),0755); };
@@ -125,6 +152,7 @@ static inline void ensure_dirs(){
     mk(database_dir());
     mk(time_temp_dir());
     mk(hist_dir()); mk(hist_host_dir()); mk(hist_join_dir()); mk(hist_live_dir());
+    mk(missions_root());
 }
 
 } // namespace BEWEPaths

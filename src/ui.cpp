@@ -2950,6 +2950,58 @@ void run_streaming_viewer(){
             }
         };
 
+        // 미션 스냅샷 수신 → JOIN 로컬 mission_* 상태 재구성
+        cli->on_mission_sync = [&](const PktMissionSync& sync){
+            std::lock_guard<std::mutex> lk(v.mission_mtx);
+            // active 슬롯 적용
+            if(sync.active_valid && sync.active.valid){
+                const auto& a = sync.active;
+                v.mission_state = (Mission::State)a.state;
+                v.mission_year  = a.year;
+                memcpy(v.mission_code,       a.code,       sizeof(v.mission_code));
+                memcpy(v.mission_name,       a.name,       sizeof(v.mission_name));
+                memcpy(v.mission_purpose,    a.purpose,    sizeof(v.mission_purpose));
+                memcpy(v.mission_target,     a.target,     sizeof(v.mission_target));
+                memcpy(v.mission_started_by, a.started_by, sizeof(v.mission_started_by));
+                memcpy(v.mission_notes,      a.notes,      sizeof(v.mission_notes));
+                v.mission_op_index  = a.op_index;
+                v.mission_start_utc = (time_t)a.start_utc;
+                v.mission_end_utc   = 0;
+            } else {
+                v.mission_state    = Mission::State::IDLE;
+                v.mission_code[0]  = 0;
+                v.mission_year     = 0;
+                v.mission_name[0]  = 0;
+                v.mission_purpose[0] = 0;
+                v.mission_target[0]  = 0;
+                v.mission_started_by[0] = 0;
+                v.mission_notes[0] = 0;
+                v.mission_op_index = 0;
+                v.mission_start_utc = 0;
+                v.mission_end_utc   = 0;
+            }
+            // history 재구성
+            v.mission_history.clear();
+            int hn = std::min<int>(sync.history_count, MAX_MISSION_HISTORY_PER_PKT);
+            for(int i = 0; i < hn; ++i){
+                const auto& e = sync.entries[i];
+                if(!e.valid) continue;
+                FFTViewer::MissionEntry me{};
+                me.year      = e.year;
+                memcpy(me.code,       e.code,       sizeof(me.code));
+                memcpy(me.name,       e.name,       sizeof(me.name));
+                memcpy(me.purpose,    e.purpose,    sizeof(me.purpose));
+                memcpy(me.target,     e.target,     sizeof(me.target));
+                memcpy(me.started_by, e.started_by, sizeof(me.started_by));
+                memcpy(me.notes,      e.notes,      sizeof(me.notes));
+                me.op_index  = e.op_index;
+                me.rollover  = e.rollover;
+                me.start_utc = (time_t)e.start_utc;
+                me.end_utc   = (time_t)e.end_utc;
+                v.mission_history.push_back(me);
+            }
+        };
+
         // Band plan 수신 → v.band_segments 재구성 (Central 공유)
         cli->on_band_plan = [&](const PktBandPlan& bp){
             std::lock_guard<std::mutex> lk(v.band_mtx);
@@ -3601,6 +3653,15 @@ void run_streaming_viewer(){
         // JOIN(mode_sel==2)은 자기 SDR 없음 → worker 안 돌림.
         if(mode_sel == 0 || mode_sel == 1){
             LongWaterfall::start_worker(&v);
+        }
+
+        // ── SIGINT Mission: LOCAL/HOST는 history load + UTC0 worker 시작.
+        // JOIN은 missions.json 로컬 보유 없음 (Central이 MISSION_SYNC로 푸시).
+        if(mode_sel == 0 || mode_sel == 1){
+            v.mission_load_history();
+            if(v.mission_state == Mission::State::ACTIVE)
+                v.mission_broadcast_sync();
+            Mission::start_utc0_worker(&v);
         }
 
         // Band plan / categories — LOCAL 모드에서도 파일 로드 + UI에 미러링
@@ -4292,6 +4353,37 @@ void run_streaming_viewer(){
                                     PktLwfList list{};
                                     LongWaterfall::scan_dir_into_list(list);
                                     if(v.net_srv) v.net_srv->send_lwf_list_to_op(op_index, list);
+                                };
+                                // ── Mission callbacks (HOST 측) ─────────
+                                v.net_srv->cb.on_mission_start = [&v](int op_index, const char* who,
+                                                                       const PktMissionStart& s){
+                                    char nm[64]={}, pp[128]={}, tg[64]={};
+                                    memcpy(nm, s.name,    sizeof(s.name));
+                                    memcpy(pp, s.purpose, sizeof(s.purpose));
+                                    memcpy(tg, s.target,  sizeof(s.target));
+                                    v.mission_start(nm, pp, tg, who ? who : "join",
+                                                    (uint8_t)op_index, /*rollover=*/false);
+                                };
+                                v.net_srv->cb.on_mission_end = [&v](int, const char*){
+                                    v.mission_end();
+                                };
+                                v.net_srv->cb.on_mission_update = [&v](int, const char*,
+                                                                        const PktMissionUpdate& u){
+                                    bool changed = false;
+                                    {
+                                        std::lock_guard<std::mutex> lk(v.mission_mtx);
+                                        if(v.mission_state == Mission::State::ACTIVE){
+                                            memcpy(v.mission_name,    u.name,    sizeof(v.mission_name));
+                                            memcpy(v.mission_purpose, u.purpose, sizeof(v.mission_purpose));
+                                            memcpy(v.mission_target,  u.target,  sizeof(v.mission_target));
+                                            memcpy(v.mission_notes,   u.notes,   sizeof(v.mission_notes));
+                                            changed = true;
+                                        }
+                                    }
+                                    if(changed){
+                                        v.mission_save_meta_to_disk();
+                                        v.mission_broadcast_sync();
+                                    }
                                 };
 
                                 central_cli.set_on_central_conn_open([&central_cli](uint16_t /*cid*/){
@@ -5948,42 +6040,44 @@ void run_streaming_viewer(){
             dl->AddText(ImVec2(mx, my), IM_COL32(140,200,255,255), mbuf);
         }
 
-        // ── Right side: channel status + REC + PAUSED ────────────────────
+        // ── Right side: Mission indicator (clickable) ────────────────────
+        // REC/PAUSED/SCHED 인디케이터는 미션 모달의 Current Session 섹션으로 통합 이동.
+        // 여기엔 미션 코드 또는 IDLE만 표시. 클릭 → 미션 모달 토글.
         {
-            float rx=disp_w-8.0f;
-            float ty2=(TOPBAR_H-ImGui::GetFontSize())/2;
-
-            if(v.rec_on.load()){
-                float el=v.rec_sr>0 ? (float)v.rec_frames.load()/(float)v.rec_sr : 0.f;
-                uint64_t fr=v.rec_frames.load(); float mb=(float)(fr*4)/1048576.0f;
-                int mm2=(int)(el/60), ss2=(int)(el)%60;
-                char rbuf[80]; snprintf(rbuf,sizeof(rbuf),"REC %d:%02d %.1fMB  ",mm2,ss2,mb);
-                ImVec2 rs=ImGui::CalcTextSize(rbuf); rx-=rs.x;
-                dl->AddText(ImVec2(rx,ty2),IM_COL32(255,80,80,255),rbuf);
-            }
-            if(v.spectrum_pause.load()){
-                const char* ps="PAUSED  ";
-                ImVec2 psz=ImGui::CalcTextSize(ps); rx-=psz.x;
-                dl->AddText(ImVec2(rx,ty2),IM_COL32(255,180,0,255),ps);
-            }
-            // SCHED indicator
+            float rx  = disp_w - 8.0f;
+            float ty2 = (TOPBAR_H - ImGui::GetFontSize()) / 2.0f;
+            char mbuf[40]; ImU32 col;
             {
-                std::lock_guard<std::mutex> lk(v.sched_mtx);
-                if(v.sched_active_idx >= 0){
-                    const char* st="SCHED REC  ";
-                    ImVec2 sz=ImGui::CalcTextSize(st); rx-=sz.x;
-                    dl->AddText(ImVec2(rx,ty2),IM_COL32(255,100,100,255),st);
+                std::lock_guard<std::mutex> lk(v.mission_mtx);
+                if(v.mission_state == Mission::State::ACTIVE && v.mission_code[0]){
+                    snprintf(mbuf, sizeof(mbuf), "  MISSION : %s  ", v.mission_code);
+                    col = IM_COL32(255, 220, 0, 255);   // 노란색
+                } else if(v.mission_state == Mission::State::CLOSING){
+                    snprintf(mbuf, sizeof(mbuf), "  MISSION : CLOSING  ");
+                    col = IM_COL32(255, 220, 0, 255);   // 노란색
                 } else {
-                    int waiting=0;
-                    for(auto& se:v.sched_entries) if(se.status==FFTViewer::SchedEntry::WAITING) waiting++;
-                    if(waiting>0){
-                        char buf[32]; snprintf(buf,sizeof(buf),"SCHED(%d)  ",waiting);
-                        ImVec2 sz=ImGui::CalcTextSize(buf); rx-=sz.x;
-                        dl->AddText(ImVec2(rx,ty2),IM_COL32(200,200,100,255),buf);
-                    }
+                    snprintf(mbuf, sizeof(mbuf), "  MISSION : IDLE  ");
+                    col = IM_COL32(255, 220, 0, 255);   // 노란색
                 }
             }
-
+            ImVec2 msz = ImGui::CalcTextSize(mbuf);
+            rx -= msz.x;
+            ImVec2 mn(rx, 0), mx(rx + msz.x, TOPBAR_H);
+            ImGui::SetCursorScreenPos(mn);
+            ImGui::InvisibleButton("##mission_btn", ImVec2(msz.x, TOPBAR_H));
+            if(ImGui::IsItemHovered())
+                dl->AddRectFilled(mn, mx, IM_COL32(60, 60, 80, 180));
+            dl->AddText(ImVec2(rx, ty2), col, mbuf);
+            if(ImGui::IsItemClicked()){
+                // 다른 overlay 활성이면 단순 토글 안 됨 (try_toggle은 아래 정의).
+                bool other = v.eid_panel_open || v.log_panel_open ||
+                             v.lwf_modal_open || v.sig_lib_panel_open;
+                if(v.mission_modal_open){
+                    v.mission_modal_open = false;       // 끄기는 항상 OK
+                } else if(!other){
+                    v.mission_modal_open = true;
+                }
+            }
         }
         ImGui::PopStyleVar(); // ItemSpacing
 
@@ -5996,11 +6090,12 @@ void run_streaming_viewer(){
         // 한 번에 하나만 활성. 다른 게 켜져 있으면 새로 켜는 동작은 무시.
         // 끄기는 언제나 허용.
         auto any_other_overlay_open = [&](int self) -> bool {
-            // self: 0=EID, 1=LOG, 3=HIST, 4=SIG_LIB
+            // self: 0=EID, 1=LOG, 3=HIST, 4=SIG_LIB, 5=MISSION
             if(self != 0 && v.eid_panel_open) return true;
             if(self != 1 && v.log_panel_open) return true;
             if(self != 3 && v.lwf_modal_open) return true;
             if(self != 4 && v.sig_lib_panel_open) return true;
+            if(self != 5 && v.mission_modal_open) return true;
             return false;
         };
         auto try_toggle = [&](int self, bool& flag){
@@ -6028,6 +6123,10 @@ void run_streaming_viewer(){
             if(try_toggle(4, v.sig_lib_panel_open) && v.sig_lib_panel_open){
                 v.sig_lib_dirty = true;
             }
+        }
+        // ── MISSION 토글 (M키) — 미션 모달 ────
+        if(ImGui::IsKeyPressed(ImGuiKey_M, false) && !io.WantTextInput){
+            try_toggle(5, v.mission_modal_open);
         }
         // ── BAND 토글 (B키) — SA overlay 열려있으면 baud-mode(노란 비트 구분선) 토글, 아니면 BAND 토글 ────
         if(ImGui::IsKeyPressed(ImGuiKey_B, false) && !io.WantTextInput){
@@ -6662,7 +6761,7 @@ void run_streaming_viewer(){
                             int act_s=(int)ch.sq_active_time, tot_s=(int)ch.sq_total_time;
                             if(act_s<0) act_s=0; if(tot_s<0) tot_s=0;
                             snprintf(label,sizeof(label),
-                                "[%2d] %-3s %10.3f MHz %6.0fkHz  [%02d:%02d:%02d/%02d:%02d:%02d]",
+                                "[%2d] %-3s %10.3f MHz %6.0fkHz  [%02d:%02d:%02d / %02d:%02d:%02d]",
                                 dn,mnames[mi],cf_mhz,bw_khz,
                                 act_s/3600,(act_s/60)%60,act_s%60,
                                 tot_s/3600,(tot_s/60)%60,tot_s%60);
@@ -12639,6 +12738,10 @@ void run_streaming_viewer(){
         // ── Signal Library overlay ────────────────────────────────────────
         SigLibView::draw_overlay(v, cli);
 
+        // ── Mission modal + toast ─────────────────────────────────────────
+        MissionView::draw_modal(v, cli);
+        MissionView::draw_toast();
+
         ImGui::Render();
         int dw2,dh2; glfwGetFramebufferSize(win,&dw2,&dh2);
         glViewport(0,0,dw2,dh2);
@@ -12663,6 +12766,7 @@ void run_streaming_viewer(){
         v.tm_iq_close();
     }
     v.mix_stop.store(true); if(v.mix_thr.joinable()) v.mix_thr.join();
+    Mission::stop_utc0_worker();
     LongWaterfall::stop_worker();
     LongWaterfallView::close_modal();
     v.net_bcast_stop.store(true);

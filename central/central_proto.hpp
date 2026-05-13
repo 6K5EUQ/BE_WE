@@ -161,6 +161,13 @@ static constexpr uint8_t BEWE_TYPE_SIGHTING_LIST_REQ  = 0x45;
 static constexpr uint8_t BEWE_TYPE_SIGHTING_LIST      = 0x46;
 static constexpr uint8_t BEWE_TYPE_SIGHTING_LINK      = 0x47;
 
+// ── SIGINT Mission System ────────────────────────────────────────────────
+static constexpr uint8_t BEWE_TYPE_MISSION_SYNC     = 0x48;
+static constexpr uint8_t BEWE_TYPE_MISSION_START    = 0x49;
+static constexpr uint8_t BEWE_TYPE_MISSION_END      = 0x4A;
+static constexpr uint8_t BEWE_TYPE_MISSION_UPDATE   = 0x4B;
+static constexpr uint8_t BEWE_TYPE_MISSION_LIST_REQ = 0x4C;
+
 static constexpr uint8_t BEWE_TYPE_CHAT     = 0x07;
 
 // AUTH_REQ payload: id[32] + pw[64] + tier[1] = 97 bytes
