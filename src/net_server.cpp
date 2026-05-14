@@ -488,12 +488,7 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
         if(cb.on_mission_end) cb.on_mission_end(c->op_index, c->name);
         break;
     }
-    case PacketType::MISSION_UPDATE: {
-        if(!c->authed || len < sizeof(PktMissionUpdate)) break;
-        const auto* req = reinterpret_cast<const PktMissionUpdate*>(payload);
-        if(cb.on_mission_update) cb.on_mission_update(c->op_index, c->name, *req);
-        break;
-    }
+    // MISSION_UPDATE 제거 — 자동 캡처 모델에서 운영자 편집 필드 없음.
 
     default: break;
     }

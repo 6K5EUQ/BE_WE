@@ -1273,25 +1273,7 @@ void run_cli_host(){
                     (void)op_index; (void)who;
                     v.mission_end();
                 };
-                srv->cb.on_mission_update = [&v](int op_index, const char* who,
-                                                 const PktMissionUpdate& u){
-                    (void)op_index; (void)who;
-                    bool changed = false;
-                    {
-                        std::lock_guard<std::mutex> lk(v.mission_mtx);
-                        if(v.mission_state == Mission::State::ACTIVE){
-                            memcpy(v.mission_name,    u.name,    sizeof(v.mission_name));
-                            memcpy(v.mission_purpose, u.purpose, sizeof(v.mission_purpose));
-                            memcpy(v.mission_target,  u.target,  sizeof(v.mission_target));
-                            memcpy(v.mission_notes,   u.notes,   sizeof(v.mission_notes));
-                            changed = true;
-                        }
-                    }
-                    if(changed){
-                        v.mission_save_meta_to_disk();
-                        v.mission_broadcast_sync();
-                    }
-                };
+                // MISSION_UPDATE는 자동 캡처 모델에서 의미 없음 — 콜백 등록 안 함.
 
                 // 새 JOIN이 Central을 통해 들어오면 cached band plan + category 즉시 푸시
                 central_cli.set_on_central_conn_open([&v, &central_cli](uint16_t cid){

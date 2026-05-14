@@ -952,9 +952,6 @@ bool NetClient::send_mission_end(){
     e.op_index = 0;
     return raw_send(PacketType::MISSION_END, &e, sizeof(e));
 }
-bool NetClient::send_mission_update(const PktMissionUpdate& up){
-    return raw_send(PacketType::MISSION_UPDATE, &up, sizeof(up));
-}
 bool NetClient::send_mission_list_req(){
     PktMissionListReq r{};
     return raw_send(PacketType::MISSION_LIST_REQ, &r, sizeof(r));

@@ -321,7 +321,6 @@ public:
     // ── SIGINT Mission ──────────────────────────────────────────────────
     bool send_mission_start();
     bool send_mission_end();
-    bool send_mission_update(const PktMissionUpdate& up);
     bool send_mission_list_req();
 
     // DB list received from Central

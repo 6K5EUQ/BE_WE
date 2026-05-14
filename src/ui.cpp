@@ -4378,10 +4378,7 @@ void run_streaming_viewer(){
                                 v.net_srv->cb.on_mission_end = [&v](int, const char*){
                                     v.mission_end();
                                 };
-                                v.net_srv->cb.on_mission_update = [](int, const char*,
-                                                                      const PktMissionUpdate&){
-                                    // v4.0: mission has no user-editable fields. Update no-op.
-                                };
+                                // MISSION_UPDATE는 자동 캡처 모델에서 의미 없음 — 콜백 미등록.
 
                                 central_cli.set_on_central_conn_open([&central_cli](uint16_t /*cid*/){
                                     std::vector<uint8_t> bp_pkt;

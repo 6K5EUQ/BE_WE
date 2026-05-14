@@ -1,49 +1,45 @@
-// SIGINT Mission System — lifecycle 구현.
-// Phase A: stubs (start/end 메모리 상태만 변경, 디렉토리 생성, 로그).
-// Phase B에서 stop_rec/stop_audio_rec 등 실 stop 호출과 broadcast_sync/save 채움.
+// SIGINT Mission System — lifecycle 구현 (자동 캡처 모델).
+// 미션 시작 시 운영자 입력 없이 station/host/lat/lon/SDR/안테나를 FFTViewer 컨텍스트에서
+// 자동 캡처. UTC 정시마다 HIST rotate (1시간 1파일). UTC 0시는 미션 자체 rollover.
 
 #include "mission.hpp"
 #include "fft_viewer.hpp"
 #include "bewe_paths.hpp"
 #include "long_waterfall.hpp"
+#include "hw_config.hpp"
 #include "login.hpp"
 
 #include <atomic>
 #include <chrono>
-#include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <mutex>
 #include <string>
+#include <unistd.h>
 #include <sys/stat.h>
 #include <thread>
+#include <vector>
 
-// Toast storage (UI / headless 양쪽 빌드. 표시는 GUI 빌드의 mission_view.cpp).
+// ── Toast storage (mission_view.cpp가 draw_toast로 읽음) ──────────────────
 namespace MissionView {
-    // 정의는 여기 (mission.cpp), 그림은 mission_view.cpp의 draw_toast가 읽음.
     std::string g_toast_msg;
-    double      g_toast_expire = 0.0;   // steady_clock seconds since epoch
+    double      g_toast_expire = 0.0;
     void show_toast(const char* msg){
         if(!msg) return;
         g_toast_msg = msg;
-        // 단조 시계 기반 (GUI도 같은 시계로 비교 가능하게 std::chrono 사용)
         auto now = std::chrono::steady_clock::now().time_since_epoch();
-        double s = std::chrono::duration<double>(now).count();
-        g_toast_expire = s + 3.0;
+        g_toast_expire = std::chrono::duration<double>(now).count() + 3.0;
     }
 }
 
 namespace Mission {
 
-static std::thread        g_utc0_thr;
-static std::atomic<bool>  g_utc0_stop{false};
-// UTC 시간 단위 dedup: yday*24 + hour. 매 정시(분=0)당 1회만 트리거.
-static int                g_last_rotate_hour_id = -1;
+static std::thread       g_utc0_thr;
+static std::atomic<bool> g_utc0_stop{false};
+static int               g_last_rotate_hour_id = -1;
 
 static void utc0_worker(FFTViewer* v){
-    // 20초마다 깨어나 UTC 정시 검사. 분=0 60초 윈도우 안에 1회만 발사.
-    // - UTC 00:00 → mission_rollover_utc0() (미션 자체 rollover + HIST rotate 포함)
-    // - 그 외 정시 (01:00, 02:00, ..., 23:00) → HIST rotate만 (활성 미션 안에서 1시간 단위 파일)
     while(!g_utc0_stop.load()){
         std::this_thread::sleep_for(std::chrono::seconds(20));
         if(g_utc0_stop.load()) break;
@@ -57,14 +53,13 @@ static void utc0_worker(FFTViewer* v){
         if(tm_utc.tm_hour == 0){
             v->mission_rollover_utc0();
         } else {
-            // HIST rotate만 — IDLE이면 long_waterfall.cpp::open_new_file이 알아서 skip
             LongWaterfall::request_rotate();
         }
     }
 }
 
 void start_utc0_worker(FFTViewer* v){
-    if(g_utc0_thr.joinable()) return;  // 중복 시작 방지
+    if(g_utc0_thr.joinable()) return;
     g_utc0_stop.store(false);
     g_utc0_thr = std::thread(utc0_worker, v);
 }
@@ -76,10 +71,37 @@ void stop_utc0_worker(){
 
 } // namespace Mission
 
-// ── FFTViewer mission_* 구현 ───────────────────────────────────────────────
+// ── 자동 캡처 helpers ─────────────────────────────────────────────────────
+static const char* mission_sdr_kind_str(const FFTViewer& v){
+    if(v.dev_blade)             return "BladeRF";
+    if(v.pluto_ctx)             return "Pluto";
+    if(v.dev_rtl)               return "RTL-SDR";
+    if(v.hw.type == HWType::BLADERF) return "BladeRF";
+    if(v.hw.type == HWType::PLUTO)   return "Pluto";
+    if(v.hw.type == HWType::RTLSDR)  return "RTL-SDR";
+    return "Unknown";
+}
 
-bool FFTViewer::mission_start(const char* started_by, uint8_t op_index, bool rollover)
-{
+static void fill_host_name(char* dst, size_t cap){
+    // login_get_id가 비어있을 수도 → 시스템 hostname 폴백
+    const char* lid = login_get_id();
+    if(lid && lid[0]){
+        size_t n = strlen(lid); if(n >= cap) n = cap - 1;
+        memcpy(dst, lid, n); dst[n] = 0;
+        return;
+    }
+    char h[64] = {};
+    if(gethostname(h, sizeof(h)-1) == 0){
+        size_t n = strlen(h); if(n >= cap) n = cap - 1;
+        memcpy(dst, h, n); dst[n] = 0;
+    } else {
+        dst[0] = 0;
+    }
+}
+
+// ── FFTViewer mission_* 구현 ─────────────────────────────────────────────
+
+bool FFTViewer::mission_start(const char* started_by, uint8_t op_index, bool rollover){
     {
         std::lock_guard<std::mutex> lk(mission_mtx);
         if(mission_state != Mission::State::IDLE) return false;
@@ -102,14 +124,13 @@ bool FFTViewer::mission_start(const char* started_by, uint8_t op_index, bool rol
         mission_end_utc    = 0;
         mission_state      = Mission::State::ACTIVE;
 
-        // Auto-capture metadata from current host context.
+        // 자동 캡처 메타데이터
         cpy(mission_station_name, sizeof(mission_station_name), station_name.c_str());
-        cpy(mission_host_name,    sizeof(mission_host_name),    login_get_id());
+        fill_host_name(mission_host_name, sizeof(mission_host_name));
         mission_lat = station_lat;
         mission_lon = station_lon;
-        cpy(mission_sdr_kind, sizeof(mission_sdr_kind),
-            g_sdr_force.empty() ? "" : g_sdr_force.c_str());
-        cpy(mission_antenna, sizeof(mission_antenna), host_antenna);
+        cpy(mission_sdr_kind, sizeof(mission_sdr_kind), mission_sdr_kind_str(*this));
+        cpy(mission_antenna,  sizeof(mission_antenna),  host_antenna);
 
         // 디렉토리 생성
         mkdir(BEWEPaths::missions_root().c_str(), 0755);
@@ -119,13 +140,11 @@ bool FFTViewer::mission_start(const char* started_by, uint8_t op_index, bool rol
         mkdir(BEWEPaths::mission_audio_dir(mission_year, mission_code).c_str(), 0755);
         mkdir(BEWEPaths::mission_hist_dir(mission_year, mission_code).c_str(), 0755);
 
-        bewe_log_push(0, "[MISSION] start: %04d/%s by %s (rollover=%d, station='%s' host='%s')\n",
-                      mission_year, mission_code,
-                      mission_started_by, (int)rollover,
-                      mission_station_name, mission_host_name);
+        bewe_log_push(0, "[MISSION] start: %04d/%s by %s (rollover=%d, sdr=%s)\n",
+                      mission_year, mission_code, mission_started_by,
+                      (int)rollover, mission_sdr_kind);
     }
 
-    // 락 풀린 상태에서: HIST rotate + disk/network IO (broadcast_sync 안에서 lock 재진입)
     LongWaterfall::request_rotate();
     mission_save_meta_to_disk();
     mission_broadcast_sync();
@@ -133,8 +152,6 @@ bool FFTViewer::mission_start(const char* started_by, uint8_t op_index, bool rol
 }
 
 bool FFTViewer::mission_end(){
-    // 진행 중 녹음 stop은 별도 락 없는 함수들이라 mission_mtx 잡고 부르면
-    // 데드락 위험 → 진행 중 녹음 정리는 락 풀고 수행, 그 후 다시 락 잡고 상태 전이.
     {
         std::lock_guard<std::mutex> lk(mission_mtx);
         if(mission_state != Mission::State::ACTIVE) return false;
@@ -143,9 +160,7 @@ bool FFTViewer::mission_end(){
         bewe_log_push(0, "[MISSION] end: %04d/%s\n", mission_year, mission_code);
     }
 
-    // HIST: 즉시 rotate → 현재 파일 finalize, 새 파일은 IDLE이라 안 만들어짐.
     LongWaterfall::request_rotate();
-    // 진행 중 IQ/Audio 녹음 자동 stop (확인 모달은 UI 레이어에서 처리, 여기는 unconditional stop).
     if(rec_on.load()) stop_rec();
     for(int i = 0; i < MAX_CHANNELS; ++i){
         if(channels[i].iq_rec_on.load()) stop_iq_rec(i);
@@ -157,45 +172,41 @@ bool FFTViewer::mission_end(){
 
     {
         std::lock_guard<std::mutex> lk(mission_mtx);
-        // history에 snapshot 추가
         MissionEntry done{};
-        done.year       = mission_year;
-        memcpy(done.code,        mission_code,        sizeof(done.code));
-        memcpy(done.started_by,  mission_started_by,  sizeof(done.started_by));
-        memcpy(done.station_name,mission_station_name,sizeof(done.station_name));
-        memcpy(done.host_name,   mission_host_name,   sizeof(done.host_name));
-        memcpy(done.sdr_kind,    mission_sdr_kind,    sizeof(done.sdr_kind));
-        memcpy(done.antenna,     mission_antenna,     sizeof(done.antenna));
-        done.lat        = mission_lat;
-        done.lon        = mission_lon;
-        done.op_index   = mission_op_index;
-        done.start_utc  = mission_start_utc;
-        done.end_utc    = mission_end_utc;
+        done.year      = mission_year;
+        memcpy(done.code,         mission_code,         sizeof(done.code));
+        memcpy(done.started_by,   mission_started_by,   sizeof(done.started_by));
+        memcpy(done.station_name, mission_station_name, sizeof(done.station_name));
+        memcpy(done.host_name,    mission_host_name,    sizeof(done.host_name));
+        memcpy(done.sdr_kind,     mission_sdr_kind,     sizeof(done.sdr_kind));
+        memcpy(done.antenna,      mission_antenna,      sizeof(done.antenna));
+        done.lat       = mission_lat;
+        done.lon       = mission_lon;
+        done.op_index  = mission_op_index;
+        done.start_utc = mission_start_utc;
+        done.end_utc   = mission_end_utc;
         mission_history.push_back(done);
 
         // IDLE 전이
-        mission_state            = Mission::State::IDLE;
-        mission_code[0]          = 0;
-        mission_year             = 0;
-        mission_started_by[0]    = 0;
-        mission_op_index         = 0;
-        mission_start_utc        = 0;
-        mission_end_utc          = 0;
-        mission_station_name[0]  = 0;
-        mission_host_name[0]     = 0;
+        mission_state         = Mission::State::IDLE;
+        mission_code[0]       = 0;
+        mission_year          = 0;
+        mission_started_by[0] = 0;
+        mission_station_name[0] = 0;
+        mission_host_name[0]    = 0;
+        mission_sdr_kind[0]     = 0;
+        mission_antenna[0]      = 0;
         mission_lat = mission_lon = 0.f;
-        mission_sdr_kind[0]      = 0;
-        mission_antenna[0]       = 0;
+        mission_op_index      = 0;
+        mission_start_utc     = 0;
+        mission_end_utc       = 0;
     }
-    // 락 풀린 상태에서 disk/network IO (broadcast_sync는 mission_mtx를 자체 잡음)
     mission_save_meta_to_disk();
     mission_broadcast_sync();
     return true;
 }
 
 void FFTViewer::mission_rollover_utc0(){
-    // 활성 미션 → UTC0 시점에 새 코드로 자동 재시작. started_by/op_index만 승계.
-    // 새 미션은 현재 station/host/lat/lon/sdr/antenna 컨텍스트로 다시 캡처됨.
     char prev_started_by[32];
     uint8_t prev_op;
     {
@@ -208,7 +219,7 @@ void FFTViewer::mission_rollover_utc0(){
     mission_start(prev_started_by, prev_op, /*rollover=*/true);
 }
 
-// JSON escape (간단 — 따옴표/백슬래시/제어문자만)
+// ── Persistence helpers ──────────────────────────────────────────────────
 static void mj_escape(std::string& out, const char* s){
     for(; *s; s++){
         char c = *s;
@@ -220,73 +231,63 @@ static void mj_escape(std::string& out, const char* s){
     }
 }
 
-// MissionEntry → JSON object (v4.0 schema: auto-captured metadata)
 static void mj_entry_write(std::string& out, int year, const char* code,
                            time_t start_utc, time_t end_utc,
-                           const char* started_by, uint8_t op_index, uint8_t rollover,
+                           const char* started_by,
                            const char* station_name, const char* host_name,
                            float lat, float lon,
                            const char* sdr_kind, const char* antenna,
-                           uint8_t state){
+                           uint8_t op_index, uint8_t rollover, uint8_t state){
     char buf[160];
     snprintf(buf, sizeof(buf),
         "{\"state\":%u,\"op_index\":%u,\"rollover\":%u,\"year\":%d,\"code\":\"",
         (unsigned)state, (unsigned)op_index, (unsigned)rollover, year);
     out += buf;
     mj_escape(out, code);
-    snprintf(buf, sizeof(buf), "\",\"start_utc\":%lld,\"end_utc\":%lld,\"started_by\":\"",
-             (long long)start_utc, (long long)end_utc);
+    snprintf(buf, sizeof(buf),
+        "\",\"start_utc\":%lld,\"end_utc\":%lld,\"lat\":%.6f,\"lon\":%.6f,",
+        (long long)start_utc, (long long)end_utc, (double)lat, (double)lon);
     out += buf;
-    mj_escape(out, started_by);
-    out += "\",\"station\":\"";  mj_escape(out, station_name);
-    out += "\",\"host\":\"";     mj_escape(out, host_name);
-    snprintf(buf, sizeof(buf), "\",\"lat\":%.6f,\"lon\":%.6f,\"sdr\":\"",
-             (double)lat, (double)lon);
-    out += buf;
-    mj_escape(out, sdr_kind);
-    out += "\",\"antenna\":\""; mj_escape(out, antenna);
+    out += "\"started_by\":\""; mj_escape(out, started_by);
+    out += "\",\"station_name\":\""; mj_escape(out, station_name);
+    out += "\",\"host_name\":\"";    mj_escape(out, host_name);
+    out += "\",\"sdr_kind\":\"";     mj_escape(out, sdr_kind);
+    out += "\",\"antenna\":\"";      mj_escape(out, antenna);
     out += "\"}";
 }
 
 void FFTViewer::mission_save_meta_to_disk(){
-    // HOST local missions.json — 활성 미션 + history 모두 저장 (end_utc=0이 활성).
-    // mission.info 파일 — 활성 미션의 키-밸류 메타 (iq_record.cpp의 .info 패턴 유사).
     std::lock_guard<std::mutex> lk(mission_mtx);
 
-    // 1) missions.json
+    // missions.json
     std::string out = "{\n  \"version\": 1,\n  \"missions\": [\n";
     bool first = true;
-    // 활성 미션 먼저 (있으면)
     if(mission_state == Mission::State::ACTIVE && mission_code[0]){
         if(!first) out += ",\n";
         out += "    ";
         mj_entry_write(out, mission_year, mission_code,
                        mission_start_utc, 0,
-                       mission_started_by, mission_op_index, 0,
-                       mission_station_name, mission_host_name,
-                       mission_lat, mission_lon,
-                       mission_sdr_kind, mission_antenna,
-                       (uint8_t)Mission::State::ACTIVE);
+                       mission_started_by, mission_station_name, mission_host_name,
+                       mission_lat, mission_lon, mission_sdr_kind, mission_antenna,
+                       mission_op_index, 0, (uint8_t)Mission::State::ACTIVE);
         first = false;
     }
-    // history
     for(auto& e : mission_history){
         if(!first) out += ",\n";
         out += "    ";
         mj_entry_write(out, e.year, e.code, e.start_utc, e.end_utc,
-                       e.started_by, e.op_index, e.rollover,
-                       e.station_name, e.host_name, e.lat, e.lon,
-                       e.sdr_kind, e.antenna,
-                       (uint8_t)Mission::State::IDLE);
+                       e.started_by, e.station_name, e.host_name,
+                       e.lat, e.lon, e.sdr_kind, e.antenna,
+                       e.op_index, e.rollover, (uint8_t)Mission::State::IDLE);
         first = false;
     }
     out += "\n  ]\n}\n";
     mkdir(BEWEPaths::missions_root().c_str(), 0755);
     FILE* fp = fopen(BEWEPaths::missions_json_path().c_str(), "w");
     if(fp){ fwrite(out.data(), 1, out.size(), fp); fclose(fp); }
-    else bewe_log_push(1, "[MISSION] save missions.json failed errno=%d\n", errno);
+    else   bewe_log_push(1, "[MISSION] save missions.json failed errno=%d\n", errno);
 
-    // 2) mission.info (활성 미션만) — auto-captured metadata
+    // mission.info (활성 미션만)
     if(mission_state == Mission::State::ACTIVE && mission_code[0]){
         std::string ipath = BEWEPaths::mission_info_path(mission_year, mission_code);
         FILE* ifp = fopen(ipath.c_str(), "w");
@@ -295,30 +296,28 @@ void FFTViewer::mission_save_meta_to_disk(){
             struct tm tu; gmtime_r(&st, &tu);
             fprintf(ifp,
                 "Mission Code: %04d/%s\n"
-                "Station: %s\n"
-                "Host: %s\n"
-                "Coordinates: %.6f, %.6f\n"
-                "SDR: %s\n"
-                "Antenna: %s\n"
                 "Started By: %s\n"
                 "Start UTC: %04d-%02d-%02d %02d:%02d:%02d\n"
-                "End UTC: %s\n"
+                "Station: %s\n"
+                "Host: %s\n"
+                "Lat: %.6f\n"
+                "Lon: %.6f\n"
+                "SDR: %s\n"
+                "Antenna: %s\n"
                 "Op Index: %u\n",
                 mission_year, mission_code,
-                mission_station_name, mission_host_name,
-                (double)mission_lat, (double)mission_lon,
-                mission_sdr_kind, mission_antenna,
                 mission_started_by,
                 1900+tu.tm_year, 1+tu.tm_mon, tu.tm_mday,
                 tu.tm_hour, tu.tm_min, tu.tm_sec,
-                mission_end_utc ? "" : "-",
+                mission_station_name, mission_host_name,
+                (double)mission_lat, (double)mission_lon,
+                mission_sdr_kind, mission_antenna,
                 (unsigned)mission_op_index);
             fclose(ifp);
         }
     }
 }
 
-// 간단 JSON parser helpers
 static bool mj_parse_str(const char*& p, char* dst, size_t cap){
     while(*p && *p != '"') p++;
     if(!*p) return false;
@@ -335,7 +334,6 @@ static bool mj_parse_str(const char*& p, char* dst, size_t cap){
 }
 
 void FFTViewer::mission_load_history(){
-    // missions.json 파싱. end_utc=0인 entry 발견 시 ACTIVE 복원.
     FILE* fp = fopen(BEWEPaths::missions_json_path().c_str(), "r");
     if(!fp){
         bewe_log_push(0, "[MISSION] missions.json absent — starting IDLE\n");
@@ -360,8 +358,7 @@ void FFTViewer::mission_load_history(){
         if(*p != '{') break;
         p++;
         MissionEntry e{};
-        uint8_t state_val = 0;
-        char tmp[512];
+        char tmp[256];
         while(*p && *p != '}'){
             while(*p && (*p == ',' || *p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')) p++;
             if(*p == '}') break;
@@ -375,29 +372,28 @@ void FFTViewer::mission_load_history(){
                 tmp[0] = 0; mj_parse_str(p, tmp, sizeof(tmp));
                 if      (!strcmp(key,"code"))         { strncpy(e.code,         tmp, sizeof(e.code)-1); }
                 else if (!strcmp(key,"started_by"))   { strncpy(e.started_by,   tmp, sizeof(e.started_by)-1); }
-                else if (!strcmp(key,"station"))      { strncpy(e.station_name, tmp, sizeof(e.station_name)-1); }
-                else if (!strcmp(key,"host"))         { strncpy(e.host_name,    tmp, sizeof(e.host_name)-1); }
-                else if (!strcmp(key,"sdr"))          { strncpy(e.sdr_kind,     tmp, sizeof(e.sdr_kind)-1); }
+                else if (!strcmp(key,"station_name")) { strncpy(e.station_name, tmp, sizeof(e.station_name)-1); }
+                else if (!strcmp(key,"host_name"))    { strncpy(e.host_name,    tmp, sizeof(e.host_name)-1); }
+                else if (!strcmp(key,"sdr_kind"))     { strncpy(e.sdr_kind,     tmp, sizeof(e.sdr_kind)-1); }
                 else if (!strcmp(key,"antenna"))      { strncpy(e.antenna,      tmp, sizeof(e.antenna)-1); }
-            } else {
-                // number: int OR float (lat/lon). strtod handles both.
-                char* endp = (char*)p;
-                double dv = strtod(p, &endp);
-                long long iv = (long long)dv;
-                p = endp;
-                if      (!strcmp(key,"state"))     state_val   = (uint8_t)iv;
-                else if (!strcmp(key,"op_index"))  e.op_index  = (uint8_t)iv;
-                else if (!strcmp(key,"rollover"))  e.rollover  = (uint8_t)iv;
-                else if (!strcmp(key,"year"))      e.year      = (int)iv;
-                else if (!strcmp(key,"start_utc")) e.start_utc = (time_t)iv;
-                else if (!strcmp(key,"end_utc"))   e.end_utc   = (time_t)iv;
-                else if (!strcmp(key,"lat"))       e.lat       = (float)dv;
-                else if (!strcmp(key,"lon"))       e.lon       = (float)dv;
+            } else if((*p>='0' && *p<='9') || *p=='-' || *p=='+'){
+                // 숫자(정수/실수). lat/lon만 float, 나머지는 정수.
+                char* endp = nullptr;
+                if(!strcmp(key,"lat"))      { e.lat = (float)strtod(p, &endp); p = endp; }
+                else if(!strcmp(key,"lon")) { e.lon = (float)strtod(p, &endp); p = endp; }
+                else {
+                    long long v = strtoll(p, (char**)&p, 10);
+                    if      (!strcmp(key,"op_index"))  e.op_index  = (uint8_t)v;
+                    else if (!strcmp(key,"rollover"))  e.rollover  = (uint8_t)v;
+                    else if (!strcmp(key,"year"))      e.year      = (int)v;
+                    else if (!strcmp(key,"start_utc")) e.start_utc = (time_t)v;
+                    else if (!strcmp(key,"end_utc"))   e.end_utc   = (time_t)v;
+                    // state는 ACTIVE 복원에 사용 안 함 (end_utc=0 검사로 충분)
+                }
             }
             while(*p && (*p == ' ' || *p == '\t' || *p == '\n')) p++;
         }
         if(*p == '}') p++;
-        // end_utc=0이고 아직 활성 미션 안 복원했다면 → ACTIVE 복원
         if(e.end_utc == 0 && !active_restored){
             mission_state    = Mission::State::ACTIVE;
             mission_year     = e.year;
@@ -413,18 +409,17 @@ void FFTViewer::mission_load_history(){
             mission_start_utc  = e.start_utc;
             mission_end_utc    = 0;
             active_restored = true;
-            bewe_log_push(0, "[MISSION] restored ACTIVE %04d/%s station='%s' host='%s'\n",
-                          e.year, e.code, e.station_name, e.host_name);
+            bewe_log_push(0, "[MISSION] restored ACTIVE %04d/%s station=%s sdr=%s\n",
+                          e.year, e.code, e.station_name, e.sdr_kind);
         } else {
             mission_history.push_back(e);
         }
-        (void)state_val;
     }
     bewe_log_push(0, "[MISSION] loaded %zu history entries (active=%d)\n",
                   mission_history.size(), (int)active_restored);
 }
 
-// 한 MissionEntry → 패킷용 MissionSyncEntry (v4.0 schema)
+// ── Broadcast ────────────────────────────────────────────────────────────
 static void fill_sync_entry(MissionSyncEntry& dst,
                             const FFTViewer::MissionEntry& src,
                             uint8_t state_val){
@@ -439,24 +434,21 @@ static void fill_sync_entry(MissionSyncEntry& dst,
     memcpy(dst.started_by,   src.started_by,   sizeof(dst.started_by));
     memcpy(dst.station_name, src.station_name, sizeof(dst.station_name));
     memcpy(dst.host_name,    src.host_name,    sizeof(dst.host_name));
-    memcpy(dst.sdr_kind,     src.sdr_kind,     sizeof(dst.sdr_kind));
-    memcpy(dst.antenna,      src.antenna,      sizeof(dst.antenna));
     dst.lat = src.lat;
     dst.lon = src.lon;
+    memcpy(dst.sdr_kind, src.sdr_kind, sizeof(dst.sdr_kind));
+    memcpy(dst.antenna,  src.antenna,  sizeof(dst.antenna));
 }
 
 void FFTViewer::mission_broadcast_sync(){
-    // HOST만 broadcast 송신. JOIN은 본 콜백 무시.
     if(!net_srv) return;
-
     PktMissionSync pkt{};
     {
         std::lock_guard<std::mutex> lk(mission_mtx);
-        // 활성 미션
         if(mission_state == Mission::State::ACTIVE && mission_code[0]){
             pkt.active_valid = 1;
             MissionEntry act{};
-            act.year       = mission_year;
+            act.year      = mission_year;
             memcpy(act.code,         mission_code,         sizeof(act.code));
             memcpy(act.started_by,   mission_started_by,   sizeof(act.started_by));
             memcpy(act.station_name, mission_station_name, sizeof(act.station_name));
@@ -470,7 +462,6 @@ void FFTViewer::mission_broadcast_sync(){
             act.end_utc   = 0;
             fill_sync_entry(pkt.active, act, (uint8_t)Mission::State::ACTIVE);
         }
-        // history (최신 우선, 최대 MAX_MISSION_HISTORY_PER_PKT)
         size_t n = mission_history.size();
         size_t taken = 0;
         for(size_t i = 0; i < n && taken < MAX_MISSION_HISTORY_PER_PKT; ++i){
@@ -483,6 +474,7 @@ void FFTViewer::mission_broadcast_sync(){
     net_srv->broadcast_mission_sync(pkt);
 }
 
+// ── active_*_dir helpers ─────────────────────────────────────────────────
 std::string FFTViewer::active_iq_dir() const {
     std::lock_guard<std::mutex> lk(mission_mtx);
     if(mission_state == Mission::State::ACTIVE && mission_code[0]){
