@@ -748,6 +748,14 @@ void draw_info_modal(){
 
 } // anon
 
+// External entry point for mission_view: open a HIST file in the viewer.
+// Returns true on success — caller should set v.lwf_modal_open = true.
+// Anon-namespace open_file has internal linkage; in the same TU the unqualified
+// call resolves to it via the implicit using-directive on anonymous namespaces.
+bool lwf_open_file(const std::string& path){
+    return open_file(path);
+}
+
 namespace LongWaterfallView {
 
 void draw_modal(FFTViewer& v, NetClient* cli){
@@ -776,12 +784,10 @@ void draw_modal(FFTViewer& v, NetClient* cli){
         ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove|
         ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoScrollbar);
 
-    // S키: HIST file panel 토글 (입력 중이거나 모달 안 focus면 무시).
+    // S키 file-panel 토글 제거 (v4.0): mission 창에서 파일 선택해 진입.
+    // 우측 file panel 자체도 항상 닫힌 채 — viewer는 viewer 본연만 담당.
     bool modal_focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
-    if(modal_focused && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_S, false)){
-        g_files_panel_open = !g_files_panel_open;
-    }
-    // (탭 단축키 제거 — HOST/JOIN을 collapsing section으로 통합)
+    g_files_panel_open = false;
     // ESC로 모달 닫기 (titlebar X 없음 보완).
     if(modal_focused && ImGui::IsKeyPressed(ImGuiKey_Escape, false)){
         v.lwf_modal_open = false;

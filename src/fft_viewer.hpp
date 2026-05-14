@@ -173,37 +173,37 @@ public:
         char     code[8]    = {};       // "A03"
         time_t   start_utc  = 0;
         time_t   end_utc    = 0;        // 0 = open
-        char     name[64]   = {};
-        char     purpose[128]={};
-        char     target[64] = {};
         char     started_by[32] = {};
         uint8_t  op_index   = 0;        // 0=HOST, 1..N=JOIN
         uint8_t  rollover   = 0;        // 1 = UTC0 자동 시작
-        char     notes[256] = {};
+        // Mission metadata captured at start (station ctx, written to mission.json)
+        char     station_name[64] = {};
+        char     host_name[32]    = {};
+        float    lat = 0.f, lon = 0.f;
+        char     sdr_kind[24]     = {};   // "BladeRF" / "RTL-SDR" / "Pluto"
+        char     antenna[64]      = {};
     };
     mutable std::mutex mission_mtx;
     Mission::State mission_state = Mission::State::IDLE;
     int            mission_year = 0;
     char           mission_code[8]        = {};
-    char           mission_name[64]       = {};
-    char           mission_purpose[128]   = {};
-    char           mission_target[64]     = {};
     char           mission_started_by[32] = {};
     uint8_t        mission_op_index       = 0;
-    char           mission_notes[256]     = {};
     time_t         mission_start_utc      = 0;
     time_t         mission_end_utc        = 0;
+    // 활성 미션 메타데이터 (start 시점 캡처)
+    char           mission_station_name[64] = {};
+    char           mission_host_name[32]    = {};
+    float          mission_lat = 0.f, mission_lon = 0.f;
+    char           mission_sdr_kind[24]     = {};
+    char           mission_antenna[64]      = {};
     std::vector<MissionEntry> mission_history;
     bool           mission_modal_open       = false;
     bool           mission_start_modal_open = false;
     bool           mission_end_confirm_open = false;
-    char           start_input_name[64]    = {};
-    char           start_input_purpose[128]= {};
-    char           start_input_target[64]  = {};
 
     // Mission lifecycle (mission.cpp에 정의, thread-safe)
-    bool mission_start(const char* name, const char* purpose, const char* target,
-                       const char* started_by, uint8_t op_index, bool rollover);
+    bool mission_start(const char* started_by, uint8_t op_index, bool rollover);
     bool mission_end();
     void mission_rollover_utc0();
     void mission_load_history();
@@ -375,6 +375,10 @@ public:
         char    operator_name[32] = {};  // 예약자 (HOST면 login_get_id(), JOIN이면 op_name)
         uint8_t op_index          = 0;   // 0=HOST, 1..N=JOIN op_index
         char    target[32]        = {};  // free-form 식별 라벨 (UI에서 운용자 입력)
+        // Mission context — HOST stamps these at add time so mission_view can
+        // filter the list. Empty year/code = added outside any mission.
+        int     mission_year      = 0;
+        char    mission_code[8]   = {};
     };
     static constexpr float SCHED_PRE_ARM_SEC = 5.0f;
     std::vector<SchedEntry> sched_entries;

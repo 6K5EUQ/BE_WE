@@ -277,8 +277,13 @@ struct __attribute__((packed)) SchedSyncEntry {
     float    bw_khz;
     char     operator_name[32];
     char     target[32];       // free-form 식별 라벨
-}; // 88 bytes
-static_assert(sizeof(SchedSyncEntry) == 88, "SchedSyncEntry size");
+    // v4.0: mission context — set by HOST at schedule-add time so JOINs
+    // can filter the list per mission. Empty for entries added outside a mission.
+    uint16_t mission_year;
+    char     mission_code[8];
+    uint8_t  _pad2[6];
+}; // 104 bytes
+static_assert(sizeof(SchedSyncEntry) == 104, "SchedSyncEntry size");
 struct __attribute__((packed)) PktSchedSync {
     uint8_t        count;
     uint8_t        _pad[3];
@@ -663,22 +668,27 @@ struct __attribute__((packed)) PktSightingLink {
 // ── SIGINT Mission System ────────────────────────────────────────────────
 static constexpr int MAX_MISSION_HISTORY_PER_PKT = 32;
 
-// 한 미션의 wire-form representation (~584 bytes, fixed POD)
+// 한 미션의 wire-form representation (fixed POD)
+// v4.0: removed name/purpose/target/notes. Added station/host/lat/lon/sdr/antenna
+// captured automatically at mission start (no user-entered fields).
 struct __attribute__((packed)) MissionSyncEntry {
-    uint8_t  valid;        // 1=유효, 0=빈 슬롯
-    uint8_t  state;        // Mission::State (0=IDLE,1=ACTIVE,2=CLOSING)
-    uint8_t  op_index;     // 0=HOST, 1..N=JOIN
-    uint8_t  rollover;     // 1=UTC0 자동 시작
+    uint8_t  valid;          // 1=유효, 0=빈 슬롯
+    uint8_t  state;          // Mission::State (0=IDLE,1=ACTIVE,2=CLOSING)
+    uint8_t  op_index;       // 0=HOST, 1..N=JOIN
+    uint8_t  rollover;       // 1=UTC0 자동 시작
     uint16_t year;
     uint16_t _pad;
-    char     code[8];      // "A03"
+    char     code[8];        // "A03"
     int64_t  start_utc;
-    int64_t  end_utc;      // 0 = open
-    char     name[64];
-    char     purpose[128];
-    char     target[64];
+    int64_t  end_utc;        // 0 = open
     char     started_by[32];
-    char     notes[256];
+    // Auto-captured metadata
+    char     station_name[64];
+    char     host_name[32];
+    float    lat;
+    float    lon;
+    char     sdr_kind[24];   // "BladeRF" / "RTL-SDR" / "Pluto"
+    char     antenna[64];
 };
 
 // Central → all clients (handshake replay + broadcast)
@@ -691,12 +701,9 @@ struct __attribute__((packed)) PktMissionSync {
     MissionSyncEntry entries[MAX_MISSION_HISTORY_PER_PKT];
 };
 
-// JOIN/HOST → Central → HOST (relay)
+// JOIN/HOST → Central → HOST (relay) — v4.0: payload reduced to trigger only.
+// started_by is filled by HOST from op_name; op_index is filled by central.
 struct __attribute__((packed)) PktMissionStart {
-    char    name[64];
-    char    purpose[128];
-    char    target[64];
-    char    started_by[32];   // 빈 문자열이면 HOST가 op_name 채움
     uint8_t op_index;         // central이 채움 (JOIN op_index)
     uint8_t _pad[3];
 };

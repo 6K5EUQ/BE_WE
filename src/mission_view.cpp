@@ -12,6 +12,7 @@
 #include <imgui.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <cstdio>
 
 #include <algorithm>
 #include <chrono>
@@ -20,6 +21,9 @@
 #include <map>
 #include <string>
 #include <vector>
+
+// External HIST viewer entry point (defined in long_waterfall_view.cpp)
+extern bool lwf_open_file(const std::string& path);
 
 namespace MissionView {
 
@@ -147,27 +151,26 @@ static int g_tab = 0;   // 0=IQ 1=Audio 2=HIST
 // ── Start / End 서브모달 헬퍼 ───────────────────────────────────────────
 static void draw_start_submodal(FFTViewer& v, NetClient* cli){
     if(!v.mission_start_modal_open) return;
-    ImGui::SetNextWindowSize(ImVec2(440, 0));
-    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x*0.5f - 220.f,
+    ImGui::SetNextWindowSize(ImVec2(380, 0));
+    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x*0.5f - 190.f,
                                    ImGui::GetIO().DisplaySize.y*0.30f),
                             ImGuiCond_Appearing);
     ImGui::OpenPopup("Start Mission##mission_start");
     bool open = true;
     if(ImGui::BeginPopupModal("Start Mission##mission_start", &open,
         ImGuiWindowFlags_NoResize|ImGuiWindowFlags_AlwaysAutoResize)){
-        // Mission code preview
+        // Mission code preview (only field — code = identifier; station/host/coords/SDR
+        // captured automatically from current state)
         time_t now = time(nullptr);
         struct tm tu; gmtime_r(&now, &tu);
         auto code = Mission::make_code(1900+tu.tm_year, tu.tm_mon, tu.tm_mday);
-        ImGui::TextDisabled("Code (auto):");
+        ImGui::TextDisabled("Mission code:");
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(0.5f,0.9f,0.6f,1.f),
             "%s  (%04d-%02d-%02d UTC)",
             code.c_str(), 1900+tu.tm_year, 1+tu.tm_mon, tu.tm_mday);
-        ImGui::Separator();
-        ImGui::InputText("Name",    v.start_input_name,    sizeof(v.start_input_name));
-        ImGui::InputText("Purpose", v.start_input_purpose, sizeof(v.start_input_purpose));
-        ImGui::InputText("Target",  v.start_input_target,  sizeof(v.start_input_target));
+        ImGui::Spacing();
+        ImGui::TextDisabled("Station / host / coords / SDR / antenna are captured automatically.");
         ImGui::Spacing();
         if(ImGui::Button("Cancel", ImVec2(120, 0))){
             v.mission_start_modal_open = false;
@@ -178,18 +181,10 @@ static void draw_start_submodal(FFTViewer& v, NetClient* cli){
         if(ImGui::Button("Start", ImVec2(120, 0))){
             // JOIN: net_cli 경유로 HOST에 요청. LOCAL/HOST: 직접 호출.
             if(cli){
-                cli->send_mission_start(v.start_input_name,
-                                        v.start_input_purpose,
-                                        v.start_input_target);
+                cli->send_mission_start();
             } else {
-                v.mission_start(v.start_input_name,
-                                v.start_input_purpose,
-                                v.start_input_target,
-                                login_get_id(), /*op_index=*/0, /*rollover=*/false);
+                v.mission_start(login_get_id(), /*op_index=*/0, /*rollover=*/false);
             }
-            v.start_input_name[0]    = 0;
-            v.start_input_purpose[0] = 0;
-            v.start_input_target[0]  = 0;
             v.mission_start_modal_open = false;
             ImGui::CloseCurrentPopup();
         }
@@ -256,10 +251,12 @@ static void draw_end_confirm_submodal(FFTViewer& v, NetClient* cli){
 
 // ── Right-pane: 메타 + Current Session + 파일 탭 ────────────────────────
 static void draw_meta_block(FFTViewer& v){
-    // 활성 미션 메타 vs history 미션 메타
+    // 활성 미션 메타 vs history 미션 메타 (모두 자동 캡처된 필드)
     bool   is_active = false;
     int    year = 0;
-    char   code[8] = {}, name[64] = {}, purpose[128] = {}, target[64] = {}, started_by[32] = {};
+    char   code[8] = {}, started_by[32] = {};
+    char   station[64] = {}, host[32] = {}, sdr[24] = {}, antenna[64] = {};
+    float  lat = 0.f, lon = 0.f;
     time_t start_utc = 0, end_utc = 0;
     {
         std::lock_guard<std::mutex> lk(v.mission_mtx);
@@ -268,11 +265,14 @@ static void draw_meta_block(FFTViewer& v){
             (g_sel_year == v.mission_year && g_sel_code == v.mission_code))){
             is_active = true;
             year = v.mission_year;
-            memcpy(code,        v.mission_code,        sizeof(code));
-            memcpy(name,        v.mission_name,        sizeof(name));
-            memcpy(purpose,     v.mission_purpose,     sizeof(purpose));
-            memcpy(target,      v.mission_target,      sizeof(target));
-            memcpy(started_by,  v.mission_started_by,  sizeof(started_by));
+            memcpy(code,        v.mission_code,         sizeof(code));
+            memcpy(started_by,  v.mission_started_by,   sizeof(started_by));
+            memcpy(station,     v.mission_station_name, sizeof(station));
+            memcpy(host,        v.mission_host_name,    sizeof(host));
+            memcpy(sdr,         v.mission_sdr_kind,     sizeof(sdr));
+            memcpy(antenna,     v.mission_antenna,      sizeof(antenna));
+            lat = v.mission_lat;
+            lon = v.mission_lon;
             start_utc = v.mission_start_utc;
             end_utc   = v.mission_end_utc;
         } else {
@@ -280,11 +280,14 @@ static void draw_meta_block(FFTViewer& v){
             for(auto& e : v.mission_history){
                 if(e.year == g_sel_year && g_sel_code == e.code){
                     year = e.year;
-                    memcpy(code,        e.code,        sizeof(code));
-                    memcpy(name,        e.name,        sizeof(name));
-                    memcpy(purpose,     e.purpose,     sizeof(purpose));
-                    memcpy(target,      e.target,      sizeof(target));
-                    memcpy(started_by,  e.started_by,  sizeof(started_by));
+                    memcpy(code,        e.code,         sizeof(code));
+                    memcpy(started_by,  e.started_by,   sizeof(started_by));
+                    memcpy(station,     e.station_name, sizeof(station));
+                    memcpy(host,        e.host_name,    sizeof(host));
+                    memcpy(sdr,         e.sdr_kind,     sizeof(sdr));
+                    memcpy(antenna,     e.antenna,      sizeof(antenna));
+                    lat = e.lat;
+                    lon = e.lon;
                     start_utc = e.start_utc;
                     end_utc   = e.end_utc;
                     break;
@@ -299,8 +302,7 @@ static void draw_meta_block(FFTViewer& v){
     ImGui::PushStyleColor(ImGuiCol_Text, is_active
         ? ImVec4(0.55f, 0.90f, 0.65f, 1.f)
         : ImVec4(0.70f, 0.75f, 0.85f, 1.f));
-    ImGui::Text("Mission %04d/%s  %s", year, code,
-        name[0] ? name : "(unnamed)");
+    ImGui::Text("Mission %04d/%s", year, code);
     ImGui::PopStyleColor();
     ImGui::Separator();
     const float L = 110.f;
@@ -308,12 +310,20 @@ static void draw_meta_block(FFTViewer& v){
         ImGui::TextDisabled("%s", k); ImGui::SameLine(L);
         ImGui::TextWrapped("%s", val[0] ? val : "-");
     };
+    auto row_coord = [&](){
+        ImGui::TextDisabled("Coords:"); ImGui::SameLine(L);
+        if(lat == 0.f && lon == 0.f) ImGui::TextWrapped("-");
+        else ImGui::Text("%.4f, %.4f", (double)lat, (double)lon);
+    };
     row("Status:",   is_active ? "ACTIVE" : "CLOSED");
+    row("Station:",  station);
+    row("Host:",     host);
+    row_coord();
+    row("SDR:",      sdr);
+    row("Antenna:",  antenna);
     row("Started:",  fmt_utc(start_utc).c_str());
     if(!is_active) row("Ended:", fmt_utc(end_utc).c_str());
     row("By:",       started_by);
-    row("Purpose:",  purpose);
-    row("Target:",   target);
 }
 
 static void draw_current_session(FFTViewer& v){
@@ -389,15 +399,38 @@ static void draw_current_session(FFTViewer& v){
     if(!any) ImGui::TextDisabled("  (idle)");
 }
 
+// FileKind: drives ctx-menu behavior (open/delete semantics per type).
+enum FileKind { FK_IQ, FK_AUDIO, FK_HIST };
+
+// Sched-add modal state (per-frame transient).
+static bool   g_sched_add_open = false;
+static char   g_sched_add_date[16]  = {};   // YYYY-MM-DD UTC
+static char   g_sched_add_time[16]  = {};   // HH:MM UTC
+static float  g_sched_add_dur_sec   = 60.f;
+static float  g_sched_add_freq_mhz  = 100.0f;
+static float  g_sched_add_bw_khz    = 200.f;
+static char   g_sched_add_target[32] = {};
+
 static void draw_file_tabs(FFTViewer& v){
     if(g_sel_year == 0 || g_sel_code.empty()) return;
     std::string dir_iq    = BEWEPaths::mission_iq_dir   (g_sel_year, g_sel_code);
     std::string dir_audio = BEWEPaths::mission_audio_dir(g_sel_year, g_sel_code);
     std::string dir_hist  = BEWEPaths::mission_hist_dir (g_sel_year, g_sel_code);
 
+    // Deferred actions to apply after rendering (avoids mutating list mid-iter).
+    static std::string pending_delete;
+    static std::string pending_hist_open;
+    static std::string pending_sa_open;      // IQ → Signal Analyzer offline load
+    static std::string pending_xdg_open;     // Audio → system default player
+    static int         pending_sched_remove_idx = -1;
+    // Rename modal state
+    static bool        rename_modal_open = false;
+    static std::string rename_old_path;
+    static char        rename_new_name[128] = {};
+
     ImGui::Spacing();
     if(ImGui::BeginTabBar("##mission_file_tabs")){
-        auto draw_list = [&](const std::string& dir, const char* ext){
+        auto draw_list = [&](const std::string& dir, const char* ext, FileKind kind){
             auto items = list_dir(dir, ext);
             if(items.empty()){
                 ImGui::TextDisabled("  (no files)");
@@ -406,9 +439,46 @@ static void draw_file_tabs(FFTViewer& v){
             ImGui::BeginChild("##mission_files_scroll", ImVec2(0,0), false);
             for(auto& it : items){
                 float pw = ImGui::GetContentRegionAvail().x;
+                std::string full = dir + "/" + it.name;
                 ImGui::PushID(it.name.c_str());
-                ImGui::Selectable(it.name.c_str(), false,
-                    ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw, 0));
+                bool clicked = ImGui::Selectable(it.name.c_str(), false,
+                    ImGuiSelectableFlags_SpanAllColumns
+                    | ImGuiSelectableFlags_AllowDoubleClick,
+                    ImVec2(pw, 0));
+                // Double-click: HIST → viewer; IQ → SA; Audio → system default
+                if(clicked && ImGui::IsMouseDoubleClicked(0)){
+                    if(kind == FK_HIST)       pending_hist_open = full;
+                    else if(kind == FK_IQ)    pending_sa_open  = full;
+                    else                       pending_xdg_open = full;
+                }
+                // Right-click context menu
+                if(ImGui::BeginPopupContextItem("##file_ctx")){
+                    if(kind == FK_HIST){
+                        if(ImGui::MenuItem("Open in viewer")) pending_hist_open = full;
+                    } else if(kind == FK_IQ){
+                        if(ImGui::MenuItem("Open in Signal Analyzer")) pending_sa_open = full;
+                    } else if(kind == FK_AUDIO){
+                        if(ImGui::MenuItem("Play (system default)")) pending_xdg_open = full;
+                    }
+                    ImGui::Separator();
+                    if(ImGui::MenuItem("Rename...")){
+                        rename_modal_open = true;
+                        rename_old_path   = full;
+                        strncpy(rename_new_name, it.name.c_str(), sizeof(rename_new_name)-1);
+                        rename_new_name[sizeof(rename_new_name)-1] = 0;
+                    }
+                    if(ImGui::MenuItem("Show in folder")){
+                        char cmd[1024];
+                        snprintf(cmd, sizeof(cmd),
+                            "xdg-open '%s' >/dev/null 2>&1 &", dir.c_str());
+                        int rc = system(cmd); (void)rc;
+                    }
+                    ImGui::Separator();
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f,0.5f,0.5f,1.f));
+                    if(ImGui::MenuItem("Delete")) pending_delete = full;
+                    ImGui::PopStyleColor();
+                    ImGui::EndPopup();
+                }
                 // 우측 정렬 크기 + mtime
                 std::string info = FFTViewer::format_file_info(0.0,
                     (uint64_t)it.size);
@@ -421,20 +491,256 @@ static void draw_file_tabs(FFTViewer& v){
         };
         if(ImGui::BeginTabItem("IQ")){
             g_tab = 0;
-            draw_list(dir_iq, ".wav");
+            draw_list(dir_iq, ".wav", FK_IQ);
             ImGui::EndTabItem();
         }
         if(ImGui::BeginTabItem("Audio")){
             g_tab = 1;
-            draw_list(dir_audio, ".wav");
+            draw_list(dir_audio, ".wav", FK_AUDIO);
             ImGui::EndTabItem();
         }
         if(ImGui::BeginTabItem("HIST")){
             g_tab = 2;
-            draw_list(dir_hist, ".bewehist");
+            draw_list(dir_hist, ".bewehist", FK_HIST);
+            ImGui::EndTabItem();
+        }
+        if(ImGui::BeginTabItem("Schedule")){
+            g_tab = 3;
+            // [+ Add] 버튼: 새 스케줄 예약 모달 열기 (UTC 입력)
+            if(ImGui::Button("[+] Add scheduled recording", ImVec2(-1, 0))){
+                g_sched_add_open = true;
+                time_t now = time(nullptr) + 60;
+                struct tm tu; gmtime_r(&now, &tu);
+                snprintf(g_sched_add_date, sizeof(g_sched_add_date),
+                    "%04d-%02d-%02d", 1900+tu.tm_year, 1+tu.tm_mon, tu.tm_mday);
+                snprintf(g_sched_add_time, sizeof(g_sched_add_time),
+                    "%02d:%02d", tu.tm_hour, tu.tm_min);
+                g_sched_add_dur_sec  = 60.f;
+                g_sched_add_freq_mhz = (float)(v.live_cf_hz.load() / 1e6);
+                g_sched_add_bw_khz   = 200.f;
+                g_sched_add_target[0]= 0;
+            }
+            ImGui::Separator();
+            std::lock_guard<std::mutex> lk(v.sched_mtx);
+            // Filter by selected mission (mission_year+mission_code match).
+            std::vector<int> order;
+            order.reserve(v.sched_entries.size());
+            for(int i=0; i<(int)v.sched_entries.size(); i++){
+                const auto& s = v.sched_entries[i];
+                if(s.mission_year == g_sel_year
+                   && strncmp(s.mission_code, g_sel_code.c_str(), sizeof(s.mission_code)) == 0){
+                    order.push_back(i);
+                }
+            }
+            if(order.empty()){
+                ImGui::TextDisabled("  (no scheduled recordings for this mission)");
+            } else {
+                ImGui::BeginChild("##mission_sched_scroll", ImVec2(0,0), false);
+                std::sort(order.begin(), order.end(), [&](int a, int b){
+                    return v.sched_entries[a].start_time < v.sched_entries[b].start_time;
+                });
+                time_t now_t = time(nullptr);
+                for(int oi=0; oi<(int)order.size(); oi++){
+                    int i = order[oi];
+                    auto& s = v.sched_entries[i];
+                    ImGui::PushID(i);
+                    char tbuf[40] = {};
+                    struct tm tu; gmtime_r(&s.start_time, &tu);
+                    snprintf(tbuf, sizeof(tbuf),
+                        "%04d-%02d-%02d %02d:%02d UTC",
+                        1900+tu.tm_year, 1+tu.tm_mon, tu.tm_mday,
+                        tu.tm_hour, tu.tm_min);
+                    const char* status_str = "?";
+                    ImVec4 col(1,1,1,1);
+                    switch(s.status){
+                        case FFTViewer::SchedEntry::WAITING:
+                            status_str="WAIT"; col=ImVec4(0.7f,0.7f,0.8f,1); break;
+                        case FFTViewer::SchedEntry::ARMED:
+                            status_str="ARM";  col=ImVec4(1.f,0.85f,0.2f,1); break;
+                        case FFTViewer::SchedEntry::RECORDING:
+                            status_str="REC";  col=ImVec4(1.f,0.3f,0.3f,1); break;
+                        case FFTViewer::SchedEntry::DONE:
+                            status_str="DONE"; col=ImVec4(0.3f,0.9f,0.3f,1); break;
+                        case FFTViewer::SchedEntry::FAILED:
+                            status_str="FAIL"; col=ImVec4(0.9f,0.2f,0.2f,1); break;
+                    }
+                    ImGui::TextColored(col, "[%s]", status_str);
+                    ImGui::SameLine();
+                    char tail[40] = "";
+                    if(s.status == FFTViewer::SchedEntry::WAITING){
+                        int d = (int)(s.start_time - now_t);
+                        if(d > 0) snprintf(tail, sizeof(tail), "  in %dm%02ds", d/60, d%60);
+                    }
+                    ImGui::Text("%s  %.3f MHz  BW=%.0fkHz  %.0fs  by %s%s%s%s",
+                        tbuf, (double)s.freq_mhz, (double)s.bw_khz, (double)s.duration_sec,
+                        s.operator_name[0] ? s.operator_name : "?",
+                        s.target[0] ? "  '" : "", s.target,
+                        s.target[0] ? "'" : "");
+                    ImGui::SameLine();
+                    bool can_remove = (s.status != FFTViewer::SchedEntry::RECORDING
+                                    && s.status != FFTViewer::SchedEntry::ARMED);
+                    if(!can_remove) ImGui::BeginDisabled();
+                    if(ImGui::SmallButton("X")) pending_sched_remove_idx = i;
+                    if(!can_remove) ImGui::EndDisabled();
+                    ImGui::PopID();
+                }
+                ImGui::EndChild();
+            }
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
+    }
+
+    // Apply pending actions
+    if(!pending_delete.empty()){
+        if(remove(pending_delete.c_str()) == 0){
+            // info sidecar 동반 삭제 (Archive 패턴 — .info, .wav.info 등 가능성 모두 시도)
+            std::string info1 = pending_delete + ".info";
+            remove(info1.c_str());
+        }
+        pending_delete.clear();
+    }
+    if(!pending_hist_open.empty()){
+        if(lwf_open_file(pending_hist_open)){
+            v.lwf_modal_open = true;
+        }
+        pending_hist_open.clear();
+    }
+    if(!pending_sa_open.empty()){
+        v.sa_temp_path   = pending_sa_open;
+        v.eid_panel_open = true;
+        pending_sa_open.clear();
+    }
+    if(!pending_xdg_open.empty()){
+        char cmd[1100];
+        snprintf(cmd, sizeof(cmd), "xdg-open '%s' >/dev/null 2>&1 &",
+                 pending_xdg_open.c_str());
+        int rc = system(cmd); (void)rc;
+        pending_xdg_open.clear();
+    }
+    if(pending_sched_remove_idx >= 0){
+        std::lock_guard<std::mutex> lk(v.sched_mtx);
+        if(pending_sched_remove_idx < (int)v.sched_entries.size()){
+            auto& s = v.sched_entries[pending_sched_remove_idx];
+            if(v.remote_mode && v.net_cli){
+                v.net_cli->cmd_remove_sched((int64_t)s.start_time, s.freq_mhz);
+            } else {
+                v.sched_entries.erase(v.sched_entries.begin() + pending_sched_remove_idx);
+                v.broadcast_sched_list_locked();
+            }
+        }
+        pending_sched_remove_idx = -1;
+    }
+
+    // ── Rename modal ──────────────────────────────────────────────────────
+    if(rename_modal_open){
+        ImGui::SetNextWindowSize(ImVec2(420, 0));
+        ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x*0.5f - 210.f,
+                                       ImGui::GetIO().DisplaySize.y*0.30f),
+                                ImGuiCond_Appearing);
+        ImGui::OpenPopup("Rename file##mv_rename");
+        bool open = true;
+        if(ImGui::BeginPopupModal("Rename file##mv_rename", &open,
+            ImGuiWindowFlags_NoResize|ImGuiWindowFlags_AlwaysAutoResize)){
+            ImGui::TextDisabled("%s", rename_old_path.c_str());
+            ImGui::InputText("New name", rename_new_name, sizeof(rename_new_name));
+            ImGui::Spacing();
+            if(ImGui::Button("Cancel", ImVec2(120, 0))){
+                rename_modal_open = false;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if(ImGui::Button("Rename", ImVec2(120, 0))){
+                if(rename_new_name[0]){
+                    auto slash = rename_old_path.find_last_of('/');
+                    std::string dir = (slash == std::string::npos) ? "."
+                                                                    : rename_old_path.substr(0, slash);
+                    std::string new_path = dir + "/" + rename_new_name;
+                    if(rename(rename_old_path.c_str(), new_path.c_str()) == 0){
+                        // info sidecar 동반 rename
+                        std::string old_info = rename_old_path + ".info";
+                        std::string new_info = new_path + ".info";
+                        ::rename(old_info.c_str(), new_info.c_str());
+                    }
+                }
+                rename_modal_open = false;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+        if(!open) rename_modal_open = false;
+    }
+
+    // ── Schedule add modal ────────────────────────────────────────────────
+    if(g_sched_add_open){
+        ImGui::SetNextWindowSize(ImVec2(420, 0));
+        ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x*0.5f - 210.f,
+                                       ImGui::GetIO().DisplaySize.y*0.30f),
+                                ImGuiCond_Appearing);
+        ImGui::OpenPopup("Add Scheduled Recording##sched_add");
+        bool open = true;
+        if(ImGui::BeginPopupModal("Add Scheduled Recording##sched_add", &open,
+            ImGuiWindowFlags_NoResize|ImGuiWindowFlags_AlwaysAutoResize)){
+            ImGui::TextDisabled("Time is interpreted as UTC.");
+            ImGui::InputText("Date (YYYY-MM-DD)", g_sched_add_date, sizeof(g_sched_add_date));
+            ImGui::InputText("Time (HH:MM)",       g_sched_add_time, sizeof(g_sched_add_time));
+            ImGui::InputFloat("Duration (s)",      &g_sched_add_dur_sec,  1.f, 10.f, "%.0f");
+            ImGui::InputFloat("Freq (MHz)",        &g_sched_add_freq_mhz, 0.001f, 1.f, "%.3f");
+            ImGui::InputFloat("BW (kHz)",          &g_sched_add_bw_khz,   1.f, 10.f, "%.0f");
+            ImGui::InputText("Target (optional)",  g_sched_add_target, sizeof(g_sched_add_target));
+            ImGui::Spacing();
+            if(ImGui::Button("Cancel", ImVec2(120, 0))){
+                g_sched_add_open = false;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.55f, 0.25f, 1.f));
+            if(ImGui::Button("Add", ImVec2(120, 0))){
+                // Parse "YYYY-MM-DD" + "HH:MM" as UTC.
+                int y=0, mo=0, da=0, h=0, mi=0;
+                bool ok = (sscanf(g_sched_add_date, "%d-%d-%d", &y, &mo, &da) == 3)
+                       && (sscanf(g_sched_add_time, "%d:%d", &h, &mi) == 2);
+                if(ok && g_sched_add_dur_sec > 0.f){
+                    struct tm tu{};
+                    tu.tm_year = y - 1900;
+                    tu.tm_mon  = mo - 1;
+                    tu.tm_mday = da;
+                    tu.tm_hour = h;
+                    tu.tm_min  = mi;
+                    tu.tm_sec  = 0;
+                    time_t start_utc = timegm(&tu);
+                    if(v.remote_mode && v.net_cli){
+                        // JOIN: HOST가 자신의 active mission으로 stamp함
+                        v.net_cli->cmd_add_sched((int64_t)start_utc,
+                            g_sched_add_dur_sec, g_sched_add_freq_mhz,
+                            g_sched_add_bw_khz, g_sched_add_target);
+                    } else {
+                        std::lock_guard<std::mutex> lk(v.sched_mtx);
+                        if(!v.sched_has_overlap(start_utc, g_sched_add_dur_sec)
+                           && (int)v.sched_entries.size() < MAX_SCHED_ENTRIES){
+                            FFTViewer::SchedEntry e{};
+                            e.start_time   = start_utc;
+                            e.duration_sec = g_sched_add_dur_sec;
+                            e.freq_mhz     = g_sched_add_freq_mhz;
+                            e.bw_khz       = g_sched_add_bw_khz;
+                            e.status       = FFTViewer::SchedEntry::WAITING;
+                            strncpy(e.operator_name, login_get_id(), sizeof(e.operator_name)-1);
+                            strncpy(e.target, g_sched_add_target, sizeof(e.target)-1);
+                            // Stamp with currently-viewed mission (g_sel_year/code).
+                            e.mission_year = g_sel_year;
+                            strncpy(e.mission_code, g_sel_code.c_str(), sizeof(e.mission_code)-1);
+                            v.sched_entries.push_back(e);
+                            v.broadcast_sched_list_locked();
+                        }
+                    }
+                }
+                g_sched_add_open = false;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::PopStyleColor();
+            ImGui::EndPopup();
+        }
+        if(!open) g_sched_add_open = false;
     }
 }
 
@@ -443,9 +749,6 @@ static void draw_left_tree(FFTViewer& v){
     // [+ Start Mission]
     if(ImGui::Button("[+] Start Mission", ImVec2(-1, 0))){
         v.mission_start_modal_open = true;
-        v.start_input_name[0] = 0;
-        v.start_input_purpose[0] = 0;
-        v.start_input_target[0] = 0;
     }
     ImGui::Separator();
 

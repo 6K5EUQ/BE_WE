@@ -1728,18 +1728,20 @@ static void mission_entry_to_json(std::string& out, const MissionSyncEntry& e){
     out += buf;
     char code[9]={}; memcpy(code, e.code, 8);
     json_escape(out, code);
-    snprintf(buf, sizeof(buf), "\",\"start_utc\":%lld,\"end_utc\":%lld,\"name\":\"",
+    snprintf(buf, sizeof(buf), "\",\"start_utc\":%lld,\"end_utc\":%lld,\"started_by\":\"",
              (long long)e.start_utc, (long long)e.end_utc);
     out += buf;
-    char nm[65]={}; memcpy(nm, e.name, 64); json_escape(out, nm);
-    out += "\",\"purpose\":\"";
-    char ps[129]={}; memcpy(ps, e.purpose, 128); json_escape(out, ps);
-    out += "\",\"target\":\"";
-    char tg[65]={}; memcpy(tg, e.target, 64); json_escape(out, tg);
-    out += "\",\"started_by\":\"";
     char sb[33]={}; memcpy(sb, e.started_by, 32); json_escape(out, sb);
-    out += "\",\"notes\":\"";
-    char nt[257]={}; memcpy(nt, e.notes, 256); json_escape(out, nt);
+    out += "\",\"station\":\"";
+    char st[65]={}; memcpy(st, e.station_name, 64); json_escape(out, st);
+    out += "\",\"host\":\"";
+    char hn[33]={}; memcpy(hn, e.host_name, 32); json_escape(out, hn);
+    snprintf(buf, sizeof(buf), "\",\"lat\":%.6f,\"lon\":%.6f,\"sdr\":\"",
+             (double)e.lat, (double)e.lon);
+    out += buf;
+    char sd[25]={}; memcpy(sd, e.sdr_kind, 24); json_escape(out, sd);
+    out += "\",\"antenna\":\"";
+    char an[65]={}; memcpy(an, e.antenna, 64); json_escape(out, an);
     out += "\"}";
 }
 
@@ -1847,20 +1849,25 @@ void CentralServer::load_missions_from_json(){
                 if(*p == '"'){
                     char val[512] = {};
                     parse_str(p, val, sizeof(val));
-                    if      (!strcmp(key,"code"))       memcpy(e.code,       val, sizeof(e.code));
-                    else if (!strcmp(key,"name"))       memcpy(e.name,       val, sizeof(e.name));
-                    else if (!strcmp(key,"purpose"))    memcpy(e.purpose,    val, sizeof(e.purpose));
-                    else if (!strcmp(key,"target"))     memcpy(e.target,     val, sizeof(e.target));
-                    else if (!strcmp(key,"started_by")) memcpy(e.started_by, val, sizeof(e.started_by));
-                    else if (!strcmp(key,"notes"))      memcpy(e.notes,      val, sizeof(e.notes));
+                    if      (!strcmp(key,"code"))         memcpy(e.code,         val, sizeof(e.code));
+                    else if (!strcmp(key,"started_by"))   memcpy(e.started_by,   val, sizeof(e.started_by));
+                    else if (!strcmp(key,"station"))      memcpy(e.station_name, val, sizeof(e.station_name));
+                    else if (!strcmp(key,"host"))         memcpy(e.host_name,    val, sizeof(e.host_name));
+                    else if (!strcmp(key,"sdr"))          memcpy(e.sdr_kind,     val, sizeof(e.sdr_kind));
+                    else if (!strcmp(key,"antenna"))      memcpy(e.antenna,      val, sizeof(e.antenna));
                 } else {
-                    long long v = strtoll(p, (char**)&p, 10);
-                    if      (!strcmp(key,"state"))     e.state    = (uint8_t)v;
-                    else if (!strcmp(key,"op_index"))  e.op_index = (uint8_t)v;
-                    else if (!strcmp(key,"rollover"))  e.rollover = (uint8_t)v;
-                    else if (!strcmp(key,"year"))      e.year     = (uint16_t)v;
-                    else if (!strcmp(key,"start_utc")) e.start_utc= (int64_t)v;
-                    else if (!strcmp(key,"end_utc"))   e.end_utc  = (int64_t)v;
+                    char* endp = (char*)p;
+                    double dv = strtod(p, &endp);
+                    long long iv = (long long)dv;
+                    p = endp;
+                    if      (!strcmp(key,"state"))     e.state    = (uint8_t)iv;
+                    else if (!strcmp(key,"op_index"))  e.op_index = (uint8_t)iv;
+                    else if (!strcmp(key,"rollover"))  e.rollover = (uint8_t)iv;
+                    else if (!strcmp(key,"year"))      e.year     = (uint16_t)iv;
+                    else if (!strcmp(key,"start_utc")) e.start_utc= (int64_t)iv;
+                    else if (!strcmp(key,"end_utc"))   e.end_utc  = (int64_t)iv;
+                    else if (!strcmp(key,"lat"))       e.lat      = (float)dv;
+                    else if (!strcmp(key,"lon"))       e.lon      = (float)dv;
                 }
                 while(*p && (*p == ' ' || *p == '\t' || *p == '\n')) p++;
             }

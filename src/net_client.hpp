@@ -319,7 +319,7 @@ public:
                            uint8_t action, const char* editor);
 
     // ── SIGINT Mission ──────────────────────────────────────────────────
-    bool send_mission_start(const char* name, const char* purpose, const char* target);
+    bool send_mission_start();
     bool send_mission_end();
     bool send_mission_update(const PktMissionUpdate& up);
     bool send_mission_list_req();

@@ -228,8 +228,7 @@ struct ServerCallbacks {
     // ── SIGINT Mission System ────────────────────────────────────────────
     // JOIN → Central → HOST relay. cb 콜백은 HOST 측 cli_host/ui에서 등록해
     // FFTViewer.mission_start/end/update를 호출.
-    std::function<void(int /*op_index*/, const char* /*who*/,
-                       const PktMissionStart&)> on_mission_start;
+    std::function<void(int /*op_index*/, const char* /*who*/)> on_mission_start;
     std::function<void(int /*op_index*/, const char* /*who*/)> on_mission_end;
     std::function<void(int /*op_index*/, const char* /*who*/,
                        const PktMissionUpdate&)> on_mission_update;

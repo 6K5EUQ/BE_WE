@@ -6,9 +6,11 @@
 #include "fft_viewer.hpp"
 #include "bewe_paths.hpp"
 #include "long_waterfall.hpp"
+#include "login.hpp"
 
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <mutex>
@@ -76,9 +78,7 @@ void stop_utc0_worker(){
 
 // ── FFTViewer mission_* 구현 ───────────────────────────────────────────────
 
-bool FFTViewer::mission_start(const char* name, const char* purpose,
-                              const char* target, const char* started_by,
-                              uint8_t op_index, bool rollover)
+bool FFTViewer::mission_start(const char* started_by, uint8_t op_index, bool rollover)
 {
     {
         std::lock_guard<std::mutex> lk(mission_mtx);
@@ -96,15 +96,20 @@ bool FFTViewer::mission_start(const char* name, const char* purpose,
             memcpy(dst, src, n); dst[n] = 0;
         };
         cpy(mission_code,       sizeof(mission_code),       code.c_str());
-        cpy(mission_name,       sizeof(mission_name),       name);
-        cpy(mission_purpose,    sizeof(mission_purpose),    purpose);
-        cpy(mission_target,     sizeof(mission_target),     target);
         cpy(mission_started_by, sizeof(mission_started_by), started_by);
         mission_op_index   = op_index;
         mission_start_utc  = now;
         mission_end_utc    = 0;
-        mission_notes[0]   = 0;
         mission_state      = Mission::State::ACTIVE;
+
+        // Auto-capture metadata from current host context.
+        cpy(mission_station_name, sizeof(mission_station_name), station_name.c_str());
+        cpy(mission_host_name,    sizeof(mission_host_name),    login_get_id());
+        mission_lat = station_lat;
+        mission_lon = station_lon;
+        cpy(mission_sdr_kind, sizeof(mission_sdr_kind),
+            g_sdr_force.empty() ? "" : g_sdr_force.c_str());
+        cpy(mission_antenna, sizeof(mission_antenna), host_antenna);
 
         // 디렉토리 생성
         mkdir(BEWEPaths::missions_root().c_str(), 0755);
@@ -114,9 +119,10 @@ bool FFTViewer::mission_start(const char* name, const char* purpose,
         mkdir(BEWEPaths::mission_audio_dir(mission_year, mission_code).c_str(), 0755);
         mkdir(BEWEPaths::mission_hist_dir(mission_year, mission_code).c_str(), 0755);
 
-        bewe_log_push(0, "[MISSION] start: %04d/%s '%s' by %s (rollover=%d)\n",
-                      mission_year, mission_code, mission_name,
-                      mission_started_by, (int)rollover);
+        bewe_log_push(0, "[MISSION] start: %04d/%s by %s (rollover=%d, station='%s' host='%s')\n",
+                      mission_year, mission_code,
+                      mission_started_by, (int)rollover,
+                      mission_station_name, mission_host_name);
     }
 
     // 락 풀린 상태에서: HIST rotate + disk/network IO (broadcast_sync 안에서 lock 재진입)
@@ -155,28 +161,31 @@ bool FFTViewer::mission_end(){
         MissionEntry done{};
         done.year       = mission_year;
         memcpy(done.code,        mission_code,        sizeof(done.code));
-        memcpy(done.name,        mission_name,        sizeof(done.name));
-        memcpy(done.purpose,     mission_purpose,     sizeof(done.purpose));
-        memcpy(done.target,      mission_target,      sizeof(done.target));
         memcpy(done.started_by,  mission_started_by,  sizeof(done.started_by));
-        memcpy(done.notes,       mission_notes,       sizeof(done.notes));
+        memcpy(done.station_name,mission_station_name,sizeof(done.station_name));
+        memcpy(done.host_name,   mission_host_name,   sizeof(done.host_name));
+        memcpy(done.sdr_kind,    mission_sdr_kind,    sizeof(done.sdr_kind));
+        memcpy(done.antenna,     mission_antenna,     sizeof(done.antenna));
+        done.lat        = mission_lat;
+        done.lon        = mission_lon;
         done.op_index   = mission_op_index;
         done.start_utc  = mission_start_utc;
         done.end_utc    = mission_end_utc;
         mission_history.push_back(done);
 
         // IDLE 전이
-        mission_state         = Mission::State::IDLE;
-        mission_code[0]       = 0;
-        mission_year          = 0;
-        mission_name[0]       = 0;
-        mission_purpose[0]    = 0;
-        mission_target[0]     = 0;
-        mission_started_by[0] = 0;
-        mission_op_index      = 0;
-        mission_notes[0]      = 0;
-        mission_start_utc     = 0;
-        mission_end_utc       = 0;
+        mission_state            = Mission::State::IDLE;
+        mission_code[0]          = 0;
+        mission_year             = 0;
+        mission_started_by[0]    = 0;
+        mission_op_index         = 0;
+        mission_start_utc        = 0;
+        mission_end_utc          = 0;
+        mission_station_name[0]  = 0;
+        mission_host_name[0]     = 0;
+        mission_lat = mission_lon = 0.f;
+        mission_sdr_kind[0]      = 0;
+        mission_antenna[0]       = 0;
     }
     // 락 풀린 상태에서 disk/network IO (broadcast_sync는 mission_mtx를 자체 잡음)
     mission_save_meta_to_disk();
@@ -185,21 +194,18 @@ bool FFTViewer::mission_end(){
 }
 
 void FFTViewer::mission_rollover_utc0(){
-    // 활성 미션이 있으면 이름/목적 승계, 없으면 no-op.
-    char prev_name[64], prev_purpose[128], prev_target[64], prev_started_by[32];
+    // 활성 미션 → UTC0 시점에 새 코드로 자동 재시작. started_by/op_index만 승계.
+    // 새 미션은 현재 station/host/lat/lon/sdr/antenna 컨텍스트로 다시 캡처됨.
+    char prev_started_by[32];
     uint8_t prev_op;
     {
         std::lock_guard<std::mutex> lk(mission_mtx);
         if(mission_state != Mission::State::ACTIVE) return;
-        memcpy(prev_name,       mission_name,       sizeof(prev_name));
-        memcpy(prev_purpose,    mission_purpose,    sizeof(prev_purpose));
-        memcpy(prev_target,     mission_target,     sizeof(prev_target));
         memcpy(prev_started_by, mission_started_by, sizeof(prev_started_by));
         prev_op = mission_op_index;
     }
     mission_end();
-    mission_start(prev_name, prev_purpose, prev_target, prev_started_by,
-                  prev_op, /*rollover=*/true);
+    mission_start(prev_started_by, prev_op, /*rollover=*/true);
 }
 
 // JSON escape (간단 — 따옴표/백슬래시/제어문자만)
@@ -214,27 +220,31 @@ static void mj_escape(std::string& out, const char* s){
     }
 }
 
-// MissionEntry → JSON object
+// MissionEntry → JSON object (v4.0 schema: auto-captured metadata)
 static void mj_entry_write(std::string& out, int year, const char* code,
                            time_t start_utc, time_t end_utc,
-                           const char* name, const char* purpose,
-                           const char* target, const char* started_by,
-                           uint8_t op_index, uint8_t rollover,
-                           const char* notes, uint8_t state){
-    char buf[128];
+                           const char* started_by, uint8_t op_index, uint8_t rollover,
+                           const char* station_name, const char* host_name,
+                           float lat, float lon,
+                           const char* sdr_kind, const char* antenna,
+                           uint8_t state){
+    char buf[160];
     snprintf(buf, sizeof(buf),
         "{\"state\":%u,\"op_index\":%u,\"rollover\":%u,\"year\":%d,\"code\":\"",
         (unsigned)state, (unsigned)op_index, (unsigned)rollover, year);
     out += buf;
     mj_escape(out, code);
-    snprintf(buf, sizeof(buf), "\",\"start_utc\":%lld,\"end_utc\":%lld,\"name\":\"",
+    snprintf(buf, sizeof(buf), "\",\"start_utc\":%lld,\"end_utc\":%lld,\"started_by\":\"",
              (long long)start_utc, (long long)end_utc);
     out += buf;
-    mj_escape(out, name);
-    out += "\",\"purpose\":\""; mj_escape(out, purpose);
-    out += "\",\"target\":\"";  mj_escape(out, target);
-    out += "\",\"started_by\":\""; mj_escape(out, started_by);
-    out += "\",\"notes\":\""; mj_escape(out, notes);
+    mj_escape(out, started_by);
+    out += "\",\"station\":\"";  mj_escape(out, station_name);
+    out += "\",\"host\":\"";     mj_escape(out, host_name);
+    snprintf(buf, sizeof(buf), "\",\"lat\":%.6f,\"lon\":%.6f,\"sdr\":\"",
+             (double)lat, (double)lon);
+    out += buf;
+    mj_escape(out, sdr_kind);
+    out += "\",\"antenna\":\""; mj_escape(out, antenna);
     out += "\"}";
 }
 
@@ -252,9 +262,11 @@ void FFTViewer::mission_save_meta_to_disk(){
         out += "    ";
         mj_entry_write(out, mission_year, mission_code,
                        mission_start_utc, 0,
-                       mission_name, mission_purpose, mission_target,
                        mission_started_by, mission_op_index, 0,
-                       mission_notes, (uint8_t)Mission::State::ACTIVE);
+                       mission_station_name, mission_host_name,
+                       mission_lat, mission_lon,
+                       mission_sdr_kind, mission_antenna,
+                       (uint8_t)Mission::State::ACTIVE);
         first = false;
     }
     // history
@@ -262,8 +274,9 @@ void FFTViewer::mission_save_meta_to_disk(){
         if(!first) out += ",\n";
         out += "    ";
         mj_entry_write(out, e.year, e.code, e.start_utc, e.end_utc,
-                       e.name, e.purpose, e.target, e.started_by,
-                       e.op_index, e.rollover, e.notes,
+                       e.started_by, e.op_index, e.rollover,
+                       e.station_name, e.host_name, e.lat, e.lon,
+                       e.sdr_kind, e.antenna,
                        (uint8_t)Mission::State::IDLE);
         first = false;
     }
@@ -273,7 +286,7 @@ void FFTViewer::mission_save_meta_to_disk(){
     if(fp){ fwrite(out.data(), 1, out.size(), fp); fclose(fp); }
     else bewe_log_push(1, "[MISSION] save missions.json failed errno=%d\n", errno);
 
-    // 2) mission.info (활성 미션만)
+    // 2) mission.info (활성 미션만) — auto-captured metadata
     if(mission_state == Mission::State::ACTIVE && mission_code[0]){
         std::string ipath = BEWEPaths::mission_info_path(mission_year, mission_code);
         FILE* ifp = fopen(ipath.c_str(), "w");
@@ -282,24 +295,24 @@ void FFTViewer::mission_save_meta_to_disk(){
             struct tm tu; gmtime_r(&st, &tu);
             fprintf(ifp,
                 "Mission Code: %04d/%s\n"
-                "Name: %s\n"
-                "Purpose: %s\n"
-                "Target: %s\n"
+                "Station: %s\n"
+                "Host: %s\n"
+                "Coordinates: %.6f, %.6f\n"
+                "SDR: %s\n"
+                "Antenna: %s\n"
                 "Started By: %s\n"
                 "Start UTC: %04d-%02d-%02d %02d:%02d:%02d\n"
                 "End UTC: %s\n"
-                "Op Index: %u\n"
-                "Rollover: %u\n"
-                "Notes: %s\n",
+                "Op Index: %u\n",
                 mission_year, mission_code,
-                mission_name, mission_purpose, mission_target,
+                mission_station_name, mission_host_name,
+                (double)mission_lat, (double)mission_lon,
+                mission_sdr_kind, mission_antenna,
                 mission_started_by,
                 1900+tu.tm_year, 1+tu.tm_mon, tu.tm_mday,
                 tu.tm_hour, tu.tm_min, tu.tm_sec,
                 mission_end_utc ? "" : "-",
-                (unsigned)mission_op_index,
-                (unsigned)0,
-                mission_notes);
+                (unsigned)mission_op_index);
             fclose(ifp);
         }
     }
@@ -360,20 +373,26 @@ void FFTViewer::mission_load_history(){
             while(*p == ' ' || *p == '\t') p++;
             if(*p == '"'){
                 tmp[0] = 0; mj_parse_str(p, tmp, sizeof(tmp));
-                if      (!strcmp(key,"code"))       { strncpy(e.code,       tmp, sizeof(e.code)-1); }
-                else if (!strcmp(key,"name"))       { strncpy(e.name,       tmp, sizeof(e.name)-1); }
-                else if (!strcmp(key,"purpose"))    { strncpy(e.purpose,    tmp, sizeof(e.purpose)-1); }
-                else if (!strcmp(key,"target"))     { strncpy(e.target,     tmp, sizeof(e.target)-1); }
-                else if (!strcmp(key,"started_by")) { strncpy(e.started_by, tmp, sizeof(e.started_by)-1); }
-                else if (!strcmp(key,"notes"))      { strncpy(e.notes,      tmp, sizeof(e.notes)-1); }
+                if      (!strcmp(key,"code"))         { strncpy(e.code,         tmp, sizeof(e.code)-1); }
+                else if (!strcmp(key,"started_by"))   { strncpy(e.started_by,   tmp, sizeof(e.started_by)-1); }
+                else if (!strcmp(key,"station"))      { strncpy(e.station_name, tmp, sizeof(e.station_name)-1); }
+                else if (!strcmp(key,"host"))         { strncpy(e.host_name,    tmp, sizeof(e.host_name)-1); }
+                else if (!strcmp(key,"sdr"))          { strncpy(e.sdr_kind,     tmp, sizeof(e.sdr_kind)-1); }
+                else if (!strcmp(key,"antenna"))      { strncpy(e.antenna,      tmp, sizeof(e.antenna)-1); }
             } else {
-                long long v = strtoll(p, (char**)&p, 10);
-                if      (!strcmp(key,"state"))     state_val   = (uint8_t)v;
-                else if (!strcmp(key,"op_index"))  e.op_index  = (uint8_t)v;
-                else if (!strcmp(key,"rollover"))  e.rollover  = (uint8_t)v;
-                else if (!strcmp(key,"year"))      e.year      = (int)v;
-                else if (!strcmp(key,"start_utc")) e.start_utc = (time_t)v;
-                else if (!strcmp(key,"end_utc"))   e.end_utc   = (time_t)v;
+                // number: int OR float (lat/lon). strtod handles both.
+                char* endp = (char*)p;
+                double dv = strtod(p, &endp);
+                long long iv = (long long)dv;
+                p = endp;
+                if      (!strcmp(key,"state"))     state_val   = (uint8_t)iv;
+                else if (!strcmp(key,"op_index"))  e.op_index  = (uint8_t)iv;
+                else if (!strcmp(key,"rollover"))  e.rollover  = (uint8_t)iv;
+                else if (!strcmp(key,"year"))      e.year      = (int)iv;
+                else if (!strcmp(key,"start_utc")) e.start_utc = (time_t)iv;
+                else if (!strcmp(key,"end_utc"))   e.end_utc   = (time_t)iv;
+                else if (!strcmp(key,"lat"))       e.lat       = (float)dv;
+                else if (!strcmp(key,"lon"))       e.lon       = (float)dv;
             }
             while(*p && (*p == ' ' || *p == '\t' || *p == '\n')) p++;
         }
@@ -382,18 +401,20 @@ void FFTViewer::mission_load_history(){
         if(e.end_utc == 0 && !active_restored){
             mission_state    = Mission::State::ACTIVE;
             mission_year     = e.year;
-            memcpy(mission_code,       e.code,       sizeof(mission_code));
-            memcpy(mission_name,       e.name,       sizeof(mission_name));
-            memcpy(mission_purpose,    e.purpose,    sizeof(mission_purpose));
-            memcpy(mission_target,     e.target,     sizeof(mission_target));
-            memcpy(mission_started_by, e.started_by, sizeof(mission_started_by));
-            memcpy(mission_notes,      e.notes,      sizeof(mission_notes));
+            memcpy(mission_code,         e.code,         sizeof(mission_code));
+            memcpy(mission_started_by,   e.started_by,   sizeof(mission_started_by));
+            memcpy(mission_station_name, e.station_name, sizeof(mission_station_name));
+            memcpy(mission_host_name,    e.host_name,    sizeof(mission_host_name));
+            memcpy(mission_sdr_kind,     e.sdr_kind,     sizeof(mission_sdr_kind));
+            memcpy(mission_antenna,      e.antenna,      sizeof(mission_antenna));
+            mission_lat        = e.lat;
+            mission_lon        = e.lon;
             mission_op_index   = e.op_index;
             mission_start_utc  = e.start_utc;
             mission_end_utc    = 0;
             active_restored = true;
-            bewe_log_push(0, "[MISSION] restored ACTIVE %04d/%s '%s'\n",
-                          e.year, e.code, e.name);
+            bewe_log_push(0, "[MISSION] restored ACTIVE %04d/%s station='%s' host='%s'\n",
+                          e.year, e.code, e.station_name, e.host_name);
         } else {
             mission_history.push_back(e);
         }
@@ -403,7 +424,7 @@ void FFTViewer::mission_load_history(){
                   mission_history.size(), (int)active_restored);
 }
 
-// 한 MissionEntry → 패킷용 MissionSyncEntry
+// 한 MissionEntry → 패킷용 MissionSyncEntry (v4.0 schema)
 static void fill_sync_entry(MissionSyncEntry& dst,
                             const FFTViewer::MissionEntry& src,
                             uint8_t state_val){
@@ -412,14 +433,16 @@ static void fill_sync_entry(MissionSyncEntry& dst,
     dst.op_index = src.op_index;
     dst.rollover = src.rollover;
     dst.year     = (uint16_t)src.year;
-    memcpy(dst.code,       src.code,       sizeof(dst.code));
+    memcpy(dst.code,         src.code,         sizeof(dst.code));
     dst.start_utc = (int64_t)src.start_utc;
     dst.end_utc   = (int64_t)src.end_utc;
-    memcpy(dst.name,       src.name,       sizeof(dst.name));
-    memcpy(dst.purpose,    src.purpose,    sizeof(dst.purpose));
-    memcpy(dst.target,     src.target,     sizeof(dst.target));
-    memcpy(dst.started_by, src.started_by, sizeof(dst.started_by));
-    memcpy(dst.notes,      src.notes,      sizeof(dst.notes));
+    memcpy(dst.started_by,   src.started_by,   sizeof(dst.started_by));
+    memcpy(dst.station_name, src.station_name, sizeof(dst.station_name));
+    memcpy(dst.host_name,    src.host_name,    sizeof(dst.host_name));
+    memcpy(dst.sdr_kind,     src.sdr_kind,     sizeof(dst.sdr_kind));
+    memcpy(dst.antenna,      src.antenna,      sizeof(dst.antenna));
+    dst.lat = src.lat;
+    dst.lon = src.lon;
 }
 
 void FFTViewer::mission_broadcast_sync(){
@@ -434,12 +457,14 @@ void FFTViewer::mission_broadcast_sync(){
             pkt.active_valid = 1;
             MissionEntry act{};
             act.year       = mission_year;
-            memcpy(act.code,       mission_code,       sizeof(act.code));
-            memcpy(act.name,       mission_name,       sizeof(act.name));
-            memcpy(act.purpose,    mission_purpose,    sizeof(act.purpose));
-            memcpy(act.target,     mission_target,     sizeof(act.target));
-            memcpy(act.started_by, mission_started_by, sizeof(act.started_by));
-            memcpy(act.notes,      mission_notes,      sizeof(act.notes));
+            memcpy(act.code,         mission_code,         sizeof(act.code));
+            memcpy(act.started_by,   mission_started_by,   sizeof(act.started_by));
+            memcpy(act.station_name, mission_station_name, sizeof(act.station_name));
+            memcpy(act.host_name,    mission_host_name,    sizeof(act.host_name));
+            memcpy(act.sdr_kind,     mission_sdr_kind,     sizeof(act.sdr_kind));
+            memcpy(act.antenna,      mission_antenna,      sizeof(act.antenna));
+            act.lat       = mission_lat;
+            act.lon       = mission_lon;
             act.op_index  = mission_op_index;
             act.start_utc = mission_start_utc;
             act.end_utc   = 0;

@@ -812,6 +812,14 @@ void run_cli_host(){
             e.op_index     = op_idx;
             strncpy(e.operator_name, op_name?op_name:"", sizeof(e.operator_name)-1);
             strncpy(e.target,        target ?target :"", sizeof(e.target)-1);
+            // Stamp with HOST's current active mission (empty if no active mission).
+            {
+                std::lock_guard<std::mutex> mlk(v.mission_mtx);
+                if(v.mission_state == Mission::State::ACTIVE && v.mission_code[0]){
+                    e.mission_year = v.mission_year;
+                    memcpy(e.mission_code, v.mission_code, sizeof(e.mission_code));
+                }
+            }
             v.sched_entries.push_back(e);
             bewe_log_push(0,"[CMD:%s] SCHED added: %.3fMHz %.0fkHz dur=%.0fs target='%s' at %lld\n",
                           op_name, freq_mhz, bw_khz, duration_sec, e.target, (long long)start_time);
@@ -1257,13 +1265,8 @@ void run_cli_host(){
 
                 // ── SIGINT Mission System ──────────────────────────────
                 // JOIN이 보낸 미션 명령을 HOST가 실행 (op_name으로 started_by 채움).
-                srv->cb.on_mission_start = [&v](int op_index, const char* who,
-                                                const PktMissionStart& s){
-                    char nm[64]={}, pp[128]={}, tg[64]={};
-                    memcpy(nm, s.name,    sizeof(s.name));
-                    memcpy(pp, s.purpose, sizeof(s.purpose));
-                    memcpy(tg, s.target,  sizeof(s.target));
-                    v.mission_start(nm, pp, tg, who ? who : "join",
+                srv->cb.on_mission_start = [&v](int op_index, const char* who){
+                    v.mission_start(who ? who : "join",
                                     (uint8_t)op_index, /*rollover=*/false);
                 };
                 srv->cb.on_mission_end = [&v](int op_index, const char* who){

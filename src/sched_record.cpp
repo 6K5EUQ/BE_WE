@@ -26,6 +26,8 @@ static PktSchedSync build_sched_sync_pkt(const std::vector<FFTViewer::SchedEntry
         se.bw_khz       = e.bw_khz;
         strncpy(se.operator_name, e.operator_name, sizeof(se.operator_name)-1);
         strncpy(se.target,        e.target,        sizeof(se.target)-1);
+        se.mission_year = (uint16_t)e.mission_year;
+        memcpy(se.mission_code, e.mission_code, sizeof(se.mission_code));
     }
     return pkt;
 }

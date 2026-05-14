@@ -524,6 +524,8 @@ void NetClient::handle_packet(PacketType type,
             memcpy(&op_list.ops[i], payload + off, esz);
         }
         op_list_updated.store(true);
+        fprintf(stderr, "[net_cli] OPERATOR_LIST recv cnt=%u len=%zu first='%s'\n",
+                (unsigned)cnt, len, cnt > 0 ? op_list.ops[0].name : "(empty)");
         break;
     }
 
@@ -940,13 +942,8 @@ bool NetClient::cmd_sighting_link(const char* sighting_id, const char* emitter_u
 }
 
 // ── SIGINT Mission requests (JOIN → Central → HOST) ─────────────────────
-bool NetClient::send_mission_start(const char* name, const char* purpose,
-                                   const char* target){
+bool NetClient::send_mission_start(){
     PktMissionStart s{};
-    if(name)    strncpy(s.name,    name,    sizeof(s.name)    - 1);
-    if(purpose) strncpy(s.purpose, purpose, sizeof(s.purpose) - 1);
-    if(target)  strncpy(s.target,  target,  sizeof(s.target)  - 1);
-    strncpy(s.started_by, my_name, sizeof(s.started_by) - 1);
     s.op_index = 0;   // central에서 채움
     return raw_send(PacketType::MISSION_START, &s, sizeof(s));
 }

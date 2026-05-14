@@ -478,9 +478,9 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
     }
 
     case PacketType::MISSION_START: {
-        if(!c->authed || len < sizeof(PktMissionStart)) break;
-        const auto* req = reinterpret_cast<const PktMissionStart*>(payload);
-        if(cb.on_mission_start) cb.on_mission_start(c->op_index, c->name, *req);
+        if(!c->authed) break;
+        (void)payload; (void)len;   // payload는 op_index padding 뿐 — 호스트 컨텍스트로 직접 시작
+        if(cb.on_mission_start) cb.on_mission_start(c->op_index, c->name);
         break;
     }
     case PacketType::MISSION_END: {

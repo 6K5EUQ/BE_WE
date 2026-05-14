@@ -2946,6 +2946,9 @@ void run_streaming_viewer(){
                 e.status       = (FFTViewer::SchedEntry::Status)se.status;
                 e.op_index     = se.op_index;
                 strncpy(e.operator_name, se.operator_name, sizeof(e.operator_name)-1);
+                strncpy(e.target, se.target, sizeof(e.target)-1);
+                e.mission_year = (int)se.mission_year;
+                memcpy(e.mission_code, se.mission_code, sizeof(e.mission_code));
                 v.sched_entries.push_back(e);
             }
         };
@@ -2958,25 +2961,28 @@ void run_streaming_viewer(){
                 const auto& a = sync.active;
                 v.mission_state = (Mission::State)a.state;
                 v.mission_year  = a.year;
-                memcpy(v.mission_code,       a.code,       sizeof(v.mission_code));
-                memcpy(v.mission_name,       a.name,       sizeof(v.mission_name));
-                memcpy(v.mission_purpose,    a.purpose,    sizeof(v.mission_purpose));
-                memcpy(v.mission_target,     a.target,     sizeof(v.mission_target));
-                memcpy(v.mission_started_by, a.started_by, sizeof(v.mission_started_by));
-                memcpy(v.mission_notes,      a.notes,      sizeof(v.mission_notes));
+                memcpy(v.mission_code,         a.code,         sizeof(v.mission_code));
+                memcpy(v.mission_started_by,   a.started_by,   sizeof(v.mission_started_by));
+                memcpy(v.mission_station_name, a.station_name, sizeof(v.mission_station_name));
+                memcpy(v.mission_host_name,    a.host_name,    sizeof(v.mission_host_name));
+                memcpy(v.mission_sdr_kind,     a.sdr_kind,     sizeof(v.mission_sdr_kind));
+                memcpy(v.mission_antenna,      a.antenna,      sizeof(v.mission_antenna));
+                v.mission_lat = a.lat;
+                v.mission_lon = a.lon;
                 v.mission_op_index  = a.op_index;
                 v.mission_start_utc = (time_t)a.start_utc;
                 v.mission_end_utc   = 0;
             } else {
-                v.mission_state    = Mission::State::IDLE;
-                v.mission_code[0]  = 0;
-                v.mission_year     = 0;
-                v.mission_name[0]  = 0;
-                v.mission_purpose[0] = 0;
-                v.mission_target[0]  = 0;
-                v.mission_started_by[0] = 0;
-                v.mission_notes[0] = 0;
-                v.mission_op_index = 0;
+                v.mission_state           = Mission::State::IDLE;
+                v.mission_code[0]         = 0;
+                v.mission_year            = 0;
+                v.mission_started_by[0]   = 0;
+                v.mission_station_name[0] = 0;
+                v.mission_host_name[0]    = 0;
+                v.mission_sdr_kind[0]     = 0;
+                v.mission_antenna[0]      = 0;
+                v.mission_lat = v.mission_lon = 0.f;
+                v.mission_op_index  = 0;
                 v.mission_start_utc = 0;
                 v.mission_end_utc   = 0;
             }
@@ -2988,12 +2994,14 @@ void run_streaming_viewer(){
                 if(!e.valid) continue;
                 FFTViewer::MissionEntry me{};
                 me.year      = e.year;
-                memcpy(me.code,       e.code,       sizeof(me.code));
-                memcpy(me.name,       e.name,       sizeof(me.name));
-                memcpy(me.purpose,    e.purpose,    sizeof(me.purpose));
-                memcpy(me.target,     e.target,     sizeof(me.target));
-                memcpy(me.started_by, e.started_by, sizeof(me.started_by));
-                memcpy(me.notes,      e.notes,      sizeof(me.notes));
+                memcpy(me.code,         e.code,         sizeof(me.code));
+                memcpy(me.started_by,   e.started_by,   sizeof(me.started_by));
+                memcpy(me.station_name, e.station_name, sizeof(me.station_name));
+                memcpy(me.host_name,    e.host_name,    sizeof(me.host_name));
+                memcpy(me.sdr_kind,     e.sdr_kind,     sizeof(me.sdr_kind));
+                memcpy(me.antenna,      e.antenna,      sizeof(me.antenna));
+                me.lat       = e.lat;
+                me.lon       = e.lon;
                 me.op_index  = e.op_index;
                 me.rollover  = e.rollover;
                 me.start_utc = (time_t)e.start_utc;
@@ -4155,6 +4163,14 @@ void run_streaming_viewer(){
                     e.op_index     = op_idx;
                     strncpy(e.operator_name, op_name?op_name:"", sizeof(e.operator_name)-1);
                     strncpy(e.target,        target ?target :"", sizeof(e.target)-1);
+                    // Stamp with HOST's current active mission.
+                    {
+                        std::lock_guard<std::mutex> mlk(v.mission_mtx);
+                        if(v.mission_state == Mission::State::ACTIVE && v.mission_code[0]){
+                            e.mission_year = v.mission_year;
+                            memcpy(e.mission_code, v.mission_code, sizeof(e.mission_code));
+                        }
+                    }
                     v.sched_entries.push_back(e);
                     bewe_log_push(0,"[CMD:%s] SCHED added: %.3fMHz %.0fkHz dur=%.0fs target='%s'\n",
                                   op_name, freq_mhz, bw_khz, duration_sec, e.target);
@@ -4355,35 +4371,16 @@ void run_streaming_viewer(){
                                     if(v.net_srv) v.net_srv->send_lwf_list_to_op(op_index, list);
                                 };
                                 // ── Mission callbacks (HOST 측) ─────────
-                                v.net_srv->cb.on_mission_start = [&v](int op_index, const char* who,
-                                                                       const PktMissionStart& s){
-                                    char nm[64]={}, pp[128]={}, tg[64]={};
-                                    memcpy(nm, s.name,    sizeof(s.name));
-                                    memcpy(pp, s.purpose, sizeof(s.purpose));
-                                    memcpy(tg, s.target,  sizeof(s.target));
-                                    v.mission_start(nm, pp, tg, who ? who : "join",
+                                v.net_srv->cb.on_mission_start = [&v](int op_index, const char* who){
+                                    v.mission_start(who ? who : "join",
                                                     (uint8_t)op_index, /*rollover=*/false);
                                 };
                                 v.net_srv->cb.on_mission_end = [&v](int, const char*){
                                     v.mission_end();
                                 };
-                                v.net_srv->cb.on_mission_update = [&v](int, const char*,
-                                                                        const PktMissionUpdate& u){
-                                    bool changed = false;
-                                    {
-                                        std::lock_guard<std::mutex> lk(v.mission_mtx);
-                                        if(v.mission_state == Mission::State::ACTIVE){
-                                            memcpy(v.mission_name,    u.name,    sizeof(v.mission_name));
-                                            memcpy(v.mission_purpose, u.purpose, sizeof(v.mission_purpose));
-                                            memcpy(v.mission_target,  u.target,  sizeof(v.mission_target));
-                                            memcpy(v.mission_notes,   u.notes,   sizeof(v.mission_notes));
-                                            changed = true;
-                                        }
-                                    }
-                                    if(changed){
-                                        v.mission_save_meta_to_disk();
-                                        v.mission_broadcast_sync();
-                                    }
+                                v.net_srv->cb.on_mission_update = [](int, const char*,
+                                                                      const PktMissionUpdate&){
+                                    // v4.0: mission has no user-editable fields. Update no-op.
                                 };
 
                                 central_cli.set_on_central_conn_open([&central_cli](uint16_t /*cid*/){
@@ -5736,17 +5733,8 @@ void run_streaming_viewer(){
             }
         }
 
-        // ── 숫자키 1/2/3: STATUS/ARCHIVE/SCHED 탭 전환 ─────────────
-        // 우측 패널이 "가장 상단 오버레이"일 때만 숫자키 전환 적용 (EID/LOG/DIGI이 위면 무시)
-        if(top_ov() == 4 && v.right_panel_ratio > 0.01f && !ImGui::GetIO().WantTextInput){
-            auto sel = [&](int n){
-                stat_open = (n==1); archive_open = (n==2);
-                v.sched_panel_open = (n==3);
-            };
-            if(ImGui::IsKeyPressed(ImGuiKey_1, false)) sel(1);
-            else if(ImGui::IsKeyPressed(ImGuiKey_2, false)) sel(2);
-            else if(ImGui::IsKeyPressed(ImGuiKey_3, false)) sel(3);
-        }
+        // (v4.0: 1/2/3 키로 STATUS/ARCHIVE/SCHED 전환 기능 제거 —
+        // ARCHIVE/SCHED가 mission 창에 흡수되어 STATUS만 남음)
 
         // ── 채팅창 토글 / 빠른 명령 입력 (항상 우선 처리, editing 무관) ─────
         if(ImGui::IsKeyPressed(ImGuiKey_RightShift, false) && !ImGui::GetIO().WantTextInput){
@@ -6446,26 +6434,16 @@ void run_streaming_viewer(){
                 }
             };
 
-            // ── STATUS 버튼 ───────────────────────────────────────────────
+            // ── STATUS 버튼 (v4.0: ARCHIVE/SCHED는 mission 창으로 통합 — 버튼 제거) ──
             float btn_x = rpx + 6;
             if(subbar_btn(btn_x, "STATUS", stat_open, IM_COL32(80,255,160,255))){
                 stat_open = !stat_open;
                 if(stat_open){ archive_open=false; v.sched_panel_open=false; }
             }
-
-            // ── ARCHIVE 버튼 ─────────────────────────────────────────────
-            float arch_btn_x = btn_x + 56;
-            if(subbar_btn(arch_btn_x, "ARCHIVE", archive_open, IM_COL32(180,140,255,255))){
-                archive_open = !archive_open;
-                if(archive_open){ stat_open=false; v.sched_panel_open=false; }
-            }
-
-            // ── SCHED 버튼 ───────────────────────────────────────────────
-            float sched_btn_x = arch_btn_x + 64;
-            if(subbar_btn(sched_btn_x, "SCHED", v.sched_panel_open, IM_COL32(255,100,100,255))){
-                v.sched_panel_open = !v.sched_panel_open;
-                if(v.sched_panel_open){ stat_open=false; archive_open=false; }
-            }
+            // archive_open / sched_panel_open 변수는 panel 코드와 함께 잔존하나 토글 불가 →
+            // 항상 닫힌 채. 다음 patch에서 panel 코드 자체도 제거 예정.
+            archive_open       = false;
+            v.sched_panel_open = false;
 
             // ── 패널 콘텐츠 영역 ─────────────────────────────────────────
             dl->AddRectFilled(ImVec2(rpx,rp_content_y),ImVec2(disp_w,content_y+content_h),IM_COL32(12,12,15,255));
@@ -6645,9 +6623,16 @@ void run_streaming_viewer(){
                                     ImGui::TextDisabled("  (no clients connected)");
                             } else if(v.net_cli){
                                 std::lock_guard<std::mutex> lk(v.net_cli->op_mtx);
-                                if(v.net_cli->op_list.count==0)
-                                    ImGui::TextDisabled("  (none)");
-                                else
+                                if(v.net_cli->op_list.count==0){
+                                    // Fallback: op_list still in flight after connect.
+                                    // Show what we know locally so the panel isn't empty.
+                                    ImGui::TextColored(ImVec4(0.7f,0.92f,0.7f,1.f),
+                                        "[JOIN] %s  [Tier%d]",
+                                        login_get_id(), login_get_tier());
+                                    if(!v.station_name.empty())
+                                        ImGui::TextDisabled("  station: %s", v.station_name.c_str());
+                                    ImGui::TextDisabled("  (waiting for op-list from host)");
+                                } else
                                     for(int oi=0;oi<(int)v.net_cli->op_list.count;oi++)
                                         draw_op_entry(v.net_cli->op_list.ops[oi]);
                             }
