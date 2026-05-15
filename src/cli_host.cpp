@@ -1953,7 +1953,11 @@ void run_cli_host(){
     // ══════════════════════════════════════════════════════════════════════
     bewe_log_push(0,"[BEWE CLI] Shutting down...\n");
 
-    // 1) Central 쪽을 먼저 완전히 끊어서 auto-reconnect 스레드가 더 이상
+    // 1) Background workers 즉시 중단 (sleep_for 안에 있어도 1초 내 깨어남)
+    Mission::stop_utc0_worker();
+    LongWaterfall::stop_worker();
+
+    // 2) Central 쪽을 먼저 완전히 끊어서 auto-reconnect 스레드가 더 이상
     //    mux_adapter를 살리지 못하게 함 (g_shutdown 체크로 reconnect도 자가 종료)
     central_cli.stop_mux_adapter();
     central_cli.stop_polling();

@@ -40,11 +40,16 @@ static std::atomic<bool> g_utc0_stop{false};
 static int               g_last_rotate_hour_id = -1;
 
 static void utc0_worker(FFTViewer* v){
+    // 1초씩 쪼개 sleep — stop_utc0_worker() 호출 시 최대 1초 안에 종료.
+    // 20초 단위 정시 검사는 last_check_sec으로 dedup.
+    int last_check_sec = -1;
     while(!g_utc0_stop.load()){
-        std::this_thread::sleep_for(std::chrono::seconds(20));
+        std::this_thread::sleep_for(std::chrono::seconds(1));
         if(g_utc0_stop.load()) break;
         if(!v) continue;
         time_t now = time(nullptr);
+        if((int)(now / 20) == last_check_sec) continue;
+        last_check_sec = (int)(now / 20);
         struct tm tm_utc; gmtime_r(&now, &tm_utc);
         if(tm_utc.tm_min != 0) continue;
         int hour_id = tm_utc.tm_yday * 24 + tm_utc.tm_hour;
