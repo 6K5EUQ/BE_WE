@@ -195,15 +195,30 @@ static char         g_rn_new[128] = {};
 
 // ── Start / End 서브모달 ────────────────────────────────────────────────
 static void draw_start_submodal(FFTViewer& v, NetClient* cli){
+    // OpenPopup은 IDLE→OPEN 전환 1회만 호출. 매 프레임 호출하면 popup 내부 상태가
+    // 매번 reset돼서 버튼 click 이벤트가 누락될 수 있음.
+    static bool s_prev_start_open = false;
+    if(v.mission_start_modal_open && !s_prev_start_open){
+        ImGui::OpenPopup("Start Mission##mission_start");
+    }
+    s_prev_start_open = v.mission_start_modal_open;
     if(!v.mission_start_modal_open) return;
     ImGui::SetNextWindowSize(ImVec2(440, 0));
     ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x*0.5f - 220.f,
                                    ImGui::GetIO().DisplaySize.y*0.30f),
                             ImGuiCond_Appearing);
-    ImGui::OpenPopup("Start Mission##mission_start");
     bool open = true;
-    if(ImGui::BeginPopupModal("Start Mission##mission_start", &open,
-        ImGuiWindowFlags_NoResize|ImGuiWindowFlags_AlwaysAutoResize)){
+    bool popup_shown = ImGui::BeginPopupModal("Start Mission##mission_start", &open,
+        ImGuiWindowFlags_NoResize|ImGuiWindowFlags_AlwaysAutoResize);
+    {
+        static bool s_logged_state = false;
+        if(popup_shown && !s_logged_state){
+            bewe_log_push(0, "[MISSION] Start popup shown\n");
+            s_logged_state = true;
+        }
+        if(!popup_shown) s_logged_state = false;
+    }
+    if(popup_shown){
         time_t now = time(nullptr);
         struct tm tu; KST::to_tm(now, tu);
         auto code = Mission::make_code(1900+tu.tm_year, tu.tm_mon, tu.tm_mday);
@@ -250,13 +265,23 @@ static void draw_start_submodal(FFTViewer& v, NetClient* cli){
         ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.55f, 0.25f, 1.f));
         if(ImGui::Button("Start", ImVec2(120, 0))){
+            bewe_log_push(0, "[MISSION] Start button clicked: remote_mode=%d cli=%p net_cli=%p\n",
+                          (int)v.remote_mode, (void*)cli, (void*)v.net_cli);
             bool ok = false;
-            if(cli){
-                ok = cli->send_mission_start();
+            // cli 파라미터가 null이어도 remote_mode면 v.net_cli로 폴백
+            NetClient* use_cli = cli ? cli : v.net_cli;
+            if(v.remote_mode && use_cli){
+                ok = use_cli->send_mission_start();
+                bewe_log_push(0, "[MISSION] cli->send_mission_start() → ok=%d\n", (int)ok);
                 if(!ok) MissionView::show_toast("Mission start failed: not connected");
-            } else {
+            } else if(!v.remote_mode){
                 ok = v.mission_start(login_get_id(), /*op_index=*/0, /*rollover=*/false);
+                bewe_log_push(0, "[MISSION] v.mission_start() → ok=%d state=%d\n",
+                              (int)ok, (int)v.mission_state);
                 if(!ok) MissionView::show_toast("Mission start failed: already active");
+            } else {
+                bewe_log_push(1, "[MISSION] start failed: remote_mode=1 but no NetClient available\n");
+                MissionView::show_toast("Mission start failed: net client missing");
             }
             if(ok) MissionView::show_toast("Mission start requested");
             v.mission_start_modal_open = false;
