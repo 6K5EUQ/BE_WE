@@ -57,8 +57,8 @@ void draw_toast(){
 static std::string fmt_utc(time_t t){
     if(t <= 0) return "-";
     struct tm tu; gmtime_r(&t, &tu);
-    char b[40];
-    snprintf(b, sizeof(b), "%04d-%02d-%02d %02d:%02d:%02d UTC",
+    char b[48];
+    snprintf(b, sizeof(b), "%04d-%02d-%02d %02d:%02d:%02d UTC+0",
         1900+tu.tm_year, 1+tu.tm_mon, tu.tm_mday,
         tu.tm_hour, tu.tm_min, tu.tm_sec);
     return b;
@@ -352,9 +352,9 @@ static void draw_meta_block(FFTViewer& v){
     row("By:",      started_by);
     row("Station:", station);
     row("Host:",    host);
-    char latlon[64];
-    snprintf(latlon, sizeof(latlon), "%.4f, %.4f", (double)lat, (double)lon);
-    row("Lat/Lon:", latlon);
+    // host의 좌표 그대로 N/S/E/W 단위 표기 (long_waterfall.hpp 공용 헬퍼).
+    std::string latlon = LongWaterfall::fmt_lat_lon(lat, lon);
+    row("Lat/Lon:", latlon.c_str());
     row("SDR:",     sdr_kind);
     row("Antenna:", antenna);
 }
@@ -597,21 +597,18 @@ static void open_local_in_viewer(FFTViewer& v, const std::string& path){
     MissionView::show_toast("No viewer for this file type");
 }
 
-// Right-click context for a LOCAL (downloads_dir) row.
-static void local_context_menu(FFTViewer& v, const std::string& path){
-    if(ImGui::BeginPopupContextItem("##loc_ctx")){
-        ImGui::TextDisabled("%s", path.c_str());
-        ImGui::Separator();
-        if(ImGui::MenuItem("Open in viewer")){
-            open_local_in_viewer(v, path);
-        }
-        ImGui::Separator();
-        if(ImGui::MenuItem("Delete (Local)")){
-            unlink(path.c_str());
-            unlink((path + ".info").c_str());
-            MissionView::show_toast("Local file deleted");
-        }
-        ImGui::EndPopup();
+// LOCAL row 우클릭 — 메인 페이지의 file_ctx 메뉴 (Signal Analysis / Info /
+// Report / Save DB / Delete) 를 동일하게 띄우도록 v.pending_file_ctx 에 신호.
+// ui.cpp run_streaming_viewer() 가 다음 프레임에 file_ctx.open=true 로 옮긴다.
+static void local_request_main_ctx(FFTViewer& v, const std::string& full_path,
+                                   const std::string& name){
+    if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+        ImVec2 mp = ImGui::GetMousePos();
+        v.pending_file_ctx.filepath = full_path;
+        v.pending_file_ctx.filename = name;
+        v.pending_file_ctx.x = mp.x;
+        v.pending_file_ctx.y = mp.y;
+        v.pending_file_ctx.pending.store(true);
     }
 }
 
@@ -629,9 +626,15 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
     }
     ImGui::TextDisabled("Central: %s/%04d/%s/%s",
         g_cf_req_station, g_sel_year, g_sel_code.c_str(), subdir_label(subdir));
-    ImGui::SameLine();
-    if(ImGui::SmallButton("Refresh##cf")){
-        g_cf_last_req_time = 0;
+    // Refresh 버튼 우측 정렬 (현재 child 영역의 오른쪽 끝에 배치)
+    {
+        const char* btn_label = "Refresh";
+        ImVec2 btn_size = ImGui::CalcTextSize(btn_label);
+        btn_size.x += ImGui::GetStyle().FramePadding.x * 2.f;
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - btn_size.x);
+        if(ImGui::SmallButton("Refresh##cf")){
+            g_cf_last_req_time = 0;
+        }
     }
     ImGui::Separator();
     if(!cli){
@@ -692,7 +695,8 @@ static void draw_local_list(FFTViewer& v){
         if(clicked && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
             open_local_in_viewer(v, full);
         }
-        local_context_menu(v, full);
+        // 우클릭 → 메인 페이지 동일한 file_ctx 메뉴 (Signal Analysis/Info/Report/Save DB/Delete)
+        local_request_main_ctx(v, full, it.name);
         std::string info = fmt_size(it.size);
         float tw = ImGui::CalcTextSize(info.c_str()).x;
         ImGui::SameLine(pw - tw - 4.f);

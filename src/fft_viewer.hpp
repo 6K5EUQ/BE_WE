@@ -202,6 +202,16 @@ public:
     bool           mission_start_modal_open = false;
     bool           mission_end_confirm_open = false;
 
+    // mission_view 의 LOCAL 우클릭 → main 페이지 file_ctx 메뉴 (Signal Analysis/
+    // Info/Report/Save DB/Delete) 를 동일하게 트리거. mission_view 가 set 하고,
+    // run_streaming_viewer() 매 프레임 루프 시작 시 소비.
+    struct PendingFileCtx {
+        std::atomic<bool> pending{false};
+        std::string filepath;
+        std::string filename;
+        float       x = 0, y = 0;
+    } pending_file_ctx;
+
     // Mission lifecycle (mission.cpp에 정의, thread-safe)
     bool mission_start(const char* started_by, uint8_t op_index, bool rollover);
     bool mission_end();

@@ -9341,6 +9341,20 @@ void run_streaming_viewer(){
 
                 // Chat panel (C key toggle) HOST/JOIN unified
                 // Chat panel (C key toggle) HOST/JOIN unified
+        // ── mission_view LOCAL 우클릭 → main file_ctx 메뉴 트리거 옮김 ────
+        // FFTViewer::pending_file_ctx 는 mission_view.cpp 가 set;
+        // 여기서 소비해 메인 페이지와 동일 메뉴를 그 좌표에 띄움.
+        if(v.pending_file_ctx.pending.exchange(false)){
+            file_ctx.open      = true;
+            file_ctx.x         = v.pending_file_ctx.x;
+            file_ctx.y         = v.pending_file_ctx.y;
+            file_ctx.filepath  = v.pending_file_ctx.filepath;
+            file_ctx.filename  = v.pending_file_ctx.filename;
+            file_ctx.is_public = false;
+            file_ctx.selected  = false;
+            file_ctx.type      = FileCtxMenu::FT_LOCAL;
+        }
+
         // ── 파일 우클릭 컨텍스트 메뉴 ────────────────────────────────────
         if(file_ctx.open){
             ImGui::SetNextWindowPos(ImVec2(file_ctx.x, file_ctx.y));
