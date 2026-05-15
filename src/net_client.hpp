@@ -279,6 +279,7 @@ public:
     bool cmd_set_sq_thresh(int idx, float thr);
     bool cmd_set_autoscale();
     bool cmd_toggle_recv(int ch_idx, bool enable);
+    bool cmd_toggle_fft_recv(bool enable);  // central에서 이 JOIN으로 FFT 송신 토글 (audio/HB 무관)
     bool cmd_update_ch_range(int idx, float s, float e);
     bool cmd_toggle_tm_iq();
     bool cmd_set_capture_pause(bool pause);

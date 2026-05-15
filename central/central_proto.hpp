@@ -195,6 +195,7 @@ static constexpr int BEWE_MAX_OPERATORS = 16;
 static constexpr uint8_t BEWE_CMD_TOGGLE_RECV = 0x0C;
 static constexpr uint8_t BEWE_CMD_CREATE_CH    = 0x03;
 static constexpr uint8_t BEWE_CMD_DELETE_CH    = 0x04;
+static constexpr uint8_t BEWE_CMD_TOGGLE_FFT_RECV = 0x22;
 
 // AUDIO_FRAME header: ch_idx[1] + pan[1] + n_samples[4]
 // → ch_idx is at BEWE payload offset 0

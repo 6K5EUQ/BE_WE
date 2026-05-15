@@ -2356,6 +2356,8 @@ void run_streaming_viewer(){
             s_central_join_station_id = g_session_args.station_id;
             pending_join.name         = g_session_args.station_name;
             pending_join.station_id   = g_session_args.station_id;
+            pending_join.lat          = g_session_args.station_lat;
+            pending_join.lon          = g_session_args.station_lon;
             mode_sel  = 2;
         }
         mode_done = true;
@@ -2844,6 +2846,8 @@ void run_streaming_viewer(){
         v.my_op_index = cli->my_op_index;
         strncpy(v.host_name, cli->my_name, 31);
         v.station_name = pending_join.name;
+        v.station_lat  = pending_join.lat;
+        v.station_lon  = pending_join.lon;
         // 워터폴 타임스탬프 초기화
         { std::lock_guard<std::mutex> wlk(v.wf_events_mtx); v.wf_events.clear(); }
         v.last_tagged_sec = -1;
@@ -5502,13 +5506,18 @@ void run_streaming_viewer(){
 
             if(ImGui::IsKeyPressed(ImGuiKey_P,false)){
                 bool np = !v.spectrum_pause.load();
-                // JOIN이든 HOST든 로컬 FFT 표시만 토글 (채널 복조 스트리밍과 무관)
+                // JOIN이든 HOST든 로컬 FFT 표시 토글 (채널 복조 스트리밍과 무관)
                 v.spectrum_pause.store(np);
                 if(v.net_srv){
                     v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
                     // 즉시 heartbeat: JOIN에게 pause 상태 즉시 반영
                     v.net_srv->broadcast_heartbeat(np ? 2 : 0);
                     heartbeat_last = std::chrono::steady_clock::now();
+                }
+                // JOIN 모드: Central에 FFT 송신 토글 요청 — 네트워크 자체 차단/재개.
+                // (audio/HB/CMD 등 다른 트래픽은 영향 없음.)
+                if(v.remote_mode && v.net_cli){
+                    v.net_cli->cmd_toggle_fft_recv(/*enable=*/!np);
                 }
             }
             // T키: IQ 롤링 버퍼 활성/비활성 (JOIN이면 HOST에 CMD 전송)
@@ -10079,6 +10088,11 @@ void run_streaming_viewer(){
         if(v.eid_panel_open){
             // SA 텍스처 업로드 (right panel 없이 EID 오버레이만 열려있을 때도 동작)
             if(v.sa_pixel_ready.load()){ v.sa_upload_texture(); v.sa_anim_timer=0.0f; }
+            // 미션 모달 위로 떠올라야 ESC가 이 창에 작용.
+            static bool s_sa_prev_open = false;
+            bool sa_first_open = !s_sa_prev_open;
+            if(sa_first_open) ImGui::SetNextWindowFocus();
+            s_sa_prev_open = true;
             ImGui::SetNextWindowPos(ImVec2(0,0));
             ImGui::SetNextWindowSize(ImVec2(disp_w, disp_h - TOPBAR_H));
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
@@ -10086,6 +10100,12 @@ void run_streaming_viewer(){
             ImGui::Begin("##sig_analysis", nullptr,
                 ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
                 ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar);
+            // ESC로 SA 패널 닫기 (포커스된 경우만)
+            if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+               ImGui::IsKeyPressed(ImGuiKey_Escape, false)){
+                v.eid_panel_open = false;
+                v.audio_play_stop();
+            }
             ImDrawList* fg = ImGui::GetWindowDrawList();
             const float SB_H = 22.f;  // 서브바 높이
             float ov_x0 = 0.f, ov_y0 = 0.f;

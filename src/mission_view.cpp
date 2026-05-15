@@ -213,15 +213,25 @@ static void draw_start_submodal(FFTViewer& v, NetClient* cli){
             "%s  (%04d-%02d-%02d)",
             code.c_str(), 1900+tu.tm_year, 1+tu.tm_mon, tu.tm_mday);
         ImGui::Separator();
-        ImGui::TextDisabled("Auto-captured metadata at start:");
+        // JOIN 모드: HOST 정보는 net_cli에서 가져옴 (lat/lon은 v.station_lat에 동기화됨)
+        char antenna_buf[32] = {};
+        if(v.remote_mode && cli){
+            std::lock_guard<std::mutex> lk(cli->remote_antenna_mtx);
+            memcpy(antenna_buf, cli->remote_antenna, sizeof(antenna_buf));
+            antenna_buf[sizeof(antenna_buf)-1] = '\0';
+        } else {
+            memcpy(antenna_buf, v.host_antenna, sizeof(antenna_buf));
+            antenna_buf[sizeof(antenna_buf)-1] = '\0';
+        }
         ImGui::BulletText("Station: %s", v.station_name.empty() ? "(unset)" : v.station_name.c_str());
         ImGui::BulletText("Lat/Lon: %.4f, %.4f", (double)v.station_lat, (double)v.station_lon);
         const char* sdr =
-            (v.dev_blade) ? "BladeRF" :
-            (v.pluto_ctx) ? "Pluto"   :
-            (v.dev_rtl)   ? "RTL-SDR" : "Unknown";
+            v.remote_mode      ? (v.mission_sdr_kind[0] ? v.mission_sdr_kind : "(remote)") :
+            (v.dev_blade)      ? "BladeRF" :
+            (v.pluto_ctx)      ? "Pluto"   :
+            (v.dev_rtl)        ? "RTL-SDR" : "Unknown";
         ImGui::BulletText("SDR: %s", sdr);
-        ImGui::BulletText("Antenna: %s", v.host_antenna[0] ? v.host_antenna : "(unset)");
+        ImGui::BulletText("Antenna: %s", antenna_buf[0] ? antenna_buf : "(unset)");
         // login_get_id가 비면 USER env / hostname 으로 폴백 (mission.cpp와 동일 정책)
         const char* sb = login_get_id();
         if(!sb || !sb[0]) sb = getenv("USER");
@@ -240,8 +250,15 @@ static void draw_start_submodal(FFTViewer& v, NetClient* cli){
         ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.55f, 0.25f, 1.f));
         if(ImGui::Button("Start", ImVec2(120, 0))){
-            if(cli) cli->send_mission_start();
-            else    v.mission_start(login_get_id(), /*op_index=*/0, /*rollover=*/false);
+            bool ok = false;
+            if(cli){
+                ok = cli->send_mission_start();
+                if(!ok) MissionView::show_toast("Mission start failed: not connected");
+            } else {
+                ok = v.mission_start(login_get_id(), /*op_index=*/0, /*rollover=*/false);
+                if(!ok) MissionView::show_toast("Mission start failed: already active");
+            }
+            if(ok) MissionView::show_toast("Mission start requested");
             v.mission_start_modal_open = false;
             ImGui::CloseCurrentPopup();
         }
@@ -673,7 +690,7 @@ static void open_local_in_viewer(FFTViewer& v, const std::string& path){
     if(ends_with(".bewehist") || ends_with(".bewewf")){
         if(::lwf_open_file(path)){
             v.lwf_modal_open = true;
-            v.mission_modal_open = false;  // 미션 모달 닫고 viewer 보이게
+            // 미션 모달은 닫지 않음 — ESC로 LWF만 끄고 미션으로 복귀.
         } else {
             MissionView::show_toast("LWF open failed");
         }
@@ -682,7 +699,7 @@ static void open_local_in_viewer(FFTViewer& v, const std::string& path){
     if(ends_with(".wav")){
         v.sa_temp_path = path;
         v.eid_panel_open = true;
-        v.mission_modal_open = false;
+        // 미션 모달은 닫지 않음 — ESC로 SA만 끄고 미션으로 복귀.
         return;
     }
     MissionView::show_toast("No viewer for this file type");
@@ -1103,6 +1120,14 @@ void draw_modal(FFTViewer& v, NetClient* cli){
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.06f, 0.08f, 0.14f, 1.f));
     if(ImGui::Begin("MISSION##mission_modal", &v.mission_modal_open,
         ImGuiWindowFlags_NoCollapse)){
+
+        // 이 창이 포커스이고 다른 viewer가 떠있지 않을 때만 ESC로 닫기 —
+        // viewer(HIST/SA)가 떠있으면 그쪽 ESC 핸들러가 먼저 처리.
+        if(!v.lwf_modal_open && !v.eid_panel_open &&
+           ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+           ImGui::IsKeyPressed(ImGuiKey_Escape, false)){
+            v.mission_modal_open = false;
+        }
 
         int hdr_year = 0; char hdr_code[8] = {};
         bool hdr_active = false;

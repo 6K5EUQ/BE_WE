@@ -743,11 +743,14 @@ namespace LongWaterfallView {
 void draw_modal(FFTViewer& v, NetClient* cli){
     // HIST 모달 새로 열릴 때마다 file panel 기본 open + HOST 탭 활성.
     static bool s_prev_open = false;
-    if(v.lwf_modal_open && !s_prev_open){
+    bool first_open = (v.lwf_modal_open && !s_prev_open);
+    if(first_open){
         g_files_panel_open = true;
     }
     s_prev_open = v.lwf_modal_open;
     if(!v.lwf_modal_open) return;
+    // 미션 모달 위에 떠올라야 ESC가 이 창에 작용.
+    if(first_open) ImGui::SetNextWindowFocus();
 
     register_dl_callbacks_once(cli);
 

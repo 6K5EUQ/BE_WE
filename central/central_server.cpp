@@ -950,6 +950,9 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         // 다운로드 중 JOIN에는 FFT 보내지 않음 (HB는 ctrl_queue로 계속 감 → LINK 유지)
         if(is_fft && je->active_file_transfers.load(std::memory_order_relaxed) > 0)
             continue;
+        // P 키로 일시정지 요청한 JOIN에는 FFT 스킵 (audio/HB 등은 그대로 흐름)
+        if(is_fft && je->fft_paused.load(std::memory_order_relaxed))
+            continue;
 
         if(is_file){
             if(is_file_meta)
@@ -1019,6 +1022,16 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
                 // join_loop 경유: HOST에 send OK
                 rebuild_and_broadcast_ch_sync(room, /*send_to_host=*/true);
             }
+            return true;  // HOST에 포워드 안 함
+        }
+        // TOGGLE_FFT_RECV: 릴레이에서만 처리 — HOST는 모르고 계속 송신,
+        // central이 이 JOIN으로만 FFT_FRAME drop. audio/HB/CMD는 영향 없음.
+        if(cmd_type == BEWE_CMD_TOGGLE_FFT_RECV && cmd_len >= 5){
+            uint8_t enable = cmd_payload[4];
+            // enable=1 → FFT 수신 켜기(=fft_paused=false). enable=0 → 끄기.
+            je->fft_paused.store(enable == 0, std::memory_order_relaxed);
+            printf("[Central] TOGGLE_FFT_RECV conn_id=%u enable=%u (fft_paused=%d)\n",
+                   je->conn_id, enable, (int)je->fft_paused.load());
             return true;  // HOST에 포워드 안 함
         }
         // CREATE_CH: HOST에 포워드하되, 해당 slot의 모든 JOIN의 recv_audio를 true로 리셋

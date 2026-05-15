@@ -68,6 +68,10 @@ struct JoinEntry {
     // > 0 이면 dispatch_to_joins가 FFT_FRAME을 이 JOIN에 보내지 않음 (HB는 계속 보냄).
     std::atomic<int> active_file_transfers{0};
 
+    // P 키로 JOIN이 FFT 수신 일시정지 요청. dispatch_to_joins가 FFT_FRAME만 스킵.
+    // audio/HB/CMD/STATUS 등 다른 트래픽은 그대로.
+    std::atomic<bool> fft_paused{false};
+
     // ── 독립 송신 큐 ──────────────────────────────────────────────────────
     // 우선순위: ctrl_queue > file_queue > send_queue(FFT) > audio_queue
     // 단일 send 스레드가 우선순위 순서로 큐에서 꺼내 전송

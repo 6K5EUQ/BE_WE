@@ -169,6 +169,7 @@ enum class CmdType : uint8_t {
     ADD_SCHED       = 0x1E,  // JOIN → server: add scheduled IQ recording
     REMOVE_SCHED    = 0x1F,  // JOIN → server: remove own scheduled entry
     SET_HW          = 0x21,  // JOIN → server: switch HOST SDR runtime ("bladerf"/"pluto"/"rtlsdr")
+    TOGGLE_FFT_RECV = 0x22,  // JOIN → central: enable/disable FFT stream (audio/HB unaffected)
 };
 
 struct __attribute__((packed)) PktCmd {
@@ -203,6 +204,7 @@ struct __attribute__((packed)) PktCmd {
                  char target[32]; }                                add_sched;
         struct { int64_t start_time; float freq_mhz; }             remove_sched;
         struct { char    name[16]; }                       set_hw;
+        struct { uint8_t enable; }                         toggle_fft_recv;
         uint8_t raw[64];
     };
 };

@@ -1104,6 +1104,11 @@ bool NetClient::cmd_toggle_recv(int ch_idx, bool enable){
     c.toggle_recv.enable=enable?1:0;
     return send_cmd(c);
 }
+bool NetClient::cmd_toggle_fft_recv(bool enable){
+    PktCmd c{}; c.cmd=(uint8_t)CmdType::TOGGLE_FFT_RECV;
+    c.toggle_fft_recv.enable=enable?1:0;
+    return send_cmd(c);
+}
 bool NetClient::cmd_update_ch_range(int idx, float s, float e){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::UPDATE_CH_RANGE;
     c.update_ch_range.idx=(uint8_t)idx;
