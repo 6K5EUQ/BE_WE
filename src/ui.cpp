@@ -4394,6 +4394,7 @@ void run_streaming_viewer(){
                                                               (uint8_t)op_index, /*rollover=*/false);
                                     bewe_log_push(0, "[NetSrv] on_mission_start op=%d who='%s' → ok=%d state=%d\n",
                                                   op_index, who ? who : "", (int)ok, (int)v.mission_state);
+                                    if(!ok) v.mission_broadcast_sync();
                                 };
                                 v.net_srv->cb.on_mission_end = [&v](int, const char*){
                                     v.mission_end();
@@ -4825,7 +4826,10 @@ void run_streaming_viewer(){
     using clk = std::chrono::steady_clock;
     static constexpr float FRAME_TARGET = 1.0f / 60.0f; // 60fps
     clk::time_point frame_last = clk::now();
+    extern std::atomic<bool> g_signal_shutdown;
     while(!glfwWindowShouldClose(win) && !do_logout && !do_main_menu){
+        // SIGINT/SIGTERM 받으면 윈도우 닫기 트리거 → 루프 탈출 후 cleanup 경로 거침
+        if(g_signal_shutdown.load()) glfwSetWindowShouldClose(win, GLFW_TRUE);
         // 60fps 캡: 포커스/백그라운드 구분 없이 동일
         {
             auto now = clk::now();
@@ -12781,6 +12785,13 @@ void run_streaming_viewer(){
     // 재연결 스레드 완료 대기 (central_cli 참조하는 detached 스레드 보호)
     for(int w=0; w<100 && reconn_busy.load(); w++)
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // 활성 미션 있으면 안전 종료 (HIST/IQ finalize + Central push + sync).
+    // worker stop 전에 호출해야 HIST rotate가 처리됨.
+    if(v.mission_state == Mission::State::ACTIVE){
+        v.mission_end();
+        std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    }
 
     v.is_running = false;
     // RTL-SDR: async read 즉시 취소 > cap thread 블로킹 해제

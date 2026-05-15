@@ -1271,6 +1271,9 @@ void run_cli_host(){
                                               (uint8_t)op_index, /*rollover=*/false);
                     bewe_log_push(0, "[CLI-HOST] on_mission_start op=%d who='%s' → ok=%d state=%d\n",
                                   op_index, who ? who : "", (int)ok, (int)v.mission_state);
+                    // ok=false이면 mission_start 내부 broadcast가 안 일어남.
+                    // 그 경우라도 현재 상태를 JOIN에 알려 stale UI를 갱신.
+                    if(!ok) v.mission_broadcast_sync();
                 };
                 srv->cb.on_mission_end = [&v](int op_index, const char* who){
                     (void)op_index; (void)who;
@@ -1323,6 +1326,13 @@ void run_cli_host(){
                 srv->cb.on_relay_broadcast = [&central_cli](const uint8_t* pkt, size_t len, bool no_drop){
                     central_cli.enqueue_relay_broadcast(pkt, len, no_drop);
                 };
+                // 부팅 시 mission_load_history → broadcast_sync는 net_srv/on_relay_broadcast가
+                // 없을 때 호출돼서 Central 캐시가 비어있다. 여기서 (relay 연결 + net_srv 모두
+                // 준비된 시점) 한 번 더 broadcast해서 신규 JOIN이 ACTIVE 상태를 받게 함.
+                if(v.mission_state == Mission::State::ACTIVE){
+                    bewe_log_push(0, "[CLI-HOST] re-broadcasting mission_sync after relay setup\n");
+                    v.mission_broadcast_sync();
+                }
                 // Auto-reconnect function
                 auto reconnect_fn = std::make_shared<std::function<void()>>();
                 *reconnect_fn = [&v, &central_cli,
@@ -1966,6 +1976,17 @@ void run_cli_host(){
     //  Cleanup
     // ══════════════════════════════════════════════════════════════════════
     bewe_log_push(0,"[BEWE CLI] Shutting down...\n");
+
+    // 0) 활성 미션 있으면 안전하게 종료 — HIST/IQ/Audio finalize + Central archive push +
+    //    mission_history 저장 + IDLE 전이 + JOIN들에게 sync broadcast.
+    //    이건 worker stop보다 먼저 (LongWaterfall worker가 살아있어야 HIST rename됨).
+    if(v.mission_state == Mission::State::ACTIVE){
+        bewe_log_push(0,"[BEWE CLI] auto-ending active mission before shutdown\n");
+        v.mission_end();
+        // mission_end가 LongWaterfall::request_rotate를 큐잉만 하므로
+        // worker가 rotate를 처리할 시간을 짧게 준다 (~600ms).
+        std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    }
 
     // 1) Background workers 즉시 중단 (sleep_for 안에 있어도 1초 내 깨어남)
     Mission::stop_utc0_worker();
