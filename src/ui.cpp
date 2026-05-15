@@ -4390,8 +4390,10 @@ void run_streaming_viewer(){
                                 };
                                 // ── Mission callbacks (HOST 측) ─────────
                                 v.net_srv->cb.on_mission_start = [&v](int op_index, const char* who){
-                                    v.mission_start(who ? who : "join",
-                                                    (uint8_t)op_index, /*rollover=*/false);
+                                    bool ok = v.mission_start(who ? who : "join",
+                                                              (uint8_t)op_index, /*rollover=*/false);
+                                    bewe_log_push(0, "[NetSrv] on_mission_start op=%d who='%s' → ok=%d state=%d\n",
+                                                  op_index, who ? who : "", (int)ok, (int)v.mission_state);
                                 };
                                 v.net_srv->cb.on_mission_end = [&v](int, const char*){
                                     v.mission_end();

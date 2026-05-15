@@ -1267,8 +1267,10 @@ void run_cli_host(){
                 // ── SIGINT Mission System ──────────────────────────────
                 // JOIN이 보낸 미션 명령을 HOST가 실행 (op_name으로 started_by 채움).
                 srv->cb.on_mission_start = [&v](int op_index, const char* who){
-                    v.mission_start(who ? who : "join",
-                                    (uint8_t)op_index, /*rollover=*/false);
+                    bool ok = v.mission_start(who ? who : "join",
+                                              (uint8_t)op_index, /*rollover=*/false);
+                    bewe_log_push(0, "[CLI-HOST] on_mission_start op=%d who='%s' → ok=%d state=%d\n",
+                                  op_index, who ? who : "", (int)ok, (int)v.mission_state);
                 };
                 srv->cb.on_mission_end = [&v](int op_index, const char* who){
                     (void)op_index; (void)who;

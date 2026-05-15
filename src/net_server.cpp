@@ -478,6 +478,8 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
     }
 
     case PacketType::MISSION_START: {
+        printf("[NetServer] MISSION_START recv: op=%u name='%s' authed=%d cb=%d\n",
+               c->op_index, c->name, (int)c->authed, cb.on_mission_start ? 1 : 0);
         if(!c->authed) break;
         (void)payload; (void)len;   // payload는 op_index padding 뿐 — 호스트 컨텍스트로 직접 시작
         if(cb.on_mission_start) cb.on_mission_start(c->op_index, c->name);

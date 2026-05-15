@@ -981,6 +981,11 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
     if(bewe_type >= 0x24 && bewe_type <= 0x2F)
         printf("[Central] intercept_join_cmd: bewe_type=0x%02x len=%zu conn_id=%u '%s'\n",
                bewe_type, bewe_len, je->conn_id, je->name);
+    // MISSION_START/END/DELETE 진단 로그 (JOIN→HOST relay 확인용)
+    if(bewe_type == BEWE_TYPE_MISSION_START || bewe_type == BEWE_TYPE_MISSION_END ||
+       bewe_type == BEWE_TYPE_MISSION_DELETE)
+        printf("[Central] MISSION relay: bewe_type=0x%02x len=%zu conn_id=%u '%s' authed=%d → forwarding to HOST\n",
+               bewe_type, bewe_len, je->conn_id, je->name, (int)je->authed);
 
     // ── DB_LIST_REQ: 즉시 재전송 ─────────────────────────────────
     if(bewe_type == BEWE_TYPE_DB_LIST_REQ){
