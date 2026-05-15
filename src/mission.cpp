@@ -99,6 +99,23 @@ static void fill_host_name(char* dst, size_t cap){
     }
 }
 
+// "By: " 필드용 폴백 — login_id → USER env → hostname → "unknown"
+static void fill_started_by(char* dst, size_t cap, const char* requested){
+    auto cpy = [&](const char* src){
+        if(!src || !src[0]) return false;
+        size_t n = strlen(src); if(n >= cap) n = cap - 1;
+        memcpy(dst, src, n); dst[n] = 0;
+        return true;
+    };
+    if(cpy(requested)) return;
+    if(cpy(login_get_id())) return;
+    if(cpy(getenv("USER"))) return;
+    if(cpy(getenv("LOGNAME"))) return;
+    char h[64] = {};
+    if(gethostname(h, sizeof(h)-1) == 0 && cpy(h)) return;
+    cpy("unknown");
+}
+
 // ── FFTViewer mission_* 구현 ─────────────────────────────────────────────
 
 bool FFTViewer::mission_start(const char* started_by, uint8_t op_index, bool rollover){
@@ -118,7 +135,8 @@ bool FFTViewer::mission_start(const char* started_by, uint8_t op_index, bool rol
             memcpy(dst, src, n); dst[n] = 0;
         };
         cpy(mission_code,       sizeof(mission_code),       code.c_str());
-        cpy(mission_started_by, sizeof(mission_started_by), started_by);
+        // started_by 폴백 (인자 → login_id → USER env → hostname → "unknown")
+        fill_started_by(mission_started_by, sizeof(mission_started_by), started_by);
         mission_op_index   = op_index;
         mission_start_utc  = now;
         mission_end_utc    = 0;

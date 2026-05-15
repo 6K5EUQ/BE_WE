@@ -1450,7 +1450,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         ImVec2 mp = ImGui::GetIO().MousePos;
         bool ctrl = ImGui::GetIO().KeyCtrl;
         bool in_sp = (mp.x>=gx && mp.x<=gx+gw && mp.y>=gy && mp.y<=gy+gh);
-        if(!eid_panel_open && !log_panel_open && !lwf_modal_open
+        if(!eid_panel_open && !log_panel_open && !lwf_modal_open && !mission_modal_open
            && ctrl && in_sp &&
            ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
             notch_drag.selecting = true;
@@ -1514,11 +1514,11 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         ImVec2 _mp = ImGui::GetIO().MousePos;
         bool in_band_bar = band_bar_active &&
                            _mp.y >= band_bar_y && _mp.y <= band_bar_y + BAND_BAR_H;
-        bool any_ovl = eid_panel_open || log_panel_open || lwf_modal_open;
+        bool any_ovl = eid_panel_open || log_panel_open || lwf_modal_open || mission_modal_open;
         if(!any_ovl && !in_band_bar) handle_new_channel_drag(gx,gw);
     }
     int sel_before = selected_ch;
-    bool any_ovl_b = eid_panel_open || log_panel_open || lwf_modal_open || sig_lib_panel_open;
+    bool any_ovl_b = eid_panel_open || log_panel_open || lwf_modal_open || sig_lib_panel_open || mission_modal_open;
     if(!region.active && !any_ovl_b) handle_channel_interactions(gx,gw,gy,gh);
 
     // ── 좌클릭 토글 > Max Hold (채널 위가 아닌 빈 영역 클릭에서만) ──────
@@ -1733,10 +1733,10 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
         // 마우스가 워터폴 영역 안에 있을 때만 채널 드래그 시작 허용 (band bar 우클릭 보호)
         ImVec2 _mp = ImGui::GetIO().MousePos;
         bool in_wf_area = (_mp.y >= gy && _mp.y <= gy + gh);
-        bool any_ovl_w = eid_panel_open || log_panel_open || lwf_modal_open || sig_lib_panel_open;
+        bool any_ovl_w = eid_panel_open || log_panel_open || lwf_modal_open || sig_lib_panel_open || mission_modal_open;
         if(!any_ovl_w && in_wf_area) handle_new_channel_drag(gx,gw);
     }
-    bool any_ovl_w2 = eid_panel_open || log_panel_open || lwf_modal_open || sig_lib_panel_open;
+    bool any_ovl_w2 = eid_panel_open || log_panel_open || lwf_modal_open || sig_lib_panel_open || mission_modal_open;
     if(!region.active && !any_ovl_w2) handle_channel_interactions(gx,gw,gy,gh);
 
     // ── Ctrl+우클릭 드래그: 영역 IQ 녹음 선택 ────────────────────────────
@@ -1747,7 +1747,7 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
         bool in_wf=(mp.x>=gx&&mp.x<=gx+gw&&mp.y>=gy&&mp.y<=gy+gh);
 
         // ── 신규 선택: Ctrl+우클릭 드래그 ──────────────────────────────
-        if(!eid_panel_open&&!log_panel_open&&!lwf_modal_open
+        if(!eid_panel_open&&!log_panel_open&&!lwf_modal_open&&!mission_modal_open
            &&ctrl&&ImGui::IsMouseClicked(ImGuiMouseButton_Right)&&in_wf&&(tm_iq_file_ready||remote_mode)){
             region.selecting=true; region.active=false;
             region.edit_mode=RegionSel::EDIT_NONE;
@@ -5393,7 +5393,8 @@ void run_streaming_viewer(){
         // 없을 때만 true. 우측 사이드 패널은 비모달이라 메인 단축키와 공존 허용.
         // 다른 모달이 떠있으면 그 창의 단축키만 동작.
         bool main_kbd_active = !v.eid_panel_open && !v.log_panel_open
-                            && !v.lwf_modal_open && !v.sig_lib_panel_open;
+                            && !v.lwf_modal_open && !v.sig_lib_panel_open
+                            && !v.mission_modal_open;
 
         // ── Keyboard shortcuts ────────────────────────────────────────────
         if(!editing && main_kbd_active){
@@ -5709,13 +5710,14 @@ void run_streaming_viewer(){
         };
         {
             static bool prev_eid=false, prev_log=false, prev_lwf=false,
-                        prev_side=false, prev_lib=false;
+                        prev_side=false, prev_lib=false, prev_mission=false;
             bool side_now = v.right_panel_ratio > 0.01f;
             if(v.eid_panel_open != prev_eid){ v.eid_panel_open ? push_ov(1) : pop_ov(1); prev_eid=v.eid_panel_open; }
             if(v.log_panel_open != prev_log){ v.log_panel_open ? push_ov(2) : pop_ov(2); prev_log=v.log_panel_open; }
             if(v.lwf_modal_open != prev_lwf){ v.lwf_modal_open ? push_ov(3) : pop_ov(3); prev_lwf=v.lwf_modal_open; }
             if(side_now != prev_side){ side_now ? push_ov(4) : pop_ov(4); prev_side=side_now; }
             if(v.sig_lib_panel_open != prev_lib){ v.sig_lib_panel_open ? push_ov(5) : pop_ov(5); prev_lib=v.sig_lib_panel_open; }
+            if(v.mission_modal_open != prev_mission){ v.mission_modal_open ? push_ov(6) : pop_ov(6); prev_mission=v.mission_modal_open; }
         }
         // S키: 메인 STATUS 패널 토글. 다른 오버레이 활성 시엔 그쪽이 S 키 소비.
         if(main_kbd_active
@@ -9228,6 +9230,7 @@ void run_streaming_viewer(){
                 if(self != 1 && v.log_panel_open) return true;
                 if(self != 3 && v.lwf_modal_open) return true;
                 if(self != 4 && v.sig_lib_panel_open) return true;
+                if(self != 5 && v.mission_modal_open) return true;
                 return false;
             };
             auto bar_try_toggle = [&](int self, bool& flag){

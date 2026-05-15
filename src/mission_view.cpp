@@ -13,6 +13,7 @@
 #include <imgui.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <chrono>
@@ -162,7 +163,16 @@ static void draw_start_submodal(FFTViewer& v, NetClient* cli){
             (v.dev_rtl)   ? "RTL-SDR" : "Unknown";
         ImGui::BulletText("SDR: %s", sdr);
         ImGui::BulletText("Antenna: %s", v.host_antenna[0] ? v.host_antenna : "(unset)");
-        ImGui::BulletText("Started by: %s", login_get_id());
+        // login_get_id가 비면 USER env / hostname 으로 폴백 (mission.cpp와 동일 정책)
+        const char* sb = login_get_id();
+        if(!sb || !sb[0]) sb = getenv("USER");
+        if(!sb || !sb[0]) sb = getenv("LOGNAME");
+        char hbuf[64] = {};
+        if(!sb || !sb[0]){
+            if(gethostname(hbuf, sizeof(hbuf)-1) == 0) sb = hbuf;
+        }
+        if(!sb || !sb[0]) sb = "unknown";
+        ImGui::BulletText("Started by: %s", sb);
         ImGui::Spacing();
         if(ImGui::Button("Cancel", ImVec2(120, 0))){
             v.mission_start_modal_open = false;
@@ -388,6 +398,9 @@ static void draw_file_tabs(FFTViewer& /*v*/){
     if(ImGui::BeginTabBar("##mission_file_tabs")){
         auto draw_list = [&](const std::string& dir, const char* ext){
             auto items = list_dir(dir, ext);
+            // 디렉토리 경로 항상 표시 (투명성: 어디 보고 있는지 사용자가 확인 가능)
+            ImGui::TextDisabled("dir: %s", dir.c_str());
+            ImGui::Separator();
             if(items.empty()){
                 ImGui::TextDisabled("  (no files)");
                 return;
@@ -410,7 +423,7 @@ static void draw_file_tabs(FFTViewer& /*v*/){
             draw_list(dir_iq, ".wav");
             ImGui::EndTabItem();
         }
-        if(ImGui::BeginTabItem("Audio")){
+        if(ImGui::BeginTabItem("DEMOD")){
             draw_list(dir_audio, ".wav");
             ImGui::EndTabItem();
         }
