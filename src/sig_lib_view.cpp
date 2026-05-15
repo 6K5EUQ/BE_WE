@@ -2,6 +2,7 @@
 #include "fft_viewer.hpp"
 #include "net_client.hpp"
 #include "net_protocol.hpp"
+#include "kst_time.hpp"
 
 #include <imgui.h>
 
@@ -20,7 +21,7 @@ constexpr float kBottomBarH = 32.0f;
 std::string fmt_short_local(int64_t utc){
     if(utc <= 0) return "-";
     time_t t = (time_t)utc;
-    struct tm tm; localtime_r(&t, &tm);
+    struct tm tm; KST::to_tm(t, tm);
     char buf[32];
     strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm);
     return buf;

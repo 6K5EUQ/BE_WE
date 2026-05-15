@@ -1,6 +1,7 @@
 #include "fft_viewer.hpp"
 #include "audio_playback.hpp"
 #include "net_protocol.hpp"
+#include "kst_time.hpp"
 #include <algorithm>
 #include <mutex>
 
@@ -21,9 +22,9 @@ void FFTViewer::log_push(int col, const char* fmt, ...){
     // strip trailing newlines
     size_t len = strlen(raw);
     while(len > 0 && (raw[len-1]=='\n'||raw[len-1]=='\r')) raw[--len]='\0';
-    // timestamp prefix
+    // timestamp prefix (KST 기준)
     time_t now = time(nullptr);
-    struct tm tm_buf; localtime_r(&now, &tm_buf);
+    struct tm tm_buf; KST::to_tm(now, tm_buf);
     char ts[12]; strftime(ts, sizeof(ts), "%H:%M:%S", &tm_buf);
     char full[512];
     snprintf(full, sizeof(full), "[%s] %s", ts, raw);

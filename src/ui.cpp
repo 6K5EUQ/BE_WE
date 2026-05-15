@@ -1990,7 +1990,7 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
             wt_ms = now_ms - (int64_t)((current_fft_idx - hov_fft_idx) * 1000.0f / rps);
         }
         time_t wt_sec = (time_t)(wt_ms / 1000);
-        struct tm lt; localtime_r(&wt_sec, &lt);
+        struct tm lt; KST::to_tm(wt_sec, lt);
         char tbuf[16]; strftime(tbuf, sizeof(tbuf), "%H:%M:%S", &lt);
         ImGui::SetTooltip("%s\n%.3f MHz", tbuf, af);
         if(!eid_panel_open) handle_zoom_scroll(gx,gw,mm.x);
@@ -3849,7 +3849,7 @@ void run_streaming_viewer(){
                 {
                     std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                     FFTViewer::RecEntry e{};
-                    time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
+                    time_t t=time(nullptr); struct tm tm2; KST::to_tm(t,tm2);
                     char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
                     float cf_mhz = (freq_lo+freq_hi)/2.0f;
                     char fn[128]; snprintf(fn,sizeof(fn),"IQ_%.3fMHz_%s.wav",cf_mhz,dts);
@@ -4703,17 +4703,11 @@ void run_streaming_viewer(){
             fclose(f);
             return dur;
         }
-        // 로컬 UTC 오프셋 (시간 단위)
-        static int utc_off_hours(){
-            time_t now = time(nullptr);
-            struct tm lt; localtime_r(&now, &lt);
-            return (int)(lt.tm_gmtoff / 3600);
-        }
-        // HH:MM:SS (UTC+N) 포맷
-        static void fmt_time_utc(char* out, size_t sz, const struct tm& lt, int off){
-            char base[16]; strftime(base, sizeof(base), "%H:%M:%S", &lt);
-            if(off >= 0) snprintf(out, sz, "%s (UTC+%d)", base, off);
-            else         snprintf(out, sz, "%s (UTC%d)",  base, off);
+        // 시간 기준은 항상 KST(UTC+9).
+        static int utc_off_hours(){ return KST::OFFSET_HOURS; }
+        // HH:MM:SS 포맷 (UTC 라벨 없음)
+        static void fmt_time_utc(char* out, size_t sz, const struct tm& lt, int /*off_ignored*/){
+            strftime(out, sz, "%H:%M:%S", &lt);
         }
         void autofill(const std::string& filename){
             memset(fields, 0, sizeof(fields));
@@ -4742,14 +4736,13 @@ void run_streaming_viewer(){
                 int day=0,yr=0,hh=0,mm=0,ss=0;
                 if(sscanf(under-3, "%3s%2d_%4d_%2d%2d%2d", mon,&day,&yr,&hh,&mm,&ss) >= 5){
                     snprintf(fields[1], 256, "%s %02d, %04d", mon, day, yr);
-                    if(utc_off >= 0) snprintf(fields[2], 256, "%02d:%02d:%02d (UTC+%d)", hh, mm, ss, utc_off);
-                    else             snprintf(fields[2], 256, "%02d:%02d:%02d (UTC%d)",  hh, mm, ss, utc_off);
+                    snprintf(fields[2], 256, "%02d:%02d:%02d", hh, mm, ss);
                     dt_found = true;
                 }
             }
             if(!dt_found){
                 time_t now = time(nullptr);
-                struct tm lt; localtime_r(&now, &lt);
+                struct tm lt; KST::to_tm(now, lt);
                 strftime(fields[1], 256, "%b %d, %Y", &lt);
                 fmt_time_utc(fields[2], 256, lt, utc_off);
             }
@@ -4777,32 +4770,18 @@ void run_streaming_viewer(){
         }
     } info_modal;
 
-    // HH:MM:SS (UTC+N) 또는 HHMMSS 입력 → HH:MM:SS (UTC+N) 형식으로 자동 변환
+    // HHMMSS 입력 → HH:MM:SS 형식으로 자동 변환 (KST 가정, UTC 태그 없음)
     auto fmt_time_field = [](char* buf){
         if(!buf || !buf[0]) return;
         // 이미 콜론 있으면 그대로
         if(strchr(buf, ':')) return;
-        // UTC 태그 추출 (있으면 나중에 다시 붙임)
-        char utc_tag[32] = {};
-        char* paren = strchr(buf, '(');
-        if(paren){
-            strncpy(utc_tag, paren, sizeof(utc_tag)-1);
-            utc_tag[sizeof(utc_tag)-1] = '\0';
-            // paren 이전 trim
-            while(paren > buf && (paren[-1]==' '||paren[-1]=='\t')) paren--;
-            *paren = '\0';
-        }
         // 숫자만 추출
         char digits[8]={}; int dn=0;
         for(char* p=buf; *p && dn<7; p++) if(*p>='0' && *p<='9') digits[dn++] = *p;
         if(dn == 6){
             char out[64];
-            if(utc_tag[0])
-                snprintf(out, sizeof(out), "%c%c:%c%c:%c%c %s",
-                         digits[0],digits[1],digits[2],digits[3],digits[4],digits[5], utc_tag);
-            else
-                snprintf(out, sizeof(out), "%c%c:%c%c:%c%c",
-                         digits[0],digits[1],digits[2],digits[3],digits[4],digits[5]);
+            snprintf(out, sizeof(out), "%c%c:%c%c:%c%c",
+                     digits[0],digits[1],digits[2],digits[3],digits[4],digits[5]);
             strncpy(buf, out, 255); buf[255]='\0';
         }
     };
@@ -5449,7 +5428,7 @@ void run_streaming_viewer(){
                         {
                             std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                             FFTViewer::RecEntry e{};
-                            time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
+                            time_t t=time(nullptr); struct tm tm2; KST::to_tm(t,tm2);
                             char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
                             float cf_mhz = (v.region.freq_lo + v.region.freq_hi) / 2.0f;
                             char fn[128]; snprintf(fn,sizeof(fn),"IQ_%.3fMHz_%s.wav",cf_mhz,dts);
@@ -7684,9 +7663,9 @@ void run_streaming_viewer(){
                                 row_sec = (double)v.sa_actual_fft_n / (double)v.sa_sample_rate;
                             double t_offset = tv * v.sa_total_rows * row_sec;
                             time_t t_abs = (time_t)(v.sa_start_time + (int64_t)t_offset);
-                            struct tm* tmv = localtime(&t_abs);
+                            struct tm tmv; KST::to_tm(t_abs, tmv);
                             char time_buf[16]="--:--:--";
-                            if(tmv) strftime(time_buf, sizeof(time_buf), "%H:%M:%S", tmv);
+                            strftime(time_buf, sizeof(time_buf), "%H:%M:%S", &tmv);
 
                             // 오버레이 텍스트 (우측 상단)
                             char freq_buf[32]; snprintf(freq_buf, sizeof(freq_buf), "Freq : %.3fMHz", freq_mhz);
@@ -7748,7 +7727,7 @@ void run_streaming_viewer(){
                 static bool sched_time_inited = false;
                 if(!sched_time_inited){
                     time_t now0 = time(nullptr);
-                    struct tm tm0; localtime_r(&now0, &tm0);
+                    struct tm tm0; KST::to_tm(now0, tm0);
                     sh = tm0.tm_hour; sm = tm0.tm_min; ss = tm0.tm_sec;
                     sched_time_inited = true;
                 }
@@ -7818,12 +7797,13 @@ void run_streaming_viewer(){
                 float sbw = sbw_mhz * 1000.f;
 
                 // 입력 시각을 절대시간으로 환산 (overlap 검사용; UI 표시 없음)
+                // 입력 HH:MM:SS는 KST 기준 — timegm으로 UTC 해석 후 KST 오프셋 차감.
                 time_t preview_st = 0;
                 {
                     time_t now3 = time(nullptr);
-                    struct tm t4; localtime_r(&now3,&t4);
+                    struct tm t4; KST::to_tm(now3, t4);
                     t4.tm_hour=sh; t4.tm_min=sm; t4.tm_sec=ss;
-                    preview_st = mktime(&t4);
+                    preview_st = timegm(&t4) - KST::OFFSET_SEC;
                     if(preview_st <= now3) preview_st += 86400;
                 }
                 bool preview_overlap = false;
@@ -7843,9 +7823,9 @@ void run_streaming_viewer(){
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f,0.7f,0.3f,1.f));
                 if(ImGui::Button("  ADD  ")){
                     time_t now=time(nullptr);
-                    struct tm tm2; localtime_r(&now,&tm2);
+                    struct tm tm2; KST::to_tm(now, tm2);
                     tm2.tm_hour=sh; tm2.tm_min=sm; tm2.tm_sec=ss;
-                    time_t st=mktime(&tm2);
+                    time_t st=timegm(&tm2) - KST::OFFSET_SEC;
                     if(st <= now) st += 86400;
                     if(v.remote_mode && v.net_cli){
                         v.net_cli->cmd_add_sched((int64_t)st, sdur, sfreq, sbw, starget);
@@ -7941,7 +7921,7 @@ void run_streaming_viewer(){
                         }
                         ImGui::TextColored(st_cols[e.status], "%s", icon);
                         ImGui::SameLine();
-                        struct tm t2; localtime_r(&e.start_time,&t2);
+                        struct tm t2; KST::to_tm(e.start_time, t2);
                         char tb[16]; strftime(tb,sizeof(tb),"%H:%M:%S",&t2);
                         const char* opn = e.operator_name[0] ? e.operator_name : "?";
 
@@ -9033,9 +9013,9 @@ void run_streaming_viewer(){
                     }
                 }
 
-                // 시계
+                // 시계 (KST 기준)
                 time_t tnow = time(nullptr);
-                struct tm tlocal{}; localtime_r(&tnow, &tlocal);
+                struct tm tlocal{}; KST::to_tm(tnow, tlocal);
                 char clock_str[16];
                 strftime(clock_str, sizeof(clock_str), "%H:%M:%S", &tlocal);
 
@@ -10717,9 +10697,9 @@ void run_streaming_viewer(){
                             double row_sec = (double)v.sa_actual_fft_n / (double)v.sa_sample_rate;
                             double t_off = tv * v.sa_total_rows * row_sec;
                             time_t ta = (time_t)(v.sa_start_time + (int64_t)t_off);
-                            struct tm* tmv = localtime(&ta);
+                            struct tm tmv; KST::to_tm(ta, tmv);
                             char tb[16]="--:--:--";
-                            if(tmv) strftime(tb, sizeof(tb), "%H:%M:%S", tmv);
+                            strftime(tb, sizeof(tb), "%H:%M:%S", &tmv);
                             char fb[32]; snprintf(fb, sizeof(fb), "Freq : %.3fMHz", freq_hz/1e6);
                             char tt[32]; snprintf(tt, sizeof(tt), "Time : %s", tb);
                             float fw = std::max(ImGui::CalcTextSize(fb).x, ImGui::CalcTextSize(tt).x);

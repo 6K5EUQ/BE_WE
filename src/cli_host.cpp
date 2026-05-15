@@ -560,7 +560,7 @@ void run_cli_host(){
         {
             std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
             FFTViewer::RecEntry e{};
-            time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
+            time_t t=time(nullptr); struct tm tm2; KST::to_tm(t,tm2);
             char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
             float cf_mhz = (freq_lo+freq_hi)/2.0f;
             char fn[128]; snprintf(fn,sizeof(fn),"IQ_%.3fMHz_%s.wav",cf_mhz,dts);
@@ -1466,7 +1466,7 @@ void run_cli_host(){
             float el = std::chrono::duration<float>(clk::now()-status_print_last).count();
             if(el >= 30.0f){
                 status_print_last = clk::now();
-                time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
+                time_t t=time(nullptr); struct tm tm2; KST::to_tm(t,tm2);
                 char ts[16]; strftime(ts,sizeof(ts),"%H:%M:%S",&tm2);
                 int clients = v.net_srv ? v.net_srv->client_count() : 0;
                 uint64_t net_tx=0, net_drops=0;
@@ -1533,13 +1533,13 @@ void run_cli_host(){
         {
             static int cli_last_tagged_sec = -1;
             time_t now_tt = time(nullptr);
-            struct tm* tt = localtime(&now_tt);
-            int cur5 = tt->tm_hour*720 + tt->tm_min*12 + tt->tm_sec/5;
+            struct tm tt; KST::to_tm(now_tt, tt);
+            int cur5 = tt.tm_hour*720 + tt.tm_min*12 + tt.tm_sec/5;
             if(cur5 != cli_last_tagged_sec){
                 cli_last_tagged_sec = cur5;
                 v.tm_add_time_tag(v.current_fft_idx);
                 if(v.net_srv){
-                    char lbl[32]; strftime(lbl, sizeof(lbl), "%H:%M:%S", tt);
+                    char lbl[32]; strftime(lbl, sizeof(lbl), "%H:%M:%S", &tt);
                     v.net_srv->broadcast_wf_event(0, (int64_t)now_tt, 0, lbl);
                 }
             }

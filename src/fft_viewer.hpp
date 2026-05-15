@@ -606,17 +606,8 @@ public:
         }
         return hw_recorder_name(hw.type);
     }
-    // UTC 오프셋(시간 단위): HOST/Local은 station_lon, 그 외는 시스템 TZ
-    int utc_offset_hours() const {
-        if(!remote_mode && station_lon != 0.f){
-            // 경도 15° = 1시간 (반올림)
-            float v = station_lon / 15.0f;
-            return (int)(v >= 0 ? v + 0.5f : v - 0.5f);
-        }
-        time_t now = time(nullptr);
-        struct tm lt; localtime_r(&now, &lt);
-        return (int)(lt.tm_gmtoff / 3600);
-    }
+    // 시간 기준: 항상 KST (UTC+9). 시스템 TZ나 station 위치와 무관.
+    int utc_offset_hours() const { return 9; }
 
     // tm_rec 내부 상태
     bool    tm_rec_active=false;

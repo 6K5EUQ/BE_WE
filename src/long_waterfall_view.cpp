@@ -158,18 +158,14 @@ static std::string strip_hist_ext(const std::string& s){
 }
 
 // ARCHIVE 스타일 hover tooltip — Station/Frequency/Start/(Stop). is_live이면 Stop 생략.
-// 시간은 viewer 머신의 local TZ로 표시 (tm_gmtoff).
+// 시간은 항상 KST(UTC+9).
 static void hist_row_tooltip(const char* station_name, float station_lat, float station_lon,
                               uint64_t cf_hz, uint64_t start_utc, uint64_t end_utc,
                               bool is_live){
     auto fmt_local = [](uint64_t utc) -> std::string {
-        time_t t = (time_t)utc;
-        struct tm tm_loc; localtime_r(&t, &tm_loc);
-        long off_sec = tm_loc.tm_gmtoff;
-        int off_h = (int)(off_sec / 3600);
-        char b[40];
-        snprintf(b, sizeof(b), "%02d:%02d (UTC%+d)",
-            tm_loc.tm_hour, tm_loc.tm_min, off_h);
+        struct tm tm_loc; KST::to_tm((time_t)utc, tm_loc);
+        char b[24];
+        snprintf(b, sizeof(b), "%02d:%02d", tm_loc.tm_hour, tm_loc.tm_min);
         return b;
     };
     if(!ImGui::BeginTooltip()) return;
@@ -467,30 +463,16 @@ void rebuild_texture(float view_db_min, float view_db_max){
     g_tex_dirty = false;
 }
 
-// UTC offset (hours) for the file. v2+ has reliable utc_offset_hours
-// (host's system TZ at file open). v1 didn't store it → fallback to viewer's TZ.
-int header_utc_offset(const LongWaterfall::FileHeader& h){
-    if(h.version >= 0x0002){
-        return (int)h.utc_offset_hours;
-    }
-    // Legacy v1: best effort = viewer's local TZ.
-    time_t now = time(nullptr);
-    struct tm lt; localtime_r(&now, &lt);
-    return (int)(lt.tm_gmtoff / 3600);
+// UTC offset (hours) for the file. KST 강제 (UTC+9). 파라미터는 호환을 위해 유지.
+int header_utc_offset(const LongWaterfall::FileHeader& /*h*/){
+    return KST::OFFSET_HOURS;
 }
 
-// Format epoch+offset → "YYYY-MM-DD HH:MM:SS UTC±N"
-std::string fmt_local_time(uint64_t utc, int off_h){
-    time_t shifted = (time_t)utc + off_h * 3600;
-    struct tm tm_utc; gmtime_r(&shifted, &tm_utc);
-    char buf[64];
-    if(off_h == 0){
-        strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", &tm_utc);
-    } else {
-        char base[40];
-        strftime(base, sizeof(base), "%Y-%m-%d %H:%M:%S", &tm_utc);
-        snprintf(buf, sizeof(buf), "%s UTC%+d", base, off_h);
-    }
+// Format epoch → "YYYY-MM-DD HH:MM:SS" (KST 기준, off_h 무시).
+std::string fmt_local_time(uint64_t utc, int /*off_h_ignored*/){
+    struct tm tm_kst; KST::to_tm((time_t)utc, tm_kst);
+    char buf[40];
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_kst);
     return buf;
 }
 

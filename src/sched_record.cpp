@@ -2,6 +2,7 @@
 #include "net_server.hpp"
 #include "bewe_paths.hpp"
 #include "login.hpp"
+#include "kst_time.hpp"
 #include <ctime>
 #include <chrono>
 #include <thread>
@@ -259,8 +260,8 @@ void FFTViewer::sched_stop_entry(int idx){
             }
             // sched 특유 메타를 Notes에 추가 (info_str이 비었거나 Notes 라인 비어있으면 채움)
             char tbuf[64] = {};
-            struct tm tm_utc; gmtime_r(&entry_start, &tm_utc);
-            strftime(tbuf, sizeof(tbuf), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+            struct tm tm_kst; KST::to_tm(entry_start, tm_kst);
+            strftime(tbuf, sizeof(tbuf), "%Y-%m-%dT%H:%M:%S", &tm_kst);
             char sched_note[256];
             snprintf(sched_note, sizeof(sched_note),
                 "Notes: Scheduled by %s @ %s, dur=%.0fs, BW=%.1fkHz\n",

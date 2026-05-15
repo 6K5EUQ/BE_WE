@@ -119,12 +119,12 @@ void FFTViewer::tm_mark_rows(int fi){
 
 void FFTViewer::tm_add_time_tag(int fft_idx){
     time_t now=time(nullptr);
-    struct tm* t=localtime(&now);
-    int cur5=t->tm_hour*720+t->tm_min*12+t->tm_sec/5; // 5초 단위 카운터
+    struct tm t; KST::to_tm(now, t);
+    int cur5=t.tm_hour*720+t.tm_min*12+t.tm_sec/5; // 5초 단위 카운터
     if(cur5==last_tagged_sec&&last_tagged_sec!=-1) return;
     last_tagged_sec=cur5;
     WfEvent ev; ev.fft_idx=fft_idx; ev.wall_time=now; ev.type=0;
-    strftime(ev.label,sizeof(ev.label),"%M:%S",t);
+    strftime(ev.label,sizeof(ev.label),"%M:%S",&t);
     std::lock_guard<std::mutex> lk(wf_events_mtx);
     wf_events.push_back(ev);
     int cutoff=fft_idx-MAX_FFTS_MEMORY;
@@ -133,10 +133,10 @@ void FFTViewer::tm_add_time_tag(int fft_idx){
 }
 
 void FFTViewer::tm_add_event_tag(int type){
-    time_t now=time(nullptr); struct tm* t=localtime(&now);
+    time_t now=time(nullptr); struct tm t; KST::to_tm(now, t);
     WfEvent ev; ev.fft_idx=current_fft_idx; ev.wall_time=now; ev.type=type;
     snprintf(ev.label,sizeof(ev.label),"%s  %02d:%02d:%02d",
-             type==1?"IQ Start":"IQ Stop",t->tm_hour,t->tm_min,t->tm_sec);
+             type==1?"IQ Start":"IQ Stop",t.tm_hour,t.tm_min,t.tm_sec);
     std::lock_guard<std::mutex> lk(wf_events_mtx);
     wf_events.push_back(ev);
 }

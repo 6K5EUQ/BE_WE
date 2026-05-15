@@ -1,11 +1,12 @@
 // SIGINT Mission System — lifecycle 구현 (자동 캡처 모델).
 // 미션 시작 시 운영자 입력 없이 station/host/lat/lon/SDR/안테나를 FFTViewer 컨텍스트에서
-// 자동 캡처. UTC 정시마다 HIST rotate (1시간 1파일). UTC 0시는 미션 자체 rollover.
+// 자동 캡처. KST(UTC+9) 정시마다 HIST rotate (1시간 1파일). KST 0시는 미션 자체 rollover.
 
 #include "mission.hpp"
 #include "fft_viewer.hpp"
 #include "bewe_paths.hpp"
 #include "long_waterfall.hpp"
+#include "kst_time.hpp"
 #include "hw_config.hpp"
 #include "login.hpp"
 #include "mission_push.hpp"
@@ -44,6 +45,7 @@ static int               g_last_rotate_hour_id = -1;
 static void utc0_worker(FFTViewer* v){
     // 1초씩 쪼개 sleep — stop_utc0_worker() 호출 시 최대 1초 안에 종료.
     // 20초 단위 정시 검사는 last_check_sec으로 dedup.
+    // 정시 기준은 KST(UTC+9). KST 0시 = mission rollover.
     int last_check_sec = -1;
     while(!g_utc0_stop.load()){
         std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -52,12 +54,12 @@ static void utc0_worker(FFTViewer* v){
         time_t now = time(nullptr);
         if((int)(now / 20) == last_check_sec) continue;
         last_check_sec = (int)(now / 20);
-        struct tm tm_utc; gmtime_r(&now, &tm_utc);
-        if(tm_utc.tm_min != 0) continue;
-        int hour_id = tm_utc.tm_yday * 24 + tm_utc.tm_hour;
+        struct tm tm_kst; KST::to_tm(now, tm_kst);
+        if(tm_kst.tm_min != 0) continue;
+        int hour_id = tm_kst.tm_yday * 24 + tm_kst.tm_hour;
         if(hour_id == g_last_rotate_hour_id) continue;
         g_last_rotate_hour_id = hour_id;
-        if(tm_utc.tm_hour == 0){
+        if(tm_kst.tm_hour == 0){
             v->mission_rollover_utc0();
         } else {
             LongWaterfall::request_rotate();
@@ -131,9 +133,9 @@ bool FFTViewer::mission_start(const char* started_by, uint8_t op_index, bool rol
         if(mission_state != Mission::State::IDLE) return false;
 
         time_t now = time(nullptr);
-        struct tm tm_utc; gmtime_r(&now, &tm_utc);
-        mission_year = 1900 + tm_utc.tm_year;
-        auto code = Mission::make_code(mission_year, tm_utc.tm_mon, tm_utc.tm_mday);
+        struct tm tm_kst; KST::to_tm(now, tm_kst);
+        mission_year = 1900 + tm_kst.tm_year;
+        auto code = Mission::make_code(mission_year, tm_kst.tm_mon, tm_kst.tm_mday);
 
         auto cpy = [](char* dst, size_t cap, const char* src){
             if(!src){ dst[0] = 0; return; }
@@ -171,6 +173,8 @@ bool FFTViewer::mission_start(const char* started_by, uint8_t op_index, bool rol
     }
 
     LongWaterfall::request_rotate();
+    // 미션 시작 시 활성 hist dir에 남아있을 수 있는 stale -LIVE 파일 정리.
+    LongWaterfall::finalize_stale_live_all();
     mission_save_meta_to_disk();
     mission_broadcast_sync();
     return true;
@@ -325,11 +329,11 @@ void FFTViewer::mission_save_meta_to_disk(){
         FILE* ifp = fopen(ipath.c_str(), "w");
         if(ifp){
             time_t st = mission_start_utc;
-            struct tm tu; gmtime_r(&st, &tu);
+            struct tm tu; KST::to_tm(st, tu);
             fprintf(ifp,
                 "Mission Code: %04d/%s\n"
                 "Started By: %s\n"
-                "Start UTC: %04d-%02d-%02d %02d:%02d:%02d\n"
+                "Start: %04d-%02d-%02d %02d:%02d:%02d\n"
                 "Station: %s\n"
                 "Host: %s\n"
                 "Lat: %.6f\n"

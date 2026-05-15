@@ -19,6 +19,7 @@
 #include <functional>
 
 #include "net_protocol.hpp"
+#include "kst_time.hpp"
 
 class FFTViewer;
 
@@ -70,6 +71,17 @@ std::string current_file_path();
 // Skips files that are not valid .bewewf (header missing / wrong magic).
 void scan_dir_into_list(::PktLwfList& out);
 
+// Scan `dir` for stale "...-LIVE.bewehist" files (host crashed before close → rename
+// never ran) and finalize them using file mtime as end time. Skips `active_basename`
+// if it matches the currently-recording file. Safe to call from any thread.
+void finalize_stale_live_in_dir(const std::string& dir,
+                                 const std::string& active_basename);
+
+// Convenience: finalize stale LIVE files in well-known HIST dirs
+// (host dir, join dir, live dir, active mission hist dir). Called from
+// start_worker() and on mission start.
+void finalize_stale_live_all();
+
 // ── Live broadcast hooks ───────────────────────────────────────────────
 // Set by host wiring (cli_host / ui). Worker calls these inside open/flush/close
 // so NetServer can fan out LIVE_START / LIVE_ROW / LIVE_STOP to all JOINs.
@@ -113,9 +125,10 @@ inline std::string fmt_lat_lon(float lat, float lon){
 
 // ── Mission-code filename helpers (host + JOIN 공용) ──────────────────────
 // 양식: <MissCode><DD>_<Mon><DD>.<YYYY>_<F.F>MHz_<HHMM>-LIVE.bewehist
-// 종료 시 -LIVE → -<HHMM>Z 로 rename.
+// 종료 시 -LIVE → -<HHMM> 로 rename (KST 기준).
 // MissCode: A=Jan, B=Feb, ..., L=Dec (alphabet, 'I' 포함).
-// HHMM/날짜는 host TZ 기준 — viewer 상단 Start/Stop 표시와 일치.
+// HHMM/날짜는 항상 KST(UTC+9) — viewer 상단 Start/Stop 표시와 일치.
+// utc_offset_hours 파라미터는 호환성을 위해 남기지만 무시 (KST 강제).
 inline char mission_letter(int mon0_11){ return (char)('A' + mon0_11); }
 inline const char* month_abbr3(int mon0_11){
     static const char* m[] = {"Jan","Feb","Mar","Apr","May","Jun",
@@ -123,9 +136,8 @@ inline const char* month_abbr3(int mon0_11){
     return m[mon0_11];
 }
 inline std::string build_hist_filename_live(uint64_t start_utc, uint64_t cf_hz,
-                                             int utc_offset_hours){
-    time_t st = (time_t)start_utc + (time_t)utc_offset_hours * 3600;
-    struct tm tm_loc; gmtime_r(&st, &tm_loc);  // shifted UTC == host local
+                                             int /*utc_offset_hours_ignored*/){
+    struct tm tm_loc; KST::to_tm((time_t)start_utc, tm_loc);
     double cf_mhz = (double)cf_hz / 1e6;
     char buf[96];
     snprintf(buf, sizeof(buf),
@@ -137,15 +149,16 @@ inline std::string build_hist_filename_live(uint64_t start_utc, uint64_t cf_hz,
 }
 // Returns finalized basename when given a "...-LIVE.bewehist" basename + end_utc.
 // If input doesn't match, returns input unchanged.
+// 새 형식: 1600-1624.bewehist (KST 기준, Z 접미사 제거).
+// 기존 -HHMMZ.bewehist 파일도 같은 dir에 공존 가능 (둘 다 valid).
 inline std::string build_hist_filename_finalize(const std::string& live_name,
                                                  uint64_t end_utc,
-                                                 int utc_offset_hours){
+                                                 int /*utc_offset_hours_ignored*/){
     auto pos = live_name.rfind("-LIVE.bewehist");
     if(pos == std::string::npos) return live_name;
-    time_t et = (time_t)end_utc + (time_t)utc_offset_hours * 3600;
-    struct tm tm_loc; gmtime_r(&et, &tm_loc);
+    struct tm tm_loc; KST::to_tm((time_t)end_utc, tm_loc);
     char tail[24];
-    snprintf(tail, sizeof(tail), "-%02d%02dZ.bewehist",
+    snprintf(tail, sizeof(tail), "-%02d%02d.bewehist",
              tm_loc.tm_hour, tm_loc.tm_min);
     return live_name.substr(0, pos) + tail;
 }

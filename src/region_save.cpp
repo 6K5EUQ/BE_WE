@@ -1,6 +1,7 @@
 #include "fft_viewer.hpp"
 #include "bewe_paths.hpp"
 #include "login.hpp"
+#include "kst_time.hpp"
 #include <unistd.h>
 #include <sys/stat.h>
 #include <cmath>
@@ -93,10 +94,10 @@ static void make_filename(char* out, size_t sz,
 {
     if(t_start <= 0) t_start = time(nullptr);
     if(t_end   <= 0) t_end   = time(nullptr);
-    struct tm *ts=localtime(&t_start);
-    char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",ts);
-    struct tm *te=localtime(&t_end);
-    char s_end[8]; strftime(s_end,sizeof(s_end),"%H%M%S",te);
+    struct tm ts; KST::to_tm(t_start, ts);
+    char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&ts);
+    struct tm te; KST::to_tm(t_end, te);
+    char s_end[8]; strftime(s_end,sizeof(s_end),"%H%M%S",&te);
     (void)bw_khz;
 
     snprintf(out, sz,

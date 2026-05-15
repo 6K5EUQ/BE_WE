@@ -131,12 +131,7 @@ bool open_new_file(uint64_t cf_hz, uint64_t sr_hz, uint32_t fft_size,
     mkdir(BEWEPaths::recordings_dir().c_str(), 0755);
 
     uint64_t now_utc = (uint64_t)time(nullptr);
-    int32_t off_h_now = 0;
-    {
-        time_t now = (time_t)now_utc;
-        struct tm lt; localtime_r(&now, &lt);
-        off_h_now = (int32_t)(lt.tm_gmtoff / 3600);
-    }
+    int32_t off_h_now = KST::OFFSET_HOURS;  // KST 강제 (UTC+9)
     std::string fname = build_hist_filename_live(now_utc, cf_hz, (int)off_h_now);
     // 같은 분에 두 번 시작될 가능성 — 충돌 회피 suffix
     std::string full = dir + "/" + fname;
@@ -376,6 +371,8 @@ void start_worker(FFTViewer* v){
     g_v = v;
     g_rotate_seen_seq = g_rotate_req_seq.load();
     g_last_total_ffts = 0;
+    // 기존 실행에서 crash로 남은 -LIVE.bewehist 파일을 mtime 기준으로 finalize.
+    finalize_stale_live_all();
     g_thr = std::thread(worker_loop);
 }
 
@@ -404,6 +401,95 @@ bool snapshot_live_start(::PktLwfLiveStart& out){
     if(!g_live_state_valid) return false;
     out = g_live_state;
     return true;
+}
+
+// Finalize any "...-LIVE.bewehist" files in `dir` that aren't the active recording.
+// Uses file mtime as end time → renames to "...-HHMM.bewehist" (KST).
+void finalize_stale_live_in_dir(const std::string& dir,
+                                 const std::string& active_basename){
+    DIR* d = opendir(dir.c_str());
+    if(!d) return;
+    struct dirent* de;
+    std::vector<std::string> targets;
+    while((de = readdir(d)) != nullptr){
+        const char* n = de->d_name;
+        if(!n || n[0]=='.') continue;
+        std::string name = n;
+        if(name.rfind("-LIVE.bewehist") == std::string::npos) continue;
+        if(!active_basename.empty() && name == active_basename) continue;
+        targets.push_back(name);
+    }
+    closedir(d);
+    for(auto& base : targets){
+        std::string full = dir + "/" + base;
+        struct stat st{};
+        if(stat(full.c_str(), &st) != 0) continue;
+        uint64_t end_utc = (uint64_t)st.st_mtime;
+        std::string fin = build_hist_filename_finalize(base, end_utc, 0);
+        if(fin == base) continue;
+        std::string new_full = dir + "/" + fin;
+        // 충돌 회피: 같은 이름 이미 있으면 _2, _3 ... suffix
+        std::string try_full = new_full;
+        std::string try_fin  = fin;
+        for(int n=2; access(try_full.c_str(), F_OK)==0 && n<100; ++n){
+            auto dot = fin.rfind(".bewehist");
+            if(dot == std::string::npos) break;
+            try_fin  = fin.substr(0, dot) + "_" + std::to_string(n) + ".bewehist";
+            try_full = dir + "/" + try_fin;
+        }
+        if(rename(full.c_str(), try_full.c_str()) == 0){
+            printf("[LongWaterfall] stale-LIVE finalize: %s → %s\n",
+                   base.c_str(), try_fin.c_str());
+        } else {
+            fprintf(stderr, "[LongWaterfall] stale-LIVE rename failed: %s → %s errno=%d\n",
+                    base.c_str(), try_fin.c_str(), errno);
+        }
+    }
+}
+
+void finalize_stale_live_all(){
+    // 현재 recording 중인 파일 basename (skip 대상)
+    std::string cur = current_file_path();
+    std::string cur_base;
+    if(!cur.empty()){
+        auto s = cur.find_last_of('/');
+        cur_base = (s == std::string::npos) ? cur : cur.substr(s+1);
+    }
+    finalize_stale_live_in_dir(BEWEPaths::hist_host_dir(), cur_base);
+    finalize_stale_live_in_dir(BEWEPaths::hist_join_dir(), cur_base);
+    finalize_stale_live_in_dir(BEWEPaths::hist_live_dir(), cur_base);
+    // 활성 미션 hist 디렉토리
+    if(g_v){
+        std::string md = g_v->active_hist_dir();
+        if(!md.empty()) finalize_stale_live_in_dir(md, cur_base);
+    }
+    // 모든 미션 디렉토리 (지난 미션의 stale LIVE도 정리)
+    DIR* dr = opendir(BEWEPaths::missions_root().c_str());
+    if(!dr) return;
+    struct dirent* de;
+    while((de = readdir(dr)) != nullptr){
+        const char* n = de->d_name;
+        if(!n || n[0]=='.') continue;
+        if(strlen(n) != 4) continue;
+        bool num = true;
+        for(int i=0;i<4;i++) if(n[i]<'0'||n[i]>'9'){ num=false; break; }
+        if(!num) continue;
+        std::string ydir = BEWEPaths::missions_root() + "/" + n;
+        DIR* dy = opendir(ydir.c_str());
+        if(!dy) continue;
+        struct dirent* de2;
+        while((de2 = readdir(dy)) != nullptr){
+            const char* m = de2->d_name;
+            if(!m || m[0]=='.') continue;
+            std::string hd = ydir + "/" + m + "/hist";
+            struct stat st;
+            if(stat(hd.c_str(), &st) == 0 && S_ISDIR(st.st_mode)){
+                finalize_stale_live_in_dir(hd, cur_base);
+            }
+        }
+        closedir(dy);
+    }
+    closedir(dr);
 }
 
 void scan_dir_into_list(::PktLwfList& out){

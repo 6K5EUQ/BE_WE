@@ -9,6 +9,7 @@
 #include "net_client.hpp"
 #include "bewe_paths.hpp"
 #include "login.hpp"
+#include "kst_time.hpp"
 
 #include <imgui.h>
 #include <dirent.h>
@@ -54,11 +55,12 @@ void draw_toast(){
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
+// 모든 시간은 KST(UTC+9) 기준.
 static std::string fmt_utc(time_t t){
     if(t <= 0) return "-";
-    struct tm tu; gmtime_r(&t, &tu);
+    struct tm tu; KST::to_tm(t, tu);
     char b[48];
-    snprintf(b, sizeof(b), "%04d-%02d-%02d %02d:%02d:%02d UTC+0",
+    snprintf(b, sizeof(b), "%04d-%02d-%02d %02d:%02d:%02d",
         1900+tu.tm_year, 1+tu.tm_mon, tu.tm_mday,
         tu.tm_hour, tu.tm_min, tu.tm_sec);
     return b;
@@ -203,12 +205,12 @@ static void draw_start_submodal(FFTViewer& v, NetClient* cli){
     if(ImGui::BeginPopupModal("Start Mission##mission_start", &open,
         ImGuiWindowFlags_NoResize|ImGuiWindowFlags_AlwaysAutoResize)){
         time_t now = time(nullptr);
-        struct tm tu; gmtime_r(&now, &tu);
+        struct tm tu; KST::to_tm(now, tu);
         auto code = Mission::make_code(1900+tu.tm_year, tu.tm_mon, tu.tm_mday);
         ImGui::TextDisabled("Mission Code:");
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(0.5f,0.9f,0.6f,1.f),
-            "%s  (%04d-%02d-%02d UTC)",
+            "%s  (%04d-%02d-%02d)",
             code.c_str(), 1900+tu.tm_year, 1+tu.tm_mon, tu.tm_mday);
         ImGui::Separator();
         ImGui::TextDisabled("Auto-captured metadata at start:");
@@ -713,6 +715,11 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
             rows.push_back(r);
         }
     }
+    // 최신순 정렬 (mtime DESC) — 주파수 무관, 최신 파일이 위로.
+    std::sort(rows.begin(), rows.end(),
+        [](const CentralFileRow& a, const CentralFileRow& b){
+            return a.mtime_unix > b.mtime_unix;
+        });
     ImGui::TextDisabled("Central: %s/%04d/%s/%s",
         g_cf_req_station, g_sel_year, g_sel_code.c_str(), subdir_label(subdir));
     // Refresh 버튼 우측 정렬 (현재 child 영역의 오른쪽 끝에 배치)

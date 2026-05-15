@@ -2,6 +2,7 @@
 #include "login.hpp"
 #include "long_waterfall.hpp"
 #include "mission_push.hpp"
+#include "kst_time.hpp"
 #include <ctime>
 #include <algorithm>
 #include <chrono>
@@ -9,17 +10,9 @@
 #include <sys/stat.h>
 #include <cmath>
 
-// 로컬 시스템 UTC 오프셋 (시간 단위). localtime_r의 tm_gmtoff 사용 (GNU 확장).
-static int calc_local_utc_offset_hours(){
-    time_t now = time(nullptr);
-    struct tm lt; localtime_r(&now, &lt);
-    return (int)(lt.tm_gmtoff / 3600);
-}
-// HH:MM:SS (UTC+N) 형식으로 시간 문자열 생성
-static void fmt_time_with_utc(char* out, size_t sz, const struct tm& tm_loc, int utc_off_hr){
-    char base[16]; strftime(base, sizeof(base), "%H:%M:%S", &tm_loc);
-    if(utc_off_hr >= 0) snprintf(out, sz, "%s (UTC+%d)", base, utc_off_hr);
-    else                snprintf(out, sz, "%s (UTC%d)",  base, utc_off_hr);
+// 모든 시간은 KST(UTC+9) 기준.
+static void fmt_time_hms(char* out, size_t sz, const struct tm& tm_loc){
+    strftime(out, sz, "%H:%M:%S", &tm_loc);
 }
 
 // ── 녹음 .info 자동 생성 ─────────────────────────────────────────────────
@@ -42,12 +35,11 @@ void write_default_info_file(const std::string& wav_path,
     if(!f) return;
 
     if(start_wall_time <= 0) start_wall_time = time(nullptr);
-    struct tm tm2; localtime_r(&start_wall_time, &tm2);
-    int utc_off = (utc_offset_hours == INT_MIN)
-                  ? calc_local_utc_offset_hours() : utc_offset_hours;
+    struct tm tm2; KST::to_tm(start_wall_time, tm2);
+    (void)utc_offset_hours;  // 호환 위해 남기지만 KST 강제
     char day_buf[64], up_buf[64];
     strftime(day_buf, sizeof(day_buf), "%b %d, %Y", &tm2);
-    fmt_time_with_utc(up_buf, sizeof(up_buf), tm2, utc_off);
+    fmt_time_hms(up_buf, sizeof(up_buf), tm2);
 
     // 파일명 (stem, 확장자 제외)
     size_t slash = wav_path.find_last_of('/');
@@ -61,8 +53,8 @@ void write_default_info_file(const std::string& wav_path,
     // Down Time
     if(duration_sec > 0){
         time_t end_wt = start_wall_time + (time_t)(duration_sec + 0.5);
-        struct tm tm_end; localtime_r(&end_wt, &tm_end);
-        char down_buf[64]; fmt_time_with_utc(down_buf, sizeof(down_buf), tm_end, utc_off);
+        struct tm tm_end; KST::to_tm(end_wt, tm_end);
+        char down_buf[64]; fmt_time_hms(down_buf, sizeof(down_buf), tm_end);
         fprintf(f, "Down Time: %s\n", down_buf);
         fprintf(f, "Duration: %.1f s\n", duration_sec);
     } else {
@@ -97,8 +89,6 @@ static void update_info_file_duration(const std::string& wav_path, double durati
     char buf[1024];
     while(fgets(buf, sizeof(buf), f)) lines.emplace_back(buf);
     fclose(f);
-
-    int utc_off = calc_local_utc_offset_hours();
 
     // Up Time 파싱 > Down Time 계산에 사용
     int up_hh=-1, up_mm=-1, up_ss=-1;
@@ -136,12 +126,8 @@ static void update_info_file_duration(const std::string& wav_path, double durati
                 int dm = (int)((total_sec / 60) % 60);
                 int ds = (int)(total_sec % 60);
                 char nl[64];
-                if(utc_off >= 0)
-                    snprintf(nl, sizeof(nl), "Down Time: %02d:%02d:%02d (UTC+%d)\n",
-                             dh, dm, ds, utc_off);
-                else
-                    snprintf(nl, sizeof(nl), "Down Time: %02d:%02d:%02d (UTC%d)\n",
-                             dh, dm, ds, utc_off);
+                snprintf(nl, sizeof(nl), "Down Time: %02d:%02d:%02d\n",
+                         dh, dm, ds);
                 l = nl;
                 down_updated = true;
             }
@@ -228,7 +214,7 @@ void FFTViewer::start_rec(){
     float bw_hz=(se-ss)*1e6f;
     rec_sr=optimal_iq_sr(header.sample_rate,bw_hz);
 
-    time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
+    time_t t=time(nullptr); struct tm tm2; KST::to_tm(t,tm2);
     char fn[512];
     std::string rec_dir=active_iq_dir();
     if(rec_dir.empty()){
@@ -291,7 +277,7 @@ void FFTViewer::start_audio_rec(int ch_idx){
     uint32_t asr=inter_sr/std::max(1u,audio_decim);
     ch.audio_rec_sr=asr;
 
-    time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
+    time_t t=time(nullptr); struct tm tm2; KST::to_tm(t,tm2);
     char fn[512];
     std::string rec_dir=active_audio_dir();
     if(rec_dir.empty()){
@@ -489,7 +475,7 @@ void FFTViewer::start_iq_rec(int ch_idx){
     }
     ch.iq_rec_sr=actual_inter;
 
-    time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
+    time_t t=time(nullptr); struct tm tm2; KST::to_tm(t,tm2);
     char fn[512];
     std::string rec_dir=active_iq_dir();
     if(rec_dir.empty()){
@@ -501,7 +487,7 @@ void FFTViewer::start_iq_rec(int ch_idx){
     if(pending_sched_meta.active){
         // SCHED 형식: SCHED_IQ_<station>_<MissCode><DD>_<MonDD>.<YYYY>_<HHMMSS>-<HHMMSS>_<F.F>MHz.wav
         // "IQ" 포함시켜 분류 헬퍼(is_iq_filename)가 IQ로 인식하도록.
-        // 시간은 모두 UTC (Z타임), date code는 HIST와 동일 ('A'=Jan…'L'=Dec).
+        // 시간은 모두 KST 기준. date code는 HIST와 동일 ('A'=Jan…'L'=Dec).
         // station 이름은 파일시스템 안전 문자만 남김 (공백/괄호/슬래시 → '_').
         std::string st = station_name;
         for(auto& c : st){
@@ -511,8 +497,8 @@ void FFTViewer::start_iq_rec(int ch_idx){
             if(!ok) c = '_';
         }
         if(st.empty()) st = "host";
-        struct tm su; gmtime_r(&pending_sched_meta.start_utc, &su);
-        struct tm eu; gmtime_r(&pending_sched_meta.end_utc,   &eu);
+        struct tm su; KST::to_tm(pending_sched_meta.start_utc, su);
+        struct tm eu; KST::to_tm(pending_sched_meta.end_utc,   eu);
         snprintf(fn,sizeof(fn),
                  "%s/SCHED_IQ_%s_%c%02d_%s%d.%04d_%02d%02d%02d-%02d%02d%02d_%.1fMHz.wav",
                  rec_dir.c_str(), st.c_str(),
@@ -629,7 +615,7 @@ void FFTViewer::start_join_audio_rec(int ch_idx){
     uint32_t asr = AUDIO_SR;
     ch.audio_rec_sr = asr;
 
-    time_t t=time(nullptr); struct tm tm2; localtime_r(&t,&tm2);
+    time_t t=time(nullptr); struct tm tm2; KST::to_tm(t,tm2);
     char fn[512];
     std::string rec_dir=active_audio_dir();
     if(rec_dir.empty()){
