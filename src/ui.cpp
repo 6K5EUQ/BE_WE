@@ -9681,7 +9681,8 @@ void run_streaming_viewer(){
             ImGui::SetCursorPosX((ImGui::GetWindowWidth() - bw) * 0.5f);
             bool pressed = ImGui::Button(primary_label, ImVec2(80,0));
             ImGui::SameLine();
-            bool cancelled = ImGui::Button("Cancel", ImVec2(80,0));
+            bool cancelled = ImGui::Button("Cancel", ImVec2(80,0))
+                          || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
 
             if(pressed || submit){
                 // 0) Up/Down Time 필드 마지막 자동 포맷 (포커스 놓치지 않은 경우 대비)

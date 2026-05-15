@@ -162,10 +162,25 @@ static double                         g_cf_last_req_time = 0.0;
 static std::mutex   g_dl_mtx;
 static FILE*        g_dl_fp = nullptr;
 static std::string  g_dl_local_path;
-static std::string  g_dl_filename;  // basename 비교용
+static std::string  g_dl_filename;  // basename 비교용 — Central row 매칭
 static uint64_t     g_dl_total = 0;
 static uint64_t     g_dl_written = 0;
 static bool         g_dl_active = false;
+static double       g_dl_started_at = 0.0;
+static double       g_dl_last_sample_t = 0.0;
+static uint64_t     g_dl_last_sample_bytes = 0;
+static double       g_dl_speed_bps = 0.0;   // EWMA bytes/sec
+
+// ── 선택 상태 (Delete 키 처리용; 단일 선택) ──────────────────────────────
+enum class SelKind : uint8_t { NONE, LOCAL, CENTRAL };
+static SelKind     g_sel_kind = SelKind::NONE;
+static std::string g_sel_local_path;          // LOCAL 선택 시 full path
+// CENTRAL 선택 시 key
+static char     g_sel_c_station[64] = {};
+static uint16_t g_sel_c_year   = 0;
+static uint8_t  g_sel_c_subdir = 0;
+static char     g_sel_c_code[8] = {};
+static char     g_sel_c_filename[128] = {};
 
 // ── Rename submodal 상태 ─────────────────────────────────────────────────
 static bool         g_rn_open = false;
@@ -485,6 +500,76 @@ static const char* subdir_label(uint8_t s){
     }
 }
 
+// LOCAL 다운로드 파일을 IQ/DEMOD/HIST 로 분류.
+// .bewehist        → HIST
+// "Audio_..."/"SCHED_AUDIO_..."  → DEMOD
+// 나머지 (.wav 포함) → IQ
+static uint8_t classify_local_file(const std::string& name){
+    size_t n = name.size();
+    if(n >= 9 && name.compare(n - 9, 9, ".bewehist") == 0) return MFS_HIST;
+    if(name.rfind("Audio_", 0) == 0 ||
+       name.rfind("SCHED_AUDIO_", 0) == 0 ||
+       name.rfind("Demod_", 0) == 0) return MFS_AUDIO;
+    return MFS_IQ;
+}
+
+// .info sidecar 인지.
+static bool is_info_file(const std::string& name){
+    size_t n = name.size();
+    return n >= 5 && name.compare(n - 5, 5, ".info") == 0;
+}
+
+// 선택 초기화.
+static void clear_selection(){
+    g_sel_kind = SelKind::NONE;
+    g_sel_local_path.clear();
+    memset(g_sel_c_station,  0, sizeof(g_sel_c_station));
+    memset(g_sel_c_code,     0, sizeof(g_sel_c_code));
+    memset(g_sel_c_filename, 0, sizeof(g_sel_c_filename));
+    g_sel_c_year   = 0;
+    g_sel_c_subdir = 0;
+}
+
+// Delete 키 → 선택된 파일 삭제. 미션 모달 활성 시 매 프레임 호출.
+static void process_delete_key(NetClient* cli){
+    if(g_sel_kind == SelKind::NONE) return;
+    if(!ImGui::IsKeyPressed(ImGuiKey_Delete, false)) return;
+    if(g_sel_kind == SelKind::LOCAL){
+        unlink(g_sel_local_path.c_str());
+        unlink((g_sel_local_path + ".info").c_str());
+        MissionView::show_toast("Local file deleted");
+    } else if(g_sel_kind == SelKind::CENTRAL && cli){
+        MissionFileKey k{};
+        strncpy(k.station,  g_sel_c_station,  sizeof(k.station)  - 1);
+        k.year   = g_sel_c_year;
+        k.subdir = g_sel_c_subdir;
+        strncpy(k.code,     g_sel_c_code,     sizeof(k.code)     - 1);
+        strncpy(k.filename, g_sel_c_filename, sizeof(k.filename) - 1);
+        cli->send_mission_file_delete(k);
+        g_cf_last_req_time = 0;
+        MissionView::show_toast("Central file delete requested");
+    }
+    clear_selection();
+}
+
+// 다운로드 진행률 폴링 (UI 스레드 — main).
+static void poll_dl_speed(){
+    if(!g_dl_active) return;
+    double now = ImGui::GetTime();
+    double dt = now - g_dl_last_sample_t;
+    if(dt < 0.2) return;
+    uint64_t bytes_now;
+    {
+        std::lock_guard<std::mutex> lk(g_dl_mtx);
+        bytes_now = g_dl_written;
+    }
+    double inst = dt > 0 ? (double)(bytes_now - g_dl_last_sample_bytes) / dt : 0.0;
+    // EWMA (반응성 + 평활)
+    g_dl_speed_bps = (g_dl_speed_bps <= 0.0) ? inst : (g_dl_speed_bps * 0.5 + inst * 0.5);
+    g_dl_last_sample_t = now;
+    g_dl_last_sample_bytes = bytes_now;
+}
+
 static std::string fmt_size(uint64_t bytes){
     char b[32];
     if(bytes >= 1ull << 30) snprintf(b, sizeof(b), "%.2f GB", bytes / (double)(1ull<<30));
@@ -519,6 +604,10 @@ static bool start_download(NetClient* cli, const CentralFileRow& row){
     g_dl_total      = 0;
     g_dl_written    = 0;
     g_dl_active     = true;
+    g_dl_started_at      = ImGui::GetTime();
+    g_dl_last_sample_t   = g_dl_started_at;
+    g_dl_last_sample_bytes = 0;
+    g_dl_speed_bps       = 0.0;
     MissionFileKey k{};
     strncpy(k.station,  row.station, sizeof(k.station) - 1);
     k.year   = row.year;
@@ -646,17 +735,78 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
         ImGui::TextDisabled("  (no files in Central archive)");
         return;
     }
+    poll_dl_speed();
+    std::string dl_dir = BEWEPaths::downloads_dir();
     ImGui::BeginChild("##cf_scroll", ImVec2(0, 0), false);
     for(auto& r : rows){
         float pw = ImGui::GetContentRegionAvail().x;
         ImGui::PushID(r.filename);
-        ImGui::Selectable(r.filename, false,
-            ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw, 0));
+
+        std::string dl_path = dl_dir + "/" + r.filename;
+        bool already_dl = (access(dl_path.c_str(), F_OK) == 0);
+        bool downloading = false;
+        double frac = 0.0;
+        uint64_t dl_total_now = 0, dl_written_now = 0;
+        {
+            std::lock_guard<std::mutex> lk(g_dl_mtx);
+            if(g_dl_active && g_dl_filename == r.filename){
+                downloading = true;
+                dl_total_now = g_dl_total;
+                dl_written_now = g_dl_written;
+                if(g_dl_total > 0) frac = (double)g_dl_written / (double)g_dl_total;
+            }
+        }
+
+        bool sel = (g_sel_kind == SelKind::CENTRAL &&
+                    g_sel_c_year == r.year && g_sel_c_subdir == r.subdir &&
+                    strncmp(g_sel_c_code,     r.code,     sizeof(g_sel_c_code))     == 0 &&
+                    strncmp(g_sel_c_filename, r.filename, sizeof(g_sel_c_filename)) == 0);
+
+        ImVec4 text_col = already_dl
+            ? ImVec4(0.35f, 0.95f, 0.45f, 1.f)   // 다운로드 완료 → 초록
+            : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+        ImGui::PushStyleColor(ImGuiCol_Text, text_col);
+        bool clicked = ImGui::Selectable(r.filename, sel,
+            ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick,
+            ImVec2(pw, 0));
+        ImGui::PopStyleColor();
+
+        if(clicked){
+            // 단일 클릭 = 선택; 더블클릭 = open/download
+            g_sel_kind = SelKind::CENTRAL;
+            strncpy(g_sel_c_station,  r.station,  sizeof(g_sel_c_station)  - 1);
+            g_sel_c_year   = r.year;
+            g_sel_c_subdir = r.subdir;
+            strncpy(g_sel_c_code,     r.code,     sizeof(g_sel_c_code)     - 1);
+            strncpy(g_sel_c_filename, r.filename, sizeof(g_sel_c_filename) - 1);
+        }
+        if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
+            if(already_dl) open_local_in_viewer(v, dl_path);
+            else           start_download(cli, r);
+        }
         central_context_menu(cli, r);
-        std::string info = fmt_size(r.size_bytes);
-        float tw = ImGui::CalcTextSize(info.c_str()).x;
+
+        // 우측 표시: 다운로드 중이면 진행률+속도, 아니면 파일 크기
+        char info[80];
+        if(downloading){
+            double speed_mb = g_dl_speed_bps / 1048576.0;
+            if(dl_total_now > 0){
+                snprintf(info, sizeof(info), "%.0f%%  %.1fMB/s",
+                         frac * 100.0, speed_mb);
+            } else {
+                snprintf(info, sizeof(info), "%.1fMB  %.1fMB/s",
+                         dl_written_now / 1048576.0, speed_mb);
+            }
+        } else {
+            std::string s = fmt_size(r.size_bytes);
+            snprintf(info, sizeof(info), "%s", s.c_str());
+        }
+        float tw = ImGui::CalcTextSize(info).x;
         ImGui::SameLine(pw - tw - 4.f);
-        ImGui::TextDisabled("%s", info.c_str());
+        ImVec4 info_col = downloading
+            ? ImVec4(0.4f, 0.85f, 1.0f, 1.f)
+            : ImVec4(0.6f, 0.6f, 0.6f, 1.f);
+        ImGui::TextColored(info_col, "%s", info);
         ImGui::PopID();
     }
     ImGui::EndChild();
@@ -667,41 +817,65 @@ static void draw_local_list(FFTViewer& v){
     mkdir(BEWEPaths::data_dir().c_str(), 0755);
     mkdir(dir.c_str(), 0755);
     auto items = list_dir(dir, nullptr);
+    // .info 사이드카 제외 (데이터 파일에 종속)
+    items.erase(std::remove_if(items.begin(), items.end(),
+        [](const FileItem& f){ return is_info_file(f.name); }),
+        items.end());
+
     ImGui::TextDisabled("Local downloads: %s", dir.c_str());
-    {
-        std::lock_guard<std::mutex> lk(g_dl_mtx);
-        if(g_dl_active){
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.4f, 0.85f, 1.0f, 1.f),
-                "DL: %s %.1f/%.1fMB",
-                g_dl_filename.c_str(),
-                g_dl_written / 1048576.0,
-                g_dl_total ? g_dl_total / 1048576.0 : 0.0);
-        }
-    }
     ImGui::Separator();
     if(items.empty()){
         ImGui::TextDisabled("  (no downloads yet)");
         return;
     }
-    ImGui::BeginChild("##loc_scroll", ImVec2(0, 0), false);
+
+    // IQ / DEMOD / HIST 분류 (Central 탭과 동일한 라벨)
+    std::vector<const FileItem*> by[3] = {{}, {}, {}};  // 0=IQ 1=DEMOD 2=HIST
     for(auto& it : items){
-        float pw = ImGui::GetContentRegionAvail().x;
-        std::string full = dir + "/" + it.name;
-        ImGui::PushID(it.name.c_str());
-        bool clicked = ImGui::Selectable(it.name.c_str(), false,
-            ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick,
-            ImVec2(pw, 0));
-        if(clicked && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
-            open_local_in_viewer(v, full);
+        uint8_t s = classify_local_file(it.name);
+        int slot = (s == MFS_IQ) ? 0 : (s == MFS_AUDIO ? 1 : 2);
+        by[slot].push_back(&it);
+    }
+    const char* labels[3]  = {"IQ", "DEMOD", "HIST"};
+    const uint8_t subs[3]  = {MFS_IQ, MFS_AUDIO, MFS_HIST};
+
+    ImGui::BeginChild("##loc_scroll", ImVec2(0, 0), false);
+    for(int s = 0; s < 3; s++){
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.85f, 1.0f, 1.f));
+        ImGui::TextUnformatted(labels[s]);
+        ImGui::PopStyleColor();
+        ImGui::Separator();
+        if(by[s].empty()){
+            ImGui::TextDisabled("  (none)");
+            ImGui::Spacing();
+            continue;
         }
-        // 우클릭 → 메인 페이지 동일한 file_ctx 메뉴 (Signal Analysis/Info/Report/Save DB/Delete)
-        local_request_main_ctx(v, full, it.name);
-        std::string info = fmt_size(it.size);
-        float tw = ImGui::CalcTextSize(info.c_str()).x;
-        ImGui::SameLine(pw - tw - 4.f);
-        ImGui::TextDisabled("%s", info.c_str());
-        ImGui::PopID();
+        (void)subs;  // 분류 ID 는 시각적 그룹핑에만 사용
+        for(const FileItem* itp : by[s]){
+            const FileItem& it = *itp;
+            float pw = ImGui::GetContentRegionAvail().x;
+            std::string full = dir + "/" + it.name;
+            ImGui::PushID(it.name.c_str());
+
+            bool sel = (g_sel_kind == SelKind::LOCAL && g_sel_local_path == full);
+            bool clicked = ImGui::Selectable(it.name.c_str(), sel,
+                ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick,
+                ImVec2(pw, 0));
+            if(clicked){
+                g_sel_kind = SelKind::LOCAL;
+                g_sel_local_path = full;
+            }
+            if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
+                open_local_in_viewer(v, full);
+            }
+            local_request_main_ctx(v, full, it.name);
+            std::string info = fmt_size(it.size);
+            float tw = ImGui::CalcTextSize(info.c_str()).x;
+            ImGui::SameLine(pw - tw - 4.f);
+            ImGui::TextDisabled("%s", info.c_str());
+            ImGui::PopID();
+        }
+        ImGui::Spacing();
     }
     ImGui::EndChild();
 }
@@ -975,6 +1149,12 @@ void draw_modal(FFTViewer& v, NetClient* cli){
     draw_end_confirm_submodal(v, cli);
     draw_delete_confirm_submodal(v, cli);
     draw_rename_submodal(cli);
+
+    // 미션 모달 활성 시 Delete 키 → 선택 파일 삭제
+    process_delete_key(cli);
+
+    // 모달 닫혔으면 선택 클리어
+    if(!v.mission_modal_open) clear_selection();
 }
 
 // ── NetClient callback hooks (ui.cpp 에서 registration) ─────────────────
