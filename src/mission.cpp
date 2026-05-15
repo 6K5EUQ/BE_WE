@@ -8,6 +8,7 @@
 #include "long_waterfall.hpp"
 #include "hw_config.hpp"
 #include "login.hpp"
+#include "mission_push.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -18,6 +19,7 @@
 #include <string>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <thread>
 #include <vector>
 
@@ -175,11 +177,15 @@ bool FFTViewer::mission_start(const char* started_by, uint8_t op_index, bool rol
 }
 
 bool FFTViewer::mission_end(){
+    int ended_year = 0;
+    char ended_code[8] = {};
     {
         std::lock_guard<std::mutex> lk(mission_mtx);
         if(mission_state != Mission::State::ACTIVE) return false;
         mission_state   = Mission::State::CLOSING;
         mission_end_utc = time(nullptr);
+        ended_year = mission_year;
+        memcpy(ended_code, mission_code, sizeof(ended_code));
         bewe_log_push(0, "[MISSION] end: %04d/%s\n", mission_year, mission_code);
     }
 
@@ -192,6 +198,9 @@ bool FFTViewer::mission_end(){
             else            stop_audio_rec(i);
         }
     }
+
+    // Mission File Push: 미션 종료 시점에 잔여 파일 모두 enqueue (race-safe)
+    MissionPush::scan_mission_dir_enqueue(ended_year, ended_code);
 
     {
         std::lock_guard<std::mutex> lk(mission_mtx);
@@ -497,6 +506,74 @@ void FFTViewer::mission_broadcast_sync(){
     net_srv->broadcast_mission_sync(pkt);
 }
 
+// ── Delete ──────────────────────────────────────────────────────────────
+// 미션 디렉토리(파일 모두) + history 엔트리 영구 삭제.
+// 활성 미션이면 mission_end() 먼저 호출 → IDLE 전이 후 삭제.
+static void rm_rf_dir(const std::string& path){
+    DIR* d = opendir(path.c_str());
+    if(!d) return;
+    struct dirent* ent;
+    while((ent = readdir(d)) != nullptr){
+        const char* n = ent->d_name;
+        if(!n || (n[0]=='.' && (n[1]==0 || (n[1]=='.' && n[2]==0)))) continue;
+        std::string full = path + "/" + n;
+        struct stat st;
+        if(stat(full.c_str(), &st) != 0) continue;
+        if(S_ISDIR(st.st_mode)) rm_rf_dir(full);
+        else                    unlink(full.c_str());
+    }
+    closedir(d);
+    rmdir(path.c_str());
+}
+
+bool FFTViewer::mission_delete(int year, const char* code){
+    if(!code || !code[0] || year <= 0) return false;
+    // 안전: code에 슬래시 금지
+    if(strchr(code, '/')) return false;
+
+    // 활성 미션 삭제 시 먼저 mission_end()
+    {
+        std::lock_guard<std::mutex> lk(mission_mtx);
+        if(mission_state == Mission::State::ACTIVE &&
+           mission_year == year && strcmp(mission_code, code) == 0){
+            // 락 풀고 mission_end 호출 (mission_end가 자체 lock 잡음)
+        } else {
+            // history에서만 제거 (활성 미션 아님)
+            for(auto it = mission_history.begin(); it != mission_history.end(); ){
+                if(it->year == year && strcmp(it->code, code) == 0){
+                    it = mission_history.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+    }
+    // 활성 미션이었으면 종료 (락 풀린 후)
+    if(mission_state == Mission::State::ACTIVE &&
+       mission_year == year && strncmp(mission_code, code, 8) == 0){
+        mission_end();
+        // history에 들어갔으니 다시 제거
+        std::lock_guard<std::mutex> lk(mission_mtx);
+        for(auto it = mission_history.begin(); it != mission_history.end(); ){
+            if(it->year == year && strcmp(it->code, code) == 0){
+                it = mission_history.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    // 디스크 디렉토리 통째 삭제
+    std::string dir = BEWEPaths::mission_dir(year, code);
+    rm_rf_dir(dir);
+
+    bewe_log_push(0, "[MISSION] delete %04d/%s (dir removed)\n", year, code);
+
+    mission_save_meta_to_disk();
+    mission_broadcast_sync();
+    return true;
+}
+
 // ── active_*_dir helpers ─────────────────────────────────────────────────
 std::string FFTViewer::active_iq_dir() const {
     std::lock_guard<std::mutex> lk(mission_mtx);
@@ -535,4 +612,22 @@ std::string FFTViewer::active_hist_dir() const {
         return d;
     }
     return std::string();
+}
+
+std::string FFTViewer::mission_active_station_name() const {
+    std::lock_guard<std::mutex> lk(mission_mtx);
+    if(mission_state != Mission::State::ACTIVE) return std::string();
+    return std::string(mission_station_name);
+}
+
+int FFTViewer::mission_active_year() const {
+    std::lock_guard<std::mutex> lk(mission_mtx);
+    if(mission_state != Mission::State::ACTIVE) return 0;
+    return mission_year;
+}
+
+std::string FFTViewer::mission_active_code() const {
+    std::lock_guard<std::mutex> lk(mission_mtx);
+    if(mission_state != Mission::State::ACTIVE) return std::string();
+    return std::string(mission_code);
 }

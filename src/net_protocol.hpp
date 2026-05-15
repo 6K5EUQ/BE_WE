@@ -79,6 +79,17 @@ enum class PacketType : uint8_t {
     MISSION_END        = 0x4A,  // any → host: 활성 미션 종료 요청
     MISSION_UPDATE     = 0x4B,  // any → host: 미션 메타데이터 업데이트 (notes 등)
     MISSION_LIST_REQ   = 0x4C,  // any → central: MISSION_SYNC 재발송 요청
+    MISSION_DELETE     = 0x4D,  // any → host: 특정 미션 디렉토리/메타 삭제
+    // ── Mission File Archive (Central-centric, station-keyed) ────────────
+    MISSION_FILE_PUSH_META = 0x4E,  // host → central: 파일 업로드 시작 (transfer 선언)
+    MISSION_FILE_PUSH_DATA = 0x4F,  // host → central: 파일 청크 (offset append)
+    MISSION_FILE_LIST_REQ  = 0x50,  // any → central: station/year/code 파일 목록 요청
+    MISSION_FILE_LIST      = 0x51,  // central → caller: 파일 목록 응답
+    MISSION_FILE_DL_REQ    = 0x52,  // any → central: 파일 다운로드 요청
+    MISSION_FILE_DL_DATA   = 0x53,  // central → caller: 다운로드 청크 (첫 청크에 .info)
+    MISSION_FILE_DELETE    = 0x54,  // any → central: Central archive 파일 삭제
+    MISSION_FILE_RENAME    = 0x55,  // any → central: Central archive 파일 이름 변경
+    MISSION_FILE_PUSH_ACK  = 0x56,  // central → host: PUSH 전송 종료 ACK (HOST가 로컬 unlink 트리거)
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────
@@ -727,6 +738,121 @@ struct __attribute__((packed)) PktMissionUpdate {
 
 struct __attribute__((packed)) PktMissionListReq {
     uint8_t _pad[4];
+};
+
+struct __attribute__((packed)) PktMissionDelete {
+    uint16_t year;          // e.g. 2026
+    uint8_t  _pad[2];
+    char     code[8];       // "A03"
+    uint8_t  op_index;      // 누가 요청 (central이 채움)
+    uint8_t  _pad2[3];
+};
+
+// ── Mission File Archive (Central-centric, station-keyed) ─────────────────
+// Subdir codes (1 byte): 1=iq, 2=audio, 3=hist
+static constexpr uint8_t MFS_IQ    = 1;
+static constexpr uint8_t MFS_AUDIO = 2;
+static constexpr uint8_t MFS_HIST  = 3;
+
+// Mission station + dir + filename key. station[64] matches mission_station_name.
+struct __attribute__((packed)) MissionFileKey {
+    char     station[64];   // "DGS-1" 등 (mission_station_name과 동일 폭)
+    uint16_t year;
+    uint8_t  subdir;        // MFS_*
+    uint8_t  _pad;
+    char     code[8];       // "A03"
+    char     filename[128]; // basename only (경로 분리자 금지)
+};
+
+// HOST → Central: 파일 업로드 시작
+// total_bytes==0 이면 활성 미션 중 real-time append (close 시점 미정)
+struct __attribute__((packed)) PktMissionFilePushMeta {
+    MissionFileKey key;
+    uint64_t       total_bytes;     // 0 = unknown / streaming
+    uint8_t        transfer_id;     // HOST가 부여 (room 내 unique)
+    uint8_t        mode;            // 0=replace (truncate), 1=append (offset 따름)
+    uint8_t        _pad[2];
+    char           info_data[512];  // .info 사이드카 (없으면 빈)
+};
+
+// HOST → Central: 청크 (offset append 지원)
+struct __attribute__((packed)) PktMissionFilePushData {
+    uint8_t  transfer_id;
+    uint8_t  is_last;       // 1: 마지막 청크 → Central은 파일 close 후 ack
+    uint8_t  _pad[2];
+    uint64_t offset;        // 목적 파일 내 쓰기 시작 위치
+    uint32_t chunk_bytes;
+    uint8_t  _pad2[4];      // 8-byte align before raw bytes
+    // 뒤에 raw bytes [chunk_bytes]
+};
+
+// any → Central: 파일 목록 (station/year/code 필터)
+struct __attribute__((packed)) PktMissionFileListReq {
+    char     station[64];   // 빈 = 모든 station
+    uint16_t year;          // 0 = 모든 year
+    uint8_t  subdir;        // 0 = 모두 (iq+audio+hist)
+    uint8_t  _pad;
+    char     code[8];       // 빈 = 모든 code
+};
+
+static constexpr int MAX_MISSION_FILES_PER_PKT = 32;
+struct __attribute__((packed)) MissionFileEntry {
+    char     station[64];
+    uint16_t year;
+    uint8_t  subdir;
+    uint8_t  _pad;
+    char     code[8];
+    char     filename[128];
+    uint64_t size_bytes;
+    int64_t  mtime_unix;
+};
+
+// Central → caller: 파일 목록 응답 (count > MAX → 다중 패킷)
+struct __attribute__((packed)) PktMissionFileList {
+    uint16_t           count;              // entries[] 유효 개수 (≤ MAX_*)
+    uint8_t            is_last_page;       // 1: 더 없음
+    uint8_t            _pad;
+    MissionFileEntry   entries[MAX_MISSION_FILES_PER_PKT];
+};
+
+// any → Central: 다운로드 요청
+struct __attribute__((packed)) PktMissionFileDlReq {
+    MissionFileKey key;
+};
+
+// Central → caller: 다운로드 청크 (첫 청크에 .info 동봉)
+struct __attribute__((packed)) PktMissionFileDlData {
+    MissionFileKey key;
+    uint64_t       total_bytes;
+    uint64_t       offset;
+    uint32_t       chunk_bytes;
+    uint8_t        is_first;        // 1: info_data 유효
+    uint8_t        is_last;
+    uint8_t        _pad[2];
+    char           info_data[512];  // is_first 일 때만
+    // 뒤에 raw bytes [chunk_bytes]
+};
+
+// any → Central: 파일 삭제
+struct __attribute__((packed)) PktMissionFileDelete {
+    MissionFileKey key;
+};
+
+// any → Central: 파일 이름 변경 (subdir 내에서만)
+struct __attribute__((packed)) PktMissionFileRename {
+    MissionFileKey key;
+    char           new_filename[128];
+};
+
+// Central → HOST: PUSH 완료 (or 실패) ACK
+//   status: 0=ok (file fully committed), 1=io error, 2=protocol error, 3=key invalid
+struct __attribute__((packed)) PktMissionFilePushAck {
+    MissionFileKey key;
+    uint8_t        transfer_id;
+    uint8_t        status;
+    uint8_t        _pad[2];
+    uint64_t       total_bytes;     // 실제 디스크에 쓰인 바이트
+    char           error_msg[64];
 };
 
 // ── Wire helpers ──────────────────────────────────────────────────────────

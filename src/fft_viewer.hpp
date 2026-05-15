@@ -209,10 +209,18 @@ public:
     void mission_load_history();
     void mission_save_meta_to_disk();
     void mission_broadcast_sync();
+    // 특정 미션의 디렉토리(파일 전체) + history 엔트리 영구 삭제.
+    // 활성 미션이면 먼저 mission_end() 후 삭제.
+    bool mission_delete(int year, const char* code);
     // 현재 활성 미션 디렉토리. IDLE이면 빈 문자열 (호출자가 차단).
     std::string active_iq_dir() const;
     std::string active_audio_dir() const;
     std::string active_hist_dir() const;
+    // 현재 활성 미션 station_name (MissionPush key 채우기용). IDLE이면 빈.
+    std::string mission_active_station_name() const;
+    // 현재 활성 미션 year/code (MissionPush + file LIST_REQ 용).
+    int  mission_active_year() const;
+    std::string mission_active_code() const;
 
     // ── Long Waterfall (24h+ FFT magnitude image) ─────────────────────
     bool              lwf_modal_open = false;     // IMG 버튼 토글 → viewer 모달

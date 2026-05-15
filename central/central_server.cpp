@@ -19,19 +19,7 @@ static constexpr int HOST_TIMEOUT_SEC  = 3;   // HB 간격 1s 가정, 3초 미�
 static constexpr int HANDSHAKE_TIMEOUT = 10;
 static constexpr size_t PIPE_BUF_SZ    = 65536;
 
-// HOST fd에 보낼 MUX 패킷을 큐에 enqueue (non-blocking, host_mux_loop이 flush)
-static void enqueue_host_send(std::shared_ptr<HostRoom>& room, uint16_t conn_id,
-                              CentralMuxType type, const void* data, uint32_t len){
-    CentralMuxHdr mh{};
-    mh.conn_id = conn_id;
-    mh.type = static_cast<uint8_t>(type);
-    mh.len = len;
-    std::vector<uint8_t> pkt(CENTRAL_MUX_HDR_SIZE + len);
-    memcpy(pkt.data(), &mh, CENTRAL_MUX_HDR_SIZE);
-    if(len > 0 && data) memcpy(pkt.data() + CENTRAL_MUX_HDR_SIZE, data, len);
-    std::lock_guard<std::mutex> lk(room->host_send_mtx);
-    room->host_send_queue.push_back(std::move(pkt));
-}
+// enqueue_host_send: header (central_server.hpp)에 inline 정의 — 다른 TU(central_mission_archive.cpp)도 사용.
 
 // HOST send 큐를 flush (host_mux_loop에서 호출)
 // blocking send: CONN_OPEN/CLOSE 같은 제어 패킷은 절대 드롭하면 안 됨
@@ -703,7 +691,62 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
             missions_by_station_[room->station_id].assign(bewe_pkt, bewe_pkt + bewe_len);
         }
         save_missions_to_json();
+        // Mission File Archive: active mission shadow 갱신 (LWF tap 경로 결정용)
+        update_active_mission_shadow(room, bewe_pkt, bewe_len);
         // fall-through to dispatch_to_joins
+    }
+
+    // ── Mission File Archive (Phase 1): HOST→Central PUSH 처리 ──────────────
+    if(bewe_type == BEWE_TYPE_MISSION_FILE_PUSH_META){
+        handle_mission_file_push_meta(room, bewe_pkt + BEWE_HDR_SIZE,
+                                      bewe_len - BEWE_HDR_SIZE);
+        return;  // HOST→Central 전용, JOIN에 안 보냄
+    }
+    if(bewe_type == BEWE_TYPE_MISSION_FILE_PUSH_DATA){
+        handle_mission_file_push_data(room, bewe_pkt + BEWE_HDR_SIZE,
+                                      bewe_len - BEWE_HDR_SIZE);
+        return;
+    }
+    // HOST가 직접 archive를 조회/조작할 수도 있음 (HOST UI 측에서)
+    if(bewe_type == BEWE_TYPE_MISSION_FILE_LIST_REQ){
+        handle_mission_file_list_req(room, nullptr,
+                                     bewe_pkt + BEWE_HDR_SIZE, bewe_len - BEWE_HDR_SIZE);
+        return;
+    }
+    if(bewe_type == BEWE_TYPE_MISSION_FILE_DL_REQ){
+        handle_mission_file_dl_req(room, nullptr,
+                                   bewe_pkt + BEWE_HDR_SIZE, bewe_len - BEWE_HDR_SIZE);
+        return;
+    }
+    if(bewe_type == BEWE_TYPE_MISSION_FILE_DELETE){
+        handle_mission_file_delete(room, nullptr,
+                                   bewe_pkt + BEWE_HDR_SIZE, bewe_len - BEWE_HDR_SIZE);
+        return;
+    }
+    if(bewe_type == BEWE_TYPE_MISSION_FILE_RENAME){
+        handle_mission_file_rename(room, nullptr,
+                                   bewe_pkt + BEWE_HDR_SIZE, bewe_len - BEWE_HDR_SIZE);
+        return;
+    }
+
+    // ── LWF live stream tap: archive에 동시 기록 (fall-through to dispatch) ──
+    if(bewe_type == BEWE_TYPE_LWF_LIVE_START &&
+       bewe_len >= BEWE_HDR_SIZE + sizeof(PktLwfLiveStart)){
+        const auto* ls = reinterpret_cast<const PktLwfLiveStart*>(bewe_pkt + BEWE_HDR_SIZE);
+        archive_hist_on_live_start(room, *ls);
+        // fall-through: JOIN들에게도 broadcast
+    }
+    if(bewe_type == BEWE_TYPE_LWF_LIVE_ROW &&
+       bewe_len >= BEWE_HDR_SIZE + sizeof(PktLwfLiveRowHdr)){
+        const auto* h = reinterpret_cast<const PktLwfLiveRowHdr*>(bewe_pkt + BEWE_HDR_SIZE);
+        uint32_t row_bytes = (uint32_t)(bewe_len - BEWE_HDR_SIZE - sizeof(PktLwfLiveRowHdr));
+        const uint8_t* row = bewe_pkt + BEWE_HDR_SIZE + sizeof(PktLwfLiveRowHdr);
+        archive_hist_on_live_row(room, *h, row, row_bytes);
+    }
+    if(bewe_type == BEWE_TYPE_LWF_LIVE_STOP &&
+       bewe_len >= BEWE_HDR_SIZE + sizeof(PktLwfLiveStop)){
+        const auto* s = reinterpret_cast<const PktLwfLiveStop*>(bewe_pkt + BEWE_HDR_SIZE);
+        archive_hist_on_live_stop(room, *s);
     }
 
     // ── CHANNEL_SYNC 인터셉트: 캐시 저장 → audio_mask 재작성 후 broadcast
@@ -1240,6 +1283,39 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
     if(bewe_type == BEWE_TYPE_CHAT){
         broadcast_global_chat(bewe_pkt, bewe_len, room.get());
         return false;  // 소스 방 HOST에도 포워드
+    }
+
+    // ── Mission File Archive (Phase 1): JOIN→Central 조회/조작 ───────────
+    // 응답은 je->enqueue_ctrl/file로 직접 전송. HOST 포워드 안 함 (Central 자체 처리).
+    if(bewe_type == BEWE_TYPE_MISSION_FILE_LIST_REQ){
+        handle_mission_file_list_req(room, je,
+                                     bewe_pkt + BEWE_HDR_SIZE, bewe_len - BEWE_HDR_SIZE);
+        return true;
+    }
+    if(bewe_type == BEWE_TYPE_MISSION_FILE_DL_REQ){
+        handle_mission_file_dl_req(room, je,
+                                   bewe_pkt + BEWE_HDR_SIZE, bewe_len - BEWE_HDR_SIZE);
+        return true;
+    }
+    if(bewe_type == BEWE_TYPE_MISSION_FILE_DELETE){
+        handle_mission_file_delete(room, je,
+                                   bewe_pkt + BEWE_HDR_SIZE, bewe_len - BEWE_HDR_SIZE);
+        return true;
+    }
+    if(bewe_type == BEWE_TYPE_MISSION_FILE_RENAME){
+        handle_mission_file_rename(room, je,
+                                   bewe_pkt + BEWE_HDR_SIZE, bewe_len - BEWE_HDR_SIZE);
+        return true;
+    }
+
+    // ── MISSION_DELETE: Central archive 도 wipe (HOST에도 포워드해서 로컬 dir 정리) ─
+    if(bewe_type == BEWE_TYPE_MISSION_DELETE &&
+       bewe_len >= BEWE_HDR_SIZE + sizeof(PktMissionDelete)){
+        const auto* d = reinterpret_cast<const PktMissionDelete*>(bewe_pkt + BEWE_HDR_SIZE);
+        char code[9]={}; memcpy(code, d->code, 8); code[8]=0;
+        // station은 HOST room의 info.station_name 사용 (한 HOST = 한 station 가정).
+        archive_wipe_mission(room->info.station_name, d->year, code);
+        return false;  // HOST에도 forward (로컬 dir 정리)
     }
 
     return false;

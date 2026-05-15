@@ -1,6 +1,7 @@
 #include "fft_viewer.hpp"
 #include "login.hpp"
 #include "long_waterfall.hpp"
+#include "mission_push.hpp"
 #include <ctime>
 #include <algorithm>
 #include <chrono>
@@ -209,6 +210,10 @@ void FFTViewer::rec_worker(){
         for(auto& e : rec_entries)
             if(e.path==rec_filename){ e.finished=true; break; }
     }
+
+    // Central archive 로 push (활성 미션 + Central 연결 시에만 실제 전송 — worker 가 검증)
+    if(rec_frames.load() > 0)
+        MissionPush::enqueue(rec_filename, MFS_IQ);
 }
 
 void FFTViewer::start_rec(){
@@ -375,6 +380,8 @@ void FFTViewer::stop_audio_rec(int ch_idx){
         for(auto& e : rec_entries)
             if(e.path==ch.audio_rec_path){ e.finished=true; break; }
     }
+    // Mission File Push: 미션 dir 내 audio 파일이면 Central archive로 업로드 후 unlink
+    MissionPush::enqueue(ch.audio_rec_path, MFS_AUDIO);
     ch.audio_rec_path.clear();
 }
 
@@ -608,6 +615,8 @@ void FFTViewer::stop_iq_rec(int ch_idx){
         for(auto& e : rec_entries)
             if(e.path==ch.iq_rec_path){ e.finished=true; break; }
     }
+    // Mission File Push: 미션 dir 내 IQ 파일이면 Central archive로 업로드 후 unlink
+    MissionPush::enqueue(ch.iq_rec_path, MFS_IQ);
     ch.iq_rec_path.clear();
 }
 

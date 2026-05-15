@@ -23,6 +23,9 @@
 #include <string>
 #include <vector>
 
+// long_waterfall_view.cpp의 file-scope 함수 (별도 헤더에 선언 안 됨).
+bool lwf_open_file(const std::string& path);
+
 namespace MissionView {
 
 extern std::string g_toast_msg;
@@ -133,6 +136,45 @@ static std::vector<FileItem> list_dir(const std::string& dir, const char* ext){
 // 좌측 트리 선택
 static int         g_sel_year = 0;
 static std::string g_sel_code;
+// Delete 확인 모달 대기 (트리/모달 어디서나 트리거 → 모달이 처리)
+static int         g_del_year = 0;
+static std::string g_del_code;
+
+// ── Central archive 캐시 (NetClient on_mission_file_list 콜백이 채움) ────
+struct CentralFileRow {
+    char     station[64];
+    uint16_t year;
+    uint8_t  subdir;
+    char     code[8];
+    char     filename[128];
+    uint64_t size_bytes;
+    int64_t  mtime_unix;
+};
+static std::mutex                     g_cf_mtx;
+static std::vector<CentralFileRow>    g_cf_rows;            // 모든 mission 합쳐서 누적
+static bool                           g_cf_last_page = true;
+static int                            g_cf_req_year  = 0;
+static std::string                    g_cf_req_code;
+static char                           g_cf_req_station[64] = {};
+static double                         g_cf_last_req_time = 0.0;
+
+// ── Download 진행 상태 (단일 동시 다운로드) ──────────────────────────────
+static std::mutex   g_dl_mtx;
+static FILE*        g_dl_fp = nullptr;
+static std::string  g_dl_local_path;
+static std::string  g_dl_filename;  // basename 비교용
+static uint64_t     g_dl_total = 0;
+static uint64_t     g_dl_written = 0;
+static bool         g_dl_active = false;
+
+// ── Rename submodal 상태 ─────────────────────────────────────────────────
+static bool         g_rn_open = false;
+static char         g_rn_station[64] = {};
+static int          g_rn_year = 0;
+static char         g_rn_code[8] = {};
+static uint8_t      g_rn_subdir = 0;
+static char         g_rn_old[128] = {};
+static char         g_rn_new[128] = {};
 
 // ── Start / End 서브모달 ────────────────────────────────────────────────
 static void draw_start_submodal(FFTViewer& v, NetClient* cli){
@@ -388,47 +430,351 @@ static void draw_current_session(FFTViewer& v){
     if(!any) ImGui::TextDisabled("  (idle)");
 }
 
-static void draw_file_tabs(FFTViewer& /*v*/){
+// ── Helper: send LIST_REQ if mission selection changed or auto-refresh due ──
+static void maybe_request_central_list(FFTViewer& v, NetClient* cli){
+    if(!cli) return;
     if(g_sel_year == 0 || g_sel_code.empty()) return;
-    std::string dir_iq    = BEWEPaths::mission_iq_dir   (g_sel_year, g_sel_code);
-    std::string dir_audio = BEWEPaths::mission_audio_dir(g_sel_year, g_sel_code);
-    std::string dir_hist  = BEWEPaths::mission_hist_dir (g_sel_year, g_sel_code);
+    // station 결정: active mission 의 station_name (or history entry's station)
+    char station[64] = {};
+    {
+        std::lock_guard<std::mutex> lk(v.mission_mtx);
+        bool found = false;
+        if(v.mission_state == Mission::State::ACTIVE &&
+           v.mission_year == g_sel_year &&
+           strncmp(v.mission_code, g_sel_code.c_str(), 8) == 0){
+            strncpy(station, v.mission_station_name, sizeof(station) - 1);
+            found = true;
+        }
+        if(!found){
+            for(auto& e : v.mission_history){
+                if(e.year == g_sel_year && strncmp(e.code, g_sel_code.c_str(), 8) == 0){
+                    strncpy(station, e.station_name, sizeof(station) - 1);
+                    found = true;
+                    break;
+                }
+            }
+        }
+    }
+    bool sel_changed = (g_cf_req_year != g_sel_year) ||
+                       (g_cf_req_code != g_sel_code) ||
+                       (strncmp(g_cf_req_station, station, 64) != 0);
+    double now = ImGui::GetTime();
+    bool refresh_due = (now - g_cf_last_req_time) > 5.0;  // 5초마다 refresh
+    if(sel_changed || refresh_due){
+        {
+            std::lock_guard<std::mutex> lk(g_cf_mtx);
+            // 같은 mission 만 비워 (다른 mission rows 는 유지해도 무방하나 단순화)
+            if(sel_changed) g_cf_rows.clear();
+            g_cf_last_page = false;
+        }
+        g_cf_req_year = g_sel_year;
+        g_cf_req_code = g_sel_code;
+        strncpy(g_cf_req_station, station, sizeof(g_cf_req_station) - 1);
+        g_cf_last_req_time = now;
+        cli->send_mission_file_list_req(station, (uint16_t)g_sel_year,
+                                        g_sel_code.c_str(), /*subdir=*/0);
+    }
+}
 
+static const char* subdir_label(uint8_t s){
+    switch(s){
+        case MFS_IQ:    return "IQ";
+        case MFS_AUDIO: return "DEMOD";
+        case MFS_HIST:  return "HIST";
+        default:        return "?";
+    }
+}
+
+static std::string fmt_size(uint64_t bytes){
+    char b[32];
+    if(bytes >= 1ull << 30) snprintf(b, sizeof(b), "%.2f GB", bytes / (double)(1ull<<30));
+    else if(bytes >= 1ull << 20) snprintf(b, sizeof(b), "%.1f MB", bytes / (double)(1ull<<20));
+    else if(bytes >= 1ull << 10) snprintf(b, sizeof(b), "%.1f KB", bytes / (double)(1ull<<10));
+    else snprintf(b, sizeof(b), "%llu B", (unsigned long long)bytes);
+    return b;
+}
+
+// Start download: open file at downloads_dir/<filename> and send DL_REQ.
+// Returns true if request was sent.
+static bool start_download(NetClient* cli, const CentralFileRow& row){
+    if(!cli) return false;
+    std::lock_guard<std::mutex> lk(g_dl_mtx);
+    if(g_dl_active){
+        MissionView::show_toast("Download already in progress");
+        return false;
+    }
+    std::string dir = BEWEPaths::downloads_dir();
+    mkdir(BEWEPaths::data_dir().c_str(), 0755);
+    mkdir(dir.c_str(), 0755);
+    std::string path = dir + "/" + row.filename;
+    g_dl_fp = fopen(path.c_str(), "wb");
+    if(!g_dl_fp){
+        char msg[256]; snprintf(msg, sizeof(msg),
+            "Download open failed: %s (errno=%d)", path.c_str(), errno);
+        MissionView::show_toast(msg);
+        return false;
+    }
+    g_dl_local_path = path;
+    g_dl_filename   = row.filename;
+    g_dl_total      = 0;
+    g_dl_written    = 0;
+    g_dl_active     = true;
+    MissionFileKey k{};
+    strncpy(k.station,  row.station, sizeof(k.station) - 1);
+    k.year   = row.year;
+    k.subdir = row.subdir;
+    strncpy(k.code,     row.code,     sizeof(k.code) - 1);
+    strncpy(k.filename, row.filename, sizeof(k.filename) - 1);
+    bool ok = cli->send_mission_file_dl_req(k);
+    if(!ok){
+        if(g_dl_fp){ fclose(g_dl_fp); g_dl_fp = nullptr; }
+        unlink(g_dl_local_path.c_str());
+        g_dl_active = false;
+        MissionView::show_toast("Download request failed");
+    }
+    return ok;
+}
+
+// Right-click context for a Central-side file row.
+static void central_context_menu(NetClient* cli, const CentralFileRow& row){
+    if(ImGui::BeginPopupContextItem("##cf_ctx")){
+        ImGui::TextDisabled("%s/%s", subdir_label(row.subdir), row.filename);
+        ImGui::Separator();
+        if(ImGui::MenuItem("Download to LOCAL")){
+            start_download(cli, row);
+        }
+        if(ImGui::MenuItem("Rename...")){
+            memset(g_rn_station, 0, sizeof(g_rn_station));
+            memset(g_rn_code,    0, sizeof(g_rn_code));
+            memset(g_rn_old,     0, sizeof(g_rn_old));
+            memset(g_rn_new,     0, sizeof(g_rn_new));
+            strncpy(g_rn_station, row.station,  sizeof(g_rn_station) - 1);
+            g_rn_year = row.year;
+            strncpy(g_rn_code,    row.code,     sizeof(g_rn_code) - 1);
+            g_rn_subdir = row.subdir;
+            strncpy(g_rn_old,     row.filename, sizeof(g_rn_old) - 1);
+            strncpy(g_rn_new,     row.filename, sizeof(g_rn_new) - 1);
+            g_rn_open = true;
+        }
+        ImGui::Separator();
+        if(ImGui::MenuItem("Delete (Central)")){
+            MissionFileKey k{};
+            strncpy(k.station,  row.station,  sizeof(k.station)  - 1);
+            k.year   = row.year;
+            k.subdir = row.subdir;
+            strncpy(k.code,     row.code,     sizeof(k.code)     - 1);
+            strncpy(k.filename, row.filename, sizeof(k.filename) - 1);
+            if(cli) cli->send_mission_file_delete(k);
+            g_cf_last_req_time = 0;  // force refresh
+            MissionView::show_toast("Delete requested");
+        }
+        ImGui::EndPopup();
+    }
+}
+
+// 다운로드한 LOCAL 파일을 viewer로 열기 (HIST → LWF viewer, .wav → SA panel).
+// lwf_open_file는 long_waterfall_view.cpp 의 file-scope 자유 함수 — :: 으로 호출.
+static void open_local_in_viewer(FFTViewer& v, const std::string& path){
+    auto ends_with = [&](const char* ext){
+        size_t L = path.size(), E = strlen(ext);
+        return L >= E && path.compare(L - E, E, ext) == 0;
+    };
+    if(ends_with(".bewehist") || ends_with(".bewewf")){
+        if(::lwf_open_file(path)){
+            v.lwf_modal_open = true;
+            v.mission_modal_open = false;  // 미션 모달 닫고 viewer 보이게
+        } else {
+            MissionView::show_toast("LWF open failed");
+        }
+        return;
+    }
+    if(ends_with(".wav")){
+        v.sa_temp_path = path;
+        v.eid_panel_open = true;
+        v.mission_modal_open = false;
+        return;
+    }
+    MissionView::show_toast("No viewer for this file type");
+}
+
+// Right-click context for a LOCAL (downloads_dir) row.
+static void local_context_menu(FFTViewer& v, const std::string& path){
+    if(ImGui::BeginPopupContextItem("##loc_ctx")){
+        ImGui::TextDisabled("%s", path.c_str());
+        ImGui::Separator();
+        if(ImGui::MenuItem("Open in viewer")){
+            open_local_in_viewer(v, path);
+        }
+        ImGui::Separator();
+        if(ImGui::MenuItem("Delete (Local)")){
+            unlink(path.c_str());
+            unlink((path + ".info").c_str());
+            MissionView::show_toast("Local file deleted");
+        }
+        ImGui::EndPopup();
+    }
+}
+
+static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
+    maybe_request_central_list(v, cli);
+    std::vector<CentralFileRow> rows;
+    {
+        std::lock_guard<std::mutex> lk(g_cf_mtx);
+        for(auto& r : g_cf_rows){
+            if(r.subdir != subdir) continue;
+            if(r.year != g_sel_year) continue;
+            if(strncmp(r.code, g_sel_code.c_str(), 8) != 0) continue;
+            rows.push_back(r);
+        }
+    }
+    ImGui::TextDisabled("Central: %s/%04d/%s/%s",
+        g_cf_req_station, g_sel_year, g_sel_code.c_str(), subdir_label(subdir));
+    ImGui::SameLine();
+    if(ImGui::SmallButton("Refresh##cf")){
+        g_cf_last_req_time = 0;
+    }
+    ImGui::Separator();
+    if(!cli){
+        ImGui::TextColored(ImVec4(0.85f, 0.7f, 0.4f, 1.f),
+            "Not connected to Central (LOCAL mode) — see LOCAL tab.");
+        return;
+    }
+    if(rows.empty()){
+        ImGui::TextDisabled("  (no files in Central archive)");
+        return;
+    }
+    ImGui::BeginChild("##cf_scroll", ImVec2(0, 0), false);
+    for(auto& r : rows){
+        float pw = ImGui::GetContentRegionAvail().x;
+        ImGui::PushID(r.filename);
+        ImGui::Selectable(r.filename, false,
+            ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw, 0));
+        central_context_menu(cli, r);
+        std::string info = fmt_size(r.size_bytes);
+        float tw = ImGui::CalcTextSize(info.c_str()).x;
+        ImGui::SameLine(pw - tw - 4.f);
+        ImGui::TextDisabled("%s", info.c_str());
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+}
+
+static void draw_local_list(FFTViewer& v){
+    std::string dir = BEWEPaths::downloads_dir();
+    mkdir(BEWEPaths::data_dir().c_str(), 0755);
+    mkdir(dir.c_str(), 0755);
+    auto items = list_dir(dir, nullptr);
+    ImGui::TextDisabled("Local downloads: %s", dir.c_str());
+    {
+        std::lock_guard<std::mutex> lk(g_dl_mtx);
+        if(g_dl_active){
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.4f, 0.85f, 1.0f, 1.f),
+                "DL: %s %.1f/%.1fMB",
+                g_dl_filename.c_str(),
+                g_dl_written / 1048576.0,
+                g_dl_total ? g_dl_total / 1048576.0 : 0.0);
+        }
+    }
+    ImGui::Separator();
+    if(items.empty()){
+        ImGui::TextDisabled("  (no downloads yet)");
+        return;
+    }
+    ImGui::BeginChild("##loc_scroll", ImVec2(0, 0), false);
+    for(auto& it : items){
+        float pw = ImGui::GetContentRegionAvail().x;
+        std::string full = dir + "/" + it.name;
+        ImGui::PushID(it.name.c_str());
+        bool clicked = ImGui::Selectable(it.name.c_str(), false,
+            ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick,
+            ImVec2(pw, 0));
+        if(clicked && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
+            open_local_in_viewer(v, full);
+        }
+        local_context_menu(v, full);
+        std::string info = fmt_size(it.size);
+        float tw = ImGui::CalcTextSize(info.c_str()).x;
+        ImGui::SameLine(pw - tw - 4.f);
+        ImGui::TextDisabled("%s", info.c_str());
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+}
+
+static void draw_rename_submodal(NetClient* cli){
+    if(!g_rn_open) return;
+    ImGui::SetNextWindowSize(ImVec2(480, 0));
+    ImGui::OpenPopup("Rename##cf_rn");
+    bool open = true;
+    if(ImGui::BeginPopupModal("Rename##cf_rn", &open,
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize)){
+        ImGui::TextDisabled("Central archive rename");
+        ImGui::Text("%s/%04d/%s/%s", g_rn_station, g_rn_year, g_rn_code,
+                    subdir_label(g_rn_subdir));
+        ImGui::TextDisabled("Old:");
+        ImGui::SameLine(); ImGui::TextWrapped("%s", g_rn_old);
+        ImGui::PushItemWidth(-1);
+        ImGui::InputText("##rn_new", g_rn_new, sizeof(g_rn_new));
+        ImGui::PopItemWidth();
+        ImGui::Spacing();
+        if(ImGui::Button("Cancel", ImVec2(120, 0))){
+            g_rn_open = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        bool empty_or_same = (g_rn_new[0] == 0) || (strcmp(g_rn_new, g_rn_old) == 0);
+        if(empty_or_same) ImGui::BeginDisabled();
+        if(ImGui::Button("Rename", ImVec2(120, 0))){
+            if(cli){
+                MissionFileKey k{};
+                strncpy(k.station, g_rn_station, sizeof(k.station) - 1);
+                k.year = (uint16_t)g_rn_year;
+                k.subdir = g_rn_subdir;
+                strncpy(k.code,     g_rn_code, sizeof(k.code)     - 1);
+                strncpy(k.filename, g_rn_old,  sizeof(k.filename) - 1);
+                cli->send_mission_file_rename(k, g_rn_new);
+                g_cf_last_req_time = 0;
+                MissionView::show_toast("Rename requested");
+            }
+            g_rn_open = false;
+            ImGui::CloseCurrentPopup();
+        }
+        if(empty_or_same) ImGui::EndDisabled();
+        ImGui::EndPopup();
+    }
+    if(!open) g_rn_open = false;
+}
+
+static void draw_file_tabs(FFTViewer& v, NetClient* cli){
+    if(g_sel_year == 0 || g_sel_code.empty()){
+        // mission 선택 없음 — LOCAL 만 표시
+        ImGui::Spacing();
+        if(ImGui::BeginTabBar("##mission_file_tabs_idle")){
+            if(ImGui::BeginTabItem("LOCAL")){
+                draw_local_list(v);
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+        }
+        return;
+    }
     ImGui::Spacing();
     if(ImGui::BeginTabBar("##mission_file_tabs")){
-        auto draw_list = [&](const std::string& dir, const char* ext){
-            auto items = list_dir(dir, ext);
-            // 디렉토리 경로 항상 표시 (투명성: 어디 보고 있는지 사용자가 확인 가능)
-            ImGui::TextDisabled("dir: %s", dir.c_str());
-            ImGui::Separator();
-            if(items.empty()){
-                ImGui::TextDisabled("  (no files)");
-                return;
-            }
-            ImGui::BeginChild("##mission_files_scroll", ImVec2(0,0), false);
-            for(auto& it : items){
-                float pw = ImGui::GetContentRegionAvail().x;
-                ImGui::PushID(it.name.c_str());
-                ImGui::Selectable(it.name.c_str(), false,
-                    ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw, 0));
-                std::string info = FFTViewer::format_file_info(0.0, (uint64_t)it.size);
-                float tw = ImGui::CalcTextSize(info.c_str()).x;
-                ImGui::SameLine(pw - tw - 4.f);
-                ImGui::TextDisabled("%s", info.c_str());
-                ImGui::PopID();
-            }
-            ImGui::EndChild();
-        };
         if(ImGui::BeginTabItem("IQ")){
-            draw_list(dir_iq, ".wav");
+            draw_central_list(v, cli, MFS_IQ);
             ImGui::EndTabItem();
         }
         if(ImGui::BeginTabItem("DEMOD")){
-            draw_list(dir_audio, ".wav");
+            draw_central_list(v, cli, MFS_AUDIO);
             ImGui::EndTabItem();
         }
         if(ImGui::BeginTabItem("HIST")){
-            draw_list(dir_hist, ".bewehist");
+            draw_central_list(v, cli, MFS_HIST);
+            ImGui::EndTabItem();
+        }
+        if(ImGui::BeginTabItem("LOCAL")){
+            draw_local_list(v);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -486,12 +832,74 @@ static void draw_left_tree(FFTViewer& v){
             if(ImGui::Selectable(label, sel)){
                 g_sel_year = y; g_sel_code = code;
             }
+            // 우클릭 context menu: Delete Mission
+            if(ImGui::BeginPopupContextItem("##mission_ctx")){
+                if(is_active) ImGui::TextDisabled("Mission %s (ACTIVE)", code.c_str());
+                else          ImGui::TextDisabled("Mission %s", code.c_str());
+                ImGui::Separator();
+                if(ImGui::MenuItem("Delete Mission...")){
+                    g_del_year = y;
+                    g_del_code = code;
+                }
+                ImGui::EndPopup();
+            }
             ImGui::PopStyleColor();
             ImGui::PopID();
             ImGui::PopID();
         }
         ImGui::TreePop();
     }
+}
+
+// ── Delete 확인 모달 ────────────────────────────────────────────────────
+static void draw_delete_confirm_submodal(FFTViewer& v, NetClient* cli){
+    if(g_del_year == 0 || g_del_code.empty()) return;
+    ImGui::SetNextWindowSize(ImVec2(480, 0));
+    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x*0.5f - 240.f,
+                                   ImGui::GetIO().DisplaySize.y*0.30f),
+                            ImGuiCond_Appearing);
+    ImGui::OpenPopup("Delete Mission##mission_del");
+    bool open = true;
+    if(ImGui::BeginPopupModal("Delete Mission##mission_del", &open,
+        ImGuiWindowFlags_NoResize|ImGuiWindowFlags_AlwaysAutoResize)){
+        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.f),
+            "PERMANENTLY DELETE mission %04d/%s ?",
+            g_del_year, g_del_code.c_str());
+        ImGui::Separator();
+        std::string mdir = BEWEPaths::mission_dir(g_del_year, g_del_code);
+        ImGui::TextDisabled("Directory:");
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s", mdir.c_str());
+        ImGui::Spacing();
+        ImGui::TextDisabled("All files will be removed:");
+        ImGui::BulletText("IQ recordings (iq/*.wav)");
+        ImGui::BulletText("DEMOD recordings (audio/*.wav)");
+        ImGui::BulletText("HIST waterfalls (hist/*.bewehist)");
+        ImGui::BulletText("mission.info + .info sidecars");
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.f),
+            "This action cannot be undone.");
+        ImGui::Spacing();
+        if(ImGui::Button("Cancel", ImVec2(120, 0))){
+            g_del_year = 0; g_del_code.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.7f, 0.2f, 0.2f, 1.f));
+        if(ImGui::Button("Delete", ImVec2(120, 0))){
+            if(cli) cli->send_mission_delete(g_del_year, g_del_code.c_str());
+            else    v.mission_delete(g_del_year, g_del_code.c_str());
+            // 선택 미션이 삭제 대상이었으면 좌측 트리 선택 해제
+            if(g_sel_year == g_del_year && g_sel_code == g_del_code){
+                g_sel_year = 0; g_sel_code.clear();
+            }
+            g_del_year = 0; g_del_code.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::PopStyleColor();
+        ImGui::EndPopup();
+    }
+    if(!open){ g_del_year = 0; g_del_code.clear(); }
 }
 
 void draw_modal(FFTViewer& v, NetClient* cli){
@@ -552,7 +960,7 @@ void draw_modal(FFTViewer& v, NetClient* cli){
         }
         draw_meta_block(v);
         draw_current_session(v);
-        draw_file_tabs(v);
+        draw_file_tabs(v, cli);
         ImGui::EndChild();
     }
     ImGui::End();
@@ -561,6 +969,87 @@ void draw_modal(FFTViewer& v, NetClient* cli){
 
     draw_start_submodal(v, cli);
     draw_end_confirm_submodal(v, cli);
+    draw_delete_confirm_submodal(v, cli);
+    draw_rename_submodal(cli);
+}
+
+// ── NetClient callback hooks (ui.cpp 에서 registration) ─────────────────
+void on_mission_file_list_recv(const PktMissionFileList& page,
+                               const std::vector<MissionFileEntry>& rows){
+    std::lock_guard<std::mutex> lk(g_cf_mtx);
+    // 같은 mission_year/code 의 기존 entries 제거 (refresh 모드)
+    auto same_mission = [&](const CentralFileRow& r){
+        return r.year == g_cf_req_year &&
+               strncmp(r.code, g_cf_req_code.c_str(), 8) == 0 &&
+               (g_cf_req_station[0] == 0 ||
+                strncmp(r.station, g_cf_req_station, 64) == 0);
+    };
+    // 첫 page (g_cf_last_page=false) 시 기존 동일 mission rows 제거
+    if(!g_cf_last_page){
+        g_cf_rows.erase(std::remove_if(g_cf_rows.begin(), g_cf_rows.end(), same_mission),
+                        g_cf_rows.end());
+        g_cf_last_page = true;  // 첫 page 처리 완료 마크 (아래에서 추가)
+    }
+    for(auto& src : rows){
+        CentralFileRow r{};
+        memcpy(r.station, src.station, sizeof(r.station));
+        r.year   = src.year;
+        r.subdir = src.subdir;
+        memcpy(r.code, src.code, sizeof(r.code));
+        memcpy(r.filename, src.filename, sizeof(r.filename));
+        r.size_bytes = src.size_bytes;
+        r.mtime_unix = src.mtime_unix;
+        g_cf_rows.push_back(r);
+    }
+    if(page.is_last_page) g_cf_last_page = true;
+}
+
+void on_mission_file_dl_data_recv(const PktMissionFileDlData& d,
+                                  const uint8_t* chunk, uint32_t chunk_len){
+    std::lock_guard<std::mutex> lk(g_dl_mtx);
+    if(!g_dl_active) return;
+    // is_first 일 때 .info sidecar 작성 + total 기록
+    if(d.is_first){
+        g_dl_total = d.total_bytes;
+        // .info sidecar (info_data가 non-empty 일 때만)
+        bool has_info = (d.info_data[0] != 0);
+        if(has_info){
+            FILE* fi = fopen((g_dl_local_path + ".info").c_str(), "w");
+            if(fi){
+                size_t n = strnlen(d.info_data, sizeof(d.info_data));
+                fwrite(d.info_data, 1, n, fi);
+                fclose(fi);
+            }
+        }
+    }
+    if(g_dl_fp && chunk_len > 0){
+        fseeko(g_dl_fp, (off_t)d.offset, SEEK_SET);
+        size_t w = fwrite(chunk, 1, chunk_len, g_dl_fp);
+        g_dl_written += w;
+    }
+    if(d.is_last){
+        if(g_dl_fp){
+            fflush(g_dl_fp);
+            fclose(g_dl_fp);
+            g_dl_fp = nullptr;
+        }
+        // chunk_bytes=0 + is_first + is_last 면 "not found" 응답 → 빈 파일 unlink
+        if(d.total_bytes == 0 && g_dl_written == 0){
+            unlink(g_dl_local_path.c_str());
+            unlink((g_dl_local_path + ".info").c_str());
+            MissionView::show_toast("Download failed: file not found on Central");
+        } else {
+            char msg[256];
+            snprintf(msg, sizeof(msg), "Downloaded: %s (%.1f MB)",
+                     g_dl_filename.c_str(), g_dl_written / 1048576.0);
+            MissionView::show_toast(msg);
+        }
+        g_dl_active = false;
+        g_dl_filename.clear();
+        g_dl_local_path.clear();
+        g_dl_total = 0;
+        g_dl_written = 0;
+    }
 }
 
 } // namespace MissionView

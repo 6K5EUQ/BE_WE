@@ -170,6 +170,16 @@ public:
     // ── SIGINT Mission System ────────────────────────────────────────────
     std::function<void(const PktMissionSync&)> on_mission_sync;
 
+    // ── Mission File Archive (Central-centric, v3.8.0) ──────────────────
+    // List response: (page header, entries). is_last_page in page header.
+    std::function<void(const PktMissionFileList&,
+                       const std::vector<MissionFileEntry>&)> on_mission_file_list;
+    // Download chunk: header + raw bytes (chunk_bytes). Caller buffers / writes to downloads/.
+    std::function<void(const PktMissionFileDlData&,
+                       const uint8_t* /*chunk*/, uint32_t /*chunk_len*/)> on_mission_file_dl_data;
+    // PUSH ACK (HOST-side only; JOIN ignores).
+    std::function<void(const PktMissionFilePushAck&)> on_mission_file_push_ack;
+
     // 콜백 등록 전에 도착한 BAND_PLAN_SYNC / BAND_CAT_SYNC 보관 (race 방지)
     std::mutex                     band_plan_pending_mtx;
     std::unique_ptr<PktBandPlan>   band_plan_pending;
@@ -321,7 +331,26 @@ public:
     // ── SIGINT Mission ──────────────────────────────────────────────────
     bool send_mission_start();
     bool send_mission_end();
+    bool send_mission_delete(int year, const char* code);
     bool send_mission_list_req();
+
+    // ── Mission File Archive ────────────────────────────────────────────
+    // HOST → Central: 파일 transfer 시작/청크. info_data는 .info 사이드카에 그대로 저장.
+    bool send_mission_file_push_meta(const MissionFileKey& key,
+                                     uint64_t total_bytes,
+                                     uint8_t transfer_id,
+                                     uint8_t mode,
+                                     const char* info_data);
+    bool send_mission_file_push_data(uint8_t transfer_id,
+                                     uint64_t offset,
+                                     const uint8_t* data, uint32_t chunk_bytes,
+                                     bool is_last);
+    // any → Central: 미션 단위 파일 브라우저용. station/code/year/subdir = 0/"" → wildcard.
+    bool send_mission_file_list_req(const char* station, uint16_t year,
+                                    const char* code, uint8_t subdir);
+    bool send_mission_file_dl_req(const MissionFileKey& key);
+    bool send_mission_file_delete(const MissionFileKey& key);
+    bool send_mission_file_rename(const MissionFileKey& key, const char* new_filename);
 
     // DB list received from Central
     std::function<void(const std::vector<DbFileEntry>&)> on_db_list;

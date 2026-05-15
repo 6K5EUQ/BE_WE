@@ -535,6 +535,21 @@ void CentralClient::mux_loop(int central_fd,
                 if(btype == 0x31){  // BAND_PLAN_SYNC: host owns it; ignore any incoming.
                     continue;
                 }
+                if(btype == 0x51){  // MISSION_FILE_LIST: Central → HOST
+                    if(on_central_mf_list_)
+                        on_central_mf_list_(buf.data(), mux.len);
+                    continue;
+                }
+                if(btype == 0x53){  // MISSION_FILE_DL_DATA: Central → HOST
+                    if(on_central_mf_dl_data_)
+                        on_central_mf_dl_data_(buf.data(), mux.len);
+                    continue;
+                }
+                if(btype == 0x56){  // MISSION_FILE_PUSH_ACK: Central → HOST
+                    if(on_central_mf_push_ack_)
+                        on_central_mf_push_ack_(buf.data(), mux.len);
+                    continue;
+                }
             }
 
             // 중앙서버→HOST CHAT: relay 루프 방지를 위해 socketpair 전달 않음

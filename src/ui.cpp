@@ -2953,6 +2953,16 @@ void run_streaming_viewer(){
             }
         };
 
+        // Central archive 파일 목록 / 다운로드 청크 → mission_view 캐시에 반영
+        cli->on_mission_file_list = [&](const PktMissionFileList& page,
+                                        const std::vector<MissionFileEntry>& rows){
+            MissionView::on_mission_file_list_recv(page, rows);
+        };
+        cli->on_mission_file_dl_data = [&](const PktMissionFileDlData& d,
+                                           const uint8_t* chunk, uint32_t chunk_len){
+            MissionView::on_mission_file_dl_data_recv(d, chunk, chunk_len);
+        };
+
         // 미션 스냅샷 수신 → JOIN 로컬 mission_* 상태 재구성
         cli->on_mission_sync = [&](const PktMissionSync& sync){
             std::lock_guard<std::mutex> lk(v.mission_mtx);
@@ -3249,7 +3259,11 @@ void run_streaming_viewer(){
                                const char* filename, uint64_t filesize,
                                const uint8_t* data, uint32_t data_len){
             std::string fn(filename && filename[0] ? filename : "");
-            std::string save_dir = BEWEPaths::record_iq_dir();
+            // Phase 4 (v3.8.0): selection IQ stream → unified downloads dir
+            // (HOST/Central에 영구 저장 없음 — HOST는 stream 완료 후 temp 파일 삭제)
+            std::string save_dir = BEWEPaths::downloads_dir();
+            mkdir(BEWEPaths::data_dir().c_str(), 0755);
+            mkdir(save_dir.c_str(), 0755);
             std::string save_path = save_dir + "/" + fn;
 
             if(seq == 0){
@@ -4377,6 +4391,11 @@ void run_streaming_viewer(){
                                 };
                                 v.net_srv->cb.on_mission_end = [&v](int, const char*){
                                     v.mission_end();
+                                };
+                                v.net_srv->cb.on_mission_delete = [&v](int, const char*,
+                                                                        const PktMissionDelete& d){
+                                    char code[9] = {}; memcpy(code, d.code, 8);
+                                    v.mission_delete((int)d.year, code);
                                 };
                                 // MISSION_UPDATE는 자동 캡처 모델에서 의미 없음 — 콜백 미등록.
 
@@ -9258,6 +9277,11 @@ void run_streaming_viewer(){
                 if(bar_try_toggle(4, v.sig_lib_panel_open) && v.sig_lib_panel_open){
                     v.sig_lib_dirty = true;
                 }
+            }
+            // MSN — 미션 모달 토글 (M키와 동일).
+            // 켜져있으면 초록(state=1), 꺼져있으면 빨강(state=0).
+            if(click_ind_left(lx, "MSN", v.mission_modal_open ? 1 : 0)){
+                bar_try_toggle(5, v.mission_modal_open);
             }
 
             // 오른쪽>왼쪽: TM IQ AUD WF FFT LINK SDR

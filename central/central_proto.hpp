@@ -167,6 +167,17 @@ static constexpr uint8_t BEWE_TYPE_MISSION_START    = 0x49;
 static constexpr uint8_t BEWE_TYPE_MISSION_END      = 0x4A;
 static constexpr uint8_t BEWE_TYPE_MISSION_UPDATE   = 0x4B;
 static constexpr uint8_t BEWE_TYPE_MISSION_LIST_REQ = 0x4C;
+static constexpr uint8_t BEWE_TYPE_MISSION_DELETE   = 0x4D;
+// Mission File Archive (Central-centric, station-keyed)
+static constexpr uint8_t BEWE_TYPE_MISSION_FILE_PUSH_META = 0x4E;
+static constexpr uint8_t BEWE_TYPE_MISSION_FILE_PUSH_DATA = 0x4F;
+static constexpr uint8_t BEWE_TYPE_MISSION_FILE_LIST_REQ  = 0x50;
+static constexpr uint8_t BEWE_TYPE_MISSION_FILE_LIST      = 0x51;
+static constexpr uint8_t BEWE_TYPE_MISSION_FILE_DL_REQ    = 0x52;
+static constexpr uint8_t BEWE_TYPE_MISSION_FILE_DL_DATA   = 0x53;
+static constexpr uint8_t BEWE_TYPE_MISSION_FILE_DELETE    = 0x54;
+static constexpr uint8_t BEWE_TYPE_MISSION_FILE_RENAME    = 0x55;
+static constexpr uint8_t BEWE_TYPE_MISSION_FILE_PUSH_ACK  = 0x56;
 
 static constexpr uint8_t BEWE_TYPE_CHAT     = 0x07;
 

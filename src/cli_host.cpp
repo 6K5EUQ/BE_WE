@@ -7,6 +7,7 @@
 #include "login.hpp"
 #include "bewe_paths.hpp"
 #include "central_client.hpp"
+#include "mission_push.hpp"
 #include "net_protocol.hpp"
 #include "host_band_plan.hpp"
 #include "host_band_categories.hpp"
@@ -1273,6 +1274,12 @@ void run_cli_host(){
                     (void)op_index; (void)who;
                     v.mission_end();
                 };
+                srv->cb.on_mission_delete = [&v](int op_index, const char* who,
+                                                  const PktMissionDelete& d){
+                    (void)op_index; (void)who;
+                    char code[9] = {}; memcpy(code, d.code, 8);
+                    v.mission_delete((int)d.year, code);
+                };
                 // MISSION_UPDATE는 자동 캡처 모델에서 의미 없음 — 콜백 등록 안 함.
 
                 // 새 JOIN이 Central을 통해 들어오면 cached band plan + category 즉시 푸시
@@ -1349,6 +1356,11 @@ void run_cli_host(){
                     [&v](int local_fd){ if(v.net_srv) v.net_srv->inject_fd(local_fd); },
                     [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; },
                     *reconnect_fn);
+
+                // Mission File Push worker (Phase 2, v3.8.0):
+                // 미션 dir 안 닫힌 IQ/audio/hist 파일을 Central archive로 업로드,
+                // ACK 받으면 로컬 unlink. central_cli mux가 동작해야 ACK 수신 가능.
+                MissionPush::start(&v, &central_cli);
                 central_cli.set_state_fn([&v](CentralHostStateFull& st){
                     const char* lid = login_get_id();
                     if(lid) strncpy(st.operator_login, lid, sizeof(st.operator_login)-1);
@@ -1956,6 +1968,7 @@ void run_cli_host(){
     // 1) Background workers 즉시 중단 (sleep_for 안에 있어도 1초 내 깨어남)
     Mission::stop_utc0_worker();
     LongWaterfall::stop_worker();
+    MissionPush::stop();
 
     // 2) Central 쪽을 먼저 완전히 끊어서 auto-reconnect 스레드가 더 이상
     //    mux_adapter를 살리지 못하게 함 (g_shutdown 체크로 reconnect도 자가 종료)

@@ -113,6 +113,29 @@ static inline std::string hist_live_dir() { return hist_dir()+"/live"; }
 // (legacy 호환: 이전 코드의 long_waterfall_dir = hist_host_dir)
 static inline std::string long_waterfall_dir(){ return hist_host_dir(); }
 
+// ── Downloads (JOIN side: Central archive에서 받은 파일 평탄 저장) ──────
+// 모든 다운로드는 station/year/code 폴더 안 만들고 한 곳에 모음.
+static inline std::string downloads_dir(){ return data_dir()+"/downloads"; }
+
+// ── Central archive (Central server 머신 측: station-keyed mission archive) ──
+// $HOME/BE_WE/DataBase/missions/<station>/<year>/<code>/{iq,audio,hist}/
+static inline std::string central_missions_root(){ return database_dir()+"/missions"; }
+static inline std::string central_mission_station_dir(const std::string& station){
+    return central_missions_root()+"/"+station;
+}
+static inline std::string central_mission_year_dir(const std::string& station, int year){
+    char b[16]; snprintf(b, sizeof(b), "/%04d", year);
+    return central_mission_station_dir(station)+b;
+}
+static inline std::string central_mission_code_dir(const std::string& station, int year,
+                                                   const std::string& code){
+    return central_mission_year_dir(station,year)+"/"+code;
+}
+static inline std::string central_mission_sub_dir(const std::string& station, int year,
+                                                  const std::string& code, const char* sub){
+    return central_mission_code_dir(station,year,code)+"/"+sub;
+}
+
 // ── SIGINT Missions ──────────────────────────────────────────────────────
 // recordings/missions/<YYYY>/<code>/{iq,audio,hist}/  + mission.info
 // 활성 미션이 있을 때만 신규 녹음이 이 디렉토리로 라우팅됨.
@@ -153,6 +176,7 @@ static inline void ensure_dirs(){
     mk(time_temp_dir());
     mk(hist_dir()); mk(hist_host_dir()); mk(hist_join_dir()); mk(hist_live_dir());
     mk(missions_root());
+    mk(downloads_dir());
 }
 
 } // namespace BEWEPaths

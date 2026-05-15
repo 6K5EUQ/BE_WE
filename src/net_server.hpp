@@ -230,6 +230,8 @@ struct ServerCallbacks {
     // FFTViewer.mission_start/end/update를 호출.
     std::function<void(int /*op_index*/, const char* /*who*/)> on_mission_start;
     std::function<void(int /*op_index*/, const char* /*who*/)> on_mission_end;
+    std::function<void(int /*op_index*/, const char* /*who*/,
+                       const PktMissionDelete&)> on_mission_delete;
 };
 
 // ── NetServer ─────────────────────────────────────────────────────────────

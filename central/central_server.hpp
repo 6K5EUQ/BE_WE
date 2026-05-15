@@ -13,6 +13,36 @@
 #include <condition_variable>
 #include <unordered_map>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
+
+// ── Mission File Archive (Phase 1) ─────────────────────────────────────────
+// In-flight HOST → Central file transfer state (per transfer_id).
+struct MissionFileTransfer {
+    MissionFileKey key{};
+    FILE*       fp = nullptr;
+    uint64_t    expected_bytes = 0;  // 0 = streaming (size unknown)
+    uint64_t    written_bytes  = 0;  // monotonically increasing
+    uint64_t    high_water     = 0;  // max(offset + chunk) seen
+    std::string archive_path;        // absolute path on Central disk
+    std::string info_data;           // captured at PUSH_META, written as .info sidecar at close
+};
+
+// In-flight Central → JOIN download (server-side, just temporary streaming state).
+// (Most state lives on the JOIN side; Central just sends chunks.)
+
+// Live HIST stream tap (one per active LWF file per HOST room).
+struct MissionHistStream {
+    std::string archive_path;
+    FILE*       fp = nullptr;
+    // captured at LWF_LIVE_START
+    char        station[64] = {};
+    uint16_t    year = 0;
+    char        code[8] = {};
+    uint32_t    fft_size = 0;       // row size in bytes (each row = fft_size float? NO — row is uint8 per col)
+                                    // 실제는 행 크기 = fft_size (8-bit packed dB). open_new_file에서 row_bytes = fft_size.
+    uint32_t    rows_written = 0;
+};
 
 struct JoinEntry {
     uint16_t          conn_id = 0;
@@ -257,7 +287,38 @@ struct HostRoom {
     uint8_t                   next_op_idx = 1;
     char                      host_name[32] = {};
     uint8_t                   host_tier = 1;
+
+    // ── Mission File Archive (Phase 1, v3.8.0) ──────────────────────────────
+    // HOST→Central 파일 push 진행 중인 transfer 들 (transfer_id → state).
+    // host_mux_loop 단일 스레드만 접근 → mutex 불필요.
+    std::unordered_map<uint8_t, MissionFileTransfer> mission_xfers;
+
+    // LWF live stream tap → HIST archive 파일.
+    // host_mux_loop가 LWF_LIVE_START에서 open, LWF_LIVE_ROW에서 append, LWF_LIVE_STOP에서 close.
+    // key = filename (PktLwfLiveStart.filename) — basename only.
+    std::unordered_map<std::string, MissionHistStream> hist_streams;
+
+    // Active mission shadow (from MISSION_SYNC.active). LWF tap에서 archive 경로 결정용.
+    bool     active_mission_valid = false;
+    uint16_t active_mission_year  = 0;
+    char     active_mission_code[8]    = {};
+    char     active_mission_station[64] = {};
 };
+
+// HOST fd에 MUX 패킷 enqueue (non-blocking; host_mux_loop이 flush).
+// inline: central_server.cpp + central_mission_archive.cpp 양쪽 TU에서 사용.
+inline void enqueue_host_send(std::shared_ptr<HostRoom>& room, uint16_t conn_id,
+                              CentralMuxType type, const void* data, uint32_t len){
+    CentralMuxHdr mh{};
+    mh.conn_id = conn_id;
+    mh.type = static_cast<uint8_t>(type);
+    mh.len = len;
+    std::vector<uint8_t> pkt(CENTRAL_MUX_HDR_SIZE + len);
+    memcpy(pkt.data(), &mh, CENTRAL_MUX_HDR_SIZE);
+    if(len > 0 && data) memcpy(pkt.data() + CENTRAL_MUX_HDR_SIZE, data, len);
+    std::lock_guard<std::mutex> lk(room->host_send_mtx);
+    room->host_send_queue.push_back(std::move(pkt));
+}
 
 class CentralServer {
 public:
@@ -355,4 +416,49 @@ private:
     // skip_host_room: 소스 방의 HOST는 제외 (이미 알고 있음)
     void broadcast_global_chat(const uint8_t* bewe_pkt, size_t bewe_len,
                                HostRoom* skip_host_room = nullptr);
+
+    // ── Mission File Archive (Phase 1, v3.8.0) ──────────────────────────────
+    // Archive root: ~/BE_WE/DataBase/missions/  (Central 머신의 $HOME/BE_WE/...)
+    std::string archive_root() const;
+    std::string archive_dir(const char* station, uint16_t year,
+                            const char* code, uint8_t subdir) const;
+    // station/year/code 디렉토리 통째 삭제 (MISSION_DELETE intercept에서 호출).
+    void archive_wipe_mission(const char* station, uint16_t year, const char* code);
+
+    // HOST→Central PUSH 처리 (host_mux_loop에서 호출)
+    void handle_mission_file_push_meta(std::shared_ptr<HostRoom> room,
+                                       const uint8_t* payload, size_t plen);
+    void handle_mission_file_push_data(std::shared_ptr<HostRoom> room,
+                                       const uint8_t* payload, size_t plen);
+    // PUSH 완료 ACK 전송 (HOST에게)
+    void send_push_ack(std::shared_ptr<HostRoom> room,
+                       const MissionFileKey& key, uint8_t transfer_id,
+                       uint8_t status, uint64_t total_bytes, const char* err);
+
+    // any → Central: LIST/DL/DELETE/RENAME (intercept_join_cmd에서 호출 OR host_mux_loop)
+    // requester == nullptr 이면 HOST가 요청한 것 (응답은 host_send_queue로).
+    void handle_mission_file_list_req(std::shared_ptr<HostRoom> room,
+                                      std::shared_ptr<JoinEntry> requester,
+                                      const uint8_t* payload, size_t plen);
+    void handle_mission_file_dl_req(std::shared_ptr<HostRoom> room,
+                                    std::shared_ptr<JoinEntry> requester,
+                                    const uint8_t* payload, size_t plen);
+    void handle_mission_file_delete(std::shared_ptr<HostRoom> room,
+                                    std::shared_ptr<JoinEntry> requester,
+                                    const uint8_t* payload, size_t plen);
+    void handle_mission_file_rename(std::shared_ptr<HostRoom> room,
+                                    std::shared_ptr<JoinEntry> requester,
+                                    const uint8_t* payload, size_t plen);
+
+    // LWF live stream → HIST archive 탭 (host_mux_loop의 LWF_LIVE_* 분기에서 호출)
+    void archive_hist_on_live_start(std::shared_ptr<HostRoom> room,
+                                    const PktLwfLiveStart& ls);
+    void archive_hist_on_live_row  (std::shared_ptr<HostRoom> room,
+                                    const PktLwfLiveRowHdr& hdr,
+                                    const uint8_t* row, uint32_t row_bytes);
+    void archive_hist_on_live_stop (std::shared_ptr<HostRoom> room,
+                                    const PktLwfLiveStop& stop);
+    // MISSION_SYNC.active 변동 시 HostRoom shadow 갱신 (cached_mission_sync 업데이트 직후 호출)
+    void update_active_mission_shadow(std::shared_ptr<HostRoom> room,
+                                      const uint8_t* bewe_pkt, size_t bewe_len);
 };

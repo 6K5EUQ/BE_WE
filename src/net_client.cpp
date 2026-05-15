@@ -661,6 +661,31 @@ void NetClient::handle_packet(PacketType type,
         break;
     }
 
+    case PacketType::MISSION_FILE_LIST: {
+        if(len < sizeof(PktMissionFileList)) break;
+        auto* p = reinterpret_cast<const PktMissionFileList*>(payload);
+        size_t cnt = p->count;
+        if(cnt > MAX_MISSION_FILES_PER_PKT) cnt = MAX_MISSION_FILES_PER_PKT;
+        std::vector<MissionFileEntry> rows(p->entries, p->entries + cnt);
+        if(on_mission_file_list) on_mission_file_list(*p, rows);
+        break;
+    }
+    case PacketType::MISSION_FILE_DL_DATA: {
+        if(len < sizeof(PktMissionFileDlData)) break;
+        auto* p = reinterpret_cast<const PktMissionFileDlData*>(payload);
+        uint32_t cb = p->chunk_bytes;
+        if(len < sizeof(PktMissionFileDlData) + cb) break;
+        const uint8_t* raw = payload + sizeof(PktMissionFileDlData);
+        if(on_mission_file_dl_data) on_mission_file_dl_data(*p, raw, cb);
+        break;
+    }
+    case PacketType::MISSION_FILE_PUSH_ACK: {
+        if(len < sizeof(PktMissionFilePushAck)) break;
+        auto* p = reinterpret_cast<const PktMissionFilePushAck*>(payload);
+        if(on_mission_file_push_ack) on_mission_file_push_ack(*p);
+        break;
+    }
+
     default: break;
     }
 }
@@ -952,9 +977,83 @@ bool NetClient::send_mission_end(){
     e.op_index = 0;
     return raw_send(PacketType::MISSION_END, &e, sizeof(e));
 }
+bool NetClient::send_mission_delete(int year, const char* code){
+    PktMissionDelete d{};
+    d.year = (uint16_t)year;
+    if(code) strncpy(d.code, code, sizeof(d.code)-1);
+    d.op_index = 0;   // central이 채움
+    return raw_send(PacketType::MISSION_DELETE, &d, sizeof(d));
+}
 bool NetClient::send_mission_list_req(){
     PktMissionListReq r{};
     return raw_send(PacketType::MISSION_LIST_REQ, &r, sizeof(r));
+}
+
+// ── Mission File Archive ────────────────────────────────────────────────
+bool NetClient::send_mission_file_push_meta(const MissionFileKey& key,
+                                            uint64_t total_bytes,
+                                            uint8_t transfer_id,
+                                            uint8_t mode,
+                                            const char* info_data){
+    PktMissionFilePushMeta m{};
+    m.key = key;
+    m.total_bytes = total_bytes;
+    m.transfer_id = transfer_id;
+    m.mode = mode;
+    if(info_data){
+        size_t n = strnlen(info_data, sizeof(m.info_data) - 1);
+        memcpy(m.info_data, info_data, n);
+    }
+    return raw_send(PacketType::MISSION_FILE_PUSH_META, &m, sizeof(m));
+}
+
+bool NetClient::send_mission_file_push_data(uint8_t transfer_id,
+                                            uint64_t offset,
+                                            const uint8_t* data, uint32_t chunk_bytes,
+                                            bool is_last){
+    if(chunk_bytes > 4*1024*1024) return false;  // safety cap (relay 4MB limit)
+    std::vector<uint8_t> buf(sizeof(PktMissionFilePushData) + chunk_bytes);
+    auto* d = reinterpret_cast<PktMissionFilePushData*>(buf.data());
+    memset(d, 0, sizeof(PktMissionFilePushData));
+    d->transfer_id = transfer_id;
+    d->is_last = is_last ? 1 : 0;
+    d->offset = offset;
+    d->chunk_bytes = chunk_bytes;
+    if(chunk_bytes > 0 && data)
+        memcpy(buf.data() + sizeof(PktMissionFilePushData), data, chunk_bytes);
+    return raw_send(PacketType::MISSION_FILE_PUSH_DATA, buf.data(), (uint32_t)buf.size());
+}
+
+bool NetClient::send_mission_file_list_req(const char* station, uint16_t year,
+                                           const char* code, uint8_t subdir){
+    PktMissionFileListReq r{};
+    if(station){ strncpy(r.station, station, sizeof(r.station) - 1); }
+    r.year = year;
+    if(code){ strncpy(r.code, code, sizeof(r.code) - 1); }
+    r.subdir = subdir;
+    return raw_send(PacketType::MISSION_FILE_LIST_REQ, &r, sizeof(r));
+}
+
+bool NetClient::send_mission_file_dl_req(const MissionFileKey& key){
+    PktMissionFileDlReq r{};
+    r.key = key;
+    return raw_send(PacketType::MISSION_FILE_DL_REQ, &r, sizeof(r));
+}
+
+bool NetClient::send_mission_file_delete(const MissionFileKey& key){
+    PktMissionFileDelete r{};
+    r.key = key;
+    return raw_send(PacketType::MISSION_FILE_DELETE, &r, sizeof(r));
+}
+
+bool NetClient::send_mission_file_rename(const MissionFileKey& key,
+                                         const char* new_filename){
+    PktMissionFileRename r{};
+    r.key = key;
+    if(new_filename){
+        strncpy(r.new_filename, new_filename, sizeof(r.new_filename) - 1);
+    }
+    return raw_send(PacketType::MISSION_FILE_RENAME, &r, sizeof(r));
 }
 bool NetClient::cmd_db_save(const char* filepath, const char* operator_name){
     FILE* fp = fopen(filepath, "rb");

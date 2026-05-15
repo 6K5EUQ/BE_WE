@@ -48,8 +48,15 @@ void stop_utc0_worker();
 
 // ── GUI viewer (mission_view.cpp; headless 빌드 제외) ──────────────────────
 class NetClient;
+#include "net_protocol.hpp"   // PktMissionFileList / PktMissionFileDlData / MissionFileEntry
+#include <vector>
 namespace MissionView {
     void draw_modal(FFTViewer& v, NetClient* cli);  // v.mission_modal_open일 때 매 프레임 호출
     void show_toast(const char* msg);               // IDLE 차단 등 일시 알림
     void draw_toast();                              // 매 프레임 호출 — 만료 안 됐으면 그림
+    // NetClient 콜백 — ui.cpp 에서 cli->on_mission_file_list/dl_data 에 등록.
+    void on_mission_file_list_recv(const PktMissionFileList& page,
+                                   const std::vector<MissionFileEntry>& rows);
+    void on_mission_file_dl_data_recv(const PktMissionFileDlData& d,
+                                      const uint8_t* chunk, uint32_t chunk_len);
 }

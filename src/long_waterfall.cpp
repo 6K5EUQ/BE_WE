@@ -2,6 +2,7 @@
 #include "fft_viewer.hpp"
 #include "bewe_paths.hpp"
 #include "net_protocol.hpp"
+#include "mission_push.hpp"
 
 #include <atomic>
 #include <thread>
@@ -75,6 +76,7 @@ void close_file_locked(){
 
     if(g_fp){ fflush(g_fp); fclose(g_fp); g_fp = nullptr; }
     // Finalize: -LIVE → -<HHMM>Z based on close time.
+    std::string finalized_path;
     {
         std::lock_guard<std::mutex> lk(g_path_mtx);
         if(!g_cur_path.empty()){
@@ -87,16 +89,25 @@ void close_file_locked(){
                 std::string final_full = dir + fin;
                 if(rename(g_cur_path.c_str(), final_full.c_str()) == 0){
                     printf("[LongWaterfall] rotate finalize: %s → %s\n", base.c_str(), fin.c_str());
+                    finalized_path = final_full;
                 } else {
                     fprintf(stderr, "[LongWaterfall] rename failed: %s → %s errno=%d\n",
                             base.c_str(), fin.c_str(), errno);
+                    finalized_path = g_cur_path;  // best-effort: original path
                 }
+            } else {
+                finalized_path = g_cur_path;
             }
         }
         g_cur_path.clear();
     }
     g_acc_db.clear();
     g_acc_count = 0;
+    // Mission File Push (Phase 2): HIST 파일이 미션 dir 안이면 Central archive로 업로드 후 unlink.
+    // path 형식이 ~/BE_WE/recordings/missions/<year>/<code>/hist/... 일 때만 enqueue가 처리.
+    if(!finalized_path.empty()){
+        MissionPush::enqueue(finalized_path, MFS_HIST);
+    }
 }
 
 // Returns true if filename ends with .bewehist (new) or .bewewf (legacy).

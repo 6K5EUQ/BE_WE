@@ -29,6 +29,7 @@ if(CLI)
         src/iq_record.cpp
         src/sched_record.cpp
         src/mission.cpp
+        src/mission_push.cpp
         src/audio.cpp
         src/audio_playback.cpp
         src/timemachine.cpp
@@ -105,6 +106,7 @@ else()
         src/iq_record.cpp
         src/sched_record.cpp
         src/mission.cpp
+        src/mission_push.cpp
         src/audio.cpp
         src/audio_playback.cpp
         src/ui.cpp

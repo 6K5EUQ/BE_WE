@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(bewe_central
     central_main.cpp
     central_server.cpp
+    central_mission_archive.cpp
     emitter_db.cpp
     info_parse.cpp
 )
