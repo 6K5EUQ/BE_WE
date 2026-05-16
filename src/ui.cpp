@@ -6497,10 +6497,11 @@ void run_streaming_viewer(){
                         for(auto& p : tmp){
                             char buf[32];
                             double sz=(double)p.sz;
-                            if(sz>=1e9)      snprintf(buf,sizeof(buf),"[%.1fG]",sz/1e9);
-                            else if(sz>=1e6) snprintf(buf,sizeof(buf),"[%.1fM]",sz/1e6);
-                            else if(sz>=1e3) snprintf(buf,sizeof(buf),"[%.1fK]",sz/1e3);
-                            else             snprintf(buf,sizeof(buf),"[%dB]",(int)sz);
+                            // 통일 형식 (IQ/DEMOD 영역 동일): "%.1f MB"
+                            if(sz>=1024.0*1024.0*1024.0)      snprintf(buf,sizeof(buf),"%.1f GB",sz/(1024.0*1024.0*1024.0));
+                            else if(sz>=1024.0*1024.0)         snprintf(buf,sizeof(buf),"%.1f MB",sz/(1024.0*1024.0));
+                            else if(sz>=1024.0)                snprintf(buf,sizeof(buf),"%.1f KB",sz/1024.0);
+                            else                                snprintf(buf,sizeof(buf),"%d B",(int)sz);
                             szc[p.name] = buf;
                             out.push_back(std::move(p.name));
                         }
@@ -7106,15 +7107,28 @@ void run_streaming_viewer(){
                                                 else
                                                     ImGui::Selectable(("##rdone"+std::to_string(ri)).c_str(), false, 0, ImVec2(0,0));
                                                 ImGui::SameLine(0,0);
-                                                if(re.xfer_total > 0)
-                                                    ImGui::Text("%s  (%.1f MB)", re.filename.c_str(), re.xfer_total/1048576.0);
-                                                else {
-                                                    auto it_rz2=fsz_cache.find(re.filename);
-                                                    const std::string szstr2=(it_rz2!=fsz_cache.end())?it_rz2->second:fmt_filesize("",re.path);
-                                                    if(!szstr2.empty())
-                                                        ImGui::Text("%s  %s", re.filename.c_str(), szstr2.c_str());
-                                                    else
-                                                        ImGui::Text("%s", re.filename.c_str());
+                                                {
+                                                    // size 통일 표시 (우측정렬 회색).
+                                                    std::string sz_s;
+                                                    if(re.xfer_total > 0){
+                                                        char b[32];
+                                                        double sz = (double)re.xfer_total;
+                                                        if(sz >= 1024.0*1024.0*1024.0) snprintf(b,sizeof(b),"%.1f GB", sz/(1024.0*1024.0*1024.0));
+                                                        else if(sz >= 1024.0*1024.0)   snprintf(b,sizeof(b),"%.1f MB", sz/(1024.0*1024.0));
+                                                        else if(sz >= 1024.0)          snprintf(b,sizeof(b),"%.1f KB", sz/1024.0);
+                                                        else                            snprintf(b,sizeof(b),"%d B", (int)sz);
+                                                        sz_s = b;
+                                                    } else {
+                                                        auto it_rz2=fsz_cache.find(re.filename);
+                                                        sz_s = (it_rz2!=fsz_cache.end()) ? it_rz2->second : fmt_filesize("",re.path);
+                                                    }
+                                                    ImGui::Text("%s", re.filename.c_str());
+                                                    if(!sz_s.empty()){
+                                                        float pw = ImGui::GetContentRegionAvail().x;
+                                                        float tw = ImGui::CalcTextSize(sz_s.c_str()).x;
+                                                        ImGui::SameLine(ImGui::GetCursorPosX() + pw - tw - 4.f);
+                                                        ImGui::TextDisabled("%s", sz_s.c_str());
+                                                    }
                                                 }
                                                 if(ImGui::IsItemHovered()){
                                                     if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
@@ -7150,7 +7164,7 @@ void run_streaming_viewer(){
                                 }
 
                                 if(has_audio){
-                                    ImGui::TextDisabled("  Audio");
+                                    ImGui::TextDisabled("  DEMOD");
                                     ImGui::Indent(6.f);
                                     // Pass 1: [REC] 항목 (녹음 중) - 주파수순 정렬
                                     std::vector<int> aud_rec_order;
@@ -7299,7 +7313,7 @@ void run_streaming_viewer(){
                             }
                         }
                         if(!audio_files.empty()){
-                            ImGui::TextDisabled("  Audio");
+                            ImGui::TextDisabled("  DEMOD");
                             for(int fi=0;fi<(int)audio_files.size();fi++){
                                 ImGui::PushID(id_base+500+fi);
                                 std::string fp = audio_dir+"/"+audio_files[fi];
@@ -7390,9 +7404,9 @@ void run_streaming_viewer(){
                                     if(jse.size_bytes > 0){
                                         char szb[32];
                                         if(jse.size_bytes >= 1024*1024)
-                                            snprintf(szb,sizeof(szb)," [%.1fM]",(double)jse.size_bytes/1048576.0);
+                                            snprintf(szb,sizeof(szb),"  %.1f MB",(double)jse.size_bytes/(1024.0*1024.0));
                                         else
-                                            snprintf(szb,sizeof(szb)," [%.1fK]",(double)jse.size_bytes/1024.0);
+                                            snprintf(szb,sizeof(szb),"  %.1f KB",(double)jse.size_bytes/1024.0);
                                         sdisplay += szb;
                                     }
                                     ImGui::PushStyleColor(ImGuiCol_Text, col);
@@ -7442,7 +7456,7 @@ void run_streaming_viewer(){
                                     for(int si : jiq_idx) draw_join_pub_file(si);
                                 }
                                 if(!jaudio_idx.empty()){
-                                    ImGui::TextDisabled("  Audio");
+                                    ImGui::TextDisabled("  DEMOD");
                                     for(int si : jaudio_idx) draw_join_pub_file(si);
                                 }
                                 if(join_share_files.empty()) ImGui::TextDisabled("  (empty)");
@@ -7505,7 +7519,7 @@ void run_streaming_viewer(){
                                     draw_pub_files(pub_iq_files, BEWEPaths::public_iq_dir(), 21000);
                                 }
                                 if(!pub_audio_files.empty()){
-                                    ImGui::TextDisabled("  Audio");
+                                    ImGui::TextDisabled("  DEMOD");
                                     draw_pub_files(pub_audio_files, BEWEPaths::public_audio_dir(), 21500);
                                 }
                                 if(pub_iq_files.empty() && pub_audio_files.empty())
