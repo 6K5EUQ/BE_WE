@@ -25,15 +25,31 @@ bool NetClient::connect_fd(int fd, const char* id, const char* pw, uint8_t tier)
 
     // socketpair는 로컬 IPC — 타임아웃 불필요 (타임아웃 설정 시 EAGAIN으로 오작동)
 
+    // id 가 비어있으면 USER env → hostname → "guest" 폴백.
+    // (Central / HOST 의 op_list 에 빈 이름이 들어가는 증상 방지)
+    char id_buf[32] = {};
+    auto cpy = [&](const char* src) -> bool {
+        if(!src || !src[0]) return false;
+        strncpy(id_buf, src, sizeof(id_buf) - 1);
+        return id_buf[0] != 0;
+    };
+    if(!cpy(id))
+        if(!cpy(getenv("USER")))
+            if(!cpy(getenv("LOGNAME"))){
+                char h[64] = {};
+                if(gethostname(h, sizeof(h)-1) == 0) cpy(h);
+                else cpy("guest");
+            }
+    // strncpy 도 사용자 id 가 char[32] 꽉 차면 null 안 들어감 → memset 으로 보장
     PktAuthReq req{};
-    strncpy(req.id, id, 31);
-    strncpy(req.pw, pw, 63);
+    strncpy(req.id, id_buf, sizeof(req.id) - 1);
+    strncpy(req.pw, pw ? pw : "", sizeof(req.pw) - 1);
     req.tier = tier;
     if(!raw_send(PacketType::AUTH_REQ, &req, sizeof(req))){
         fd_=-1; return false;
     }
 
-    bewe_log_push(2,"[NetClient] connect_fd: sent AUTH_REQ id='%s' tier=%u fd=%d\n", id, tier, fd);
+    bewe_log_push(2,"[NetClient] connect_fd: sent AUTH_REQ id='%s' tier=%u fd=%d\n", id_buf, tier, fd);
 
     // AUTH_ACK가 올 때까지 앞에 도착한 다른 패킷은 드레인 (최대 32개)
     bewe_log_push(2,"[NetClient] connect_fd: waiting for AUTH_ACK...\n");
@@ -106,7 +122,8 @@ bool NetClient::connect_fd(int fd, const char* id, const char* pw, uint8_t tier)
 
     my_op_index = ack->op_index;
     my_tier     = tier;
-    strncpy(my_name, id, 31);
+    // 폴백 처리된 id_buf 로 my_name 채움 (chat from 필드용)
+    strncpy(my_name, id_buf, sizeof(my_name) - 1);
     connected_.store(true);
 
     bewe_log_push(2,"[NetClient] relay connected as op %d '%s' (Tier%d) fd=%d\n",

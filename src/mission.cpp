@@ -243,16 +243,27 @@ bool FFTViewer::mission_end(){
 }
 
 void FFTViewer::mission_rollover_utc0(){
-    char prev_started_by[32];
-    uint8_t prev_op;
+    // 24/7 운용: KST 0시마다 자동 rollover.
+    // - ACTIVE 였으면: 종료 후 새 미션 자동 start (기존 동작).
+    // - IDLE 이었으면: 자동으로 새 미션 start ("auto" 운영자 표기).
+    char prev_started_by[32] = {};
+    uint8_t prev_op = 0;
+    bool was_active = false;
     {
         std::lock_guard<std::mutex> lk(mission_mtx);
-        if(mission_state != Mission::State::ACTIVE) return;
-        memcpy(prev_started_by, mission_started_by, sizeof(prev_started_by));
-        prev_op = mission_op_index;
+        if(mission_state == Mission::State::ACTIVE){
+            was_active = true;
+            memcpy(prev_started_by, mission_started_by, sizeof(prev_started_by));
+            prev_op = mission_op_index;
+        }
     }
-    mission_end();
-    mission_start(prev_started_by, prev_op, /*rollover=*/true);
+    if(was_active){
+        mission_end();
+        mission_start(prev_started_by, prev_op, /*rollover=*/true);
+    } else {
+        // IDLE 에서 새 KST 일자 시작 — 자동으로 새 미션 등록.
+        mission_start("auto", /*op_index=*/0, /*rollover=*/true);
+    }
 }
 
 // ── Persistence helpers ──────────────────────────────────────────────────
@@ -430,29 +441,20 @@ void FFTViewer::mission_load_history(){
             while(*p && (*p == ' ' || *p == '\t' || *p == '\n')) p++;
         }
         if(*p == '}') p++;
-        if(e.end_utc == 0 && !active_restored){
-            mission_state    = Mission::State::ACTIVE;
-            mission_year     = e.year;
-            memcpy(mission_code,         e.code,         sizeof(mission_code));
-            memcpy(mission_started_by,   e.started_by,   sizeof(mission_started_by));
-            memcpy(mission_station_name, e.station_name, sizeof(mission_station_name));
-            memcpy(mission_host_name,    e.host_name,    sizeof(mission_host_name));
-            memcpy(mission_sdr_kind,     e.sdr_kind,     sizeof(mission_sdr_kind));
-            memcpy(mission_antenna,      e.antenna,      sizeof(mission_antenna));
-            mission_lat        = e.lat;
-            mission_lon        = e.lon;
-            mission_op_index   = e.op_index;
-            mission_start_utc  = e.start_utc;
-            mission_end_utc    = 0;
-            active_restored = true;
-            bewe_log_push(0, "[MISSION] restored ACTIVE %04d/%s station=%s sdr=%s\n",
-                          e.year, e.code, e.station_name, e.sdr_kind);
-        } else {
-            mission_history.push_back(e);
+        // 서버/HOST 가 비정상 종료(power-off, crash)되어 end_utc=0 로 남은 entry 는
+        // ACTIVE 로 복원하지 않음. 24/7 시스템 가정상 "수신 불가 = STOP" 으로 처리하는 게 맞고
+        // 사용자가 다시 켤 때 수동 Start Mission 으로 같은 KST 날짜면 같은 code 이어감.
+        // end_utc 는 start_utc 로 fallback 채워 history 에 stale entry 로 기록.
+        if(e.end_utc == 0 && e.start_utc > 0){
+            e.end_utc = e.start_utc;   // 종료 시각 미상 → start 와 동일 (placeholder)
+            bewe_log_push(0, "[MISSION] stale ACTIVE detected — closing %04d/%s\n",
+                          e.year, e.code);
         }
+        mission_history.push_back(e);
     }
-    bewe_log_push(0, "[MISSION] loaded %zu history entries (active=%d)\n",
-                  mission_history.size(), (int)active_restored);
+    bewe_log_push(0, "[MISSION] loaded %zu history entries (no auto-restore)\n",
+                  mission_history.size());
+    (void)active_restored;
 }
 
 // ── Broadcast ────────────────────────────────────────────────────────────

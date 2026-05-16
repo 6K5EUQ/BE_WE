@@ -287,7 +287,7 @@ void FFTViewer::start_audio_rec(int ch_idx){
     }
     float cf_mhz=(ch.s+ch.e)/2.0f;
     char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
-    snprintf(fn,sizeof(fn),"%s/Audio_%.3fMHz_%s.wav",
+    snprintf(fn,sizeof(fn),"%s/DEMOD_%.3fMHz_%s.wav",
              rec_dir.c_str(), cf_mhz, dts);
 
     FILE* fp=fopen(fn,"wb");
@@ -625,7 +625,7 @@ void FFTViewer::start_join_audio_rec(int ch_idx){
     }
     float cf_mhz=(ch.s+ch.e)/2.0f;
     char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
-    snprintf(fn,sizeof(fn),"%s/Audio_%.3fMHz_%s.wav",rec_dir.c_str(),cf_mhz,dts);
+    snprintf(fn,sizeof(fn),"%s/DEMOD_%.3fMHz_%s.wav",rec_dir.c_str(),cf_mhz,dts);
 
     FILE* fp=fopen(fn,"wb");
     if(!fp){ bewe_log("JOIN Audio REC: cannot open %s\n",fn); return; }

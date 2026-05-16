@@ -42,7 +42,7 @@ void draw_toast(){
     ImVec2 sz = ImGui::CalcTextSize(g_toast_msg.c_str());
     float  pad = 12.f;
     float  x0 = (io.DisplaySize.x - sz.x) * 0.5f - pad;
-    float  y0 = io.DisplaySize.y * 0.86f;
+    float  y0 = io.DisplaySize.y * 0.78f;
     float  x1 = x0 + sz.x + pad*2;
     float  y1 = y0 + sz.y + pad;
     ImDrawList* fdl = ImGui::GetForegroundDrawList();
@@ -551,7 +551,8 @@ static const char* subdir_label(uint8_t s){
 static uint8_t classify_local_file(const std::string& name){
     size_t n = name.size();
     if(n >= 9 && name.compare(n - 9, 9, ".bewehist") == 0) return MFS_HIST;
-    if(name.rfind("Audio_", 0) == 0 ||
+    if(name.rfind("DEMOD_", 0) == 0 ||
+       name.rfind("Audio_", 0) == 0 ||         // legacy
        name.rfind("SCHED_AUDIO_", 0) == 0 ||
        name.rfind("Demod_", 0) == 0) return MFS_AUDIO;
     return MFS_IQ;
@@ -632,9 +633,23 @@ static bool start_download(NetClient* cli, const CentralFileRow& row){
         MissionView::show_toast("Download already in progress");
         return false;
     }
-    std::string dir = BEWEPaths::downloads_dir();
-    mkdir(BEWEPaths::data_dir().c_str(), 0755);
-    mkdir(dir.c_str(), 0755);
+    // 미션별 다운로드 폴더 (station/year/code/{iq,audio,hist}) 에 저장 — Central archive 와 동일 레이아웃.
+    const char* sub_name = (row.subdir == MFS_IQ)    ? "iq"
+                          : (row.subdir == MFS_AUDIO) ? "audio"
+                          : (row.subdir == MFS_HIST)  ? "hist"
+                          : "misc";
+    std::string dir = BEWEPaths::downloads_mission_dir(row.station, row.year,
+                                                       row.code, sub_name);
+    // mkdir -p chain (data_dir → downloads → station → year → code → sub)
+    auto mkparents = [](const std::string& p){
+        std::string cur;
+        for(size_t i = 0; i < p.size(); i++){
+            cur += p[i];
+            if(p[i] == '/' && cur.size() > 1) mkdir(cur.c_str(), 0755);
+        }
+        mkdir(p.c_str(), 0755);
+    };
+    mkparents(dir);
     std::string path = dir + "/" + row.filename;
 
     // 기존 파일 존재 → resume 모드 (rb+ append). 없거나 size 0 이면 처음부터 (wb).
@@ -958,31 +973,32 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
 }
 
 static void draw_local_list(FFTViewer& v, NetClient* cli){
-    std::string dir = BEWEPaths::downloads_dir();
-    mkdir(BEWEPaths::data_dir().c_str(), 0755);
-    mkdir(dir.c_str(), 0755);
-    auto items = list_dir(dir, nullptr);
-    // .info 사이드카 제외 (데이터 파일에 종속)
-    items.erase(std::remove_if(items.begin(), items.end(),
-        [](const FileItem& f){ return is_info_file(f.name); }),
-        items.end());
-
-    ImGui::TextDisabled("Local downloads: %s", dir.c_str());
-    ImGui::Separator();
-    if(items.empty()){
-        ImGui::TextDisabled("  (no downloads yet)");
+    // 미션별 LOCAL: 선택된 mission 의 ~/BE_WE/downloads/<station>/<year>/<code>/{iq,audio,hist}/
+    // 각 sub 별로 list_dir 스캔.
+    if(g_sel_year == 0 || g_sel_code.empty() || g_cf_req_station[0] == 0){
+        ImGui::TextDisabled("Select a mission to see its local downloads.");
         return;
     }
-
-    // IQ / DEMOD / HIST 분류 (Central 탭과 동일한 라벨)
-    std::vector<const FileItem*> by[3] = {{}, {}, {}};  // 0=IQ 1=DEMOD 2=HIST
-    for(auto& it : items){
-        uint8_t s = classify_local_file(it.name);
-        int slot = (s == MFS_IQ) ? 0 : (s == MFS_AUDIO ? 1 : 2);
-        by[slot].push_back(&it);
+    std::string station = g_cf_req_station;
+    int    year = g_sel_year;
+    std::string code = g_sel_code;
+    const char* subs_name[3] = {"iq", "audio", "hist"};
+    const char* labels[3]    = {"IQ", "DEMOD", "HIST"};
+    std::vector<FileItem> by[3];
+    std::string dirs[3];
+    for(int s = 0; s < 3; s++){
+        dirs[s] = BEWEPaths::downloads_mission_dir(station, year, code, subs_name[s]);
+        by[s]   = list_dir(dirs[s], nullptr);
+        by[s].erase(std::remove_if(by[s].begin(), by[s].end(),
+            [](const FileItem& f){ return is_info_file(f.name); }),
+            by[s].end());
     }
-    const char* labels[3]  = {"IQ", "DEMOD", "HIST"};
-    const uint8_t subs[3]  = {MFS_IQ, MFS_AUDIO, MFS_HIST};
+
+    char hdr[256];
+    snprintf(hdr, sizeof(hdr), "Local: %s/%04d/%s",
+             station.c_str(), year, code.c_str());
+    ImGui::TextDisabled("%s", hdr);
+    ImGui::Separator();
 
     ImGui::BeginChild("##loc_scroll", ImVec2(0, 0), false);
     for(int s = 0; s < 3; s++){
@@ -995,11 +1011,9 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
             ImGui::Spacing();
             continue;
         }
-        (void)subs;  // 분류 ID 는 시각적 그룹핑에만 사용
-        for(const FileItem* itp : by[s]){
-            const FileItem& it = *itp;
+        for(const FileItem& it : by[s]){
             float pw = ImGui::GetContentRegionAvail().x;
-            std::string full = dir + "/" + it.name;
+            std::string full = dirs[s] + "/" + it.name;
             ImGui::PushID(it.name.c_str());
 
             bool sel = (g_sel_kind == SelKind::LOCAL && g_sel_local_path == full);
@@ -1069,43 +1083,67 @@ static void draw_rename_submodal(NetClient* cli){
     if(!open) g_rn_open = false;
 }
 
+// 미션창 활성 + sub-modal/viewer 아닐 때 1/2/3/4 키로 탭 강제 선택.
+// SetSelected 는 그 프레임만 적용 — 다음 프레임부터 사용자 마우스 클릭 평소대로.
+static int g_tab_request = -1;   // 0=IQ 1=DEMOD 2=HIST 3=LOCAL
+
+static void poll_tab_keys(FFTViewer& v){
+    // 미션 modal window 가 키보드 focus 일 때만 처리 — 다른 입력에 영향 X.
+    if(!ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) return;
+    if(ImGui::IsAnyItemActive()) return;
+    if(v.eid_panel_open || v.lwf_modal_open) return;
+    ImGuiIO& io = ImGui::GetIO();
+    if(io.WantTextInput) return;
+    if(ImGui::IsKeyPressed(ImGuiKey_1, false)) g_tab_request = 0;
+    if(ImGui::IsKeyPressed(ImGuiKey_2, false)) g_tab_request = 1;
+    if(ImGui::IsKeyPressed(ImGuiKey_3, false)) g_tab_request = 2;
+    if(ImGui::IsKeyPressed(ImGuiKey_4, false)) g_tab_request = 3;
+}
+
 static void draw_file_tabs(FFTViewer& v, NetClient* cli){
+    poll_tab_keys(v);
+    auto tab_flags = [&](int idx) -> ImGuiTabItemFlags {
+        return (g_tab_request == idx) ? ImGuiTabItemFlags_SetSelected : 0;
+    };
     if(g_sel_year == 0 || g_sel_code.empty()){
         // mission 선택 없음 — LOCAL 만 표시
         ImGui::Spacing();
         if(ImGui::BeginTabBar("##mission_file_tabs_idle")){
-            if(ImGui::BeginTabItem("LOCAL")){
+            if(ImGui::BeginTabItem("LOCAL", nullptr, tab_flags(3))){
                 draw_local_list(v, cli);
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
         }
+        g_tab_request = -1;
         return;
     }
     ImGui::Spacing();
     if(ImGui::BeginTabBar("##mission_file_tabs")){
-        if(ImGui::BeginTabItem("IQ")){
+        if(ImGui::BeginTabItem("IQ", nullptr, tab_flags(0))){
             draw_central_list(v, cli, MFS_IQ);
             ImGui::EndTabItem();
         }
-        if(ImGui::BeginTabItem("DEMOD")){
+        if(ImGui::BeginTabItem("DEMOD", nullptr, tab_flags(1))){
             draw_central_list(v, cli, MFS_AUDIO);
             ImGui::EndTabItem();
         }
-        if(ImGui::BeginTabItem("HIST")){
+        if(ImGui::BeginTabItem("HIST", nullptr, tab_flags(2))){
             draw_central_list(v, cli, MFS_HIST);
             ImGui::EndTabItem();
         }
-        if(ImGui::BeginTabItem("LOCAL")){
+        if(ImGui::BeginTabItem("LOCAL", nullptr, tab_flags(3))){
             draw_local_list(v, cli);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
     }
+    g_tab_request = -1;
 }
 
 static void draw_left_tree(FFTViewer& v){
-    if(ImGui::Button("[+] Start Mission", ImVec2(-1, 0))){
+    // [+] 제거. "Start Mission" 중앙정렬 (Button 의 ImVec2(-1,0) 은 full width).
+    if(ImGui::Button("Start Mission", ImVec2(-1, 0))){
         v.mission_start_modal_open = true;
     }
     ImGui::Separator();
@@ -1302,7 +1340,7 @@ void draw_modal(FFTViewer& v, NetClient* cli){
             g_sel_code = hdr_code;
         }
         draw_meta_block(v);
-        draw_current_session(v);
+        // (Current Session 영역 제거 — 사용자 요청)
         draw_file_tabs(v, cli);
         ImGui::EndChild();
     }

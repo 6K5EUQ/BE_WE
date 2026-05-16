@@ -5748,18 +5748,9 @@ void run_streaming_viewer(){
             if(v.sig_lib_panel_open != prev_lib){ v.sig_lib_panel_open ? push_ov(5) : pop_ov(5); prev_lib=v.sig_lib_panel_open; }
             if(v.mission_modal_open != prev_mission){ v.mission_modal_open ? push_ov(6) : pop_ov(6); prev_mission=v.mission_modal_open; }
         }
-        // S키: 메인 STATUS 패널 토글. 다른 오버레이 활성 시엔 그쪽이 S 키 소비.
-        if(main_kbd_active
-           && ImGui::IsKeyPressed(ImGuiKey_S, false) && !ImGui::GetIO().WantTextInput){
-            if(v.right_panel_ratio > 0.01f){
-                // 열려있음 > 저장 후 닫기
-                right_panel_saved_ratio = v.right_panel_ratio;
-                v.right_panel_ratio = 0.0f;
-            } else {
-                // 닫혀있음 > 마지막 저장값으로 열기 (미설정시 기본값 0.3)
-                v.right_panel_ratio = (right_panel_saved_ratio > 0.01f) ? right_panel_saved_ratio : 0.3f;
-            }
-        }
+        // (S 키는 SA viewer 토글로 재배정됨 — 아래 viewer 토글 블록 참고.
+        //  STATUS 패널은 상단 STATUS 버튼 클릭으로만 토글)
+        (void)right_panel_saved_ratio;
 
         // (v4.0: 1/2/3 키로 STATUS/ARCHIVE/SCHED 전환 기능 제거 —
         // ARCHIVE/SCHED가 mission 창에 흡수되어 STATUS만 남음)
@@ -6120,22 +6111,22 @@ void run_streaming_viewer(){
             flag = true; return true;
         };
 
-        // viewer(SA/HIST/SIG_LIB)가 떠 있으면 글로벌 토글 핫키는 모두 무시.
-        // 키 입력은 viewer 자체의 mapping(ESC/baud 등)만 처리되도록 가둠.
+        // viewer(SA/HIST/SIG_LIB)가 떠 있으면 글로벌 토글 핫키 중 L/M/B 는 무시.
+        // S(SA) / H(HIST) 는 자기 자신 토글이므로 viewer 위에서도 켜기/끄기 가능.
         bool viewer_open_blocking = v.eid_panel_open || v.lwf_modal_open || v.sig_lib_panel_open;
 
-        // ── Signal Analysis 토글 (E키) ─── 독립 오버레이 ────
-        if(!viewer_open_blocking && ImGui::IsKeyPressed(ImGuiKey_E, false) && !io.WantTextInput){
+        // ── SA (Signal Analysis) 토글 — S 키 (viewer 위에서도 토글 가능) ──
+        if(ImGui::IsKeyPressed(ImGuiKey_S, false) && !io.WantTextInput
+           && !ImGui::IsAnyItemActive()){
             if(try_toggle(0, v.eid_panel_open) && v.eid_panel_open){
                 if(!v.sa_temp_path.empty() &&
                    !v.eid_computing.load() && !v.eid_data_ready.load())
                     v.eid_start(v.sa_temp_path);
             }
         }
-        // ── LOG 토글 ─── 독립 오버레이 ────
-        // (L key reassigned to Signal Library)
-        // ── HIST (Long Waterfall history) 토글 (H키) ────
-        if(!viewer_open_blocking && ImGui::IsKeyPressed(ImGuiKey_H, false) && !io.WantTextInput){
+        // ── HIST (Long Waterfall) 토글 — H 키 (viewer 위에서도 토글 가능) ──
+        if(ImGui::IsKeyPressed(ImGuiKey_H, false) && !io.WantTextInput
+           && !ImGui::IsAnyItemActive()){
             try_toggle(3, v.lwf_modal_open);
         }
         // ── Signal Library 토글 (L키) — 새 오버레이 ────
@@ -6591,7 +6582,8 @@ void run_streaming_viewer(){
             }
 
             // ── STAT 패널 ─────────────────────────────────────────────────
-            if(stat_open){
+            // 미션 모달 활성 시엔 STATUS 패널 자체를 그리지 않음 — 미션창을 꺼야 보이도록.
+            if(stat_open && !v.mission_modal_open){
                 float px=rpx, py=rp_content_y, pw=disp_w-rpx, ph=rp_content_h;
                 ImGui::SetNextWindowPos(ImVec2(px,py));
                 ImGui::SetNextWindowSize(ImVec2(pw,ph));
@@ -7013,7 +7005,7 @@ void run_streaming_viewer(){
                                             if(re.finished){
                                                 auto it_rz=fsz_cache.find(re.filename);
                                                 const std::string szstr=(it_rz!=fsz_cache.end())?it_rz->second:fmt_filesize("",re.path);
-                                                std::string lbl = std::string("[Done]  ")+re.filename;
+                                                std::string lbl = std::string("")+re.filename;
                                                 if(!szstr.empty()) lbl += "  "+szstr;
                                                 bool is_sel_r = file_ctx.selected && file_ctx.filepath==re.path;
                                                 ImGui::Selectable(lbl.c_str(), is_sel_r);
@@ -7128,14 +7120,14 @@ void run_streaming_viewer(){
                                                     ImGui::Selectable(("##rdone"+std::to_string(ri)).c_str(), false, 0, ImVec2(0,0));
                                                 ImGui::SameLine(0,0);
                                                 if(re.xfer_total > 0)
-                                                    ImGui::Text("[Done]  %s  (%.1f MB)", re.filename.c_str(), re.xfer_total/1048576.0);
+                                                    ImGui::Text("%s  (%.1f MB)", re.filename.c_str(), re.xfer_total/1048576.0);
                                                 else {
                                                     auto it_rz2=fsz_cache.find(re.filename);
                                                     const std::string szstr2=(it_rz2!=fsz_cache.end())?it_rz2->second:fmt_filesize("",re.path);
                                                     if(!szstr2.empty())
-                                                        ImGui::Text("[Done]  %s  %s", re.filename.c_str(), szstr2.c_str());
+                                                        ImGui::Text("%s  %s", re.filename.c_str(), szstr2.c_str());
                                                     else
-                                                        ImGui::Text("[Done]  %s", re.filename.c_str());
+                                                        ImGui::Text("%s", re.filename.c_str());
                                                 }
                                                 if(ImGui::IsItemHovered()){
                                                     if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
@@ -7249,7 +7241,7 @@ void run_streaming_viewer(){
                                         {
                                             auto it_az=fsz_cache.find(re.filename);
                                             const std::string szstr=(it_az!=fsz_cache.end())?it_az->second:fmt_filesize("",re.path);
-                                            std::string lbl = std::string("[Done]  ")+re.filename;
+                                            std::string lbl = std::string("")+re.filename;
                                             if(!szstr.empty()) lbl += "  "+szstr;
                                             bool is_sel_a = file_ctx.selected && file_ctx.filepath==re.path;
                                             ImGui::Selectable(lbl.c_str(), is_sel_a);
@@ -7405,7 +7397,7 @@ void run_streaming_viewer(){
                                     ImGui::PushID(si+22000);
                                     bool already_dl = false;
                                     for(auto& df:downloaded_files) if(df==jse.filename){already_dl=true;break;}
-                                    const char* pfx = already_dl ? "[Done]  " : "";
+                                    const char* pfx = already_dl ? "" : "";
                                     ImU32 col = already_dl ? IM_COL32(80,220,80,255) : IM_COL32(80,180,255,255);
                                     std::string sdisplay = std::string(pfx)+jse.filename;
                                     if(jse.size_bytes > 0){
@@ -8226,7 +8218,7 @@ void run_streaming_viewer(){
                     ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.4f,0.3f));
                     ImGui::Separator(); ImGui::PopStyleColor();
                     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-                    if(ImGui::TreeNode("Demod##rec")){
+                    if(ImGui::TreeNode("DEMOD##rec")){
                         ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.3f,0.3f,0.3f,0.4f));
                         ImGui::Separator(); ImGui::PopStyleColor();
                         for(auto& fn : rec_audio_files) draw_arch_file(BEWEPaths::record_audio_dir(), fn, 1);

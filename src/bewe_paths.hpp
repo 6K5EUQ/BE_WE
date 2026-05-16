@@ -116,6 +116,13 @@ static inline std::string long_waterfall_dir(){ return hist_host_dir(); }
 // ── Downloads (JOIN side: Central archive에서 받은 파일 평탄 저장) ──────
 // 모든 다운로드는 station/year/code 폴더 안 만들고 한 곳에 모음.
 static inline std::string downloads_dir(){ return data_dir()+"/downloads"; }
+// 미션별 로컬 다운로드 폴더 — Central archive 와 동일 레이아웃으로
+// (station/year/code/{iq,audio,hist}) 분리해서 미션 단위로 파일 관리.
+static inline std::string downloads_mission_dir(const std::string& station, int year,
+                                                const std::string& code, const char* sub){
+    char y[16]; snprintf(y, sizeof(y), "/%04d", year);
+    return downloads_dir() + "/" + station + y + "/" + code + "/" + sub;
+}
 
 // ── Central archive (Central server 머신 측: station-keyed mission archive) ──
 // $HOME/BE_WE/DataBase/missions/<station>/<year>/<code>/{iq,audio,hist}/

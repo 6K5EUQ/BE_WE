@@ -797,7 +797,7 @@ void draw_modal(FFTViewer& v, NetClient* cli){
     bool g_open_loaded = !g_open.path.empty();
 
     if(!g_open_loaded){
-        ImGui::TextDisabled("Select a file from the right panel.");
+        // (안내문 제거 — 빈 viewer 표시)
     } else {
         // host의 LIVE 파일 OR JOIN의 hist/live/ 임시 파일이면 file size를 폴링하며 갱신.
         std::string live_dir_prefix = BEWEPaths::hist_live_dir() + "/";
