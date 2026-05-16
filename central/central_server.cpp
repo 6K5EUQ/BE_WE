@@ -1325,6 +1325,20 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
                                    bewe_pkt + BEWE_HDR_SIZE, bewe_len - BEWE_HDR_SIZE);
         return true;
     }
+    // JOIN → Central: PUSH_META/PUSH_DATA (LOCAL 우클릭 Upload).
+    // HOST 측 push worker 와 transfer_id 풀이 다르도록 (HOST=1..127, JOIN=128..255) 클라가 alloc.
+    // Central 측 mission_xfers 는 room 단위라 HOST/JOIN 두 발신자 모두 동일 map 에 들어가지만
+    // transfer_id 충돌 없으면 안전.
+    if(bewe_type == BEWE_TYPE_MISSION_FILE_PUSH_META){
+        handle_mission_file_push_meta(room,
+                                      bewe_pkt + BEWE_HDR_SIZE, bewe_len - BEWE_HDR_SIZE);
+        return true;
+    }
+    if(bewe_type == BEWE_TYPE_MISSION_FILE_PUSH_DATA){
+        handle_mission_file_push_data(room,
+                                      bewe_pkt + BEWE_HDR_SIZE, bewe_len - BEWE_HDR_SIZE);
+        return true;
+    }
 
     // ── MISSION_DELETE: Central archive 도 wipe (HOST에도 포워드해서 로컬 dir 정리) ─
     if(bewe_type == BEWE_TYPE_MISSION_DELETE &&

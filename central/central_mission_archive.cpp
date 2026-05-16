@@ -281,9 +281,7 @@ void CentralServer::handle_mission_file_list_req(std::shared_ptr<HostRoom> room,
             // .info sidecar 는 list에서 제외
             size_t nlen = strlen(n);
             if(nlen >= 5 && strcmp(n + nlen - 5, ".info") == 0) continue;
-            // -LIVE.bewehist 는 stream 진행 중인 임시 파일 — finalize 전까지 UI 노출 안 함.
-            // (HIST 는 LWF tap 으로 실시간 mirror; STOP 시 finalize 이름으로 rename.)
-            if(strstr(n, "-LIVE.bewehist")) continue;
+            // -LIVE.bewehist 는 stream 진행 중인 mirror. 다운로드/조회 모두 허용 — 표시.
             std::string full = dir + "/" + n;
             struct stat st;
             if(stat(full.c_str(), &st) != 0) continue;

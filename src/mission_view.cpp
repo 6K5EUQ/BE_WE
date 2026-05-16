@@ -671,26 +671,12 @@ static bool start_download(NetClient* cli, const CentralFileRow& row){
 // Right-click context for a Central-side file row.
 static void central_context_menu(NetClient* cli, const CentralFileRow& row){
     if(ImGui::BeginPopupContextItem("##cf_ctx")){
-        ImGui::TextDisabled("%s/%s", subdir_label(row.subdir), row.filename);
-        ImGui::Separator();
-        if(ImGui::MenuItem("Download to LOCAL")){
+        if(ImGui::MenuItem("Download")){
             start_download(cli, row);
         }
-        if(ImGui::MenuItem("Rename...")){
-            memset(g_rn_station, 0, sizeof(g_rn_station));
-            memset(g_rn_code,    0, sizeof(g_rn_code));
-            memset(g_rn_old,     0, sizeof(g_rn_old));
-            memset(g_rn_new,     0, sizeof(g_rn_new));
-            strncpy(g_rn_station, row.station,  sizeof(g_rn_station) - 1);
-            g_rn_year = row.year;
-            strncpy(g_rn_code,    row.code,     sizeof(g_rn_code) - 1);
-            g_rn_subdir = row.subdir;
-            strncpy(g_rn_old,     row.filename, sizeof(g_rn_old) - 1);
-            strncpy(g_rn_new,     row.filename, sizeof(g_rn_new) - 1);
-            g_rn_open = true;
-        }
         ImGui::Separator();
-        if(ImGui::MenuItem("Delete (Central)")){
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.35f, 0.35f, 1.f));
+        if(ImGui::MenuItem("Delete")){
             MissionFileKey k{};
             strncpy(k.station,  row.station,  sizeof(k.station)  - 1);
             k.year   = row.year;
@@ -698,9 +684,10 @@ static void central_context_menu(NetClient* cli, const CentralFileRow& row){
             strncpy(k.code,     row.code,     sizeof(k.code)     - 1);
             strncpy(k.filename, row.filename, sizeof(k.filename) - 1);
             if(cli) cli->send_mission_file_delete(k);
-            g_cf_last_req_time = 0;  // force refresh
+            g_cf_last_req_time = 0;
             MissionView::show_toast("Delete requested");
         }
+        ImGui::PopStyleColor();
         ImGui::EndPopup();
     }
 }
@@ -740,18 +727,101 @@ static void open_local_in_viewer(FFTViewer& v, const std::string& path){
     MissionView::show_toast("No viewer for this file type");
 }
 
-// LOCAL row 우클릭 — 메인 페이지의 file_ctx 메뉴 (Signal Analysis / Info /
-// Report / Save DB / Delete) 를 동일하게 띄우도록 v.pending_file_ctx 에 신호.
-// ui.cpp run_streaming_viewer() 가 다음 프레임에 file_ctx.open=true 로 옮긴다.
-static void local_request_main_ctx(FFTViewer& v, const std::string& full_path,
-                                   const std::string& name){
-    if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-        ImVec2 mp = ImGui::GetMousePos();
-        v.pending_file_ctx.filepath = full_path;
-        v.pending_file_ctx.filename = name;
-        v.pending_file_ctx.x = mp.x;
-        v.pending_file_ctx.y = mp.y;
-        v.pending_file_ctx.pending.store(true);
+// LOCAL → Central 미션 archive 로 파일 push.
+// 선택된 미션(g_sel_year/g_sel_code) + 분류된 subdir(IQ/DEMOD) 로 PUSH_META + PUSH_DATA 청크 전송.
+// HOST push worker 의 transfer_id 풀(1..127) 과 충돌 회피를 위해 JOIN-upload 는 0x80~0xFF 사용.
+static uint8_t alloc_upload_xfer_id(){
+    static std::atomic<uint8_t> next{0x80};
+    uint8_t id = next.fetch_add(1, std::memory_order_relaxed);
+    if(id < 0x80) id = 0x80;
+    return id;
+}
+
+static void start_upload(NetClient* cli, FFTViewer& v,
+                         const std::string& full_path,
+                         const std::string& filename,
+                         uint8_t subdir){
+    (void)v;
+    if(!cli){
+        MissionView::show_toast("Upload: not connected to Central");
+        return;
+    }
+    if(g_sel_year == 0 || g_sel_code.empty()){
+        MissionView::show_toast("Upload: select a mission first");
+        return;
+    }
+    if(g_cf_req_station[0] == 0){
+        MissionView::show_toast("Upload: station unknown for selected mission");
+        return;
+    }
+    FILE* fp = fopen(full_path.c_str(), "rb");
+    if(!fp){
+        MissionView::show_toast("Upload: cannot open file");
+        return;
+    }
+    fseeko(fp, 0, SEEK_END);
+    uint64_t total = (uint64_t)ftello(fp);
+    fseeko(fp, 0, SEEK_SET);
+
+    char info_data[512] = {};
+    {
+        FILE* fi = fopen((full_path + ".info").c_str(), "r");
+        if(fi){
+            size_t r = fread(info_data, 1, sizeof(info_data) - 1, fi);
+            (void)r;
+            fclose(fi);
+        }
+    }
+
+    MissionFileKey k{};
+    strncpy(k.station, g_cf_req_station,    sizeof(k.station)  - 1);
+    k.year   = (uint16_t)g_sel_year;
+    k.subdir = subdir;
+    strncpy(k.code,     g_sel_code.c_str(), sizeof(k.code)     - 1);
+    strncpy(k.filename, filename.c_str(),   sizeof(k.filename) - 1);
+
+    uint8_t xid = alloc_upload_xfer_id();
+    cli->send_mission_file_push_meta(k, total, xid, /*mode=*/0, info_data);
+
+    constexpr uint32_t CHUNK = 256 * 1024;
+    std::vector<uint8_t> buf(CHUNK);
+    uint64_t off = 0;
+    bool ok = true;
+    if(total == 0){
+        cli->send_mission_file_push_data(xid, 0, nullptr, 0, /*is_last=*/true);
+    } else {
+        while(off < total){
+            uint32_t want = (uint32_t)std::min((uint64_t)CHUNK, total - off);
+            size_t got = fread(buf.data(), 1, want, fp);
+            if(got != want){ ok = false; break; }
+            bool last = (off + want >= total);
+            cli->send_mission_file_push_data(xid, off, buf.data(), want, last);
+            off += want;
+        }
+    }
+    fclose(fp);
+    g_cf_last_req_time = 0;
+    MissionView::show_toast(ok ? "Upload complete" : "Upload aborted (read error)");
+}
+
+// LOCAL row 우클릭 — Upload (분류된 subdir 로 미션 archive 에 push) / Delete (로컬 unlink).
+static void local_context_menu(FFTViewer& v, NetClient* cli,
+                               const std::string& full_path,
+                               const std::string& name){
+    if(ImGui::BeginPopupContextItem("##loc_ctx")){
+        if(ImGui::MenuItem("Upload")){
+            uint8_t sub = classify_local_file(name);
+            start_upload(cli, v, full_path, name, sub);
+        }
+        ImGui::Separator();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.35f, 0.35f, 1.f));
+        if(ImGui::MenuItem("Delete")){
+            unlink(full_path.c_str());
+            unlink((full_path + ".info").c_str());
+            MissionView::show_toast("Local file deleted");
+        }
+        ImGui::PopStyleColor();
+        ImGui::EndPopup();
     }
 }
 
@@ -871,7 +941,7 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
     ImGui::EndChild();
 }
 
-static void draw_local_list(FFTViewer& v){
+static void draw_local_list(FFTViewer& v, NetClient* cli){
     std::string dir = BEWEPaths::downloads_dir();
     mkdir(BEWEPaths::data_dir().c_str(), 0755);
     mkdir(dir.c_str(), 0755);
@@ -927,7 +997,7 @@ static void draw_local_list(FFTViewer& v){
             if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
                 open_local_in_viewer(v, full);
             }
-            local_request_main_ctx(v, full, it.name);
+            local_context_menu(v, cli, full, it.name);
             std::string info = fmt_size(it.size);
             float tw = ImGui::CalcTextSize(info.c_str()).x;
             ImGui::SameLine(pw - tw - 4.f);
@@ -989,7 +1059,7 @@ static void draw_file_tabs(FFTViewer& v, NetClient* cli){
         ImGui::Spacing();
         if(ImGui::BeginTabBar("##mission_file_tabs_idle")){
             if(ImGui::BeginTabItem("LOCAL")){
-                draw_local_list(v);
+                draw_local_list(v, cli);
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
@@ -1011,7 +1081,7 @@ static void draw_file_tabs(FFTViewer& v, NetClient* cli){
             ImGui::EndTabItem();
         }
         if(ImGui::BeginTabItem("LOCAL")){
-            draw_local_list(v);
+            draw_local_list(v, cli);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -1227,7 +1297,7 @@ void draw_modal(FFTViewer& v, NetClient* cli){
     draw_start_submodal(v, cli);
     draw_end_confirm_submodal(v, cli);
     draw_delete_confirm_submodal(v, cli);
-    draw_rename_submodal(cli);
+    // draw_rename_submodal: Rename 기능 제거됨 (사용자 요청)
 
     // 미션 모달 활성 시 Delete 키 → 선택 파일 삭제
     process_delete_key(cli);
