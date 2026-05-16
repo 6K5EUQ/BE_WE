@@ -6104,8 +6104,12 @@ void run_streaming_viewer(){
             flag = true; return true;
         };
 
+        // viewer(SA/HIST/SIG_LIB)가 떠 있으면 글로벌 토글 핫키는 모두 무시.
+        // 키 입력은 viewer 자체의 mapping(ESC/baud 등)만 처리되도록 가둠.
+        bool viewer_open_blocking = v.eid_panel_open || v.lwf_modal_open || v.sig_lib_panel_open;
+
         // ── Signal Analysis 토글 (E키) ─── 독립 오버레이 ────
-        if(ImGui::IsKeyPressed(ImGuiKey_E, false) && !io.WantTextInput){
+        if(!viewer_open_blocking && ImGui::IsKeyPressed(ImGuiKey_E, false) && !io.WantTextInput){
             if(try_toggle(0, v.eid_panel_open) && v.eid_panel_open){
                 if(!v.sa_temp_path.empty() &&
                    !v.eid_computing.load() && !v.eid_data_ready.load())
@@ -6115,24 +6119,25 @@ void run_streaming_viewer(){
         // ── LOG 토글 ─── 독립 오버레이 ────
         // (L key reassigned to Signal Library)
         // ── HIST (Long Waterfall history) 토글 (H키) ────
-        if(ImGui::IsKeyPressed(ImGuiKey_H, false) && !io.WantTextInput){
+        if(!viewer_open_blocking && ImGui::IsKeyPressed(ImGuiKey_H, false) && !io.WantTextInput){
             try_toggle(3, v.lwf_modal_open);
         }
         // ── Signal Library 토글 (L키) — 새 오버레이 ────
-        if(ImGui::IsKeyPressed(ImGuiKey_L, false) && !io.WantTextInput){
+        if(!viewer_open_blocking && ImGui::IsKeyPressed(ImGuiKey_L, false) && !io.WantTextInput){
             if(try_toggle(4, v.sig_lib_panel_open) && v.sig_lib_panel_open){
                 v.sig_lib_dirty = true;
             }
         }
         // ── MISSION 토글 (M키) — 미션 모달 ────
-        if(ImGui::IsKeyPressed(ImGuiKey_M, false) && !io.WantTextInput){
+        if(!viewer_open_blocking && ImGui::IsKeyPressed(ImGuiKey_M, false) && !io.WantTextInput){
             try_toggle(5, v.mission_modal_open);
         }
-        // ── BAND 토글 (B키) — SA overlay 열려있으면 baud-mode(노란 비트 구분선) 토글, 아니면 BAND 토글 ────
+        // ── BAND 토글 (B키) — SA overlay 열려있으면 baud-mode(노란 비트 구분선) 토글
+        // viewer 떠 있는 동안엔 BAND 토글 무시 (사용자가 viewer 안에서 다른 글로벌 동작 방지)
         if(ImGui::IsKeyPressed(ImGuiKey_B, false) && !io.WantTextInput){
             if(v.eid_panel_open)
                 v.eid_baud_mode = !v.eid_baud_mode;
-            else
+            else if(!viewer_open_blocking)
                 v.band_show = !v.band_show;
         }
 

@@ -1034,9 +1034,10 @@ bool NetClient::send_mission_file_list_req(const char* station, uint16_t year,
     return raw_send(PacketType::MISSION_FILE_LIST_REQ, &r, sizeof(r));
 }
 
-bool NetClient::send_mission_file_dl_req(const MissionFileKey& key){
+bool NetClient::send_mission_file_dl_req(const MissionFileKey& key, uint64_t start_offset){
     PktMissionFileDlReq r{};
     r.key = key;
+    r.start_offset = start_offset;
     return raw_send(PacketType::MISSION_FILE_DL_REQ, &r, sizeof(r));
 }
 

@@ -349,7 +349,7 @@ public:
     // any → Central: 미션 단위 파일 브라우저용. station/code/year/subdir = 0/"" → wildcard.
     bool send_mission_file_list_req(const char* station, uint16_t year,
                                     const char* code, uint8_t subdir);
-    bool send_mission_file_dl_req(const MissionFileKey& key);
+    bool send_mission_file_dl_req(const MissionFileKey& key, uint64_t start_offset = 0);
     bool send_mission_file_delete(const MissionFileKey& key);
     bool send_mission_file_rename(const MissionFileKey& key, const char* new_filename);
 

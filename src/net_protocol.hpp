@@ -818,8 +818,11 @@ struct __attribute__((packed)) PktMissionFileList {
 };
 
 // any → Central: 다운로드 요청
+// start_offset: 0 = 처음부터, n = n byte 이후부터 stream (resume 다운로드).
+// LIVE HIST 같이 자라는 파일 이어받기.
 struct __attribute__((packed)) PktMissionFileDlReq {
     MissionFileKey key;
+    uint64_t       start_offset;
 };
 
 // Central → caller: 다운로드 청크 (첫 청크에 .info 동봉)

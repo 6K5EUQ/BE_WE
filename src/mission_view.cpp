@@ -623,8 +623,8 @@ static std::string fmt_size(uint64_t bytes){
     return b;
 }
 
-// Start download: open file at downloads_dir/<filename> and send DL_REQ.
-// Returns true if request was sent.
+// Start download: 기존 LOCAL 파일이 있으면 그 크기를 start_offset 으로 resume 다운로드.
+// 없으면 처음부터.
 static bool start_download(NetClient* cli, const CentralFileRow& row){
     if(!cli) return false;
     std::lock_guard<std::mutex> lk(g_dl_mtx);
@@ -636,7 +636,23 @@ static bool start_download(NetClient* cli, const CentralFileRow& row){
     mkdir(BEWEPaths::data_dir().c_str(), 0755);
     mkdir(dir.c_str(), 0755);
     std::string path = dir + "/" + row.filename;
-    g_dl_fp = fopen(path.c_str(), "wb");
+
+    // 기존 파일 존재 → resume 모드 (rb+ append). 없거나 size 0 이면 처음부터 (wb).
+    struct stat st{};
+    uint64_t start = 0;
+    bool resume = (stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0);
+    if(resume){
+        g_dl_fp = fopen(path.c_str(), "rb+");
+        if(!g_dl_fp){
+            g_dl_fp = fopen(path.c_str(), "wb");  // fallback
+            start = 0;
+        } else {
+            start = (uint64_t)st.st_size;
+            fseeko(g_dl_fp, 0, SEEK_END);
+        }
+    } else {
+        g_dl_fp = fopen(path.c_str(), "wb");
+    }
     if(!g_dl_fp){
         char msg[256]; snprintf(msg, sizeof(msg),
             "Download open failed: %s (errno=%d)", path.c_str(), errno);
@@ -646,11 +662,11 @@ static bool start_download(NetClient* cli, const CentralFileRow& row){
     g_dl_local_path = path;
     g_dl_filename   = row.filename;
     g_dl_total      = 0;
-    g_dl_written    = 0;
+    g_dl_written    = start;
     g_dl_active     = true;
     g_dl_started_at      = ImGui::GetTime();
     g_dl_last_sample_t   = g_dl_started_at;
-    g_dl_last_sample_bytes = 0;
+    g_dl_last_sample_bytes = start;
     g_dl_speed_bps       = 0.0;
     MissionFileKey k{};
     strncpy(k.station,  row.station, sizeof(k.station) - 1);
@@ -658,10 +674,10 @@ static bool start_download(NetClient* cli, const CentralFileRow& row){
     k.subdir = row.subdir;
     strncpy(k.code,     row.code,     sizeof(k.code) - 1);
     strncpy(k.filename, row.filename, sizeof(k.filename) - 1);
-    bool ok = cli->send_mission_file_dl_req(k);
+    bool ok = cli->send_mission_file_dl_req(k, start);
     if(!ok){
         if(g_dl_fp){ fclose(g_dl_fp); g_dl_fp = nullptr; }
-        unlink(g_dl_local_path.c_str());
+        if(!resume) unlink(g_dl_local_path.c_str());
         g_dl_active = false;
         MissionView::show_toast("Download request failed");
     }

@@ -409,29 +409,48 @@ void CentralServer::handle_mission_file_dl_req(std::shared_ptr<HostRoom> room,
                                         bewe.data(), (uint32_t)bewe.size());
         return;
     }
-    fseeko(fp, 0, SEEK_END); uint64_t total = (uint64_t)ftello(fp); fseeko(fp, 0, SEEK_SET);
+    fseeko(fp, 0, SEEK_END); uint64_t total = (uint64_t)ftello(fp);
+    uint64_t start = r->start_offset;
+    if(start > total) start = total;
+    fseeko(fp, (off_t)start, SEEK_SET);
 
-    // .info sidecar 읽기 (첫 chunk에 동봉)
+    // .info sidecar — start==0(처음부터 받기) 일 때만 동봉. resume 시엔 이미 받았다고 간주.
     char info[512] = {};
-    {
+    if(start == 0){
         FILE* fi = fopen((full + ".info").c_str(), "r");
         if(fi){ fread(info, 1, sizeof(info)-1, fi); fclose(fi); }
     }
 
+    // 이미 받은 양이 현재 size 와 같거나 더 큰 경우: 빈 응답 (chunk_bytes=0, is_first/last=1)
+    if(start >= total){
+        PktMissionFileDlData head{};
+        head.key = r->key;
+        head.total_bytes = total;
+        head.offset = start;
+        head.chunk_bytes = 0;
+        head.is_first = 1; head.is_last = 1;
+        auto bewe = CentralServer::make_bewe_packet(
+            BEWE_TYPE_MISSION_FILE_DL_DATA, &head, sizeof(head));
+        if(requester) requester->enqueue_ctrl(bewe.data(), bewe.size());
+        else          enqueue_host_send(room, 0xFFFF, CentralMuxType::DATA,
+                                        bewe.data(), (uint32_t)bewe.size());
+        fclose(fp);
+        printf("[Central][Archive] DL_REQ %s up-to-date (start=%lu total=%lu)\n",
+               full.c_str(), (unsigned long)start, (unsigned long)total);
+        return;
+    }
+
     constexpr uint32_t CHUNK = 256 * 1024;  // 256 KB
     std::vector<uint8_t> chunk(CHUNK);
-    uint64_t off = 0;
+    uint64_t off = start;
     bool first = true;
-    while(off < total || first){
+    while(off < total){
         uint32_t want = (uint32_t)std::min((uint64_t)CHUNK, total - off);
-        size_t got = 0;
-        if(want > 0){
-            got = fread(chunk.data(), 1, want, fp);
-            if(got != want){
-                printf("[Central][Archive] DL_REQ read short off=%lu want=%u got=%zu\n",
-                       (unsigned long)off, want, got);
-                break;
-            }
+        size_t got = fread(chunk.data(), 1, want, fp);
+        if(got != want){
+            printf("[Central][Archive] DL_REQ read short off=%lu want=%u got=%zu\n",
+                   (unsigned long)off, want, got);
+            break;
         }
         PktMissionFileDlData head{};
         head.key = r->key;
@@ -440,11 +459,11 @@ void CentralServer::handle_mission_file_dl_req(std::shared_ptr<HostRoom> room,
         head.chunk_bytes = want;
         head.is_first = first ? 1 : 0;
         head.is_last  = (off + want >= total) ? 1 : 0;
-        if(first) memcpy(head.info_data, info, sizeof(head.info_data));
+        if(first && start == 0) memcpy(head.info_data, info, sizeof(head.info_data));
         size_t pkt_payload = sizeof(head) + want;
         std::vector<uint8_t> bewe_payload(pkt_payload);
         memcpy(bewe_payload.data(), &head, sizeof(head));
-        if(want > 0) memcpy(bewe_payload.data() + sizeof(head), chunk.data(), want);
+        memcpy(bewe_payload.data() + sizeof(head), chunk.data(), want);
         auto bewe = CentralServer::make_bewe_packet(
             BEWE_TYPE_MISSION_FILE_DL_DATA,
             bewe_payload.data(), (uint32_t)bewe_payload.size());
@@ -456,10 +475,11 @@ void CentralServer::handle_mission_file_dl_req(std::shared_ptr<HostRoom> room,
         }
         off += want;
         first = false;
-        if(want == 0) break;  // 빈 파일 1 chunk만
     }
     fclose(fp);
-    printf("[Central][Archive] DL_REQ done %s (%lu bytes)\n", full.c_str(), (unsigned long)total);
+    printf("[Central][Archive] DL_REQ done %s start=%lu sent=%lu total=%lu\n",
+           full.c_str(), (unsigned long)start, (unsigned long)(off - start),
+           (unsigned long)total);
 }
 
 // ── DELETE ───────────────────────────────────────────────────────────────
@@ -603,8 +623,9 @@ void CentralServer::archive_hist_on_live_row(std::shared_ptr<HostRoom> room,
     if(row_bytes == 0) return;
     fwrite(row, 1, row_bytes, st.fp);
     st.rows_written++;
-    // 매 32 rows마다 flush (디스크 sync 비용과 latency 트레이드 오프)
-    if((st.rows_written & 0x1F) == 0) fflush(st.fp);
+    // 매 row fflush — row_rate 5Hz 라 부담 없음. UI LIST_REQ 가 stat() 으로 size
+    // 가져올 때 libc user-buffer 가 비어있어야 정확한 progress 표시.
+    fflush(st.fp);
 }
 
 void CentralServer::archive_hist_on_live_stop(std::shared_ptr<HostRoom> room,
