@@ -6993,10 +6993,9 @@ void run_streaming_viewer(){
                                             if(re.finished){
                                                 auto it_rz=fsz_cache.find(re.filename);
                                                 const std::string szstr=(it_rz!=fsz_cache.end())?it_rz->second:fmt_filesize("",re.path);
-                                                std::string lbl = std::string("")+re.filename;
-                                                if(!szstr.empty()) lbl += "  "+szstr;
                                                 bool is_sel_r = file_ctx.selected && file_ctx.filepath==re.path;
-                                                ImGui::Selectable(lbl.c_str(), is_sel_r);
+                                                float pw_r = ImGui::GetContentRegionAvail().x;
+                                                ImGui::Selectable(re.filename.c_str(), is_sel_r, ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw_r, 0));
                                                 if(ImGui::IsItemHovered()){
                                                     if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
                                                         file_ctx.selected=true; file_ctx.open=false;
@@ -7007,6 +7006,11 @@ void run_streaming_viewer(){
                                                         file_ctx={true,io.MousePos.x,io.MousePos.y,re.path,re.filename};
                                                         file_ctx.selected=true;
                                                     }
+                                                }
+                                                if(!szstr.empty()){
+                                                    float tw_r = ImGui::CalcTextSize(szstr.c_str()).x;
+                                                    ImGui::SameLine(pw_r - tw_r - 4.f);
+                                                    ImGui::TextDisabled("%s", szstr.c_str());
                                                 }
                                             } else {
                                                 float t2=(float)ImGui::GetTime();
@@ -7099,9 +7103,7 @@ void run_streaming_viewer(){
                                                     ImGui::Text("[Transferring]  %s", re.filename.c_str());
                                                 ImGui::PopStyleColor();
                                             } else if((re.req_state==RS::REQ_NONE || re.req_state==RS::REQ_TRANSFERRING) && re.finished){
-                                                // 전송 완료
-                                                col=IM_COL32(120,200,120,255);
-                                                ImGui::PushStyleColor(ImGuiCol_Text,col);
+                                                // 전송 완료 (흰색 default — IQ/DEMOD 통일)
                                                 if(re.xfer_total > 0)
                                                     ImGui::Selectable(("##rdone"+std::to_string(ri)).c_str(), false, 0, ImVec2(0,0));
                                                 else
@@ -7140,7 +7142,6 @@ void run_streaming_viewer(){
                                                         v.eid_panel_open = true;
                                                     }
                                                 }
-                                                ImGui::PopStyleColor();
                                             } else if(re.req_state==RS::REQ_DENIED){
                                                 col=IM_COL32(200,80,80,255);
                                                 ImGui::PushStyleColor(ImGuiCol_Text,col);
@@ -7242,10 +7243,9 @@ void run_streaming_viewer(){
                                         {
                                             auto it_az=fsz_cache.find(re.filename);
                                             const std::string szstr=(it_az!=fsz_cache.end())?it_az->second:fmt_filesize("",re.path);
-                                            std::string lbl = std::string("")+re.filename;
-                                            if(!szstr.empty()) lbl += "  "+szstr;
                                             bool is_sel_a = file_ctx.selected && file_ctx.filepath==re.path;
-                                            ImGui::Selectable(lbl.c_str(), is_sel_a);
+                                            float pw_a = ImGui::GetContentRegionAvail().x;
+                                            ImGui::Selectable(re.filename.c_str(), is_sel_a, ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw_a, 0));
                                             if(ImGui::IsItemHovered()){
                                                 if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
                                                     file_ctx.selected=true; file_ctx.open=false;
@@ -7256,6 +7256,11 @@ void run_streaming_viewer(){
                                                     file_ctx={true,io.MousePos.x,io.MousePos.y,re.path,re.filename};
                                                     file_ctx.selected=true;
                                                 }
+                                            }
+                                            if(!szstr.empty()){
+                                                float tw_a = ImGui::CalcTextSize(szstr.c_str()).x;
+                                                ImGui::SameLine(pw_a - tw_a - 4.f);
+                                                ImGui::TextDisabled("%s", szstr.c_str());
                                             }
                                         }
                                         ImGui::PopID();

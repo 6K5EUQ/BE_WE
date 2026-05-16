@@ -544,15 +544,17 @@ static const char* subdir_label(uint8_t s){
     }
 }
 
-// LOCAL 다운로드 파일을 IQ/DEMOD/HIST 로 분류.
+// LOCAL 다운로드 파일을 IQ/DEMOD/HIST 로 분류 (filename 기반 fallback;
+// 미션 모달 LOCAL 탭에서는 bucket index 가 직접 전달되므로 이 함수는 미사용 경로용).
 // .bewehist        → HIST
-// "Audio_..."/"SCHED_AUDIO_..."  → DEMOD
+// "DE_..."/"Audio_..."/"SCHED_AUDIO_..."/"DEMOD_..."  → DEMOD
 // 나머지 (.wav 포함) → IQ
 static uint8_t classify_local_file(const std::string& name){
     size_t n = name.size();
     if(n >= 9 && name.compare(n - 9, 9, ".bewehist") == 0) return MFS_HIST;
-    if(name.rfind("DEMOD_", 0) == 0 ||
-       name.rfind("Audio_", 0) == 0 ||         // legacy
+    if(name.rfind("DE_", 0) == 0 ||              // current DEMOD prefix
+       name.rfind("DEMOD_", 0) == 0 ||
+       name.rfind("Audio_", 0) == 0 ||           // legacy
        name.rfind("SCHED_AUDIO_", 0) == 0 ||
        name.rfind("Demod_", 0) == 0) return MFS_AUDIO;
     return MFS_IQ;
@@ -835,14 +837,14 @@ static void start_upload(NetClient* cli, FFTViewer& v,
     MissionView::show_toast(ok ? "Upload complete" : "Upload aborted (read error)");
 }
 
-// LOCAL row 우클릭 — Upload (분류된 subdir 로 미션 archive 에 push) / Delete (로컬 unlink).
+// LOCAL row 우클릭 — Upload (이미 알려진 bucket subdir 로 미션 archive 에 push) / Delete (로컬 unlink).
 static void local_context_menu(FFTViewer& v, NetClient* cli,
                                const std::string& full_path,
-                               const std::string& name){
+                               const std::string& name,
+                               uint8_t bucket){
     if(ImGui::BeginPopupContextItem("##loc_ctx")){
         if(ImGui::MenuItem("Upload")){
-            uint8_t sub = classify_local_file(name);
-            start_upload(cli, v, full_path, name, sub);
+            start_upload(cli, v, full_path, name, bucket);
         }
         ImGui::Separator();
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.35f, 0.35f, 1.f));
@@ -1058,7 +1060,7 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
             if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
                 open_local_in_viewer(v, full);
             }
-            local_context_menu(v, cli, full, it.name);
+            local_context_menu(v, cli, full, it.name, (uint8_t)s);
             std::string info = fmt_size(it.size);
             float tw = ImGui::CalcTextSize(info.c_str()).x;
             ImGui::SameLine(pw - tw - 4.f);

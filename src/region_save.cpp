@@ -86,24 +86,34 @@ static void write_wav_header(FILE* f, uint32_t sample_rate, uint32_t n_frames,
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 파일명 생성
-// iq_91.7010MHz_BW393kHz_20260222_172219-172240.wav
+// Active mission: IQ_<code>_<YYYY>_<freq>MHz_<HHMMSS>-<HHMMSS>.wav  → mission_iq_dir
+// Otherwise (legacy): IQ_<freq>MHz_<dts>-<HHMMSS>.wav → record_iq_dir
 // ─────────────────────────────────────────────────────────────────────────────
 static void make_filename(char* out, size_t sz,
                           float cf_mhz, float bw_khz,
-                          time_t t_start, time_t t_end)
+                          time_t t_start, time_t t_end,
+                          int mission_year, const char* mission_code)
 {
     if(t_start <= 0) t_start = time(nullptr);
     if(t_end   <= 0) t_end   = time(nullptr);
     struct tm ts; KST::to_tm(t_start, ts);
-    char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&ts);
     struct tm te; KST::to_tm(t_end, te);
-    char s_end[8]; strftime(s_end,sizeof(s_end),"%H%M%S",&te);
+    char hms_s[8]; strftime(hms_s, sizeof(hms_s), "%H%M%S", &ts);
+    char hms_e[8]; strftime(hms_e, sizeof(hms_e), "%H%M%S", &te);
     (void)bw_khz;
 
-    snprintf(out, sz,
-             "%s/IQ_%.3fMHz_%s-%s.wav",
-             BEWEPaths::record_iq_dir().c_str(),
-             (double)cf_mhz, dts, s_end);
+    bool have_mission = (mission_year > 0) && mission_code && mission_code[0];
+    if(have_mission){
+        snprintf(out, sz, "%s/IQ_%s_%04d_%.3fMHz_%s-%s.wav",
+                 BEWEPaths::mission_iq_dir(mission_year, mission_code).c_str(),
+                 mission_code, mission_year,
+                 (double)cf_mhz, hms_s, hms_e);
+    } else {
+        char dts[32]; strftime(dts, sizeof(dts), "%b%d_%Y_%H%M%S", &ts);
+        snprintf(out, sz, "%s/IQ_%.3fMHz_%s-%s.wav",
+                 BEWEPaths::record_iq_dir().c_str(),
+                 (double)cf_mhz, dts, hms_e);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -249,7 +259,8 @@ std::string FFTViewer::do_region_save_work(){
     char outpath[512];
     make_filename(outpath, sizeof(outpath),
                   cf_abs_mhz, bw_khz,
-                  region.time_start_ms / 1000, region.time_end_ms / 1000);
+                  region.time_start_ms / 1000, region.time_end_ms / 1000,
+                  mission_year, mission_code);
     FILE* wf = fopen(outpath, "wb");
     if(!wf){
         bewe_log_push(0,"[region_save] FAIL: fopen failed: %s\n", outpath);
