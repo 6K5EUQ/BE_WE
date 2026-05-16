@@ -256,6 +256,16 @@ std::string FFTViewer::do_region_save_work(){
     if(n_out < 1){ return ""; }
 
     // ── 출력 파일 열기 ─────────────────────────────────────────────────────
+    // 미션 활성이면 missions/<year>/<code>/iq/ 디렉토리 체인 mkdir (없을 수 있음).
+    if(mission_year > 0 && mission_code[0]){
+        mkdir(BEWEPaths::missions_root().c_str(), 0755);
+        mkdir(BEWEPaths::missions_year_dir(mission_year).c_str(), 0755);
+        mkdir(BEWEPaths::mission_dir(mission_year, mission_code).c_str(), 0755);
+        mkdir(BEWEPaths::mission_iq_dir(mission_year, mission_code).c_str(), 0755);
+    } else {
+        mkdir(BEWEPaths::record_dir().c_str(), 0755);
+        mkdir(BEWEPaths::record_iq_dir().c_str(), 0755);
+    }
     char outpath[512];
     make_filename(outpath, sizeof(outpath),
                   cf_abs_mhz, bw_khz,

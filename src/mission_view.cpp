@@ -239,9 +239,16 @@ static void draw_start_submodal(FFTViewer& v, NetClient* cli){
             antenna_buf[sizeof(antenna_buf)-1] = '\0';
         }
         ImGui::BulletText("Station: %s", v.station_name.empty() ? "(unset)" : v.station_name.c_str());
-        ImGui::BulletText("Lat/Lon: %.4f, %.4f", (double)v.station_lat, (double)v.station_lon);
+        ImGui::BulletText("Lat/Lon: %s", LongWaterfall::fmt_lat_lon(v.station_lat, v.station_lon).c_str());
+        char sdr_buf[16] = {};
+        if(v.remote_mode && cli){
+            std::lock_guard<std::mutex> lk(cli->remote_antenna_mtx);
+            memcpy(sdr_buf, cli->remote_sdr_kind, sizeof(sdr_buf));
+            sdr_buf[sizeof(sdr_buf)-1] = '\0';
+        }
         const char* sdr =
-            v.remote_mode      ? (v.mission_sdr_kind[0] ? v.mission_sdr_kind : "(remote)") :
+            v.remote_mode      ? (sdr_buf[0] ? sdr_buf :
+                                  v.mission_sdr_kind[0] ? v.mission_sdr_kind : "(remote)") :
             (v.dev_blade)      ? "BladeRF" :
             (v.pluto_ctx)      ? "Pluto"   :
             (v.dev_rtl)        ? "RTL-SDR" : "Unknown";
@@ -1060,7 +1067,8 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
             if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
                 open_local_in_viewer(v, full);
             }
-            local_context_menu(v, cli, full, it.name, (uint8_t)s);
+            uint8_t bucket = (s == 0) ? MFS_IQ : (s == 1) ? MFS_AUDIO : MFS_HIST;
+            local_context_menu(v, cli, full, it.name, bucket);
             std::string info = fmt_size(it.size);
             float tw = ImGui::CalcTextSize(info.c_str()).x;
             ImGui::SameLine(pw - tw - 4.f);

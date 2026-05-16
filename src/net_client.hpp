@@ -151,6 +151,7 @@ public:
     std::atomic<double>   last_heartbeat_time{0.0};  // glfwGetTime() at last HB
     std::mutex            remote_antenna_mtx;
     char                  remote_antenna[32] = {};    // HOST의 안테나 (HB 수신 시 갱신)
+    char                  remote_sdr_kind[16] = {};   // HOST의 SDR 모델명 (HB 수신 시 갱신)
 
     // ── Channel sync (from CHANNEL_SYNC packets) ──────────────────────────
     // Applied directly to a FFTViewer's channels array via callback

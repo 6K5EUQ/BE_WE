@@ -1591,8 +1591,9 @@ void run_cli_host(){
                 uint8_t cpu_pct  = (uint8_t)std::min(255.f, std::max(0.f, v.sysmon_cpu));
                 uint8_t ram_pct  = (uint8_t)std::min(255.f, std::max(0.f, v.sysmon_ram));
                 uint8_t cpu_temp = (uint8_t)std::min(255, std::max(0, v.sysmon_cpu_temp_c.load()));
+                const char* sk = v.dev_blade ? "BladeRF" : v.pluto_ctx ? "Pluto" : v.dev_rtl ? "RTL-SDR" : "Unknown";
                 v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st, iq_st,
-                                               cpu_pct, ram_pct, cpu_temp, v.host_antenna);
+                                               cpu_pct, ram_pct, cpu_temp, v.host_antenna, sk);
             }
         }
 

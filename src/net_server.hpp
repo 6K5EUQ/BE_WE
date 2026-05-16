@@ -312,7 +312,7 @@ public:
     // sdr_state:  0=streaming OK, 1=stream error
     void broadcast_heartbeat(uint8_t host_state = 0, uint8_t sdr_temp_c = 0, uint8_t sdr_state = 0, uint8_t iq_on = 0,
                              uint8_t host_cpu_pct = 0, uint8_t host_ram_pct = 0, uint8_t host_cpu_temp_c = 0,
-                             const char* antenna = nullptr);
+                             const char* antenna = nullptr, const char* sdr_kind = nullptr);
 
     // /chassis 2 reset: FFT+오디오 방송 일시 중단 / 재개
     void pause_broadcast()  { bcast_pause_.store(true,  std::memory_order_relaxed); }

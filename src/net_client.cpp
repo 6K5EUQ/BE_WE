@@ -1,5 +1,6 @@
 #include "net_client.hpp"
 #include "bewe_paths.hpp"
+#include "login.hpp"
 #include <cstdio>
 
 extern void bewe_log_push(int col, const char* fmt, ...);
@@ -25,8 +26,8 @@ bool NetClient::connect_fd(int fd, const char* id, const char* pw, uint8_t tier)
 
     // socketpair는 로컬 IPC — 타임아웃 불필요 (타임아웃 설정 시 EAGAIN으로 오작동)
 
-    // id 가 비어있으면 USER env → hostname → "guest" 폴백.
-    // (Central / HOST 의 op_list 에 빈 이름이 들어가는 증상 방지)
+    // id 가 비어있으면 login_get_id() 사용 (hostname 폴백은 의도적으로 제외 — Operators 패널에
+    // 컴퓨터 이름이 표시되는 것을 막기 위해). 둘 다 비면 "guest".
     char id_buf[32] = {};
     auto cpy = [&](const char* src) -> bool {
         if(!src || !src[0]) return false;
@@ -34,12 +35,8 @@ bool NetClient::connect_fd(int fd, const char* id, const char* pw, uint8_t tier)
         return id_buf[0] != 0;
     };
     if(!cpy(id))
-        if(!cpy(getenv("USER")))
-            if(!cpy(getenv("LOGNAME"))){
-                char h[64] = {};
-                if(gethostname(h, sizeof(h)-1) == 0) cpy(h);
-                else cpy("guest");
-            }
+        if(!cpy(login_get_id()))
+            cpy("guest");
     // strncpy 도 사용자 id 가 char[32] 꽉 차면 null 안 들어감 → memset 으로 보장
     PktAuthReq req{};
     strncpy(req.id, id_buf, sizeof(req.id) - 1);
@@ -575,6 +572,8 @@ void NetClient::handle_packet(PacketType type,
             std::lock_guard<std::mutex> lk(remote_antenna_mtx);
             memcpy(remote_antenna, hb->antenna, sizeof(remote_antenna));
             remote_antenna[sizeof(remote_antenna)-1] = '\0';
+            memcpy(remote_sdr_kind, hb->sdr_kind, sizeof(remote_sdr_kind));
+            remote_sdr_kind[sizeof(remote_sdr_kind)-1] = '\0';
         }
         auto now = std::chrono::steady_clock::now().time_since_epoch();
         last_heartbeat_time.store(

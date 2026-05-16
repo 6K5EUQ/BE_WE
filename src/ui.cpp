@@ -3280,11 +3280,33 @@ void run_streaming_viewer(){
                                const char* filename, uint64_t filesize,
                                const uint8_t* data, uint32_t data_len){
             std::string fn(filename && filename[0] ? filename : "");
-            // Phase 4 (v3.8.0): selection IQ stream → unified downloads dir
-            // (HOST/Central에 영구 저장 없음 — HOST는 stream 완료 후 temp 파일 삭제)
-            std::string save_dir = BEWEPaths::downloads_dir();
+            // Selection IQ stream → mission archive 레이아웃과 동일하게 저장
+            // (downloads/<station>/<year>/<code>/iq/) — 미션창 LOCAL IQ 탭 스캔 경로와 매칭.
+            // mission 활성 아니면 flat downloads_dir 로 폴백.
+            std::string save_dir;
+            int my = 0; char mc[16] = {}; std::string st;
+            {
+                std::lock_guard<std::mutex> lk(v.mission_mtx);
+                if(v.mission_state == Mission::State::ACTIVE && v.mission_code[0]){
+                    my = v.mission_year;
+                    strncpy(mc, v.mission_code, sizeof(mc)-1);
+                }
+            }
+            st = v.station_name;
             mkdir(BEWEPaths::data_dir().c_str(), 0755);
-            mkdir(save_dir.c_str(), 0755);
+            mkdir(BEWEPaths::downloads_dir().c_str(), 0755);
+            if(my > 0 && mc[0] && !st.empty()){
+                save_dir = BEWEPaths::downloads_mission_dir(st, my, mc, "iq");
+                // mkdir -p the path chain
+                std::string p = BEWEPaths::downloads_dir() + "/" + st;
+                mkdir(p.c_str(), 0755);
+                char ybuf[16]; snprintf(ybuf, sizeof(ybuf), "/%04d", my);
+                p += ybuf;                  mkdir(p.c_str(), 0755);
+                p += "/"; p += mc;          mkdir(p.c_str(), 0755);
+                p += "/iq";                 mkdir(p.c_str(), 0755);
+            } else {
+                save_dir = BEWEPaths::downloads_dir();
+            }
             std::string save_path = save_dir + "/" + fn;
 
             if(seq == 0){
@@ -4929,7 +4951,8 @@ void run_streaming_viewer(){
                 uint8_t h_cpu = (uint8_t)std::min(100.f, std::max(0.f, v.sysmon_cpu));
                 uint8_t h_ram = (uint8_t)std::min(100.f, std::max(0.f, v.sysmon_ram));
                 uint8_t h_ct  = (uint8_t)std::min(255, std::max(0, v.sysmon_cpu_temp_c.load()));
-                v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st, iq_st, h_cpu, h_ram, h_ct, v.host_antenna);
+                const char* sk = v.dev_blade ? "BladeRF" : v.pluto_ctx ? "Pluto" : v.dev_rtl ? "RTL-SDR" : "Unknown";
+                v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st, iq_st, h_cpu, h_ram, h_ct, v.host_antenna, sk);
             }
         }
 
@@ -6570,8 +6593,8 @@ void run_streaming_viewer(){
             }
 
             // ── STAT 패널 ─────────────────────────────────────────────────
-            // 미션 모달 활성 시엔 STATUS 패널 자체를 그리지 않음 — 미션창을 꺼야 보이도록.
-            if(stat_open && !v.mission_modal_open){
+            // 미션 모달이 떠도 STATUS 패널은 그대로 그림 (모달이 자체적으로 위에 올라옴).
+            if(stat_open){
                 float px=rpx, py=rp_content_y, pw=disp_w-rpx, ph=rp_content_h;
                 ImGui::SetNextWindowPos(ImVec2(px,py));
                 ImGui::SetNextWindowSize(ImVec2(pw,ph));
@@ -6611,7 +6634,8 @@ void run_streaming_viewer(){
                         ImGui::Indent(8.f);
                         if(!v.net_srv && !v.net_cli){
                             // LOCAL 단독
-                            const char* nm = v.host_name[0] ? v.host_name : "(no login)";
+                            const char* my_id = login_get_id();
+                            const char* nm = (my_id && my_id[0]) ? my_id : "(no login)";
                             ImGui::TextColored(ImVec4(0.55f,0.9f,0.55f,1.f),
                                 "[LOCAL] %s  [Tier%d]", nm, login_get_tier());
                         } else {
@@ -6628,7 +6652,8 @@ void run_streaming_viewer(){
                                 // HOST 모드: 자신(index=0) 먼저
                                 OpEntry host_e{}; host_e.index=0;
                                 host_e.tier=(uint8_t)login_get_tier();
-                                strncpy(host_e.name, v.host_name[0]?v.host_name:"Host", 31);
+                                const char* my_id = login_get_id();
+                                strncpy(host_e.name, (my_id && my_id[0]) ? my_id : "Host", 31);
                                 draw_op_entry(host_e);
                                 auto joins = v.net_srv->get_operators();
                                 for(auto& op : joins) draw_op_entry(op);
@@ -10072,7 +10097,8 @@ void run_streaming_viewer(){
             if(v.net_srv){
                 // HOST 모드: 내 항목(index=0) 직접 구성 + JOIN 목록
                 OpEntry host_e{}; host_e.index=0; host_e.tier=(uint8_t)login_get_tier();
-                strncpy(host_e.name, v.host_name[0]?v.host_name:"Host", 31);
+                const char* my_id = login_get_id();
+                strncpy(host_e.name, (my_id && my_id[0]) ? my_id : "Host", 31);
                 ops_display.push_back(host_e);
                 auto joins = v.net_srv->get_operators();
                 ops_display.insert(ops_display.end(), joins.begin(), joins.end());
