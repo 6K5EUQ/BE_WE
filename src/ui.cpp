@@ -12865,4 +12865,9 @@ void run_streaming_viewer(){
     ImGui_ImplOpenGL3_Shutdown(); ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext(); glfwTerminate();
     bewe_log_push(2,"Closed\n");
+    fflush(stdout); fflush(stderr);
+    // 모든 명시적 cleanup 완료 후 즉시 종료 — 일부 환경에서 main return 뒤
+    // 정적 destructor / atexit handler (ALSA, X11, driver 등) 에서 hang 하는
+    // 케이스 방지. Ctrl+C 두 번 눌러야 끝나는 증상의 hard-fix.
+    _exit(0);
 }

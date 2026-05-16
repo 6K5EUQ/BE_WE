@@ -778,7 +778,8 @@ void NetServer::broadcast_operator_list(){
             ++cnt;
         }
         for(auto& c : clients_){
-            if(c->is_relay || !c->authed || !c->alive.load()) continue;
+            // is_relay JOIN 도 포함 — Central 경유 접속이라도 c->name 은 AUTH_REQ 시 login_id 로 set
+            if(!c->authed || !c->alive.load()) continue;
             if(cnt >= MAX_OPERATORS) break;
             ol.ops[cnt].index = c->op_index;
             ol.ops[cnt].tier  = c->tier;

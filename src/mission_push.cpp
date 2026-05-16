@@ -365,7 +365,7 @@ void scan_mission_dir_enqueue(int year, const char* code){
     };
     scan(MFS_IQ);
     scan(MFS_AUDIO);
-    scan(MFS_HIST);
+    // HIST 는 Central LWF stream tap 이 직접 archive 에 mirror — HOST push 안 함.
 }
 
 int pending_count(){

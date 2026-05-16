@@ -7,6 +7,7 @@
 // HIST: PUSH 없이 LWF_LIVE_START/ROW/STOP 스트림 tap.
 #include "central_server.hpp"
 #include "../src/net_protocol.hpp"
+#include "../src/long_waterfall.hpp"   // build_hist_filename_finalize
 #include <cstdio>
 #include <cstring>
 #include <cerrno>
@@ -280,6 +281,9 @@ void CentralServer::handle_mission_file_list_req(std::shared_ptr<HostRoom> room,
             // .info sidecar 는 list에서 제외
             size_t nlen = strlen(n);
             if(nlen >= 5 && strcmp(n + nlen - 5, ".info") == 0) continue;
+            // -LIVE.bewehist 는 stream 진행 중인 임시 파일 — finalize 전까지 UI 노출 안 함.
+            // (HIST 는 LWF tap 으로 실시간 mirror; STOP 시 finalize 이름으로 rename.)
+            if(strstr(n, "-LIVE.bewehist")) continue;
             std::string full = dir + "/" + n;
             struct stat st;
             if(stat(full.c_str(), &st) != 0) continue;
@@ -614,6 +618,24 @@ void CentralServer::archive_hist_on_live_stop(std::shared_ptr<HostRoom> room,
         fflush(it->second.fp);
         fclose(it->second.fp);
         it->second.fp = nullptr;
+    }
+    // -LIVE → finalize 이름으로 rename. Host long_waterfall.cpp 와 동일 규칙.
+    // UTC offset = 0 (Central wall-clock 기준; host 측 offset 도 wallclock 과 매우 가까움).
+    std::string base = fname;
+    std::string fin  = LongWaterfall::build_hist_filename_finalize(
+                        base, (uint64_t)time(nullptr), 0);
+    if(fin != base){
+        auto slash = it->second.archive_path.find_last_of('/');
+        std::string dir2 = (slash == std::string::npos) ? ""
+                         : it->second.archive_path.substr(0, slash + 1);
+        std::string finalp = dir2 + fin;
+        if(rename(it->second.archive_path.c_str(), finalp.c_str()) == 0){
+            printf("[Central][Archive] HIST finalize %s -> %s\n", base.c_str(), fin.c_str());
+        } else {
+            printf("[Central][Archive] HIST finalize rename FAIL %s -> %s errno=%d (%s)\n",
+                   it->second.archive_path.c_str(), finalp.c_str(),
+                   errno, strerror(errno));
+        }
     }
     printf("[Central][Archive] HIST stream CLOSE %s (%u rows)\n",
            it->second.archive_path.c_str(), it->second.rows_written);

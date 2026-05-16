@@ -42,7 +42,7 @@ void draw_toast(){
     ImVec2 sz = ImGui::CalcTextSize(g_toast_msg.c_str());
     float  pad = 12.f;
     float  x0 = (io.DisplaySize.x - sz.x) * 0.5f - pad;
-    float  y0 = io.DisplaySize.y * 0.72f;
+    float  y0 = io.DisplaySize.y * 0.86f;
     float  x1 = x0 + sz.x + pad*2;
     float  y1 = y0 + sz.y + pad;
     ImDrawList* fdl = ImGui::GetForegroundDrawList();
@@ -722,9 +722,19 @@ static void open_local_in_viewer(FFTViewer& v, const std::string& path){
         return;
     }
     if(ends_with(".wav")){
+        // 메인 페이지의 우클릭 Signal Analysis 항목과 동일하게 EID + SA 데이터 로드.
         v.sa_temp_path = path;
         v.eid_panel_open = true;
-        // 미션 모달은 닫지 않음 — ESC로 SA만 끄고 미션으로 복귀.
+        v.eid_view_mode = 1;       // Amp 기본
+        v.audio_play_stop();
+        v.eid_audio_cursor_sample = 0;
+        v.eid_cleanup();
+        v.eid_start(path);
+        v.sa_cleanup();
+        v.sa_mode = false;
+        v.sa_view_x0 = 0.f; v.sa_view_x1 = 1.f;
+        v.sa_view_y0 = 0.f; v.sa_view_y1 = 1.f;
+        v.sa_start(path);
         return;
     }
     MissionView::show_toast("No viewer for this file type");
@@ -1114,9 +1124,21 @@ static void draw_delete_confirm_submodal(FFTViewer& v, NetClient* cli){
         ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.7f, 0.2f, 0.2f, 1.f));
         if(ImGui::Button("Delete", ImVec2(120, 0))){
+            // JOIN: Central 에 forward (Central archive wipe + HOST 로 forward → HOST local 정리).
+            //       동시에 자기 측 disk/history 도 정리 (broadcast 받기 전에 즉시 UI 반영).
+            // HOST: 직접 mission_delete (rm_rf + history erase + broadcast).
             if(cli) cli->send_mission_delete(g_del_year, g_del_code.c_str());
-            else    v.mission_delete(g_del_year, g_del_code.c_str());
-            // 선택 미션이 삭제 대상이었으면 좌측 트리 선택 해제
+            v.mission_delete(g_del_year, g_del_code.c_str());
+            // Central archive 캐시도 즉시 정리 — 다음 LIST_REQ 가 빈 결과 받을 때까지 갭 방지.
+            {
+                std::lock_guard<std::mutex> lk(g_cf_mtx);
+                g_cf_rows.erase(std::remove_if(g_cf_rows.begin(), g_cf_rows.end(),
+                    [&](const CentralFileRow& r){
+                        return r.year == g_del_year &&
+                               strncmp(r.code, g_del_code.c_str(), 8) == 0;
+                    }), g_cf_rows.end());
+            }
+            g_cf_last_req_time = 0;  // 다음 프레임 즉시 refresh
             if(g_sel_year == g_del_year && g_sel_code == g_del_code){
                 g_sel_year = 0; g_sel_code.clear();
             }

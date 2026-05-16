@@ -1359,7 +1359,15 @@ void CentralServer::build_and_broadcast_op_list(std::shared_ptr<HostRoom> room){
     uint8_t* p = buf + 1;
     p[0] = 0;  // index=0 (HOST)
     p[1] = room->host_tier;
-    strncpy((char*)(p+2), room->host_name, 31);
+    // HOST 표시는 HOST 의 login_id 우선 (HOST_STATE 의 operator_login).
+    // HOST_STATE 아직 미수신이면 fallback: host_name (station_name 으로 채워진 값).
+    const char* host_label = room->host_name;
+    {
+        std::lock_guard<std::mutex> sk(room->state_mtx);
+        if(room->has_state && room->state.operator_login[0])
+            host_label = room->state.operator_login;
+    }
+    strncpy((char*)(p+2), host_label, 31);
     p += BEWE_OP_ENTRY_SIZE;
     count++;
 
