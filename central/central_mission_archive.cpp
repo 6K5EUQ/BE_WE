@@ -281,11 +281,22 @@ void CentralServer::handle_mission_file_list_req(std::shared_ptr<HostRoom> room,
             // .info sidecar 는 list에서 제외
             size_t nlen = strlen(n);
             if(nlen >= 5 && strcmp(n + nlen - 5, ".info") == 0) continue;
-            // -LIVE.bewehist 는 stream 진행 중인 mirror. 다운로드/조회 모두 허용 — 표시.
             std::string full = dir + "/" + n;
             struct stat st;
             if(stat(full.c_str(), &st) != 0) continue;
             if(!S_ISREG(st.st_mode)) continue;
+            // Stale -LIVE.bewehist: mtime 이 30초 이상 안 변경됐으면 host stream 끊긴 것으로 판단.
+            // 자동 unlink + LIST 에서 제외 — 다른 사용자에게 보이지 않게 유지.
+            if(strstr(n, "-LIVE.bewehist")){
+                time_t now = time(nullptr);
+                if(st.st_mtime + 30 < now){
+                    printf("[Central][Archive] purge stale LIVE %s (mtime=%ld now=%ld)\n",
+                           full.c_str(), (long)st.st_mtime, (long)now);
+                    unlink(full.c_str());
+                    unlink((full + ".info").c_str());
+                    continue;
+                }
+            }
             MissionFileEntry e{};
             strncpy(e.station, station_s.c_str(), sizeof(e.station)-1);
             e.year = y;

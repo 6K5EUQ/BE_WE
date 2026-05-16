@@ -15,6 +15,47 @@ static void fmt_time_hms(char* out, size_t sz, const struct tm& tm_loc){
     strftime(out, sz, "%H:%M:%S", &tm_loc);
 }
 
+// 새 파일명 형식: <prefix>_<mission_code>_<YYYY>_<freq>MHz_<HHMMSS>.wav
+// prefix = "IQ" / "DE", time = KST. stop 시 add_end_hms_to_path() 로 -<HHMMSS> 추가.
+static std::string build_iq_demod_filename(FFTViewer& v, const char* prefix,
+                                           double cf_mhz, const struct tm& kst_tm){
+    char mcode[16] = {};
+    {
+        std::lock_guard<std::mutex> lk(v.mission_mtx);
+        if(v.mission_state == Mission::State::ACTIVE)
+            strncpy(mcode, v.mission_code, sizeof(mcode) - 1);
+    }
+    if(!mcode[0]) strcpy(mcode, "NOMSN");
+    char hms[16]; strftime(hms, sizeof(hms), "%H%M%S", &kst_tm);
+    int year = 1900 + kst_tm.tm_year;
+    char buf[256];
+    snprintf(buf, sizeof(buf), "%s_%s_%04d_%.3fMHz_%s.wav",
+             prefix, mcode, year, cf_mhz, hms);
+    return buf;
+}
+
+// stop 시점에 path 의 .wav 직전에 -<end_HHMMSS> 삽입한 새 path 반환.
+static std::string add_end_hms_to_path(const std::string& path, const struct tm& kst_end){
+    char hms[16]; strftime(hms, sizeof(hms), "%H%M%S", &kst_end);
+    auto dot = path.rfind(".wav");
+    if(dot == std::string::npos) return path;
+    return path.substr(0, dot) + "-" + hms + path.substr(dot);
+}
+
+// stop 시 src → dst rename + .info sidecar 도 함께 이동.
+static std::string rename_with_end_hms(const std::string& old_path){
+    time_t te = time(nullptr);
+    struct tm te_tm; KST::to_tm(te, te_tm);
+    std::string new_path = add_end_hms_to_path(old_path, te_tm);
+    if(new_path != old_path){
+        if(rename(old_path.c_str(), new_path.c_str()) == 0){
+            rename((old_path + ".info").c_str(), (new_path + ".info").c_str());
+            return new_path;
+        }
+    }
+    return old_path;
+}
+
 // ── 녹음 .info 자동 생성 ─────────────────────────────────────────────────
 // source_type 파라미터는 Recorder 필드(장비 이름)로 사용됨
 // utc_offset_hours = INT_MIN이면 시스템 TZ 사용
@@ -190,12 +231,22 @@ void FFTViewer::rec_worker(){
     if(actual_sr > 0)
         update_info_file_duration(rec_filename, (double)rec_frames.load() / (double)actual_sr);
 
-    // RecEntry 완료 표시
+    // stop 시점 KST HHMMSS 를 파일명 끝에 -<HHMMSS> 로 추가 (rename).
+    std::string new_path = rename_with_end_hms(rec_filename);
+
+    // RecEntry 완료 표시 (rename 후 경로)
     {
         std::lock_guard<std::mutex> lk(rec_entries_mtx);
         for(auto& e : rec_entries)
-            if(e.path==rec_filename){ e.finished=true; break; }
+            if(e.path == rec_filename){
+                e.path = new_path;
+                std::string s = new_path; auto pos = s.rfind('/');
+                e.filename = (pos==std::string::npos) ? s : s.substr(pos+1);
+                e.finished = true;
+                break;
+            }
     }
+    rec_filename = new_path;
 
     // Central archive 로 push (활성 미션 + Central 연결 시에만 실제 전송 — worker 가 검증)
     if(rec_frames.load() > 0)
@@ -222,9 +273,8 @@ void FFTViewer::start_rec(){
         MissionView::show_toast("No active mission - Start a mission first (M key)");
         return;
     }
-    char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
-    snprintf(fn,sizeof(fn),"%s/IQ_%.3fMHz_%s.wav",rec_dir.c_str(),
-             rec_cf_mhz, dts);
+    std::string base = build_iq_demod_filename(*this, "IQ", rec_cf_mhz, tm2);
+    snprintf(fn, sizeof(fn), "%s/%s", rec_dir.c_str(), base.c_str());
     rec_filename=fn;
     rec_frames.store(0);
     rec_rp.store(ring_wp.load());
@@ -286,9 +336,10 @@ void FFTViewer::start_audio_rec(int ch_idx){
         return;
     }
     float cf_mhz=(ch.s+ch.e)/2.0f;
-    char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
-    snprintf(fn,sizeof(fn),"%s/DEMOD_%.3fMHz_%s.wav",
-             rec_dir.c_str(), cf_mhz, dts);
+    {
+        std::string base = build_iq_demod_filename(*this, "DE", cf_mhz, tm2);
+        snprintf(fn, sizeof(fn), "%s/%s", rec_dir.c_str(), base.c_str());
+    }
 
     FILE* fp=fopen(fn,"wb");
     if(!fp){ bewe_log("Audio REC: cannot open %s\n",fn); return; }
@@ -355,18 +406,24 @@ void FFTViewer::stop_audio_rec(int ch_idx){
     bewe_log("Audio REC done: %llu frames → %s\n",
              (unsigned long long)ch.audio_rec_frames, ch.audio_rec_path.c_str());
 
-    // .info Duration 갱신
     if(ch.audio_rec_sr > 0)
         update_info_file_duration(ch.audio_rec_path,
                                   (double)ch.audio_rec_frames / (double)ch.audio_rec_sr);
 
-    // RecEntry 완료 표시
+    // stop 시점 KST HHMMSS rename
+    std::string new_path = rename_with_end_hms(ch.audio_rec_path);
     {
         std::lock_guard<std::mutex> lk(rec_entries_mtx);
         for(auto& e : rec_entries)
-            if(e.path==ch.audio_rec_path){ e.finished=true; break; }
+            if(e.path == ch.audio_rec_path){
+                e.path = new_path;
+                std::string s = new_path; auto pos = s.rfind('/');
+                e.filename = (pos==std::string::npos) ? s : s.substr(pos+1);
+                e.finished = true;
+                break;
+            }
     }
-    // Mission File Push: 미션 dir 내 audio 파일이면 Central archive로 업로드 후 unlink
+    ch.audio_rec_path = new_path;
     MissionPush::enqueue(ch.audio_rec_path, MFS_AUDIO);
     ch.audio_rec_path.clear();
 }
@@ -509,9 +566,8 @@ void FFTViewer::start_iq_rec(int ch_idx){
                  cf_mhz);
         pending_sched_meta.active = false;
     } else {
-        char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
-        snprintf(fn,sizeof(fn),"%s/IQ_%.3fMHz_%s.wav",
-                 rec_dir.c_str(), cf_mhz, dts);
+        std::string base = build_iq_demod_filename(*this, "IQ", cf_mhz, tm2);
+        snprintf(fn, sizeof(fn), "%s/%s", rec_dir.c_str(), base.c_str());
     }
 
     FILE* fp=fopen(fn,"wb");
@@ -596,12 +652,20 @@ void FFTViewer::stop_iq_rec(int ch_idx){
     if(ch.iq_rec_sr > 0)
         update_info_file_duration(ch.iq_rec_path,
                                   (double)ch.iq_rec_frames / (double)ch.iq_rec_sr);
+    // stop 시점 KST HHMMSS rename
+    std::string new_path = rename_with_end_hms(ch.iq_rec_path);
     {
         std::lock_guard<std::mutex> lk(rec_entries_mtx);
         for(auto& e : rec_entries)
-            if(e.path==ch.iq_rec_path){ e.finished=true; break; }
+            if(e.path == ch.iq_rec_path){
+                e.path = new_path;
+                std::string s = new_path; auto pos = s.rfind('/');
+                e.filename = (pos==std::string::npos) ? s : s.substr(pos+1);
+                e.finished = true;
+                break;
+            }
     }
-    // Mission File Push: 미션 dir 내 IQ 파일이면 Central archive로 업로드 후 unlink
+    ch.iq_rec_path = new_path;
     MissionPush::enqueue(ch.iq_rec_path, MFS_IQ);
     ch.iq_rec_path.clear();
 }
@@ -624,8 +688,10 @@ void FFTViewer::start_join_audio_rec(int ch_idx){
         return;
     }
     float cf_mhz=(ch.s+ch.e)/2.0f;
-    char dts[32]; strftime(dts,sizeof(dts),"%b%d_%Y_%H%M%S",&tm2);
-    snprintf(fn,sizeof(fn),"%s/DEMOD_%.3fMHz_%s.wav",rec_dir.c_str(),cf_mhz,dts);
+    {
+        std::string base = build_iq_demod_filename(*this, "DE", cf_mhz, tm2);
+        snprintf(fn, sizeof(fn), "%s/%s", rec_dir.c_str(), base.c_str());
+    }
 
     FILE* fp=fopen(fn,"wb");
     if(!fp){ bewe_log("JOIN Audio REC: cannot open %s\n",fn); return; }
@@ -692,10 +758,19 @@ void FFTViewer::stop_join_audio_rec(int ch_idx){
     if(ch.audio_rec_sr > 0)
         update_info_file_duration(ch.audio_rec_path,
                                   (double)ch.audio_rec_frames / (double)ch.audio_rec_sr);
+    // stop 시점 KST HHMMSS rename — LOCAL DEMOD 에 보일 최종 파일명
+    std::string new_path = rename_with_end_hms(ch.audio_rec_path);
     {
         std::lock_guard<std::mutex> lk(rec_entries_mtx);
         for(auto& e : rec_entries)
-            if(e.path==ch.audio_rec_path){ e.finished=true; break; }
+            if(e.path == ch.audio_rec_path){
+                e.path = new_path;
+                std::string s = new_path; auto pos = s.rfind('/');
+                e.filename = (pos==std::string::npos) ? s : s.substr(pos+1);
+                e.finished = true;
+                break;
+            }
     }
+    ch.audio_rec_path = new_path;
     ch.audio_rec_path.clear();
 }

@@ -896,12 +896,18 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
         return;
     }
     poll_dl_speed();
-    std::string dl_dir = BEWEPaths::downloads_dir();
     ImGui::BeginChild("##cf_scroll", ImVec2(0, 0), false);
     for(auto& r : rows){
         float pw = ImGui::GetContentRegionAvail().x;
         ImGui::PushID(r.filename);
 
+        // 미션별 다운로드 폴더에서 already_dl 검사 (start_download 와 동일 경로).
+        const char* sub_name = (r.subdir == MFS_IQ)    ? "iq"
+                              : (r.subdir == MFS_AUDIO) ? "audio"
+                              : (r.subdir == MFS_HIST)  ? "hist"
+                              : "misc";
+        std::string dl_dir  = BEWEPaths::downloads_mission_dir(r.station, r.year,
+                                                               r.code, sub_name);
         std::string dl_path = dl_dir + "/" + r.filename;
         bool already_dl = (access(dl_path.c_str(), F_OK) == 0);
         bool downloading = false;
@@ -972,9 +978,13 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
     ImGui::EndChild();
 }
 
+struct LocalFileEntry { std::string name; uint64_t size; time_t mtime; std::string full; };
+
 static void draw_local_list(FFTViewer& v, NetClient* cli){
-    // 미션별 LOCAL: 선택된 mission 의 ~/BE_WE/downloads/<station>/<year>/<code>/{iq,audio,hist}/
-    // 각 sub 별로 list_dir 스캔.
+    // 미션별 LOCAL: 두 위치를 합쳐 표시.
+    //   (a) ~/BE_WE/downloads/<station>/<year>/<code>/{iq,audio,hist}/   ← 다운로드 캐시
+    //   (b) ~/BE_WE/recordings/missions/<year>/<code>/{iq,audio,hist}/   ← 머신 로컬 녹음
+    //       (JOIN 의 선택영역/Demod 녹음, HOST 의 push 전 임시 파일)
     if(g_sel_year == 0 || g_sel_code.empty() || g_cf_req_station[0] == 0){
         ImGui::TextDisabled("Select a mission to see its local downloads.");
         return;
@@ -984,14 +994,35 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
     std::string code = g_sel_code;
     const char* subs_name[3] = {"iq", "audio", "hist"};
     const char* labels[3]    = {"IQ", "DEMOD", "HIST"};
-    std::vector<FileItem> by[3];
-    std::string dirs[3];
+
+    auto scan_into = [&](const std::string& dir, std::vector<LocalFileEntry>& out){
+        auto items = list_dir(dir, nullptr);
+        for(auto& it : items){
+            if(is_info_file(it.name)) continue;
+            LocalFileEntry e;
+            e.name = it.name; e.size = it.size; e.mtime = it.mtime;
+            e.full = dir + "/" + it.name;
+            // 중복 (downloads + missions 둘 다에 같은 이름) 제거 — 더 최신 mtime 우선
+            bool found = false;
+            for(auto& ex : out) if(ex.name == it.name){
+                if(it.mtime > ex.mtime) ex = std::move(e);
+                found = true; break;
+            }
+            if(!found) out.push_back(std::move(e));
+        }
+    };
+
+    std::vector<LocalFileEntry> by[3];
     for(int s = 0; s < 3; s++){
-        dirs[s] = BEWEPaths::downloads_mission_dir(station, year, code, subs_name[s]);
-        by[s]   = list_dir(dirs[s], nullptr);
-        by[s].erase(std::remove_if(by[s].begin(), by[s].end(),
-            [](const FileItem& f){ return is_info_file(f.name); }),
-            by[s].end());
+        scan_into(BEWEPaths::downloads_mission_dir(station, year, code, subs_name[s]), by[s]);
+        // 머신 로컬 mission 폴더 (JOIN region/demod 녹음, HOST push 임시).
+        std::string mi_dir = (s == 0) ? BEWEPaths::mission_iq_dir(year, code.c_str())
+                            : (s == 1) ? BEWEPaths::mission_audio_dir(year, code.c_str())
+                            :            BEWEPaths::mission_hist_dir(year, code.c_str());
+        scan_into(mi_dir, by[s]);
+        // mtime 내림차순 정렬
+        std::sort(by[s].begin(), by[s].end(),
+            [](const LocalFileEntry& a, const LocalFileEntry& b){ return a.mtime > b.mtime; });
     }
 
     char hdr[256];
@@ -1011,9 +1042,9 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
             ImGui::Spacing();
             continue;
         }
-        for(const FileItem& it : by[s]){
+        for(const LocalFileEntry& it : by[s]){
             float pw = ImGui::GetContentRegionAvail().x;
-            std::string full = dirs[s] + "/" + it.name;
+            const std::string& full = it.full;
             ImGui::PushID(it.name.c_str());
 
             bool sel = (g_sel_kind == SelKind::LOCAL && g_sel_local_path == full);

@@ -698,11 +698,14 @@ public:
                 (unsigned long long)(s%60));
         }
         char sbuf[16];
-        if(bytes < (1ULL<<30)) snprintf(sbuf, sizeof(sbuf), "%5.1fM", bytes/1048576.0);
-        else                   snprintf(sbuf, sizeof(sbuf), "%5.1fG", bytes/(1024.0*1024.0*1024.0));
+        // 통일 형식: "%.1f MB" (IQ/DEMOD 동일).
+        if(bytes >= (1ULL<<30))      snprintf(sbuf, sizeof(sbuf), "%.1f GB", bytes/(1024.0*1024.0*1024.0));
+        else if(bytes >= (1ULL<<20)) snprintf(sbuf, sizeof(sbuf), "%.1f MB", bytes/(1024.0*1024.0));
+        else if(bytes >= (1ULL<<10)) snprintf(sbuf, sizeof(sbuf), "%.1f KB", bytes/1024.0);
+        else                          snprintf(sbuf, sizeof(sbuf), "%llu B", (unsigned long long)bytes);
         char buf[40];
         if(tbuf[0]) snprintf(buf, sizeof(buf), "%s %s", tbuf, sbuf);
-        else        snprintf(buf, sizeof(buf), "         %s", sbuf);
+        else        snprintf(buf, sizeof(buf), "%s", sbuf);
         return buf;
     }
 

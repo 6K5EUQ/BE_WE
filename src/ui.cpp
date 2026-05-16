@@ -93,10 +93,11 @@ static std::string fmt_filesize(const std::string& dir, const std::string& fname
     if(stat(path.c_str(), &st) != 0) return "";
     double sz = (double)st.st_size;
     char buf[32];
-    if(sz >= 1e9)       snprintf(buf,sizeof(buf),"[%.1fG]",sz/1e9);
-    else if(sz >= 1e6)  snprintf(buf,sizeof(buf),"[%.1fM]",sz/1e6);
-    else if(sz >= 1e3)  snprintf(buf,sizeof(buf),"[%.1fK]",sz/1e3);
-    else                snprintf(buf,sizeof(buf),"[%dB]",(int)sz);
+    // 통일 형식: "%.1f MB" — IQ/DEMOD 영역 모두 같은 표시.
+    if(sz >= 1024.0*1024.0*1024.0) snprintf(buf,sizeof(buf),"%.1f GB", sz/(1024.0*1024.0*1024.0));
+    else if(sz >= 1024.0*1024.0)   snprintf(buf,sizeof(buf),"%.1f MB", sz/(1024.0*1024.0));
+    else if(sz >= 1024.0)          snprintf(buf,sizeof(buf),"%.1f KB", sz/1024.0);
+    else                            snprintf(buf,sizeof(buf),"%d B", (int)sz);
     return buf;
 }
 
@@ -5542,28 +5543,7 @@ void run_streaming_viewer(){
                     v.net_cli->cmd_toggle_fft_recv(/*enable=*/!np);
                 }
             }
-            // T키: IQ 롤링 버퍼 활성/비활성 (JOIN이면 HOST에 CMD 전송)
-            if(ImGui::IsKeyPressed(ImGuiKey_T,false)){
-                if(v.remote_mode && v.net_cli){
-                    v.net_cli->cmd_toggle_tm_iq();
-                } else {
-                    bool cur=v.tm_iq_on.load();
-                    if(cur){
-                        v.tm_iq_on.store(false);
-                        v.tm_add_event_tag(2);
-                        v.tm_iq_was_stopped=true;
-                        if(v.net_srv) v.net_srv->broadcast_wf_event(0,(int64_t)time(nullptr),2,"IQ Stop");
-                    } else {
-                        if(v.tm_iq_was_stopped){ v.tm_iq_close(); v.tm_iq_was_stopped=false; }
-                        v.tm_iq_open();
-                        if(v.tm_iq_file_ready){
-                            v.tm_iq_on.store(true);
-                            v.tm_add_event_tag(1);
-                            if(v.net_srv) v.net_srv->broadcast_wf_event(0,(int64_t)time(nullptr),1,"IQ Start");
-                        }
-                    }
-                }
-            }
+            // (T 키 매핑 제거 — 사용자 요청. IQ rolling 은 항상 HOST 측에서 자동 관리)
             // 스페이스바: TM 토글 (진입/해제)
             // EID Audio 탭(mode 8) 활성 시에는 audio play/pause 전용 — TM 토글 비활성
             if(ImGui::IsKeyPressed(ImGuiKey_Space,false)
@@ -5748,9 +5728,16 @@ void run_streaming_viewer(){
             if(v.sig_lib_panel_open != prev_lib){ v.sig_lib_panel_open ? push_ov(5) : pop_ov(5); prev_lib=v.sig_lib_panel_open; }
             if(v.mission_modal_open != prev_mission){ v.mission_modal_open ? push_ov(6) : pop_ov(6); prev_mission=v.mission_modal_open; }
         }
-        // (S 키는 SA viewer 토글로 재배정됨 — 아래 viewer 토글 블록 참고.
-        //  STATUS 패널은 상단 STATUS 버튼 클릭으로만 토글)
-        (void)right_panel_saved_ratio;
+        // S키: 메인 STATUS 패널 토글. 다른 오버레이 활성 시엔 그쪽이 S 키 소비.
+        if(main_kbd_active
+           && ImGui::IsKeyPressed(ImGuiKey_S, false) && !ImGui::GetIO().WantTextInput){
+            if(v.right_panel_ratio > 0.01f){
+                right_panel_saved_ratio = v.right_panel_ratio;
+                v.right_panel_ratio = 0.0f;
+            } else {
+                v.right_panel_ratio = (right_panel_saved_ratio > 0.01f) ? right_panel_saved_ratio : 0.3f;
+            }
+        }
 
         // (v4.0: 1/2/3 키로 STATUS/ARCHIVE/SCHED 전환 기능 제거 —
         // ARCHIVE/SCHED가 mission 창에 흡수되어 STATUS만 남음)
@@ -6112,11 +6099,11 @@ void run_streaming_viewer(){
         };
 
         // viewer(SA/HIST/SIG_LIB)가 떠 있으면 글로벌 토글 핫키 중 L/M/B 는 무시.
-        // S(SA) / H(HIST) 는 자기 자신 토글이므로 viewer 위에서도 켜기/끄기 가능.
+        // E(SA) / H(HIST) 는 자기 자신 토글이므로 viewer 위에서도 켜기/끄기 가능.
         bool viewer_open_blocking = v.eid_panel_open || v.lwf_modal_open || v.sig_lib_panel_open;
 
-        // ── SA (Signal Analysis) 토글 — S 키 (viewer 위에서도 토글 가능) ──
-        if(ImGui::IsKeyPressed(ImGuiKey_S, false) && !io.WantTextInput
+        // ── SA (Signal Analysis) 토글 — E 키 (viewer 위에서도 토글 가능) ──
+        if(ImGui::IsKeyPressed(ImGuiKey_E, false) && !io.WantTextInput
            && !ImGui::IsAnyItemActive()){
             if(try_toggle(0, v.eid_panel_open) && v.eid_panel_open){
                 if(!v.sa_temp_path.empty() &&
