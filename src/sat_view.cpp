@@ -291,6 +291,14 @@ namespace {
     }
 }
 
+void sat_view_update_tle() {
+    sat_tle_fetch(true);
+    sat_tle_refresh_soi(true);
+    sat_view_init();
+    if (g_mode == SAT_ALL) ensure_all_loaded();
+    fprintf(stderr, "[sat_view] TLE manually updated\n");
+}
+
 void sat_view_draw(GlobeRenderer& globe, ImGuiIO& io, time_t now_utc) {
     // ── Bottom-left control: ALL / SOI / OFF ─────────────────────────────
     {
@@ -326,18 +334,7 @@ void sat_view_draw(GlobeRenderer& globe, ImGuiIO& io, time_t now_utc) {
         ImGui::RadioButton("SOI", &g_mode, SAT_SOI); ImGui::SameLine();
         ImGui::RadioButton("OFF", &g_mode, SAT_OFF);
 
-        // Manual TLE update button, centered on its own row.
-        const char* btn = "Update TLE";
-        float btn_w = ImGui::CalcTextSize(btn).x
-                    + ImGui::GetStyle().FramePadding.x * 2.f;
-        if (avail_w > btn_w)
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail_w - btn_w) * 0.5f);
-        if (ImGui::SmallButton(btn)) {
-            sat_tle_fetch(true);
-            sat_tle_refresh_soi(true);
-            sat_view_init();
-            if (g_mode == SAT_ALL) ensure_all_loaded();
-        }
+        // (Update TLE 버튼 제거 — chat 입력 `/Update TLEs` 명령어로 트리거)
         ImGui::End();
         ImGui::PopStyleColor();
         ImGui::PopStyleVar();
@@ -352,7 +349,10 @@ void sat_view_draw(GlobeRenderer& globe, ImGuiIO& io, time_t now_utc) {
         && sat_visible((size_t)g_selected) && !g_orbit.wpts.empty()) {
         const TleElem& e = g_sats[g_selected];
         double sel_alt   = e.semi_major_km - R_EARTH_KM;
-        ImU32  col_orbit = with_alpha(band_color_rgb(sel_alt), 220);
+        // Starlink 는 점이 흰색이라 궤도도 흰색으로 통일.
+        ImU32  col_orbit = e.is_starlink
+                         ? with_alpha(IM_COL32(255, 255, 255, 0), 220)
+                         : with_alpha(band_color_rgb(sel_alt), 220);
 
         int N = (int)g_orbit.wpts.size();
         double dur = (double)(g_orbit.t_end - g_orbit.t_start);

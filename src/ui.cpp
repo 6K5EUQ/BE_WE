@@ -2143,6 +2143,10 @@ void run_streaming_viewer(){
                     early_do_shutdown = true;
                 } else if(s == "/logout"){
                     early_do_logout = true;
+                } else if(s == "/Update TLEs" || s == "/update_tle" || s == "/UpdateTLEs"){
+                    push("System", "TLE update started ...", false);
+                    sat_view_update_tle();
+                    push("System", "TLE update done.", false);
                 } else if(s == "/main" || s == "/chassis 1 reset" || s == "/chassis 2 reset"){
                     push("System", "Not available here.", true);
                 } else {
@@ -2593,7 +2597,7 @@ void run_streaming_viewer(){
                 ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar|
                 ImGuiWindowFlags_NoNav);
             {
-                const char* hdr = "Open Sessions";
+                const char* hdr = "Active Station";
                 ImVec2 hsz = ImGui::CalcTextSize(hdr);
                 float avail = ImGui::GetContentRegionAvail().x;
                 ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - hsz.x) * 0.5f);
@@ -2605,12 +2609,24 @@ void run_streaming_viewer(){
                 ImVec4 mode_col = (cs.mode == "host")
                     ? ImVec4(0.30f,0.85f,0.40f,1.f)
                     : ImVec4(0.40f,0.70f,1.00f,1.f);
-                ImGui::TextColored(mode_col, "%-4s", cs.mode.c_str());
+                // 한 row: [mode 좌측] [station 중앙] [X 우측]
+                float cx_min = ImGui::GetWindowContentRegionMin().x;
+                float cx_max = ImGui::GetWindowContentRegionMax().x;
+                float row_w  = cx_max - cx_min;
+
+                ImGui::TextColored(mode_col, "%s", cs.mode.c_str());
+
+                ImVec2 nsz = ImGui::CalcTextSize(cs.station_name.c_str());
                 ImGui::SameLine();
-                ImGui::Text("%-14s", cs.station_name.c_str());
-                ImGui::SameLine();
+                ImGui::SetCursorPosX(cx_min + (row_w - nsz.x) * 0.5f);
+                ImGui::TextUnformatted(cs.station_name.c_str());
+
                 char btn_id[32];
                 snprintf(btn_id, sizeof(btn_id), "X##cs%d", (int)cs.pid);
+                ImVec2 bsz = ImGui::CalcTextSize("X");
+                float btn_w = bsz.x + ImGui::GetStyle().FramePadding.x * 2.f;
+                ImGui::SameLine();
+                ImGui::SetCursorPosX(cx_max - btn_w);
                 if(ImGui::SmallButton(btn_id)) close_pid = cs.pid;
             }
             if(close_pid > 0) kill(close_pid, SIGTERM);
@@ -9839,7 +9855,12 @@ void run_streaming_viewer(){
                     chat_scroll_bottom = true;
                 };
                 if(chat_str[0] == '/'){
-                    if(chat_str == "/shutdown"){
+                    if(chat_str == "/Update TLEs" || chat_str == "/update_tle"
+                       || chat_str == "/UpdateTLEs"){
+                        push_local("System", "TLE update started ...", false);
+                        sat_view_update_tle();
+                        push_local("System", "TLE update done.", false);
+                    } else if(chat_str == "/shutdown"){
                         // 프로그램 완전 종료
                         glfwSetWindowShouldClose(win, GLFW_TRUE);
 
