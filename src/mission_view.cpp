@@ -538,22 +538,21 @@ static void draw_current_session(FFTViewer& v){
 static void maybe_request_central_list(FFTViewer& v, NetClient* cli){
     if(!cli) return;
     if(g_sel_year == 0 || g_sel_code.empty()) return;
-    // station 결정: active mission 의 station_name (or history entry's station)
+    // station 결정: 우선 v.station_name (현재 연결 station) — 같은 코드의 다른 station 미션을
+    // 잘못 잡지 않도록. 없으면 active mission, 없으면 history (현재 station 매칭 우선).
     char station[64] = {};
     {
         std::lock_guard<std::mutex> lk(v.mission_mtx);
-        bool found = false;
-        if(v.mission_state == Mission::State::ACTIVE &&
-           v.mission_year == g_sel_year &&
-           strncmp(v.mission_code, g_sel_code.c_str(), 8) == 0){
+        if(!v.station_name.empty()){
+            strncpy(station, v.station_name.c_str(), sizeof(station) - 1);
+        } else if(v.mission_state == Mission::State::ACTIVE &&
+                  v.mission_year == g_sel_year &&
+                  strncmp(v.mission_code, g_sel_code.c_str(), 8) == 0){
             strncpy(station, v.mission_station_name, sizeof(station) - 1);
-            found = true;
-        }
-        if(!found){
+        } else {
             for(auto& e : v.mission_history){
                 if(e.year == g_sel_year && strncmp(e.code, g_sel_code.c_str(), 8) == 0){
                     strncpy(station, e.station_name, sizeof(station) - 1);
-                    found = true;
                     break;
                 }
             }
@@ -1259,6 +1258,9 @@ static void draw_left_tree(FFTViewer& v){
     }
     ImGui::Separator();
 
+    // 현재 station — JOIN 연결 station 또는 HOST 자기 station. left tree 를 이 station 의
+    // 미션으로 필터링. cur_station 비면 LOCAL 모드 fallback (전부 표시).
+    std::string cur_station = v.station_name;
     int act_year = 0;
     std::string act_code;
     {
@@ -1267,13 +1269,33 @@ static void draw_left_tree(FFTViewer& v){
             act_year = v.mission_year;
             act_code = v.mission_code;
         }
+        if(cur_station.empty() && v.mission_station_name[0])
+            cur_station = v.mission_station_name;
+    }
+
+    if(!cur_station.empty()){
+        ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.0f, 1.f), "Station: %s", cur_station.c_str());
+        ImGui::Separator();
     }
 
     auto disk = scan_disk_missions();
+    // station 필터: cur_station 비면 통과 (legacy/LOCAL), 있으면 일치 + station 비어있는 항목만.
+    if(!cur_station.empty()){
+        disk.erase(std::remove_if(disk.begin(), disk.end(),
+            [&](const DiskMission& d){
+                return !d.station.empty() && d.station != cur_station;
+            }), disk.end());
+    }
     if(act_year > 0){
         bool found = false;
         for(auto& d : disk) if(d.year == act_year && d.code == act_code){ found = true; break; }
-        if(!found) disk.insert(disk.begin(), {act_year, act_code});
+        if(!found){
+            DiskMission act{};
+            act.year    = act_year;
+            act.code    = act_code;
+            act.station = cur_station;
+            disk.insert(disk.begin(), act);
+        }
     }
     std::map<int, std::vector<std::string>, std::greater<int>> by_year;
     for(auto& d : disk) by_year[d.year].push_back(d.code);
