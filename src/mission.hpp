@@ -1,8 +1,8 @@
 #pragma once
 // SIGINT Mission System — 운영자 단위 미션 lifecycle.
-// 미션 ID: 'A03' (월 letter A-L + 일 DD). 1년 안에서 고유.
+// 미션 ID: 'A03' (월 letter A-L + 일 DD). 1년 안에서 고유 (station 별).
 // 라이프사이클: 수동 Start/End + UTC 0시 자동 rollover.
-// 파일 조직: recordings/missions/<year>/<code>/{iq,audio,hist}/
+// 파일 조직: recordings/missions/<station>/<year>/<code>/{iq,audio,hist}/ (v3.20.0+ )
 
 #include <cstdint>
 #include <cstdio>

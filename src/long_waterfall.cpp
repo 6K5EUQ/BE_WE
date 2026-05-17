@@ -464,30 +464,46 @@ void finalize_stale_live_all(){
         if(!md.empty()) finalize_stale_live_in_dir(md, cur_base);
     }
     // 모든 미션 디렉토리 (지난 미션의 stale LIVE도 정리)
+    // v3.20.0 layout: missions/<station>/<year>/<code>/hist/ — 3 단계 루프.
     DIR* dr = opendir(BEWEPaths::missions_root().c_str());
     if(!dr) return;
     struct dirent* de;
     while((de = readdir(dr)) != nullptr){
-        const char* n = de->d_name;
-        if(!n || n[0]=='.') continue;
-        if(strlen(n) != 4) continue;
-        bool num = true;
-        for(int i=0;i<4;i++) if(n[i]<'0'||n[i]>'9'){ num=false; break; }
-        if(!num) continue;
-        std::string ydir = BEWEPaths::missions_root() + "/" + n;
-        DIR* dy = opendir(ydir.c_str());
-        if(!dy) continue;
-        struct dirent* de2;
-        while((de2 = readdir(dy)) != nullptr){
-            const char* m = de2->d_name;
-            if(!m || m[0]=='.') continue;
-            std::string hd = ydir + "/" + m + "/hist";
-            struct stat st;
-            if(stat(hd.c_str(), &st) == 0 && S_ISDIR(st.st_mode)){
-                finalize_stale_live_in_dir(hd, cur_base);
-            }
+        const char* sname = de->d_name;
+        if(!sname || sname[0]=='.') continue;
+        // 4자리 숫자(YYYY) 폴더는 legacy — 마이그레이션 안 됐으면 무시.
+        if(strlen(sname) == 4){
+            bool all_digit = true;
+            for(int i=0;i<4;i++) if(sname[i]<'0'||sname[i]>'9'){ all_digit=false; break; }
+            if(all_digit) continue;
         }
-        closedir(dy);
+        std::string sdir = BEWEPaths::missions_root() + "/" + sname;
+        DIR* ds = opendir(sdir.c_str());
+        if(!ds) continue;
+        struct dirent* de_y;
+        while((de_y = readdir(ds)) != nullptr){
+            const char* yn = de_y->d_name;
+            if(!yn || yn[0]=='.') continue;
+            if(strlen(yn) != 4) continue;
+            bool num = true;
+            for(int i=0;i<4;i++) if(yn[i]<'0'||yn[i]>'9'){ num=false; break; }
+            if(!num) continue;
+            std::string ydir = sdir + "/" + yn;
+            DIR* dy = opendir(ydir.c_str());
+            if(!dy) continue;
+            struct dirent* de2;
+            while((de2 = readdir(dy)) != nullptr){
+                const char* m = de2->d_name;
+                if(!m || m[0]=='.') continue;
+                std::string hd = ydir + "/" + m + "/hist";
+                struct stat st;
+                if(stat(hd.c_str(), &st) == 0 && S_ISDIR(st.st_mode)){
+                    finalize_stale_live_in_dir(hd, cur_base);
+                }
+            }
+            closedir(dy);
+        }
+        closedir(ds);
     }
     closedir(dr);
 }

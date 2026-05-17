@@ -144,30 +144,44 @@ static inline std::string central_mission_sub_dir(const std::string& station, in
 }
 
 // ── SIGINT Missions ──────────────────────────────────────────────────────
-// recordings/missions/<YYYY>/<code>/{iq,audio,hist}/  + mission.info
+// recordings/missions/<station>/<YYYY>/<code>/{iq,audio,hist}/  + mission.info
 // 활성 미션이 있을 때만 신규 녹음이 이 디렉토리로 라우팅됨.
+// station 키가 항상 포함됨 — DGS-1 / DGS-3 같은 다른 station 데이터가 같은 머신에서도
+// 완전히 격리되어 충돌 불가능 (v3.20.0 이전 layout 은 station 없이 recordings/missions/<YYYY>/<code>/
+// 였음 — mission_migrate_old_layout() 에서 한 번만 새 layout 으로 이동).
 static inline std::string missions_root(){ return recordings_dir()+"/missions"; }
-static inline std::string missions_year_dir(int year){
+static inline std::string mission_station_dir(const std::string& station){
+    return missions_root()+"/"+station;
+}
+static inline std::string mission_year_dir(const std::string& station, int year){
     char b[16]; snprintf(b, sizeof(b), "/%04d", year);
-    return missions_root()+b;
+    return mission_station_dir(station)+b;
 }
-static inline std::string mission_dir(int year, const std::string& code){
-    return missions_year_dir(year)+"/"+code;
+static inline std::string mission_dir(const std::string& station, int year, const std::string& code){
+    return mission_year_dir(station,year)+"/"+code;
 }
-static inline std::string mission_iq_dir(int year, const std::string& code){
-    return mission_dir(year,code)+"/iq";
+static inline std::string mission_iq_dir(const std::string& station, int year, const std::string& code){
+    return mission_dir(station,year,code)+"/iq";
 }
-static inline std::string mission_audio_dir(int year, const std::string& code){
-    return mission_dir(year,code)+"/audio";
+static inline std::string mission_audio_dir(const std::string& station, int year, const std::string& code){
+    return mission_dir(station,year,code)+"/audio";
 }
-static inline std::string mission_hist_dir(int year, const std::string& code){
-    return mission_dir(year,code)+"/hist";
+static inline std::string mission_hist_dir(const std::string& station, int year, const std::string& code){
+    return mission_dir(station,year,code)+"/hist";
 }
-static inline std::string mission_info_path(int year, const std::string& code){
-    return mission_dir(year,code)+"/mission.info";
+static inline std::string mission_info_path(const std::string& station, int year, const std::string& code){
+    return mission_dir(station,year,code)+"/mission.info";
 }
 static inline std::string missions_json_path(){
     return missions_root()+"/missions.json";
+}
+// 마이그레이션 전용: legacy 경로 (station 없음) — mission_migrate_old_layout 에서만 사용.
+static inline std::string legacy_missions_year_dir(int year){
+    char b[16]; snprintf(b, sizeof(b), "/%04d", year);
+    return missions_root()+b;
+}
+static inline std::string legacy_mission_dir(int year, const std::string& code){
+    return legacy_missions_year_dir(year)+"/"+code;
 }
 
 // 디렉터리 없으면 자동 생성

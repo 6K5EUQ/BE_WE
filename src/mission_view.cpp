@@ -21,6 +21,7 @@
 #include <cstring>
 #include <ctime>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -73,8 +74,9 @@ static std::string fmt_hms(int sec){
     return b;
 }
 
-// disk 스캔: missions/<year>/<code>/
-struct DiskMission { int year; std::string code; };
+// disk 스캔: missions/<station>/<year>/<code>/
+// (v3.20.0 station-keyed layout — 모든 station 폴더 순회)
+struct DiskMission { int year; std::string code; std::string station; };
 static std::vector<DiskMission> scan_disk_missions(){
     std::vector<DiskMission> out;
     DIR* dr = opendir(BEWEPaths::missions_root().c_str());
@@ -83,23 +85,39 @@ static std::vector<DiskMission> scan_disk_missions(){
     while((de = readdir(dr)) != nullptr){
         const char* n = de->d_name;
         if(!n || n[0]=='.') continue;
-        if(strlen(n) != 4) continue;
-        bool num = true;
-        for(int i=0;i<4;i++) if(n[i]<'0'||n[i]>'9'){ num=false; break; }
-        if(!num) continue;
-        int y = atoi(n);
-        std::string ydir = BEWEPaths::missions_year_dir(y);
-        DIR* dy = opendir(ydir.c_str());
-        if(!dy) continue;
-        struct dirent* de2;
-        while((de2 = readdir(dy)) != nullptr){
-            const char* m = de2->d_name;
-            if(!m || m[0]=='.') continue;
-            int mon0, mday;
-            if(!Mission::parse_code(m, mon0, mday)) continue;
-            out.push_back({y, m});
+        // 4자리 숫자(YYYY) 폴더는 legacy — migration 안 됐을 수도 있으니 무시.
+        if(strlen(n) == 4){
+            bool all_digit = true;
+            for(int i=0;i<4;i++) if(n[i]<'0'||n[i]>'9'){ all_digit=false; break; }
+            if(all_digit) continue;
         }
-        closedir(dy);
+        std::string sdir = BEWEPaths::missions_root() + "/" + n;
+        // station 폴더 안에 year 폴더들이 있음
+        DIR* ds = opendir(sdir.c_str());
+        if(!ds) continue;
+        struct dirent* de_y;
+        while((de_y = readdir(ds)) != nullptr){
+            const char* yn = de_y->d_name;
+            if(!yn || yn[0]=='.') continue;
+            if(strlen(yn) != 4) continue;
+            bool num = true;
+            for(int i=0;i<4;i++) if(yn[i]<'0'||yn[i]>'9'){ num=false; break; }
+            if(!num) continue;
+            int y = atoi(yn);
+            std::string ydir = sdir + "/" + yn;
+            DIR* dy = opendir(ydir.c_str());
+            if(!dy) continue;
+            struct dirent* de2;
+            while((de2 = readdir(dy)) != nullptr){
+                const char* m = de2->d_name;
+                if(!m || m[0]=='.') continue;
+                int mon0, mday;
+                if(!Mission::parse_code(m, mon0, mday)) continue;
+                out.push_back({y, m, n});
+            }
+            closedir(dy);
+        }
+        closedir(ds);
     }
     closedir(dr);
     std::sort(out.begin(), out.end(), [](const DiskMission& a, const DiskMission& b){
@@ -173,16 +191,36 @@ static double       g_dl_last_sample_t = 0.0;
 static uint64_t     g_dl_last_sample_bytes = 0;
 static double       g_dl_speed_bps = 0.0;   // EWMA bytes/sec
 
-// ── 선택 상태 (Delete 키 처리용; 단일 선택) ──────────────────────────────
+// ── 선택 상태 (Delete 키 + multi-upload; Ctrl+클릭 다중선택 지원) ──────────
 enum class SelKind : uint8_t { NONE, LOCAL, CENTRAL };
+// 마지막-선택 트랙(highlight 우선순위/색 통일용). 두 집합은 동시 사용 가능 (Mix 가능).
 static SelKind     g_sel_kind = SelKind::NONE;
-static std::string g_sel_local_path;          // LOCAL 선택 시 full path
-// CENTRAL 선택 시 key
-static char     g_sel_c_station[64] = {};
-static uint16_t g_sel_c_year   = 0;
-static uint8_t  g_sel_c_subdir = 0;
-static char     g_sel_c_code[8] = {};
-static char     g_sel_c_filename[128] = {};
+
+// 다중선택 집합 — LOCAL: full path 들, CENTRAL: 5-tuple 들.
+struct CentralSelKey {
+    char     station[64];
+    uint16_t year;
+    uint8_t  subdir;
+    char     code[8];
+    char     filename[128];
+    bool eq(const CentralSelKey& o) const {
+        return year == o.year && subdir == o.subdir
+            && strncmp(station,  o.station,  sizeof(station))  == 0
+            && strncmp(code,     o.code,     sizeof(code))     == 0
+            && strncmp(filename, o.filename, sizeof(filename)) == 0;
+    }
+};
+static std::set<std::string>      g_sel_local_paths;     // LOCAL 다중선택
+static std::vector<CentralSelKey> g_sel_central_keys;    // CENTRAL 다중선택
+
+// 컨텍스트 메뉴 등 단일행 액션이 selection-aware 인지 확인 헬퍼.
+static bool local_in_selection(const std::string& full){
+    return g_sel_local_paths.count(full) > 0;
+}
+static bool central_in_selection(const CentralSelKey& k){
+    for(auto& e : g_sel_central_keys) if(e.eq(k)) return true;
+    return false;
+}
 
 // ── Rename submodal 상태 ─────────────────────────────────────────────────
 static bool         g_rn_open = false;
@@ -573,36 +611,45 @@ static bool is_info_file(const std::string& name){
     return n >= 5 && name.compare(n - 5, 5, ".info") == 0;
 }
 
-// 선택 초기화.
+// 선택 초기화 (LOCAL + CENTRAL 모두).
 static void clear_selection(){
     g_sel_kind = SelKind::NONE;
-    g_sel_local_path.clear();
-    memset(g_sel_c_station,  0, sizeof(g_sel_c_station));
-    memset(g_sel_c_code,     0, sizeof(g_sel_c_code));
-    memset(g_sel_c_filename, 0, sizeof(g_sel_c_filename));
-    g_sel_c_year   = 0;
-    g_sel_c_subdir = 0;
+    g_sel_local_paths.clear();
+    g_sel_central_keys.clear();
 }
 
-// Delete 키 → 선택된 파일 삭제. 미션 모달 활성 시 매 프레임 호출.
+// Delete 키 → 선택된 모든 파일 삭제. 미션 모달 활성 시 매 프레임 호출.
 static void process_delete_key(NetClient* cli){
-    if(g_sel_kind == SelKind::NONE) return;
+    if(g_sel_local_paths.empty() && g_sel_central_keys.empty()) return;
     if(!ImGui::IsKeyPressed(ImGuiKey_Delete, false)) return;
-    if(g_sel_kind == SelKind::LOCAL){
-        unlink(g_sel_local_path.c_str());
-        unlink((g_sel_local_path + ".info").c_str());
-        MissionView::show_toast("Local file deleted");
-    } else if(g_sel_kind == SelKind::CENTRAL && cli){
-        MissionFileKey k{};
-        strncpy(k.station,  g_sel_c_station,  sizeof(k.station)  - 1);
-        k.year   = g_sel_c_year;
-        k.subdir = g_sel_c_subdir;
-        strncpy(k.code,     g_sel_c_code,     sizeof(k.code)     - 1);
-        strncpy(k.filename, g_sel_c_filename, sizeof(k.filename) - 1);
-        cli->send_mission_file_delete(k);
-        g_cf_last_req_time = 0;
-        MissionView::show_toast("Central file delete requested");
+    int n_local = 0;
+    for(const std::string& full : g_sel_local_paths){
+        unlink(full.c_str());
+        unlink((full + ".info").c_str());
+        n_local++;
     }
+    int n_central = 0;
+    if(cli){
+        for(auto& s : g_sel_central_keys){
+            MissionFileKey k{};
+            strncpy(k.station,  s.station,  sizeof(k.station)  - 1);
+            k.year   = s.year;
+            k.subdir = s.subdir;
+            strncpy(k.code,     s.code,     sizeof(k.code)     - 1);
+            strncpy(k.filename, s.filename, sizeof(k.filename) - 1);
+            cli->send_mission_file_delete(k);
+            n_central++;
+        }
+        if(n_central > 0) g_cf_last_req_time = 0;
+    }
+    char tbuf[96];
+    if(n_local && n_central)
+        snprintf(tbuf, sizeof(tbuf), "Deleted: %d local, %d central", n_local, n_central);
+    else if(n_local)
+        snprintf(tbuf, sizeof(tbuf), "Deleted %d local file(s)", n_local);
+    else
+        snprintf(tbuf, sizeof(tbuf), "Deleted %d central file(s)", n_central);
+    MissionView::show_toast(tbuf);
     clear_selection();
 }
 
@@ -932,10 +979,13 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
             }
         }
 
-        bool sel = (g_sel_kind == SelKind::CENTRAL &&
-                    g_sel_c_year == r.year && g_sel_c_subdir == r.subdir &&
-                    strncmp(g_sel_c_code,     r.code,     sizeof(g_sel_c_code))     == 0 &&
-                    strncmp(g_sel_c_filename, r.filename, sizeof(g_sel_c_filename)) == 0);
+        CentralSelKey row_k{};
+        strncpy(row_k.station,  r.station,  sizeof(row_k.station)  - 1);
+        row_k.year   = r.year;
+        row_k.subdir = r.subdir;
+        strncpy(row_k.code,     r.code,     sizeof(row_k.code)     - 1);
+        strncpy(row_k.filename, r.filename, sizeof(row_k.filename) - 1);
+        bool sel = central_in_selection(row_k);
 
         ImVec4 text_col = already_dl
             ? ImVec4(0.35f, 0.95f, 0.45f, 1.f)   // 다운로드 완료 → 초록
@@ -947,13 +997,22 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
         ImGui::PopStyleColor();
 
         if(clicked){
-            // 단일 클릭 = 선택; 더블클릭 = open/download
+            // 단일 클릭 = 선택; Ctrl+클릭 = 토글; 더블클릭 = open/download
+            bool ctrl = ImGui::GetIO().KeyCtrl;
             g_sel_kind = SelKind::CENTRAL;
-            strncpy(g_sel_c_station,  r.station,  sizeof(g_sel_c_station)  - 1);
-            g_sel_c_year   = r.year;
-            g_sel_c_subdir = r.subdir;
-            strncpy(g_sel_c_code,     r.code,     sizeof(g_sel_c_code)     - 1);
-            strncpy(g_sel_c_filename, r.filename, sizeof(g_sel_c_filename) - 1);
+            if(ctrl){
+                if(sel){
+                    for(auto it = g_sel_central_keys.begin(); it != g_sel_central_keys.end(); ++it){
+                        if(it->eq(row_k)){ g_sel_central_keys.erase(it); break; }
+                    }
+                } else {
+                    g_sel_central_keys.push_back(row_k);
+                }
+            } else {
+                g_sel_local_paths.clear();
+                g_sel_central_keys.clear();
+                g_sel_central_keys.push_back(row_k);
+            }
         }
         if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
             if(already_dl) open_local_in_viewer(v, dl_path);
@@ -1024,10 +1083,11 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
     std::vector<LocalFileEntry> by[3];
     for(int s = 0; s < 3; s++){
         scan_into(BEWEPaths::downloads_mission_dir(station, year, code, subs_name[s]), by[s]);
-        // 머신 로컬 mission 폴더 (JOIN region/demod 녹음, HOST push 임시).
-        std::string mi_dir = (s == 0) ? BEWEPaths::mission_iq_dir(year, code.c_str())
-                            : (s == 1) ? BEWEPaths::mission_audio_dir(year, code.c_str())
-                            :            BEWEPaths::mission_hist_dir(year, code.c_str());
+        // 머신 로컬 mission 폴더 (HOST 본인 녹음, JOIN region/demod 녹음).
+        // station-keyed: recordings/missions/<station>/<year>/<code>/<sub>/
+        std::string mi_dir = (s == 0) ? BEWEPaths::mission_iq_dir(station, year, code)
+                            : (s == 1) ? BEWEPaths::mission_audio_dir(station, year, code)
+                            :            BEWEPaths::mission_hist_dir(station, year, code);
         scan_into(mi_dir, by[s]);
         // mtime 내림차순 정렬
         std::sort(by[s].begin(), by[s].end(),
@@ -1056,13 +1116,23 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
             const std::string& full = it.full;
             ImGui::PushID(it.name.c_str());
 
-            bool sel = (g_sel_kind == SelKind::LOCAL && g_sel_local_path == full);
+            bool sel = local_in_selection(full);
             bool clicked = ImGui::Selectable(it.name.c_str(), sel,
                 ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick,
                 ImVec2(pw, 0));
             if(clicked){
+                bool ctrl = ImGui::GetIO().KeyCtrl;
                 g_sel_kind = SelKind::LOCAL;
-                g_sel_local_path = full;
+                if(ctrl){
+                    // 토글
+                    if(sel) g_sel_local_paths.erase(full);
+                    else    g_sel_local_paths.insert(full);
+                } else {
+                    // 단일 선택 — 전체 reset 후 추가
+                    g_sel_local_paths.clear();
+                    g_sel_central_keys.clear();
+                    g_sel_local_paths.insert(full);
+                }
             }
             if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
                 open_local_in_viewer(v, full);
@@ -1268,7 +1338,25 @@ static void draw_delete_confirm_submodal(FFTViewer& v, NetClient* cli){
             "PERMANENTLY DELETE mission %04d/%s ?",
             g_del_year, g_del_code.c_str());
         ImGui::Separator();
-        std::string mdir = BEWEPaths::mission_dir(g_del_year, g_del_code);
+        // station 은 history 에서 lookup (못 찾으면 _unknown_)
+        std::string del_station;
+        {
+            std::lock_guard<std::mutex> lk(v.mission_mtx);
+            for(auto& h : v.mission_history){
+                if(h.year == g_del_year &&
+                   strncmp(h.code, g_del_code.c_str(), sizeof(h.code)) == 0){
+                    if(h.station_name[0]) del_station = h.station_name;
+                    break;
+                }
+            }
+            if(del_station.empty() && v.mission_state == Mission::State::ACTIVE &&
+               v.mission_year == g_del_year &&
+               strncmp(v.mission_code, g_del_code.c_str(), sizeof(v.mission_code)) == 0){
+                if(v.mission_station_name[0]) del_station = v.mission_station_name;
+            }
+        }
+        if(del_station.empty()) del_station = "_unknown_";
+        std::string mdir = BEWEPaths::mission_dir(del_station, g_del_year, g_del_code);
         ImGui::TextDisabled("Directory:");
         ImGui::SameLine();
         ImGui::TextWrapped("%s", mdir.c_str());

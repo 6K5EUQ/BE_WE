@@ -3724,6 +3724,7 @@ void run_streaming_viewer(){
         // JOIN은 missions.json 로컬 보유 없음 (Central이 MISSION_SYNC로 푸시).
         if(mode_sel == 0 || mode_sel == 1){
             v.mission_load_history();
+            v.mission_migrate_old_layout();   // v3.20.0 — legacy paths → station-keyed
             if(v.mission_state == Mission::State::ACTIVE)
                 v.mission_broadcast_sync();
             Mission::start_utc0_worker(&v);

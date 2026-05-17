@@ -63,21 +63,23 @@ const char* subdir_name(uint8_t s){
     }
 }
 
-// path = ~/BE_WE/recordings/missions/<YYYY>/<code>/<sub>/<filename>
-// 위 형식이면 year/code/filename 파싱 후 true. 아니면 false.
+// path = ~/BE_WE/recordings/missions/<station>/<YYYY>/<code>/<sub>/<filename>
+// 위 형식이면 station/year/code/filename 파싱 후 true. 아니면 false.
 bool parse_mission_path(const std::string& full, uint8_t subdir,
                         int& year_out, std::string& code_out, std::string& fname_out){
     std::string root = BEWEPaths::missions_root() + "/";
     if(full.compare(0, root.size(), root) != 0) return false;
-    std::string rest = full.substr(root.size());  // YYYY/code/<sub>/filename
+    std::string rest = full.substr(root.size());  // <station>/YYYY/code/<sub>/filename
     size_t s1 = rest.find('/'); if(s1 == std::string::npos) return false;
     size_t s2 = rest.find('/', s1 + 1); if(s2 == std::string::npos) return false;
     size_t s3 = rest.find('/', s2 + 1); if(s3 == std::string::npos) return false;
-    std::string ys = rest.substr(0, s1);
-    std::string code = rest.substr(s1 + 1, s2 - s1 - 1);
-    std::string subs = rest.substr(s2 + 1, s3 - s2 - 1);
-    std::string fn   = rest.substr(s3 + 1);
-    if(ys.empty() || code.empty() || fn.empty()) return false;
+    size_t s4 = rest.find('/', s3 + 1); if(s4 == std::string::npos) return false;
+    std::string station = rest.substr(0, s1);
+    std::string ys      = rest.substr(s1 + 1, s2 - s1 - 1);
+    std::string code    = rest.substr(s2 + 1, s3 - s2 - 1);
+    std::string subs    = rest.substr(s3 + 1, s4 - s3 - 1);
+    std::string fn      = rest.substr(s4 + 1);
+    if(station.empty() || ys.empty() || code.empty() || fn.empty()) return false;
     if(strcmp(subs.c_str(), subdir_name(subdir)) != 0) return false;
     year_out = atoi(ys.c_str());
     if(year_out < 1970 || year_out > 3000) return false;
@@ -340,12 +342,16 @@ void enqueue(const std::string& path, uint8_t subdir){
 
 void scan_mission_dir_enqueue(int year, const char* code){
     if(!running.load() || !code || !code[0]) return;
+    // station 결정: 현재 ACTIVE mission 의 station_name (또는 history lookup)
+    std::string station;
+    if(g_v) station = g_v->mission_active_station_name();
+    if(station.empty()) station = "_unknown_";
     auto scan = [&](uint8_t sub){
         std::string dir;
         switch(sub){
-            case MFS_IQ:    dir = BEWEPaths::mission_iq_dir(year, code); break;
-            case MFS_AUDIO: dir = BEWEPaths::mission_audio_dir(year, code); break;
-            case MFS_HIST:  dir = BEWEPaths::mission_hist_dir(year, code); break;
+            case MFS_IQ:    dir = BEWEPaths::mission_iq_dir(station, year, code); break;
+            case MFS_AUDIO: dir = BEWEPaths::mission_audio_dir(station, year, code); break;
+            case MFS_HIST:  dir = BEWEPaths::mission_hist_dir(station, year, code); break;
             default: return;
         }
         DIR* d = opendir(dir.c_str());

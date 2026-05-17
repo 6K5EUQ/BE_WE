@@ -338,6 +338,7 @@ void run_cli_host(){
 
     // ── SIGINT Mission: load history + start UTC0 rollover worker ───────
     v.mission_load_history();
+    v.mission_migrate_old_layout();   // v3.20.0 — legacy paths → station-keyed
     if(v.mission_state == Mission::State::ACTIVE){
         // 부팅 후 즉시 broadcast: Central이 캐시 갱신 + JOIN들이 sync 받음
         v.mission_broadcast_sync();

@@ -219,6 +219,9 @@ public:
     void mission_load_history();
     void mission_save_meta_to_disk();
     void mission_broadcast_sync();
+    // v3.20.0 migration: 기존 recordings/missions/<YYYY>/<code>/ 구조를
+    // station-keyed recordings/missions/<station>/<YYYY>/<code>/ 로 한 번만 이동.
+    void mission_migrate_old_layout();
     // 특정 미션의 디렉토리(파일 전체) + history 엔트리 영구 삭제.
     // 활성 미션이면 먼저 mission_end() 후 삭제.
     bool mission_delete(int year, const char* code);

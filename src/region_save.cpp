@@ -92,7 +92,8 @@ static void write_wav_header(FILE* f, uint32_t sample_rate, uint32_t n_frames,
 static void make_filename(char* out, size_t sz,
                           float cf_mhz, float bw_khz,
                           time_t t_start, time_t t_end,
-                          int mission_year, const char* mission_code)
+                          int mission_year, const char* mission_code,
+                          const char* mission_station)
 {
     if(t_start <= 0) t_start = time(nullptr);
     if(t_end   <= 0) t_end   = time(nullptr);
@@ -104,8 +105,9 @@ static void make_filename(char* out, size_t sz,
 
     bool have_mission = (mission_year > 0) && mission_code && mission_code[0];
     if(have_mission){
+        std::string st = (mission_station && mission_station[0]) ? mission_station : "_unknown_";
         snprintf(out, sz, "%s/IQ_%s_%04d_%.3fMHz_%s-%s.wav",
-                 BEWEPaths::mission_iq_dir(mission_year, mission_code).c_str(),
+                 BEWEPaths::mission_iq_dir(st, mission_year, mission_code).c_str(),
                  mission_code, mission_year,
                  (double)cf_mhz, hms_s, hms_e);
     } else {
@@ -256,12 +258,14 @@ std::string FFTViewer::do_region_save_work(){
     if(n_out < 1){ return ""; }
 
     // ── 출력 파일 열기 ─────────────────────────────────────────────────────
-    // 미션 활성이면 missions/<year>/<code>/iq/ 디렉토리 체인 mkdir (없을 수 있음).
+    // 미션 활성이면 missions/<station>/<year>/<code>/iq/ 디렉토리 체인 mkdir.
+    std::string st_for_mission = mission_station_name[0] ? mission_station_name : "_unknown_";
     if(mission_year > 0 && mission_code[0]){
         mkdir(BEWEPaths::missions_root().c_str(), 0755);
-        mkdir(BEWEPaths::missions_year_dir(mission_year).c_str(), 0755);
-        mkdir(BEWEPaths::mission_dir(mission_year, mission_code).c_str(), 0755);
-        mkdir(BEWEPaths::mission_iq_dir(mission_year, mission_code).c_str(), 0755);
+        mkdir(BEWEPaths::mission_station_dir(st_for_mission).c_str(), 0755);
+        mkdir(BEWEPaths::mission_year_dir(st_for_mission, mission_year).c_str(), 0755);
+        mkdir(BEWEPaths::mission_dir(st_for_mission, mission_year, mission_code).c_str(), 0755);
+        mkdir(BEWEPaths::mission_iq_dir(st_for_mission, mission_year, mission_code).c_str(), 0755);
     } else {
         mkdir(BEWEPaths::record_dir().c_str(), 0755);
         mkdir(BEWEPaths::record_iq_dir().c_str(), 0755);
@@ -270,7 +274,7 @@ std::string FFTViewer::do_region_save_work(){
     make_filename(outpath, sizeof(outpath),
                   cf_abs_mhz, bw_khz,
                   region.time_start_ms / 1000, region.time_end_ms / 1000,
-                  mission_year, mission_code);
+                  mission_year, mission_code, mission_station_name);
     FILE* wf = fopen(outpath, "wb");
     if(!wf){
         bewe_log_push(0,"[region_save] FAIL: fopen failed: %s\n", outpath);

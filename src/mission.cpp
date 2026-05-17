@@ -12,12 +12,19 @@
 #include "mission_push.hpp"
 
 #include <atomic>
+#include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <dirent.h>
 #include <mutex>
 #include <string>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <vector>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -40,30 +47,57 @@ namespace Mission {
 
 static std::thread       g_utc0_thr;
 static std::atomic<bool> g_utc0_stop{false};
-static int               g_last_rotate_hour_id = -1;
+
+// KST day_id = year*1000 + tm_yday. KST 일자가 바뀌면 1 증가.
+// .last_rolled 파일에 마지막으로 롤오버한 day_id 저장 — sleep/restart/stall 모두에 robust.
+static std::string last_rolled_path(){
+    return BEWEPaths::missions_root() + "/.last_rolled";
+}
+static int load_last_rolled_day_id(){
+    FILE* fp = fopen(last_rolled_path().c_str(), "r");
+    if(!fp) return -1;
+    int id = -1;
+    if(fscanf(fp, "%d", &id) != 1) id = -1;
+    fclose(fp);
+    return id;
+}
+static void save_last_rolled_day_id(int day_id){
+    mkdir(BEWEPaths::missions_root().c_str(), 0755);
+    FILE* fp = fopen(last_rolled_path().c_str(), "w");
+    if(!fp) return;
+    fprintf(fp, "%d\n", day_id);
+    fclose(fp);
+}
+static int kst_day_id_now(){
+    time_t now = time(nullptr);
+    struct tm tm_kst; KST::to_tm(now, tm_kst);
+    return (1900 + tm_kst.tm_year) * 1000 + tm_kst.tm_yday;
+}
 
 static void utc0_worker(FFTViewer* v){
-    // 1초씩 쪼개 sleep — stop_utc0_worker() 호출 시 최대 1초 안에 종료.
-    // 20초 단위 정시 검사는 last_check_sec으로 dedup.
-    // 정시 기준은 KST(UTC+9). KST 0시 = mission rollover.
-    int last_check_sec = -1;
+    // KST 일자 단위 dedup — minute/hour gate 없음. sleep/suspend/restart 후 깬
+    // 직후라도 day_id 변동 즉시 rollover 발동. .last_rolled 파일에 영속화 →
+    // 프로세스 재시작해도 같은 날 두 번 rollover 방지.
+    int last_rolled_day_id = load_last_rolled_day_id();
+    int boot_day_id = kst_day_id_now();
+    // 첫 부팅 (.last_rolled 없음) → 오늘로 초기화. rollover 없음 (이미 정상 시작).
+    if(last_rolled_day_id < 0){
+        last_rolled_day_id = boot_day_id;
+        save_last_rolled_day_id(last_rolled_day_id);
+        bewe_log_push(0, "[MISSION] utc0_worker init day_id=%d\n", last_rolled_day_id);
+    }
     while(!g_utc0_stop.load()){
         std::this_thread::sleep_for(std::chrono::seconds(1));
         if(g_utc0_stop.load()) break;
         if(!v) continue;
-        time_t now = time(nullptr);
-        if((int)(now / 20) == last_check_sec) continue;
-        last_check_sec = (int)(now / 20);
-        struct tm tm_kst; KST::to_tm(now, tm_kst);
-        if(tm_kst.tm_min != 0) continue;
-        int hour_id = tm_kst.tm_yday * 24 + tm_kst.tm_hour;
-        if(hour_id == g_last_rotate_hour_id) continue;
-        g_last_rotate_hour_id = hour_id;
-        if(tm_kst.tm_hour == 0){
-            v->mission_rollover_utc0();
-        } else {
-            LongWaterfall::request_rotate();
-        }
+        int day_id = kst_day_id_now();
+        if(day_id == last_rolled_day_id) continue;
+        bewe_log_push(0, "[MISSION] day_id %d -> %d : rollover fire\n",
+                      last_rolled_day_id, day_id);
+        v->mission_rollover_utc0();
+        last_rolled_day_id = day_id;
+        save_last_rolled_day_id(day_id);
+        LongWaterfall::request_rotate();
     }
 }
 
@@ -159,13 +193,15 @@ bool FFTViewer::mission_start(const char* started_by, uint8_t op_index, bool rol
         cpy(mission_sdr_kind, sizeof(mission_sdr_kind), mission_sdr_kind_str(*this));
         cpy(mission_antenna,  sizeof(mission_antenna),  host_antenna);
 
-        // 디렉토리 생성
+        // 디렉토리 생성 (station-keyed)
+        std::string st = mission_station_name[0] ? mission_station_name : "_unknown_";
         mkdir(BEWEPaths::missions_root().c_str(), 0755);
-        mkdir(BEWEPaths::missions_year_dir(mission_year).c_str(), 0755);
-        mkdir(BEWEPaths::mission_dir(mission_year, mission_code).c_str(), 0755);
-        mkdir(BEWEPaths::mission_iq_dir(mission_year, mission_code).c_str(), 0755);
-        mkdir(BEWEPaths::mission_audio_dir(mission_year, mission_code).c_str(), 0755);
-        mkdir(BEWEPaths::mission_hist_dir(mission_year, mission_code).c_str(), 0755);
+        mkdir(BEWEPaths::mission_station_dir(st).c_str(), 0755);
+        mkdir(BEWEPaths::mission_year_dir(st, mission_year).c_str(), 0755);
+        mkdir(BEWEPaths::mission_dir(st, mission_year, mission_code).c_str(), 0755);
+        mkdir(BEWEPaths::mission_iq_dir(st, mission_year, mission_code).c_str(), 0755);
+        mkdir(BEWEPaths::mission_audio_dir(st, mission_year, mission_code).c_str(), 0755);
+        mkdir(BEWEPaths::mission_hist_dir(st, mission_year, mission_code).c_str(), 0755);
 
         bewe_log_push(0, "[MISSION] start: %04d/%s by %s (rollover=%d, sdr=%s)\n",
                       mission_year, mission_code, mission_started_by,
@@ -336,7 +372,8 @@ void FFTViewer::mission_save_meta_to_disk(){
 
     // mission.info (활성 미션만)
     if(mission_state == Mission::State::ACTIVE && mission_code[0]){
-        std::string ipath = BEWEPaths::mission_info_path(mission_year, mission_code);
+        std::string st = mission_station_name[0] ? mission_station_name : "_unknown_";
+        std::string ipath = BEWEPaths::mission_info_path(st, mission_year, mission_code);
         FILE* ifp = fopen(ipath.c_str(), "w");
         if(ifp){
             time_t st = mission_start_utc;
@@ -441,20 +478,120 @@ void FFTViewer::mission_load_history(){
             while(*p && (*p == ' ' || *p == '\t' || *p == '\n')) p++;
         }
         if(*p == '}') p++;
-        // 서버/HOST 가 비정상 종료(power-off, crash)되어 end_utc=0 로 남은 entry 는
-        // ACTIVE 로 복원하지 않음. 24/7 시스템 가정상 "수신 불가 = STOP" 으로 처리하는 게 맞고
-        // 사용자가 다시 켤 때 수동 Start Mission 으로 같은 KST 날짜면 같은 code 이어감.
-        // end_utc 는 start_utc 로 fallback 채워 history 에 stale entry 로 기록.
+        // end_utc=0 인 entry: 비정상 종료된 ACTIVE.
+        // 24/7 운용 정책 — start_utc 가 오늘 KST 자정 이후라면 ACTIVE 로 복원 (프로세스 재시작
+        // 직전까지의 미션을 그대로 이어감). 어제 이전이라면 stale 처리 (자동 종료).
         if(e.end_utc == 0 && e.start_utc > 0){
-            e.end_utc = e.start_utc;   // 종료 시각 미상 → start 와 동일 (placeholder)
+            time_t now = time(nullptr);
+            // 오늘 KST 자정의 unix epoch — KST 로 shift 한 뒤 day boundary 로 round.
+            time_t shifted = now + KST::OFFSET_SEC;
+            time_t kst_midnight = (shifted / 86400) * 86400 - KST::OFFSET_SEC;
+            if(!active_restored && e.start_utc >= kst_midnight){
+                // 오늘 시작된 ACTIVE — 복원
+                mission_state         = Mission::State::ACTIVE;
+                mission_year          = e.year;
+                memcpy(mission_code,         e.code,         sizeof(mission_code));
+                memcpy(mission_started_by,   e.started_by,   sizeof(mission_started_by));
+                memcpy(mission_station_name, e.station_name, sizeof(mission_station_name));
+                memcpy(mission_host_name,    e.host_name,    sizeof(mission_host_name));
+                memcpy(mission_sdr_kind,     e.sdr_kind,     sizeof(mission_sdr_kind));
+                memcpy(mission_antenna,      e.antenna,      sizeof(mission_antenna));
+                mission_lat       = e.lat;
+                mission_lon       = e.lon;
+                mission_op_index  = e.op_index;
+                mission_start_utc = e.start_utc;
+                mission_end_utc   = 0;
+                active_restored   = true;
+                bewe_log_push(0, "[MISSION] resumed ACTIVE %04d/%s (started_by=%s)\n",
+                              e.year, e.code, e.started_by);
+                continue; // history 에 push 하지 않음 — 현재 ACTIVE 임
+            }
+            e.end_utc = e.start_utc;   // 어제 이전 stale → placeholder
             bewe_log_push(0, "[MISSION] stale ACTIVE detected — closing %04d/%s\n",
                           e.year, e.code);
         }
         mission_history.push_back(e);
     }
-    bewe_log_push(0, "[MISSION] loaded %zu history entries (no auto-restore)\n",
-                  mission_history.size());
-    (void)active_restored;
+    bewe_log_push(0, "[MISSION] loaded %zu history entries (active_restored=%d)\n",
+                  mission_history.size(), (int)active_restored);
+}
+
+// ── v3.20.0 마이그레이션 ─────────────────────────────────────────────────
+// 기존 layout: recordings/missions/<YYYY>/<code>/
+// 새 layout:   recordings/missions/<station>/<YYYY>/<code>/
+// missions.json 의 (year,code) → station_name lookup 으로 매핑 결정.
+// 매칭 안 되면 _unknown_ station 폴더로 옮김.
+void FFTViewer::mission_migrate_old_layout(){
+    DIR* dr = opendir(BEWEPaths::missions_root().c_str());
+    if(!dr) return;
+    int moved = 0;
+    struct dirent* de;
+    std::vector<std::string> legacy_years;
+    while((de = readdir(dr)) != nullptr){
+        const char* n = de->d_name;
+        if(!n || n[0]=='.') continue;
+        // 4자리 숫자 (YYYY) 형태만 legacy 로 간주.
+        size_t L = strlen(n);
+        if(L != 4) continue;
+        bool all_digit = true;
+        for(int i = 0; i < 4; i++){ if(!isdigit((unsigned char)n[i])){ all_digit = false; break; } }
+        if(!all_digit) continue;
+        legacy_years.emplace_back(n);
+    }
+    closedir(dr);
+
+    for(const std::string& yn : legacy_years){
+        int year = atoi(yn.c_str());
+        std::string ydir = BEWEPaths::missions_root() + "/" + yn;
+        DIR* d2 = opendir(ydir.c_str());
+        if(!d2) continue;
+        std::vector<std::string> codes;
+        while((de = readdir(d2)) != nullptr){
+            const char* nm = de->d_name;
+            if(!nm || nm[0]=='.') continue;
+            codes.emplace_back(nm);
+        }
+        closedir(d2);
+
+        for(const std::string& code : codes){
+            // missions.json (in-memory history) 에서 station_name lookup
+            std::string station;
+            {
+                std::lock_guard<std::mutex> lk(mission_mtx);
+                for(auto& h : mission_history){
+                    if(h.year == year && strncmp(h.code, code.c_str(), sizeof(h.code)) == 0){
+                        if(h.station_name[0]) station = h.station_name;
+                        break;
+                    }
+                }
+                // 현재 ACTIVE 도 검사
+                if(station.empty() && mission_state == Mission::State::ACTIVE
+                   && mission_year == year
+                   && strncmp(mission_code, code.c_str(), sizeof(mission_code)) == 0){
+                    if(mission_station_name[0]) station = mission_station_name;
+                }
+            }
+            if(station.empty()) station = "_unknown_";
+
+            // mkdir -p target
+            mkdir(BEWEPaths::missions_root().c_str(), 0755);
+            mkdir(BEWEPaths::mission_station_dir(station).c_str(), 0755);
+            mkdir(BEWEPaths::mission_year_dir(station, year).c_str(), 0755);
+            std::string src_path = ydir + "/" + code;
+            std::string dst_path = BEWEPaths::mission_dir(station, year, code);
+            if(::rename(src_path.c_str(), dst_path.c_str()) == 0){
+                bewe_log_push(0, "[MIGRATE] moved %04d/%s -> %s/%04d/%s\n",
+                              year, code.c_str(), station.c_str(), year, code.c_str());
+                moved++;
+            } else {
+                bewe_log_push(1, "[MIGRATE] rename failed %s -> %s (errno=%d)\n",
+                              src_path.c_str(), dst_path.c_str(), errno);
+            }
+        }
+        rmdir(ydir.c_str()); // 비었으면 정리 (남은 파일 있으면 실패만 함)
+    }
+    if(moved > 0)
+        bewe_log_push(0, "[MIGRATE] mission layout migration complete (%d entries)\n", moved);
 }
 
 // ── Broadcast ────────────────────────────────────────────────────────────
@@ -569,11 +706,22 @@ bool FFTViewer::mission_delete(int year, const char* code){
         }
     }
 
-    // 디스크 디렉토리 통째 삭제
-    std::string dir = BEWEPaths::mission_dir(year, code);
+    // 디스크 디렉토리 통째 삭제 — station 은 history 에서 lookup. 못 찾으면 _unknown_.
+    std::string station;
+    {
+        std::lock_guard<std::mutex> lk(mission_mtx);
+        for(auto& h : mission_history){
+            if(h.year == year && strcmp(h.code, code) == 0){
+                if(h.station_name[0]) station = h.station_name;
+                break;
+            }
+        }
+    }
+    if(station.empty()) station = "_unknown_";
+    std::string dir = BEWEPaths::mission_dir(station, year, code);
     rm_rf_dir(dir);
 
-    bewe_log_push(0, "[MISSION] delete %04d/%s (dir removed)\n", year, code);
+    bewe_log_push(0, "[MISSION] delete %s/%04d/%s (dir removed)\n", station.c_str(), year, code);
 
     mission_save_meta_to_disk();
     mission_broadcast_sync();
@@ -581,13 +729,22 @@ bool FFTViewer::mission_delete(int year, const char* code){
 }
 
 // ── active_*_dir helpers ─────────────────────────────────────────────────
+// 모두 station-keyed. mission_station_name 이 비면 _unknown_ 으로 폴백.
+namespace {
+inline void mkdirs_for_mission(const std::string& station, int year, const std::string& code){
+    mkdir(BEWEPaths::missions_root().c_str(), 0755);
+    mkdir(BEWEPaths::mission_station_dir(station).c_str(), 0755);
+    mkdir(BEWEPaths::mission_year_dir(station, year).c_str(), 0755);
+    mkdir(BEWEPaths::mission_dir(station, year, code).c_str(), 0755);
+}
+} // anon
+
 std::string FFTViewer::active_iq_dir() const {
     std::lock_guard<std::mutex> lk(mission_mtx);
     if(mission_state == Mission::State::ACTIVE && mission_code[0]){
-        std::string d = BEWEPaths::mission_iq_dir(mission_year, mission_code);
-        mkdir(BEWEPaths::missions_root().c_str(), 0755);
-        mkdir(BEWEPaths::missions_year_dir(mission_year).c_str(), 0755);
-        mkdir(BEWEPaths::mission_dir(mission_year, mission_code).c_str(), 0755);
+        std::string st = mission_station_name[0] ? mission_station_name : "_unknown_";
+        std::string d = BEWEPaths::mission_iq_dir(st, mission_year, mission_code);
+        mkdirs_for_mission(st, mission_year, mission_code);
         mkdir(d.c_str(), 0755);
         return d;
     }
@@ -597,10 +754,9 @@ std::string FFTViewer::active_iq_dir() const {
 std::string FFTViewer::active_audio_dir() const {
     std::lock_guard<std::mutex> lk(mission_mtx);
     if(mission_state == Mission::State::ACTIVE && mission_code[0]){
-        std::string d = BEWEPaths::mission_audio_dir(mission_year, mission_code);
-        mkdir(BEWEPaths::missions_root().c_str(), 0755);
-        mkdir(BEWEPaths::missions_year_dir(mission_year).c_str(), 0755);
-        mkdir(BEWEPaths::mission_dir(mission_year, mission_code).c_str(), 0755);
+        std::string st = mission_station_name[0] ? mission_station_name : "_unknown_";
+        std::string d = BEWEPaths::mission_audio_dir(st, mission_year, mission_code);
+        mkdirs_for_mission(st, mission_year, mission_code);
         mkdir(d.c_str(), 0755);
         return d;
     }
@@ -610,10 +766,9 @@ std::string FFTViewer::active_audio_dir() const {
 std::string FFTViewer::active_hist_dir() const {
     std::lock_guard<std::mutex> lk(mission_mtx);
     if(mission_state == Mission::State::ACTIVE && mission_code[0]){
-        std::string d = BEWEPaths::mission_hist_dir(mission_year, mission_code);
-        mkdir(BEWEPaths::missions_root().c_str(), 0755);
-        mkdir(BEWEPaths::missions_year_dir(mission_year).c_str(), 0755);
-        mkdir(BEWEPaths::mission_dir(mission_year, mission_code).c_str(), 0755);
+        std::string st = mission_station_name[0] ? mission_station_name : "_unknown_";
+        std::string d = BEWEPaths::mission_hist_dir(st, mission_year, mission_code);
+        mkdirs_for_mission(st, mission_year, mission_code);
         mkdir(d.c_str(), 0755);
         return d;
     }
