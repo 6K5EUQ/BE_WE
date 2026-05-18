@@ -251,7 +251,7 @@ void run_cli_host(){
     sigaction(SIGTERM, &sa, nullptr);
 
     // ── Interactive prompts ──────────────────────────────────────────────
-    bewe_log_push(0,"\n=== BE_WE CLI HOST ===\n\n");
+    bewe_log_push(0,"\n=== WELCOME TO BEWE HOST CLI ====\n\n");
 
     std::string id_str = prompt_input("ID ");
     if(id_str.empty()){ bewe_log_push(0,"Aborted.\n"); return; }
@@ -278,12 +278,41 @@ void run_cli_host(){
 
     std::string server_str = CENTRAL_DEFAULT_HOST;
 
-    float lat = atof(prompt_input("Latitude ").c_str());
-    float lon = -atof(prompt_input("Longitude").c_str()); // 양수 입력 = 동경(E), 내부 규약은 서경=양수이므로 부호 반전
-    float cf  = 100.0f;
+    // ── Station selection ────────────────────────────────────────────────
+    struct StationPreset { const char* name; float lat; float lon_e; };
+    static const StationPreset presets[] = {
+        { "DGS-1", 35.1786f, 128.5553f },
+        { "DGS-2", 35.2054f, 128.7076f },
+        { "DGS-3", 35.8685f, 128.6046f },
+    };
+    bewe_log_push(0,"\n=== SELECT HOSTING LOCATION ===\n");
+    for(int i=0;i<3;i++)
+        bewe_log_push(0,"%d. %s\n", i+1, presets[i].name);
+    bewe_log_push(0,"4. ETC\n\n");
 
-    std::string station_str = prompt_input("Station name");
-    if(station_str.empty()){ bewe_log_push(0,"Aborted.\n"); return; }
+    int loc_choice = 0;
+    while(loc_choice < 1 || loc_choice > 4){
+        std::string s = prompt_input("> ");
+        loc_choice = atoi(s.c_str());
+        if(loc_choice < 1 || loc_choice > 4)
+            bewe_log_push(0,"Please enter 1-4.\n");
+    }
+
+    float lat, lon;
+    std::string station_str;
+    if(loc_choice >= 1 && loc_choice <= 3){
+        const StationPreset& p = presets[loc_choice - 1];
+        station_str = p.name;
+        lat = p.lat;
+        lon = -p.lon_e;  // 동경(E) → 내부 규약(서경=양수이므로 부호 반전)
+        bewe_log_push(0,"Station: %s  (%.4f N, %.4f E)\n", station_str.c_str(), lat, p.lon_e);
+    } else {
+        lat = atof(prompt_input("Lat ").c_str());
+        lon = -atof(prompt_input("Lon ").c_str());
+        station_str = prompt_input("Station ");
+        if(station_str.empty()){ bewe_log_push(0,"Aborted.\n"); return; }
+    }
+    float cf  = 100.0f;
 
     bewe_log_push(0,"\n");
 
