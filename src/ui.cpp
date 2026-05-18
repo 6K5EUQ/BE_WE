@@ -7019,19 +7019,15 @@ void run_streaming_viewer(){
                                             if(re.finished){
                                                 auto it_rz=fsz_cache.find(re.filename);
                                                 const std::string szstr=(it_rz!=fsz_cache.end())?it_rz->second:fmt_filesize("",re.path);
-                                                bool is_sel_r = file_ctx.selected && file_ctx.filepath==re.path;
                                                 float pw_r = ImGui::GetContentRegionAvail().x;
-                                                ImGui::Selectable(re.filename.c_str(), is_sel_r, ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw_r, 0));
-                                                if(ImGui::IsItemHovered()){
-                                                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
-                                                        file_ctx.selected=true; file_ctx.open=false;
-                                                        file_ctx.filepath=re.path; file_ctx.filename=re.filename;
-                                                        file_ctx.is_public=false;
-                                                    }
-                                                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                                                        file_ctx={true,io.MousePos.x,io.MousePos.y,re.path,re.filename};
-                                                        file_ctx.selected=true;
-                                                    }
+                                                ImGui::Selectable(re.filename.c_str(), false, ImGuiSelectableFlags_SpanAllColumns|ImGuiSelectableFlags_AllowDoubleClick, ImVec2(pw_r, 0));
+                                                if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !re.path.empty()){
+                                                    v.eid_panel_open=true; v.eid_view_mode=1;
+                                                    v.audio_play_stop(); v.eid_audio_cursor_sample=0;
+                                                    v.eid_cleanup(); v.eid_start(re.path);
+                                                    v.sa_cleanup(); v.sa_mode=false;
+                                                    v.sa_view_x0=0.f; v.sa_view_x1=1.f; v.sa_view_y0=0.f; v.sa_view_y1=1.f;
+                                                    v.sa_start(re.path);
                                                 }
                                                 if(!szstr.empty()){
                                                     float tw_r = ImGui::CalcTextSize(szstr.c_str()).x;
@@ -7129,44 +7125,33 @@ void run_streaming_viewer(){
                                                     ImGui::Text("[Transferring]  %s", re.filename.c_str());
                                                 ImGui::PopStyleColor();
                                             } else if((re.req_state==RS::REQ_NONE || re.req_state==RS::REQ_TRANSFERRING) && re.finished){
-                                                // 전송 완료 (흰색 default — IQ/DEMOD 통일)
-                                                if(re.xfer_total > 0)
-                                                    ImGui::Selectable(("##rdone"+std::to_string(ri)).c_str(), false, 0, ImVec2(0,0));
-                                                else
-                                                    ImGui::Selectable(("##rdone"+std::to_string(ri)).c_str(), false, 0, ImVec2(0,0));
-                                                ImGui::SameLine(0,0);
-                                                {
-                                                    // size 통일 표시 (우측정렬 회색).
-                                                    std::string sz_s;
-                                                    if(re.xfer_total > 0){
-                                                        char b[32];
-                                                        double sz = (double)re.xfer_total;
-                                                        if(sz >= 1024.0*1024.0*1024.0) snprintf(b,sizeof(b),"%.1f GB", sz/(1024.0*1024.0*1024.0));
-                                                        else if(sz >= 1024.0*1024.0)   snprintf(b,sizeof(b),"%.1f MB", sz/(1024.0*1024.0));
-                                                        else if(sz >= 1024.0)          snprintf(b,sizeof(b),"%.1f KB", sz/1024.0);
-                                                        else                            snprintf(b,sizeof(b),"%d B", (int)sz);
-                                                        sz_s = b;
-                                                    } else {
-                                                        auto it_rz2=fsz_cache.find(re.filename);
-                                                        sz_s = (it_rz2!=fsz_cache.end()) ? it_rz2->second : fmt_filesize("",re.path);
-                                                    }
-                                                    ImGui::Text("%s", re.filename.c_str());
-                                                    if(!sz_s.empty()){
-                                                        float pw = ImGui::GetContentRegionAvail().x;
-                                                        float tw = ImGui::CalcTextSize(sz_s.c_str()).x;
-                                                        ImGui::SameLine(ImGui::GetCursorPosX() + pw - tw - 4.f);
-                                                        ImGui::TextDisabled("%s", sz_s.c_str());
-                                                    }
+                                                // 전송 완료
+                                                std::string sz_s;
+                                                if(re.xfer_total > 0){
+                                                    char b[32]; double sz=(double)re.xfer_total;
+                                                    if(sz>=1024.0*1024.0*1024.0) snprintf(b,sizeof(b),"%.1f GB",sz/(1024.0*1024.0*1024.0));
+                                                    else if(sz>=1024.0*1024.0)   snprintf(b,sizeof(b),"%.1f MB",sz/(1024.0*1024.0));
+                                                    else if(sz>=1024.0)          snprintf(b,sizeof(b),"%.1f KB",sz/1024.0);
+                                                    else                          snprintf(b,sizeof(b),"%d B",(int)sz);
+                                                    sz_s=b;
+                                                } else {
+                                                    auto it_rz2=fsz_cache.find(re.filename);
+                                                    sz_s=(it_rz2!=fsz_cache.end())?it_rz2->second:fmt_filesize("",re.path);
                                                 }
-                                                if(ImGui::IsItemHovered()){
-                                                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                                                        file_ctx={true,io.MousePos.x,io.MousePos.y,re.path,re.filename};
-                                                        file_ctx.selected=true;
-                                                    }
-                                                    if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !re.path.empty()){
-                                                        v.sa_temp_path = re.path;
-                                                        v.eid_panel_open = true;
-                                                    }
+                                                float pw_rg = ImGui::GetContentRegionAvail().x;
+                                                ImGui::Selectable(re.filename.c_str(), false, ImGuiSelectableFlags_SpanAllColumns|ImGuiSelectableFlags_AllowDoubleClick, ImVec2(pw_rg,0));
+                                                if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !re.path.empty()){
+                                                    v.eid_panel_open=true; v.eid_view_mode=1;
+                                                    v.audio_play_stop(); v.eid_audio_cursor_sample=0;
+                                                    v.eid_cleanup(); v.eid_start(re.path);
+                                                    v.sa_cleanup(); v.sa_mode=false;
+                                                    v.sa_view_x0=0.f; v.sa_view_x1=1.f; v.sa_view_y0=0.f; v.sa_view_y1=1.f;
+                                                    v.sa_start(re.path);
+                                                }
+                                                if(!sz_s.empty()){
+                                                    float tw=ImGui::CalcTextSize(sz_s.c_str()).x;
+                                                    ImGui::SameLine(pw_rg-tw-4.f);
+                                                    ImGui::TextDisabled("%s",sz_s.c_str());
                                                 }
                                             } else if(re.req_state==RS::REQ_DENIED){
                                                 col=IM_COL32(200,80,80,255);
@@ -7269,19 +7254,15 @@ void run_streaming_viewer(){
                                         {
                                             auto it_az=fsz_cache.find(re.filename);
                                             const std::string szstr=(it_az!=fsz_cache.end())?it_az->second:fmt_filesize("",re.path);
-                                            bool is_sel_a = file_ctx.selected && file_ctx.filepath==re.path;
                                             float pw_a = ImGui::GetContentRegionAvail().x;
-                                            ImGui::Selectable(re.filename.c_str(), is_sel_a, ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw_a, 0));
-                                            if(ImGui::IsItemHovered()){
-                                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
-                                                    file_ctx.selected=true; file_ctx.open=false;
-                                                    file_ctx.filepath=re.path; file_ctx.filename=re.filename;
-                                                    file_ctx.is_public=false;
-                                                }
-                                                if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                                                    file_ctx={true,io.MousePos.x,io.MousePos.y,re.path,re.filename};
-                                                    file_ctx.selected=true;
-                                                }
+                                            ImGui::Selectable(re.filename.c_str(), false, ImGuiSelectableFlags_SpanAllColumns|ImGuiSelectableFlags_AllowDoubleClick, ImVec2(pw_a, 0));
+                                            if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !re.path.empty()){
+                                                v.eid_panel_open=true; v.eid_view_mode=1;
+                                                v.audio_play_stop(); v.eid_audio_cursor_sample=0;
+                                                v.eid_cleanup(); v.eid_start(re.path);
+                                                v.sa_cleanup(); v.sa_mode=false;
+                                                v.sa_view_x0=0.f; v.sa_view_x1=1.f; v.sa_view_y0=0.f; v.sa_view_y1=1.f;
+                                                v.sa_start(re.path);
                                             }
                                             if(!szstr.empty()){
                                                 float tw_a = ImGui::CalcTextSize(szstr.c_str()).x;
