@@ -7009,6 +7009,22 @@ void run_streaming_viewer(){
                                             v.stop_iq_rec(re.ch_idx);
                                         }
                                     }
+                                    // 파일이 삭제된 finished 항목 정리 (2초마다)
+                                    {
+                                        static float last_stale_check = -100.f;
+                                        float now_t2 = (float)ImGui::GetTime();
+                                        if(now_t2 - last_stale_check > 2.f){
+                                            last_stale_check = now_t2;
+                                            std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                                            v.rec_entries.erase(
+                                                std::remove_if(v.rec_entries.begin(), v.rec_entries.end(),
+                                                    [](const FFTViewer::RecEntry& e){
+                                                        return e.finished && !e.path.empty() &&
+                                                               access(e.path.c_str(), F_OK) != 0;
+                                                    }),
+                                                v.rec_entries.end());
+                                        }
+                                    }
                                     using RS = FFTViewer::RecEntry::ReqState;
                                     for(int ri=(int)v.rec_entries.size()-1;ri>=0;ri--){
                                         auto& re=v.rec_entries[ri];
@@ -7021,6 +7037,16 @@ void run_streaming_viewer(){
                                                 const std::string szstr=(it_rz!=fsz_cache.end())?it_rz->second:fmt_filesize("",re.path);
                                                 float pw_r = ImGui::GetContentRegionAvail().x;
                                                 ImGui::Selectable(re.filename.c_str(), false, ImGuiSelectableFlags_SpanAllColumns|ImGuiSelectableFlags_AllowDoubleClick, ImVec2(pw_r, 0));
+                                                if(ImGui::BeginPopupContextItem("##iq_fin_ctx")){
+                                                    if(ImGui::MenuItem("Delete")){
+                                                        if(!re.path.empty()) ::remove(re.path.c_str());
+                                                        ImGui::EndPopup(); ImGui::PopID();
+                                                        std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                                                        v.rec_entries.erase(v.rec_entries.begin()+ri);
+                                                        break;
+                                                    }
+                                                    ImGui::EndPopup();
+                                                }
                                                 if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !re.path.empty()){
                                                     v.eid_panel_open=true; v.eid_view_mode=1;
                                                     v.audio_play_stop(); v.eid_audio_cursor_sample=0;
@@ -7140,6 +7166,16 @@ void run_streaming_viewer(){
                                                 }
                                                 float pw_rg = ImGui::GetContentRegionAvail().x;
                                                 ImGui::Selectable(re.filename.c_str(), false, ImGuiSelectableFlags_SpanAllColumns|ImGuiSelectableFlags_AllowDoubleClick, ImVec2(pw_rg,0));
+                                                if(ImGui::BeginPopupContextItem("##riq_fin_ctx")){
+                                                    if(ImGui::MenuItem("Delete")){
+                                                        if(!re.path.empty()) ::remove(re.path.c_str());
+                                                        ImGui::EndPopup(); ImGui::PopID();
+                                                        std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                                                        v.rec_entries.erase(v.rec_entries.begin()+ri);
+                                                        break;
+                                                    }
+                                                    ImGui::EndPopup();
+                                                }
                                                 if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !re.path.empty()){
                                                     v.eid_panel_open=true; v.eid_view_mode=1;
                                                     v.audio_play_stop(); v.eid_audio_cursor_sample=0;
@@ -7256,6 +7292,16 @@ void run_streaming_viewer(){
                                             const std::string szstr=(it_az!=fsz_cache.end())?it_az->second:fmt_filesize("",re.path);
                                             float pw_a = ImGui::GetContentRegionAvail().x;
                                             ImGui::Selectable(re.filename.c_str(), false, ImGuiSelectableFlags_SpanAllColumns|ImGuiSelectableFlags_AllowDoubleClick, ImVec2(pw_a, 0));
+                                            if(ImGui::BeginPopupContextItem("##aud_fin_ctx")){
+                                                if(ImGui::MenuItem("Delete")){
+                                                    if(!re.path.empty()) ::remove(re.path.c_str());
+                                                    ImGui::EndPopup(); ImGui::PopID();
+                                                    std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                                                    v.rec_entries.erase(v.rec_entries.begin()+ri);
+                                                    break;
+                                                }
+                                                ImGui::EndPopup();
+                                            }
                                             if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !re.path.empty()){
                                                 v.eid_panel_open=true; v.eid_view_mode=1;
                                                 v.audio_play_stop(); v.eid_audio_cursor_sample=0;
@@ -10321,7 +10367,7 @@ void run_streaming_viewer(){
                 ImGui::PopStyleVar();
             }
 
-            // 1~7 키로 뷰 전환 (뷰 동기화 포함) — EID가 가장 상단일 때만
+            // 1~9 키로 뷰 전환 (뷰 동기화 포함) — EID가 가장 상단일 때만
             if(!io.WantTextInput && top_ov() == 1){
                 int new_mode=-1;
                 if(ImGui::IsKeyPressed(ImGuiKey_1,false)) new_mode=0;
@@ -10330,7 +10376,9 @@ void run_streaming_viewer(){
                 if(ImGui::IsKeyPressed(ImGuiKey_4,false)) new_mode=3;
                 if(ImGui::IsKeyPressed(ImGuiKey_5,false)) new_mode=4;
                 if(ImGui::IsKeyPressed(ImGuiKey_6,false)) new_mode=5;
-                if(ImGui::IsKeyPressed(ImGuiKey_7,false)) new_mode=6;
+                if(ImGui::IsKeyPressed(ImGuiKey_7,false)) new_mode=8; // Audio
+                if(ImGui::IsKeyPressed(ImGuiKey_8,false)) new_mode=6; // Power
+                if(ImGui::IsKeyPressed(ImGuiKey_9,false)) new_mode=7; // Bits
                 if(new_mode>=0 && new_mode!=v.eid_view_mode){
                     int prev=v.eid_view_mode;
                     v.eid_view_mode=new_mode;
@@ -12105,15 +12153,17 @@ void run_streaming_viewer(){
                                             io.MousePos.y>=cby && io.MousePos.y<=cby+font_h;
                                 fg->AddText(ImVec2(cbx,cby), rhov?IM_COL32(255,255,255,255):IM_COL32(140,180,220,255), rlbl);
                                 if(rhov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
-                                    static const int bpr_opts[]={8,16,32,64,128,256,512};
-                                    int ci=0; for(int i=0;i<7;i++) if(bpr_opts[i]==BPR) ci=i;
-                                    v.eid_bits_per_row = bpr_opts[(ci+1)%7];
+                                    static const int bpr_opts[]={8,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768,65536,131072,262144,524288,1048576};
+                                    static const int N = (int)(sizeof(bpr_opts)/sizeof(bpr_opts[0]));
+                                    int ci=0; for(int i=0;i<N;i++) if(bpr_opts[i]==BPR) ci=i;
+                                    v.eid_bits_per_row = bpr_opts[(ci+1)%N];
                                     v.eid_bits_scroll = 0;
                                 }
                                 if(rhov && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                                    static const int bpr_opts[]={8,16,32,64,128,256,512};
-                                    int ci=0; for(int i=0;i<7;i++) if(bpr_opts[i]==BPR) ci=i;
-                                    v.eid_bits_per_row = bpr_opts[(ci+6)%7];
+                                    static const int bpr_opts[]={8,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768,65536,131072,262144,524288,1048576};
+                                    static const int N = (int)(sizeof(bpr_opts)/sizeof(bpr_opts[0]));
+                                    int ci=0; for(int i=0;i<N;i++) if(bpr_opts[i]==BPR) ci=i;
+                                    v.eid_bits_per_row = bpr_opts[(ci+N-1)%N];
                                     v.eid_bits_scroll = 0;
                                 }
                                 cbx += rsz.x + 16.f;
