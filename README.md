@@ -13,6 +13,7 @@
 - [Operate](#operate)
 - [Deep Inspect](#deep-inspect)
 - [Collaboration](#collaboration)
+- [Mission Archive](#mission-archive)
 - [Headless CLI HOST](#headless-cli-host)
 - [Supported Hardware](#supported-hardware)
 - [Build & Quick Start](#build--quick-start)
@@ -51,7 +52,7 @@ The 4-tier TLE catalog (**Starlink / SOT / ETC / SOI**) auto-fetches from celest
 
 Click **Join** or **Host** on a station marker — a **separate OS window** opens with that station's operation panel. The globe stays open as your mission-control view. Drag windows to other monitors; one user can run several JOIN sessions in parallel.
 
-The globe's bottom-right **Open Sessions** panel lists each live child (mode, station name, PID) with a per-window close button. HOST is capped at 1 per machine (the SDR is exclusive); JOIN has no cap.
+The globe's bottom-right **Active Station** panel lists each live child (mode, station name, PID) with a per-window close button. HOST is capped at 1 per machine (the SDR is exclusive); JOIN has no cap.
 
 ![Multi-window sessions](assets/multiwindow.png)
 
@@ -157,9 +158,20 @@ Real-time chat, file sharing, tier-based permissions, per-channel audio routing 
 
 ---
 
+## Mission Archive
+
+Press `M` to open the Mission Archive modal. A **mission** is a named collection window — IQ captures, DEMOD audio, and HIST segments recorded during an operation are all tagged with the same mission code (e.g. `A03` = January 3rd, `B17` = February 17th). Files land in `recordings/missions/<station>/<year>/<code>/{iq,audio,hist}/`.
+
+- **Start / End** — manually start or end a mission; `Ctrl+C` also ends the active mission
+- **UTC 0 rollover** — at midnight UTC the active mission closes automatically and the day counter advances
+- **Central push** — HOST auto-pushes completed files to Central; JOIN operators can list, download, delete, or rename files from any station in the archive tree
+- **Station-keyed layout** — the left tree filters to the current station; multi-file selection with `Ctrl+click`
+
+---
+
 ## Headless CLI HOST
 
-Compile with `-DCLI=ON` for a zero-GPU build. Interactive prompt-based startup; `/status`, `/clients`, `/shutdown` commands; free text broadcasts as chat.
+Compile with `-DCLI=ON` for a zero-GPU build. Interactive prompt-based startup; `/status`, `/clients`, `/shutdown`, `/Update TLEs` commands; free text broadcasts as chat.
 
 ---
 
@@ -255,10 +267,14 @@ Overlays are mutually exclusive — opening one closes whichever is currently up
 | `Ctrl+Right-drag` | Mark region (shows BW / Duration); `R` to save as IQ |
 | `Scroll` | Zoom frequency axis |
 | `I` | Start/stop per-channel IQ recording |
+| `P` | Pause / resume spectrum display (FFT freeze) |
 | `E` | Toggle Signal Analyzer (SA) overlay |
 | `H` | Toggle HISTORY overlay (long-waterfall archive) |
 | `L` | Toggle Signal Library (LIB) overlay |
-| `B` | Toggle BAND overlay — or jump to the Bits tab when SA is open |
+| `M` | Toggle Mission Archive modal |
+| `S` | Show / hide STATUS right panel |
+| `B` | Toggle BAND overlay — or baud-mode lines when SA is open |
+| `RightShift` | Toggle chat panel |
 | `1` – `9` | Switch domain inside the SA overlay |
 | `F11` | Fullscreen / windowed |
 | `← / →` · `↑ / ↓` (SA Phase) | Carrier sweep ±1 Hz / ±10 Hz |
