@@ -967,6 +967,7 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
         std::string dl_dir  = BEWEPaths::downloads_mission_dir(r.station, r.year,
                                                                r.code, sub_name);
         std::string dl_path = dl_dir + "/" + r.filename;
+        std::string actual_path = dl_path;
         bool already_dl = (access(dl_path.c_str(), F_OK) == 0);
         // 로컬 recordings/missions/ 도 확인 (업로드 후 원본 보유 케이스)
         if(!already_dl){
@@ -978,8 +979,13 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
                 rec_dir = BEWEPaths::mission_audio_dir(st, r.year, r.code);
             else if(r.subdir == MFS_HIST)
                 rec_dir = BEWEPaths::mission_hist_dir(st, r.year, r.code);
-            if(!rec_dir.empty())
-                already_dl = (access((rec_dir + "/" + r.filename).c_str(), F_OK) == 0);
+            if(!rec_dir.empty()){
+                std::string rec_path = rec_dir + "/" + r.filename;
+                if(access(rec_path.c_str(), F_OK) == 0){
+                    already_dl = true;
+                    actual_path = rec_path;
+                }
+            }
         }
         bool downloading = false;
         double frac = 0.0;
@@ -1030,7 +1036,7 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
             }
         }
         if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
-            if(already_dl) open_local_in_viewer(v, dl_path);
+            if(already_dl) open_local_in_viewer(v, actual_path);
             else           start_download(cli, r);
         }
         central_context_menu(cli, r);

@@ -368,10 +368,6 @@ void run_cli_host(){
     // ── SIGINT Mission: load history + start UTC0 rollover worker ───────
     v.mission_load_history();
     v.mission_migrate_old_layout();   // v3.20.0 — legacy paths → station-keyed
-    if(v.mission_state == Mission::State::ACTIVE){
-        // 부팅 후 즉시 broadcast: Central이 캐시 갱신 + JOIN들이 sync 받음
-        v.mission_broadcast_sync();
-    }
     Mission::start_utc0_worker(&v);
 
     // ── NetServer ────────────────────────────────────────────────────────
@@ -1336,7 +1332,14 @@ void run_cli_host(){
                     if(!bp_pkt.empty())
                         central_cli.enqueue_relay_broadcast(bp_pkt.data(), bp_pkt.size(), true);
                     // LIVE_START는 JOIN이 STREAM 버튼으로 명시 요청(LWF_LIVE_REQ)할 때만 unicast.
-                    (void)v;
+                    // 미션이 ACTIVE면 신규 JOIN에게 즉시 mission sync 전달
+                    {
+                        std::lock_guard<std::mutex> lk(v.mission_mtx);
+                        if(v.mission_state == Mission::State::ACTIVE && v.mission_code[0] != 0){
+                            bewe_log_push(0, "[CLI-HOST] CONN_OPEN cid=%u → push mission_sync\n", cid);
+                            v.mission_broadcast_sync();
+                        }
+                    }
                 });
 
                 // Worker → NetServer LIVE broadcast 연결.
@@ -1389,10 +1392,11 @@ void run_cli_host(){
                                     [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; },
                                     *reconnect_fn);
                                 bewe_log_push(0,"[CLI] Central auto-reconnected\n");
-                                // 재연결 직후 미션이 ACTIVE면 Central에 상태 재동기화
+                                // 재연결 직후 미션이 ACTIVE면 Central에 상태 재동기화 + HIST 재개
                                 if(v.mission_state == Mission::State::ACTIVE){
                                     bewe_log_push(0,"[CLI] re-broadcasting mission_sync after auto-reconnect\n");
                                     v.mission_broadcast_sync();
+                                    LongWaterfall::request_rotate();
                                 }
                                 return;
                             }
