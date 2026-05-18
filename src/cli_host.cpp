@@ -1389,6 +1389,11 @@ void run_cli_host(){
                                     [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; },
                                     *reconnect_fn);
                                 bewe_log_push(0,"[CLI] Central auto-reconnected\n");
+                                // 재연결 직후 미션이 ACTIVE면 Central에 상태 재동기화
+                                if(v.mission_state == Mission::State::ACTIVE){
+                                    bewe_log_push(0,"[CLI] re-broadcasting mission_sync after auto-reconnect\n");
+                                    v.mission_broadcast_sync();
+                                }
                                 return;
                             }
                         }
