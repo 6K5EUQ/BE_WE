@@ -596,11 +596,13 @@ static const char* subdir_label(uint8_t s){
 static uint8_t classify_local_file(const std::string& name){
     size_t n = name.size();
     if(n >= 9 && name.compare(n - 9, 9, ".bewehist") == 0) return MFS_HIST;
-    if(name.rfind("DE_", 0) == 0 ||              // current DEMOD prefix
+    if(name.rfind("DE_", 0) == 0 ||              // legacy DEMOD prefix
        name.rfind("DEMOD_", 0) == 0 ||
        name.rfind("Audio_", 0) == 0 ||           // legacy
        name.rfind("SCHED_AUDIO_", 0) == 0 ||
-       name.rfind("Demod_", 0) == 0) return MFS_AUDIO;
+       name.rfind("Demod_", 0) == 0 ||
+       name.find("_DE_") != std::string::npos)   // station-prefixed DEMOD
+        return MFS_AUDIO;
     return MFS_IQ;
 }
 
@@ -952,9 +954,10 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
     }
     poll_dl_speed();
     ImGui::BeginChild("##cf_scroll", ImVec2(0, 0), false);
-    for(auto& r : rows){
+    for(int cf_i = 0; cf_i < (int)rows.size(); cf_i++){
+        auto& r = rows[cf_i];
         float pw = ImGui::GetContentRegionAvail().x;
-        ImGui::PushID(r.filename);
+        ImGui::PushID(cf_i);
 
         // 미션별 다운로드 폴더에서 already_dl 검사 (start_download 와 동일 경로).
         const char* sub_name = (r.subdir == MFS_IQ)    ? "iq"
@@ -965,6 +968,19 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
                                                                r.code, sub_name);
         std::string dl_path = dl_dir + "/" + r.filename;
         bool already_dl = (access(dl_path.c_str(), F_OK) == 0);
+        // 로컬 recordings/missions/ 도 확인 (업로드 후 원본 보유 케이스)
+        if(!already_dl){
+            std::string rec_dir;
+            std::string st(r.station);
+            if(r.subdir == MFS_IQ)
+                rec_dir = BEWEPaths::mission_iq_dir(st, r.year, r.code);
+            else if(r.subdir == MFS_AUDIO)
+                rec_dir = BEWEPaths::mission_audio_dir(st, r.year, r.code);
+            else if(r.subdir == MFS_HIST)
+                rec_dir = BEWEPaths::mission_hist_dir(st, r.year, r.code);
+            if(!rec_dir.empty())
+                already_dl = (access((rec_dir + "/" + r.filename).c_str(), F_OK) == 0);
+        }
         bool downloading = false;
         double frac = 0.0;
         uint64_t dl_total_now = 0, dl_written_now = 0;
@@ -1100,6 +1116,7 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
     ImGui::Separator();
 
     ImGui::BeginChild("##loc_scroll", ImVec2(0, 0), false);
+    int loc_i = 0;
     for(int s = 0; s < 3; s++){
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.85f, 1.0f, 1.f));
         ImGui::TextUnformatted(labels[s]);
@@ -1113,12 +1130,14 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
         for(const LocalFileEntry& it : by[s]){
             float pw = ImGui::GetContentRegionAvail().x;
             const std::string& full = it.full;
-            ImGui::PushID(it.name.c_str());
+            ImGui::PushID(loc_i++);
 
             bool sel = local_in_selection(full);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.35f, 0.95f, 0.45f, 1.f));
             bool clicked = ImGui::Selectable(it.name.c_str(), sel,
                 ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick,
                 ImVec2(pw, 0));
+            ImGui::PopStyleColor();
             if(clicked){
                 bool ctrl = ImGui::GetIO().KeyCtrl;
                 g_sel_kind = SelKind::LOCAL;

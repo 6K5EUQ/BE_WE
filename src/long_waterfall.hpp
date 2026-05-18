@@ -124,7 +124,7 @@ inline std::string fmt_lat_lon(float lat, float lon){
 }
 
 // ── Mission-code filename helpers (host + JOIN 공용) ──────────────────────
-// 양식: <MissCode><DD>_<Mon><DD>.<YYYY>_<F.F>MHz_<HHMM>-LIVE.bewehist
+// 양식: <station>_<MissCode><DD>_<Mon><DD>.<YYYY>_<F.F>MHz_<HHMM>-LIVE.bewehist
 // 종료 시 -LIVE → -<HHMM> 로 rename (KST 기준).
 // MissCode: A=Jan, B=Feb, ..., L=Dec (alphabet, 'I' 포함).
 // HHMM/날짜는 항상 KST(UTC+9) — viewer 상단 Start/Stop 표시와 일치.
@@ -135,13 +135,26 @@ inline const char* month_abbr3(int mon0_11){
                                "Jul","Aug","Sep","Oct","Nov","Dec"};
     return m[mon0_11];
 }
+inline std::string sanitize_station_hist(const char* sn){
+    std::string s = (sn && sn[0]) ? sn : "host";
+    for(auto& c : s){
+        unsigned char u = (unsigned char)c;
+        bool ok = (u>='0'&&u<='9') || (u>='A'&&u<='Z') || (u>='a'&&u<='z')
+               || c=='-' || c=='_' || c=='.';
+        if(!ok) c = '_';
+    }
+    return s;
+}
 inline std::string build_hist_filename_live(uint64_t start_utc, uint64_t cf_hz,
-                                             int /*utc_offset_hours_ignored*/){
+                                             int /*utc_offset_hours_ignored*/,
+                                             const char* station_name = nullptr){
     struct tm tm_loc; KST::to_tm((time_t)start_utc, tm_loc);
     double cf_mhz = (double)cf_hz / 1e6;
-    char buf[96];
+    std::string st = sanitize_station_hist(station_name);
+    char buf[128];
     snprintf(buf, sizeof(buf),
-        "%c%02d_%s%02d.%04d_%.1fMHz_%02d%02d-LIVE.bewehist",
+        "%s_%c%02d_%s%02d.%04d_%.1fMHz_%02d%02d-LIVE.bewehist",
+        st.c_str(),
         mission_letter(tm_loc.tm_mon), tm_loc.tm_mday,
         month_abbr3(tm_loc.tm_mon), tm_loc.tm_mday, 1900 + tm_loc.tm_year,
         cf_mhz, tm_loc.tm_hour, tm_loc.tm_min);

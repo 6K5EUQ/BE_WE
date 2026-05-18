@@ -106,9 +106,17 @@ static void make_filename(char* out, size_t sz,
     bool have_mission = (mission_year > 0) && mission_code && mission_code[0];
     if(have_mission){
         std::string st = (mission_station && mission_station[0]) ? mission_station : "_unknown_";
-        snprintf(out, sz, "%s/IQ_%s_%04d_%.3fMHz_%s-%s.wav",
+        // sanitize for filename
+        std::string st_fn = st;
+        for(auto& c : st_fn){
+            unsigned char u = (unsigned char)c;
+            bool ok = (u>='0'&&u<='9') || (u>='A'&&u<='Z') || (u>='a'&&u<='z')
+                   || c=='-' || c=='_' || c=='.';
+            if(!ok) c = '_';
+        }
+        snprintf(out, sz, "%s/%s_IQ_%s_%04d_%.3fMHz_%s-%s.wav",
                  BEWEPaths::mission_iq_dir(st, mission_year, mission_code).c_str(),
-                 mission_code, mission_year,
+                 st_fn.c_str(), mission_code, mission_year,
                  (double)cf_mhz, hms_s, hms_e);
     } else {
         char dts[32]; strftime(dts, sizeof(dts), "%b%d_%Y_%H%M%S", &ts);

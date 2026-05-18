@@ -8228,7 +8228,22 @@ void run_streaming_viewer(){
                                 file_ctx.type=FileCtxMenu::FT_LOCAL;
                             }
                         }
-                        if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+                        if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
+                            v.sa_temp_path = fp;
+                            v.eid_panel_open = true;
+                            v.eid_view_mode = 1;
+                            v.audio_play_stop();
+                            v.eid_audio_cursor_sample = 0;
+                            v.eid_cleanup();
+                            v.eid_start(fp);
+                            v.sa_cleanup();
+                            v.sa_mode = false;
+                            v.sa_view_x0=0.f; v.sa_view_x1=1.f;
+                            v.sa_view_y0=0.f; v.sa_view_y1=1.f;
+                            v.sa_start(fp);
+                            file_ctx.open=false; file_ctx.selected=false;
+                            file_ctx.filepath=""; file_ctx.filename="";
+                        } else if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
                             file_ctx={true,io.MousePos.x,io.MousePos.y,fp,fn}; file_ctx.selected=true;
                         }
                     }

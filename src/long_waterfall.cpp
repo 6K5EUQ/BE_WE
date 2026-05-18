@@ -132,7 +132,7 @@ bool open_new_file(uint64_t cf_hz, uint64_t sr_hz, uint32_t fft_size,
 
     uint64_t now_utc = (uint64_t)time(nullptr);
     int32_t off_h_now = KST::OFFSET_HOURS;  // KST 강제 (UTC+9)
-    std::string fname = build_hist_filename_live(now_utc, cf_hz, (int)off_h_now);
+    std::string fname = build_hist_filename_live(now_utc, cf_hz, (int)off_h_now, station_name);
     // 같은 분에 두 번 시작될 가능성 — 충돌 회피 suffix
     std::string full = dir + "/" + fname;
     for(int n=2; access(full.c_str(), F_OK)==0 && n<100; ++n){

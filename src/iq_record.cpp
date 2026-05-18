@@ -15,22 +15,38 @@ static void fmt_time_hms(char* out, size_t sz, const struct tm& tm_loc){
     strftime(out, sz, "%H:%M:%S", &tm_loc);
 }
 
-// 새 파일명 형식: <prefix>_<mission_code>_<YYYY>_<freq>MHz_<HHMMSS>.wav
+// 파일명용 스테이션 이름 정제: 영숫자·-·_·. 이외 → '_'
+static std::string sanitize_station_fn(const char* sn){
+    std::string s = (sn && sn[0]) ? sn : "host";
+    for(auto& c : s){
+        unsigned char u = (unsigned char)c;
+        bool ok = (u>='0'&&u<='9') || (u>='A'&&u<='Z') || (u>='a'&&u<='z')
+               || c=='-' || c=='_' || c=='.';
+        if(!ok) c = '_';
+    }
+    return s;
+}
+
+// 새 파일명 형식: <station>_<prefix>_<mission_code>_<YYYY>_<freq>MHz_<HHMMSS>.wav
 // prefix = "IQ" / "DE", time = KST. stop 시 add_end_hms_to_path() 로 -<HHMMSS> 추가.
 static std::string build_iq_demod_filename(FFTViewer& v, const char* prefix,
                                            double cf_mhz, const struct tm& kst_tm){
     char mcode[16] = {};
+    char mstation[64] = {};
     {
         std::lock_guard<std::mutex> lk(v.mission_mtx);
-        if(v.mission_state == Mission::State::ACTIVE)
+        if(v.mission_state == Mission::State::ACTIVE){
             strncpy(mcode, v.mission_code, sizeof(mcode) - 1);
+            strncpy(mstation, v.mission_station_name, sizeof(mstation) - 1);
+        }
     }
     if(!mcode[0]) strcpy(mcode, "NOMSN");
+    std::string st = sanitize_station_fn(mstation[0] ? mstation : nullptr);
     char hms[16]; strftime(hms, sizeof(hms), "%H%M%S", &kst_tm);
     int year = 1900 + kst_tm.tm_year;
     char buf[256];
-    snprintf(buf, sizeof(buf), "%s_%s_%04d_%.3fMHz_%s.wav",
-             prefix, mcode, year, cf_mhz, hms);
+    snprintf(buf, sizeof(buf), "%s_%s_%s_%04d_%.3fMHz_%s.wav",
+             st.c_str(), prefix, mcode, year, cf_mhz, hms);
     return buf;
 }
 
