@@ -292,7 +292,6 @@ public:
     bool cmd_start_iq_rec(int ch_idx);
     bool cmd_stop_iq_rec(int ch_idx);
     bool cmd_request_share_download(const char* filename);
-    bool cmd_share_upload(const char* filepath, uint8_t transfer_id);
     bool cmd_chassis_reset();            // JOIN → HOST: trigger chassis 1 reset
     bool cmd_net_reset();               // JOIN → HOST: trigger chassis 2 (net-only) reset
     bool cmd_delete_pub_file(const char* filename);  // JOIN → HOST: delete public file
