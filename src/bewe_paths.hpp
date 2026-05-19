@@ -85,11 +85,6 @@ static inline std::string share_dir()       { return recordings_dir()+"/share"; 
 static inline std::string share_iq_dir()    { return share_dir()+"/iq"; }
 static inline std::string share_audio_dir() { return share_dir()+"/audio"; }
 
-// ── Report 파일 (전 오퍼레이터 공유) ─────────────────────────────────────
-static inline std::string report_dir()       { return recordings_dir()+"/report"; }
-static inline std::string report_iq_dir()    { return report_dir()+"/iq"; }
-static inline std::string report_audio_dir() { return report_dir()+"/audio"; }
-
 // ── Database (Central Server 로컬 저장) ──────────────────────────────────
 // Central server의 ./BE_WE/DataBase/{operator}/ 에 저장
 // 클라이언트 측에서도 로컬 DB 캐시로 사용
@@ -110,8 +105,6 @@ static inline std::string hist_host_dir() { return hist_dir()+"/host"; }
 static inline std::string hist_join_dir() { return hist_dir()+"/join"; }
 // hist_live_dir: JOIN 실시간 수신 임시 파일. 룸 disconnect / 프로그램 종료 시 비움.
 static inline std::string hist_live_dir() { return hist_dir()+"/live"; }
-// (legacy 호환: 이전 코드의 long_waterfall_dir = hist_host_dir)
-static inline std::string long_waterfall_dir(){ return hist_host_dir(); }
 
 // ── Downloads (JOIN side: Central archive에서 받은 파일 평탄 저장) ──────
 // 모든 다운로드는 station/year/code 폴더 안 만들고 한 곳에 모음.
@@ -122,6 +115,12 @@ static inline std::string downloads_mission_dir(const std::string& station, int 
                                                 const std::string& code, const char* sub){
     char y[16]; snprintf(y, sizeof(y), "/%04d", year);
     return downloads_dir() + "/" + station + y + "/" + code + "/" + sub;
+}
+// ── DB 다운로드 캐시 (mission-agnostic) ─────────────────────────────────
+// downloads/db/{iq,audio,hist}/<filename> — Central DataBase 와 layout 동일.
+static inline std::string db_downloads_dir(){ return downloads_dir() + "/db"; }
+static inline std::string db_downloads_sub(const char* sub){
+    return db_downloads_dir() + "/" + sub;
 }
 
 // ── Central archive (Central server 머신 측: station-keyed mission archive) ──
@@ -184,20 +183,24 @@ static inline std::string legacy_mission_dir(int year, const std::string& code){
     return legacy_missions_year_dir(year)+"/"+code;
 }
 
-// 디렉터리 없으면 자동 생성
+// 디렉터리 없으면 자동 생성 (실제 입출력이 일어나는 폴더만)
+// public/share: ARCHIVE 패널/share-upload 호출처가 모두 dead 상태라 mkdir 생략.
+//               (호환용 path helper 함수 정의는 유지 — dead use 컴파일 위해)
 static inline void ensure_dirs(){
     auto mk=[](const std::string& p){ mkdir(p.c_str(),0755); };
     mk(data_dir());
     mk(recordings_dir());
     mk(record_dir());    mk(record_iq_dir());    mk(record_audio_dir());
     mk(private_dir());   mk(private_iq_dir());   mk(private_audio_dir());
-    // public/share 폴더는 더 이상 사용하지 않으므로 자동 생성하지 않음
-    mk(report_dir());   mk(report_iq_dir());   mk(report_audio_dir());
     mk(database_dir());
     mk(time_temp_dir());
     mk(hist_dir()); mk(hist_host_dir()); mk(hist_join_dir()); mk(hist_live_dir());
     mk(missions_root());
     mk(downloads_dir());
+    mk(db_downloads_dir());
+    mk(db_downloads_sub("iq"));
+    mk(db_downloads_sub("audio"));
+    mk(db_downloads_sub("hist"));
 }
 
 } // namespace BEWEPaths

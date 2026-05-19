@@ -46,6 +46,94 @@ static void flush_host_send_queue(std::shared_ptr<HostRoom>& room){
     }
 }
 
+// ── DB subdir 분류 + 자동 rename 헬퍼 ──────────────────────────────────
+// classify_local_file (mission_view.cpp:622) 와 동일 규칙:
+//   .bewehist 끝남     → "hist"
+//   이름에 _DE_ 포함   → "audio"
+//   그 외              → "iq"
+static const char* db_subdir_for(const char* fn){
+    if(!fn || !fn[0]) return "iq";
+    size_t n = strlen(fn);
+    if(n >= 9 && strcmp(fn + n - 9, ".bewehist") == 0) return "hist";
+    if(strstr(fn, "_DE_")) return "audio";
+    return "iq";
+}
+
+static std::string db_base_dir(){
+    const char* home = getenv("HOME");
+    return home ? std::string(home) + "/BE_WE/DataBase"
+                : std::string("/tmp/BE_WE/DataBase");
+}
+
+// mkdirs DataBase/{iq,audio,hist}/ if absent
+static void db_ensure_dirs(){
+    std::string base = db_base_dir();
+    mkdir(base.c_str(), 0755);
+    mkdir((base + "/iq").c_str(), 0755);
+    mkdir((base + "/audio").c_str(), 0755);
+    mkdir((base + "/hist").c_str(), 0755);
+}
+
+// 충돌 시 _2, _3 … 자동 부여. 반환: 실제 사용한 basename (입력과 다르면 rename 됨).
+// dst_path_out: 최종 절대 경로.
+static std::string db_unique_name(const std::string& base, const char* subdir,
+                                  const char* filename, std::string& dst_path_out){
+    std::string dir = base + "/" + subdir;
+    std::string name(filename);
+    auto dot = name.rfind('.');
+    std::string stem = (dot == std::string::npos) ? name : name.substr(0, dot);
+    std::string ext  = (dot == std::string::npos) ? std::string() : name.substr(dot);
+    std::string cand = name;
+    for(int i = 2; i <= 1000; i++){
+        std::string p = dir + "/" + cand;
+        struct stat st{};
+        if(stat(p.c_str(), &st) != 0){
+            dst_path_out = p;
+            return cand;
+        }
+        char buf[160];
+        snprintf(buf, sizeof(buf), "%s_%d%s", stem.c_str(), i, ext.c_str());
+        cand = buf;
+    }
+    // 너무 많아도 그냥 마지막 후보 반환
+    dst_path_out = dir + "/" + cand;
+    return cand;
+}
+
+// 기존 flat DataBase/*.wav 를 subdir 로 1회 마이그레이션.
+static void db_migrate_flat_to_subdirs(){
+    std::string base = db_base_dir();
+    DIR* d = opendir(base.c_str());
+    if(!d) return;
+    struct dirent* de;
+    int moved = 0;
+    while((de = readdir(d))){
+        if(de->d_name[0] == '.') continue;
+        std::string fn(de->d_name);
+        // .wav / .bewehist 만 대상 (subdir 폴더는 d_type == DT_DIR 로 skip)
+        bool is_wav  = (fn.size() >= 4 && fn.compare(fn.size()-4, 4, ".wav") == 0);
+        bool is_hist = (fn.size() >= 9 && fn.compare(fn.size()-9, 9, ".bewehist") == 0);
+        if(!is_wav && !is_hist) continue;
+        std::string src = base + "/" + fn;
+        struct stat st{};
+        if(stat(src.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) continue;
+        const char* sub = db_subdir_for(fn.c_str());
+        std::string dst_path;
+        std::string final_name = db_unique_name(base, sub, fn.c_str(), dst_path);
+        if(rename(src.c_str(), dst_path.c_str()) == 0){
+            rename((src + ".info").c_str(), (dst_path + ".info").c_str());
+            moved++;
+            if(final_name != fn){
+                printf("[Central] DB migrate: %s → %s/%s\n", fn.c_str(), sub, final_name.c_str());
+            } else {
+                printf("[Central] DB migrate: %s → %s/\n", fn.c_str(), sub);
+            }
+        }
+    }
+    closedir(d);
+    if(moved) printf("[Central] DB migration: %d file(s) moved into subdirs\n", moved);
+}
+
 // ── BEWE 타입 이름 (디버그용) ──────────────────────────────────────────────
 static const char* bewe_type_name(uint8_t t){
     switch(t){
@@ -95,6 +183,8 @@ bool CentralServer::start(int port){
         const char* home = getenv("HOME");
         std::string base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
         mkdir(base.c_str(), 0755);
+        db_ensure_dirs();
+        db_migrate_flat_to_subdirs();
         schedules_json_path_ = base + "/schedules.json";
         load_schedules_from_json();
 
@@ -794,11 +884,14 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
             uint64_t total_bytes=0; memcpy(&total_bytes, payload+128, 8);
             char op_name[33]={}; memcpy(op_name, payload+128+8+1, 32);
             const char* info = (plen>=128+8+1+32+1)?(const char*)(payload+128+8+1+32):"";
-            const char* home=getenv("HOME");
-            std::string db_base=home?std::string(home)+"/BE_WE/DataBase":"/tmp/BE_WE/DataBase";
-            mkdir(db_base.c_str(),0755);
-            std::string dst=db_base+"/"+filename;
-            printf("[Central] DB_SAVE_META(HOST): '%s' by '%s' → %s\n",filename,op_name,dst.c_str());
+            (void)total_bytes;
+            db_ensure_dirs();
+            std::string db_base = db_base_dir();
+            const char* sub = db_subdir_for(filename);
+            std::string dst;
+            std::string final_name = db_unique_name(db_base, sub, filename, dst);
+            printf("[Central] DB_SAVE_META(HOST): '%s' by '%s' → %s/%s\n",
+                   filename, op_name, sub, final_name.c_str());
             if(info[0]){ FILE* fi=fopen((dst+".info").c_str(),"w");
                 if(fi){fwrite(info,1,strnlen(info,511),fi);fclose(fi);} }
             if(room->db_fp) fclose(room->db_fp);
@@ -820,10 +913,24 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         if(plen >= 128+32){
             char fn[129]={}; memcpy(fn, payload, 128);
             char op[33]={}; memcpy(op, payload+128, 32);
-            const char* home = getenv("HOME");
-            std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
-            std::string fpath = db_base + "/" + fn;
-            printf("[Central] DB_DOWNLOAD_REQ(HOST): '%s' by '%s'\n", fn, op);
+            std::string db_base = db_base_dir();
+            // subdir-aware lookup: 분류된 곳 → fallback 3개 subdir → flat 루트
+            const char* primary_sub = db_subdir_for(fn);
+            std::string fpath = db_base + "/" + primary_sub + "/" + fn;
+            struct stat _st{};
+            if(stat(fpath.c_str(), &_st) != 0){
+                static const char* subs[3] = {"iq","audio","hist"};
+                bool found = false;
+                for(int i=0;i<3 && !found;i++){
+                    std::string p = db_base + "/" + subs[i] + "/" + fn;
+                    if(stat(p.c_str(), &_st) == 0){ fpath = p; found = true; }
+                }
+                if(!found){
+                    std::string p = db_base + "/" + fn;  // legacy flat
+                    if(stat(p.c_str(), &_st) == 0) fpath = p;
+                }
+            }
+            printf("[Central] DB_DOWNLOAD_REQ(HOST): '%s' by '%s' → %s\n", fn, op, fpath.c_str());
             FILE* fp = fopen(fpath.c_str(), "rb");
             if(fp){
                 fseek(fp, 0, SEEK_END); uint64_t fsz = (uint64_t)ftell(fp); fseek(fp, 0, SEEK_SET);
@@ -881,10 +988,21 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         if(plen >= 128+32){
             char fn[129]={}; memcpy(fn, payload, 128);
             char op[33]={}; memcpy(op, payload+128, 32);
-            (void)op; // operator는 로그용으로만 사용 (flat 저장이라 경로엔 불필요)
-            const char* home = getenv("HOME");
-            std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
-            std::string fpath = db_base+"/"+fn;
+            (void)op;
+            std::string db_base = db_base_dir();
+            // subdir-aware: 분류 → fallback 3개 → flat
+            const char* primary_sub = db_subdir_for(fn);
+            std::string fpath = db_base + "/" + primary_sub + "/" + fn;
+            struct stat _st{};
+            if(stat(fpath.c_str(), &_st) != 0){
+                static const char* subs[3] = {"iq","audio","hist"};
+                bool found = false;
+                for(int i=0;i<3 && !found;i++){
+                    std::string p = db_base + "/" + subs[i] + "/" + fn;
+                    if(stat(p.c_str(), &_st) == 0){ fpath = p; found = true; }
+                }
+                if(!found) fpath = db_base + "/" + fn;
+            }
             std::string ipath = fpath + ".info";
             int r1 = remove(fpath.c_str());
             int r2 = remove(ipath.c_str());
@@ -1066,14 +1184,14 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
             char operator_name[33]={}; memcpy(operator_name, payload+128+8+1, 32);
             const char* info_data = (plen >= 128+8+1+32+1) ? (const char*)(payload+128+8+1+32) : "";
 
-            // ~/BE_WE/DataBase/  (flat — operator는 .info 의 Operator: 필드로 보존)
-            const char* home = getenv("HOME");
-            std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
-            mkdir(db_base.c_str(), 0755);
-            std::string dst = db_base + "/" + filename;
+            db_ensure_dirs();
+            std::string db_base = db_base_dir();
+            const char* sub = db_subdir_for(filename);
+            std::string dst;
+            std::string final_name = db_unique_name(db_base, sub, filename, dst);
 
-            printf("[Central] DB_SAVE_META: '%s' by '%s' (%.1fMB) → %s\n",
-                   filename, operator_name, total_bytes/1048576.0, dst.c_str());
+            printf("[Central] DB_SAVE_META: '%s' by '%s' (%.1fMB) → %s/%s\n",
+                   filename, operator_name, total_bytes/1048576.0, sub, final_name.c_str());
 
             // .info 저장
             if(info_data[0]){
@@ -1114,10 +1232,23 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
         if(plen >= 128+32){
             char fn[129]={}; memcpy(fn, payload, 128);
             char op[33]={}; memcpy(op, payload+128, 32);
-            const char* home = getenv("HOME");
-            std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
-            std::string fpath = db_base + "/" + fn;
-            printf("[Central] DB_DOWNLOAD_REQ: '%s' by '%s' → conn_id=%u\n", fn, op, je->conn_id);
+            std::string db_base = db_base_dir();
+            const char* primary_sub = db_subdir_for(fn);
+            std::string fpath = db_base + "/" + primary_sub + "/" + fn;
+            struct stat _st{};
+            if(stat(fpath.c_str(), &_st) != 0){
+                static const char* subs[3] = {"iq","audio","hist"};
+                bool found = false;
+                for(int i=0;i<3 && !found;i++){
+                    std::string p = db_base + "/" + subs[i] + "/" + fn;
+                    if(stat(p.c_str(), &_st) == 0){ fpath = p; found = true; }
+                }
+                if(!found){
+                    std::string p = db_base + "/" + fn;
+                    if(stat(p.c_str(), &_st) == 0) fpath = p;
+                }
+            }
+            printf("[Central] DB_DOWNLOAD_REQ: '%s' by '%s' → %s conn_id=%u\n", fn, op, fpath.c_str(), je->conn_id);
 
             FILE* fp = fopen(fpath.c_str(), "rb");
             if(fp){
@@ -1179,10 +1310,20 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
         if(plen >= 128+32){
             char fn[129]={}; memcpy(fn, payload, 128);
             char op[33]={}; memcpy(op, payload+128, 32);
-            (void)op; // operator는 로그용으로만 사용 (flat 저장이라 경로엔 불필요)
-            const char* home = getenv("HOME");
-            std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
-            std::string fpath = db_base + "/" + fn;
+            (void)op;
+            std::string db_base = db_base_dir();
+            const char* primary_sub = db_subdir_for(fn);
+            std::string fpath = db_base + "/" + primary_sub + "/" + fn;
+            struct stat _st{};
+            if(stat(fpath.c_str(), &_st) != 0){
+                static const char* subs[3] = {"iq","audio","hist"};
+                bool found = false;
+                for(int i=0;i<3 && !found;i++){
+                    std::string p = db_base + "/" + subs[i] + "/" + fn;
+                    if(stat(p.c_str(), &_st) == 0){ fpath = p; found = true; }
+                }
+                if(!found) fpath = db_base + "/" + fn;
+            }
             std::string ipath = fpath + ".info";
             int r1 = remove(fpath.c_str());
             int r2 = remove(ipath.c_str());
@@ -1419,32 +1560,36 @@ void CentralServer::build_and_broadcast_op_list(std::shared_ptr<HostRoom> room){
 
 // ── DB_LIST broadcast ─────────────────────────────────────────────────────
 void CentralServer::broadcast_db_list(std::shared_ptr<HostRoom> room){
-    // ~/BE_WE/DataBase/ 스캔
-    const char* home = getenv("HOME");
-    std::string db_base = home ? std::string(home)+"/BE_WE/DataBase" : "/tmp/BE_WE/DataBase";
+    // ~/BE_WE/DataBase/{iq,audio,hist}/ 모두 스캔
+    std::string db_base = db_base_dir();
 
     std::vector<std::pair<time_t, DbFileEntry>> with_mtime;
-    DIR* top = opendir(db_base.c_str());
-    if(top){
+    auto scan_dir = [&](const std::string& dir, const char* allow_ext1, const char* allow_ext2){
+        DIR* top = opendir(dir.c_str());
+        if(!top) return;
         struct dirent* de;
         while((de = readdir(top))){
             if(de->d_name[0]=='.') continue;
-            // flat 구조: .wav 정규 파일만 수집 (_reports/ 등 디렉토리는 자동 제외)
             std::string fn(de->d_name);
-            if(fn.size()<5 || fn.substr(fn.size()-4)!=".wav") continue;
-            std::string fp = db_base + "/" + fn;
+            // 허용 확장자만 (.wav, .bewehist). .info 등 제외.
+            auto ends_with = [&](const char* ext){
+                size_t el = strlen(ext);
+                return fn.size() >= el && fn.compare(fn.size()-el, el, ext) == 0;
+            };
+            bool ok = (allow_ext1 && ends_with(allow_ext1)) ||
+                      (allow_ext2 && ends_with(allow_ext2));
+            if(!ok) continue;
+            std::string fp = dir + "/" + fn;
             struct stat st{};
             if(stat(fp.c_str(),&st)!=0 || !S_ISREG(st.st_mode)) continue;
             DbFileEntry e{};
             strncpy(e.filename, fn.c_str(), 127);
             e.size_bytes = (uint64_t)st.st_size;
-            // .info 전체 내용을 e.info_data에 저장 + Operator 추출
             FILE* fi = fopen((fp+".info").c_str(), "r");
             if(fi){
                 size_t n = fread(e.info_data, 1, sizeof(e.info_data)-1, fi);
                 e.info_data[n] = '\0';
                 fclose(fi);
-                // info_data 파싱하여 Operator 추출
                 const char* p = e.info_data;
                 while(p && *p){
                     char k[64]={},val[128]={};
@@ -1459,7 +1604,10 @@ void CentralServer::broadcast_db_list(std::shared_ptr<HostRoom> room){
             with_mtime.emplace_back(st.st_mtime, e);
         }
         closedir(top);
-    }
+    };
+    scan_dir(db_base + "/iq",    ".wav",      nullptr);
+    scan_dir(db_base + "/audio", ".wav",      nullptr);
+    scan_dir(db_base + "/hist",  ".bewehist", ".wav");
     // mtime 내림차순 정렬 (최신이 위)
     std::sort(with_mtime.begin(), with_mtime.end(),
               [](const auto& a, const auto& b){ return a.first > b.first; });

@@ -30,6 +30,10 @@
 // long_waterfall_view.cpp의 file-scope 함수 (별도 헤더에 선언 안 됨).
 bool lwf_open_file(const std::string& path);
 
+// fft_viewer.cpp 의 글로벌 (namespace 밖) 정의 — DB 탭에서 사용.
+extern std::vector<DbFileEntry> g_db_list;
+extern std::mutex               g_db_list_mtx;
+
 namespace MissionView {
 
 extern std::string g_toast_msg;
@@ -986,7 +990,7 @@ static void start_upload(NetClient* cli, FFTViewer& v,
     }).detach();
 }
 
-// LOCAL row 우클릭 — Upload (이미 알려진 bucket subdir 로 미션 archive 에 push) / Delete (로컬 unlink).
+// LOCAL row 우클릭 — Upload (미션 archive 에 push) / Save DB (DB 공용 저장소) / Delete (로컬 unlink).
 static void local_context_menu(FFTViewer& v, NetClient* cli,
                                const std::string& full_path,
                                const std::string& name,
@@ -994,6 +998,19 @@ static void local_context_menu(FFTViewer& v, NetClient* cli,
     if(ImGui::BeginPopupContextItem("##loc_ctx")){
         if(ImGui::MenuItem("Upload")){
             start_upload(cli, v, full_path, name, bucket);
+        }
+        if(ImGui::MenuItem("Save DB")){
+            if(!cli){
+                MissionView::show_toast("Save DB: not connected to Central");
+            } else {
+                std::string fpath_copy = full_path;
+                std::string op = login_get_id() ? std::string(login_get_id()) : std::string();
+                // 워커 스레드 — UI freeze 방지. cmd_db_save 가 내부적으로 on_db_upload_progress fire.
+                std::thread([cli, fpath_copy, op](){
+                    cli->cmd_db_save(fpath_copy.c_str(), op.c_str());
+                }).detach();
+                MissionView::show_toast("DB upload started");
+            }
         }
         ImGui::Separator();
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.35f, 0.35f, 1.f));
@@ -1005,6 +1022,7 @@ static void local_context_menu(FFTViewer& v, NetClient* cli,
         ImGui::PopStyleColor();
         ImGui::EndPopup();
     }
+    (void)v;
 }
 
 static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
@@ -1301,6 +1319,179 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
     ImGui::EndChild();
 }
 
+// ── DB 탭 (mission-agnostic 공유 저장소) ────────────────────────────────
+// g_db_list / g_db_list_mtx 는 fft_viewer.cpp 의 글로벌 (namespace 밖) 정의.
+// MissionView namespace 안에서 사용 시 :: 명시 필요.
+
+static double g_db_last_req_time = 0.0;  // 5초마다 cmd_request_db_list
+
+// DB 파일명 → "iq" / "audio" / "hist" 분류 (Central side 와 동일 규칙).
+static const char* db_classify_sub(const char* fn){
+    if(!fn || !fn[0]) return "iq";
+    size_t n = strlen(fn);
+    if(n >= 9 && strcmp(fn + n - 9, ".bewehist") == 0) return "hist";
+    if(strstr(fn, "_DE_")) return "audio";
+    return "iq";
+}
+
+static void draw_db_list(FFTViewer& v, NetClient* cli){
+    // 5초마다 list refresh 요청 (단, 무한 요청 방지 위해 cli 있을 때만).
+    if(cli){
+        double now = ImGui::GetTime();
+        if(now - g_db_last_req_time > 5.0){
+            g_db_last_req_time = now;
+            cli->cmd_request_db_list();
+        }
+    }
+    // 스냅샷 복사 — 렌더 중 mutex 풀어두기 위해.
+    std::vector<DbFileEntry> entries;
+    {
+        std::lock_guard<std::mutex> lk(::g_db_list_mtx);
+        entries = ::g_db_list;
+    }
+
+    // 헤더
+    char hdr[80];
+    snprintf(hdr, sizeof(hdr), "DB: shared (mission-agnostic) — %zu file(s)", entries.size());
+    ImGui::TextDisabled("%s", hdr);
+    ImGui::SameLine();
+    float rgt = ImGui::GetContentRegionMax().x;
+    const char* rb = "Refresh";
+    ImVec2 rbs = ImGui::CalcTextSize(rb);
+    ImGui::SameLine(rgt - rbs.x - 16.f);
+    if(ImGui::SmallButton("Refresh##db") && cli){
+        g_db_last_req_time = 0.0;
+        cli->cmd_request_db_list();
+    }
+    ImGui::Separator();
+
+    if(!cli){
+        ImGui::TextColored(ImVec4(0.85f,0.7f,0.4f,1.f),
+            "Not connected to Central — DB unavailable.");
+        return;
+    }
+
+    // 3 sub-section: IQ / DEMOD / HIST
+    static const char* sub_names[3]   = {"iq",   "audio", "hist"};
+    static const char* sub_labels[3]  = {"IQ",   "DEMOD", "HIST"};
+    std::vector<int> idx_by_sub[3];
+    for(int i = 0; i < (int)entries.size(); i++){
+        const char* s = db_classify_sub(entries[i].filename);
+        int si = (strcmp(s,"audio")==0) ? 1 : (strcmp(s,"hist")==0) ? 2 : 0;
+        idx_by_sub[si].push_back(i);
+    }
+
+    ImGui::BeginChild("##db_scroll", ImVec2(0, 0), false);
+    int row_id = 0;
+    for(int si = 0; si < 3; si++){
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.85f, 1.0f, 1.f));
+        ImGui::TextUnformatted(sub_labels[si]);
+        ImGui::PopStyleColor();
+        ImGui::Separator();
+        if(idx_by_sub[si].empty()){
+            ImGui::TextDisabled("  (none)");
+            ImGui::Spacing();
+            continue;
+        }
+        for(int ei : idx_by_sub[si]){
+            const DbFileEntry& e = entries[ei];
+            ImGui::PushID(row_id++);
+
+            // 이미 로컬에 다운로드돼 있나?
+            std::string local_path = BEWEPaths::db_downloads_sub(sub_names[si]) + "/" + e.filename;
+            bool already_dl = (access(local_path.c_str(), F_OK) == 0);
+
+            // file_xfers 매칭 (업로드/다운로드 진행률)
+            bool xfer_active = false;
+            bool xfer_up = false;
+            double frac = 0.0;
+            double bps = 0.0;
+            uint64_t done_now = 0, total_now = 0;
+            {
+                std::lock_guard<std::mutex> lk(v.file_xfer_mtx);
+                for(auto& x : v.file_xfers){
+                    if(x.filename == e.filename && !x.finished){
+                        xfer_active = true;
+                        xfer_up = (x.dir == FFTViewer::FileXfer::DIR_UPLOAD);
+                        done_now = x.done_bytes;
+                        total_now = x.total_bytes;
+                        if(total_now > 0) frac = (double)done_now / (double)total_now;
+                        bps = x.bps_ewma;
+                        break;
+                    }
+                }
+            }
+
+            float pw = ImGui::GetContentRegionAvail().x;
+            ImVec4 tcol = already_dl
+                ? ImVec4(0.35f, 0.95f, 0.45f, 1.f)
+                : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+            ImGui::PushStyleColor(ImGuiCol_Text, tcol);
+            ImGui::Selectable(e.filename, false,
+                ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick,
+                ImVec2(pw, 0));
+            ImGui::PopStyleColor();
+
+            // 우클릭: Delete
+            if(ImGui::BeginPopupContextItem("##db_ctx")){
+                if(already_dl){
+                    if(ImGui::MenuItem("Open in viewer")){
+                        open_local_in_viewer(v, local_path);
+                    }
+                    ImGui::Separator();
+                }
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.35f, 0.35f, 1.f));
+                if(ImGui::MenuItem("Delete (DB)")){
+                    const char* op = login_get_id();
+                    cli->cmd_db_delete(e.filename, op ? op : "");
+                    MissionView::show_toast("DB delete requested");
+                }
+                ImGui::PopStyleColor();
+                ImGui::EndPopup();
+            }
+
+            // 더블클릭: 받은 파일이면 viewer, 아니면 다운로드 시작
+            if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
+                if(already_dl){
+                    open_local_in_viewer(v, local_path);
+                } else if(!xfer_active){
+                    const char* op = login_get_id();
+                    cli->cmd_db_download(e.filename, op ? op : "");
+                    MissionView::show_toast("DB download requested");
+                }
+            }
+
+            // 우측 표시: 진행률 / 크기 + uploader
+            char info[96];
+            if(xfer_active){
+                double mb_s = bps / 1048576.0;
+                if(total_now > 0)
+                    snprintf(info, sizeof(info), "%s  %.0f%%  %.1fMB/s",
+                             xfer_up ? "UL" : "DL", frac * 100.0, mb_s);
+                else
+                    snprintf(info, sizeof(info), "%s  %.1fMB",
+                             xfer_up ? "UL" : "DL", done_now / 1048576.0);
+            } else {
+                std::string s = fmt_size(e.size_bytes);
+                if(e.operator_name[0])
+                    snprintf(info, sizeof(info), "%s  [%s]", s.c_str(), e.operator_name);
+                else
+                    snprintf(info, sizeof(info), "%s", s.c_str());
+            }
+            float tw = ImGui::CalcTextSize(info).x;
+            ImGui::SameLine(pw - tw - 4.f);
+            ImVec4 info_col = xfer_active
+                ? ImVec4(0.4f, 0.85f, 1.0f, 1.f)
+                : ImVec4(0.6f, 0.6f, 0.6f, 1.f);
+            ImGui::TextColored(info_col, "%s", info);
+
+            ImGui::PopID();
+        }
+        ImGui::Spacing();
+    }
+    ImGui::EndChild();
+}
+
 static void draw_rename_submodal(NetClient* cli){
     if(!g_rn_open) return;
     ImGui::SetNextWindowSize(ImVec2(480, 0));
@@ -1360,6 +1551,7 @@ static void poll_tab_keys(FFTViewer& v){
     if(ImGui::IsKeyPressed(ImGuiKey_2, false)) g_tab_request = 1;
     if(ImGui::IsKeyPressed(ImGuiKey_3, false)) g_tab_request = 2;
     if(ImGui::IsKeyPressed(ImGuiKey_4, false)) g_tab_request = 3;
+    if(ImGui::IsKeyPressed(ImGuiKey_5, false)) g_tab_request = 4;
 }
 
 static void draw_file_tabs(FFTViewer& v, NetClient* cli){
@@ -1368,11 +1560,15 @@ static void draw_file_tabs(FFTViewer& v, NetClient* cli){
         return (g_tab_request == idx) ? ImGuiTabItemFlags_SetSelected : 0;
     };
     if(g_sel_year == 0 || g_sel_code.empty()){
-        // mission 선택 없음 — LOCAL 만 표시
+        // mission 선택 없음 — LOCAL + DB 만 표시 (DB 는 mission-agnostic)
         ImGui::Spacing();
         if(ImGui::BeginTabBar("##mission_file_tabs_idle")){
             if(ImGui::BeginTabItem("LOCAL", nullptr, tab_flags(3))){
                 draw_local_list(v, cli);
+                ImGui::EndTabItem();
+            }
+            if(ImGui::BeginTabItem("DB", nullptr, tab_flags(4))){
+                draw_db_list(v, cli);
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
@@ -1396,6 +1592,10 @@ static void draw_file_tabs(FFTViewer& v, NetClient* cli){
         }
         if(ImGui::BeginTabItem("LOCAL", nullptr, tab_flags(3))){
             draw_local_list(v, cli);
+            ImGui::EndTabItem();
+        }
+        if(ImGui::BeginTabItem("DB", nullptr, tab_flags(4))){
+            draw_db_list(v, cli);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();

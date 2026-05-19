@@ -3469,12 +3469,21 @@ void run_streaming_viewer(){
             g_db_list = entries;
         };
 
+        // DB 파일명 → subdir 분류 (mission_view::classify_local_file 와 동일 규칙).
+        auto db_classify = [](const char* fn) -> const char* {
+            if(!fn || !fn[0]) return "iq";
+            size_t n = strlen(fn);
+            if(n >= 9 && strcmp(fn + n - 9, ".bewehist") == 0) return "hist";
+            if(strstr(fn, "_DE_")) return "audio";
+            return "iq";
+        };
+
         // DB 다운로드 .info 수신 (Central → JOIN) — .wav 보다 먼저 도착
-        cli->on_db_download_info = [](const PktDbDownloadInfo* di){
+        cli->on_db_download_info = [db_classify](const PktDbDownloadInfo* di){
             if(!di) return;
             char fn[129]={}; strncpy(fn, di->filename, 128);
-            bool is_iq = (is_iq_filename(fn));
-            std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
+            const char* sub = db_classify(fn);
+            std::string dir = BEWEPaths::db_downloads_sub(sub);
             mkdir(dir.c_str(), 0755);
             std::string ipath = dir + "/" + fn + ".info";
             FILE* fi = fopen(ipath.c_str(), "w");
@@ -3486,14 +3495,14 @@ void run_streaming_viewer(){
             }
         };
 
-        // DB 다운로드 데이터 수신 → private/ 폴더에 저장 (파일별 독립 핸들 — 동시 다운로드 지원)
+        // DB 다운로드 데이터 수신 → downloads/db/<sub>/ 에 저장 (파일별 독립 핸들 — 동시 다운로드 지원)
         struct ActiveDl { FILE* fp=nullptr; std::string path; uint64_t recv=0; };
         static std::map<std::string, ActiveDl> db_dl_active;
-        cli->on_db_download_data = [&](const PktDbDownloadData* d, const uint8_t* data, uint32_t data_len){
+        cli->on_db_download_data = [&,db_classify](const PktDbDownloadData* d, const uint8_t* data, uint32_t data_len){
             std::string key(d->filename);
             if(d->is_first){
-                bool is_iq = (is_iq_filename(d->filename));
-                std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
+                const char* sub = db_classify(d->filename);
+                std::string dir = BEWEPaths::db_downloads_sub(sub);
                 mkdir(dir.c_str(), 0755);
                 ActiveDl dl;
                 dl.path = dir + "/" + key;
