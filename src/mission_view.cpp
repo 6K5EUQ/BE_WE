@@ -133,6 +133,42 @@ static std::vector<DiskMission> scan_disk_missions(){
     return out;
 }
 
+// 미션 목록 통합: disk 폴더 스캔 + mission_history (missions.json 으로 영속화된 종료
+// 미션) union. 종료 후 MissionPush 가 로컬 파일을 unlink 해도 history entry 가 살아있어
+// 좌측 트리/자동선택 양쪽이 같은 set 을 보게 함. 결과는 year DESC, code DESC 정렬.
+// cur_station 비어있으면 station 필터 없이 모두 통과 (LOCAL/legacy 모드).
+static std::vector<DiskMission> collect_visible_missions(FFTViewer& v,
+                                                         const std::string& cur_station){
+    auto out = scan_disk_missions();
+    {
+        std::lock_guard<std::mutex> lk(v.mission_mtx);
+        for(const auto& e : v.mission_history){
+            if(e.year == 0 || e.code[0] == 0) continue;
+            std::string ecode(e.code, strnlen(e.code, sizeof(e.code)));
+            bool dup = false;
+            for(const auto& d : out)
+                if(d.year == e.year && d.code == ecode){ dup = true; break; }
+            if(dup) continue;
+            DiskMission dm;
+            dm.year = e.year;
+            dm.code = ecode;
+            dm.station.assign(e.station_name, strnlen(e.station_name, sizeof(e.station_name)));
+            out.push_back(std::move(dm));
+        }
+    }
+    if(!cur_station.empty()){
+        out.erase(std::remove_if(out.begin(), out.end(),
+            [&](const DiskMission& d){
+                return !d.station.empty() && d.station != cur_station;
+            }), out.end());
+    }
+    std::sort(out.begin(), out.end(), [](const DiskMission& a, const DiskMission& b){
+        if(a.year != b.year) return a.year > b.year;
+        return a.code > b.code;
+    });
+    return out;
+}
+
 struct FileItem { std::string name; uint64_t size; time_t mtime; };
 static std::vector<FileItem> list_dir(const std::string& dir, const char* ext){
     std::vector<FileItem> out;
@@ -1630,14 +1666,8 @@ static void draw_left_tree(FFTViewer& v){
         ImGui::Separator();
     }
 
-    auto disk = scan_disk_missions();
-    // station 필터: cur_station 비면 통과 (legacy/LOCAL), 있으면 일치 + station 비어있는 항목만.
-    if(!cur_station.empty()){
-        disk.erase(std::remove_if(disk.begin(), disk.end(),
-            [&](const DiskMission& d){
-                return !d.station.empty() && d.station != cur_station;
-            }), disk.end());
-    }
+    // disk 폴더 + mission_history union (종료 후 push&unlink 된 미션도 표시).
+    auto disk = collect_visible_missions(v, cur_station);
     if(act_year > 0){
         bool found = false;
         for(auto& d : disk) if(d.year == act_year && d.code == act_code){ found = true; break; }
@@ -1838,9 +1868,25 @@ void draw_modal(FFTViewer& v, NetClient* cli){
         ImGui::SameLine();
 
         ImGui::BeginChild("##mission_right", ImVec2(0, 0), true);
-        if(g_sel_year == 0 && hdr_active){
-            g_sel_year = hdr_year;
-            g_sel_code = hdr_code;
+        if(g_sel_year == 0){
+            if(hdr_active){
+                g_sel_year = hdr_year;
+                g_sel_code = hdr_code;
+            } else {
+                // IDLE 부팅 후: disk+history union 의 가장 최신 미션 자동 선택 →
+                // 우측 패널이 즉시 LIST_REQ 트리거하여 파일 표시.
+                std::string cur_station_auto = v.station_name;
+                if(cur_station_auto.empty()){
+                    std::lock_guard<std::mutex> lk(v.mission_mtx);
+                    if(v.mission_station_name[0])
+                        cur_station_auto = v.mission_station_name;
+                }
+                auto missions = collect_visible_missions(v, cur_station_auto);
+                if(!missions.empty()){
+                    g_sel_year = missions[0].year;
+                    g_sel_code = missions[0].code;
+                }
+            }
         }
         draw_meta_block(v);
         // (Current Session 영역 제거 — 사용자 요청)
