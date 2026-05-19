@@ -1334,8 +1334,12 @@ void run_cli_host(){
                     // LIVE_START는 JOIN이 STREAM 버튼으로 명시 요청(LWF_LIVE_REQ)할 때만 unicast.
                     // 미션이 ACTIVE면 신규 JOIN에게 즉시 mission sync 전달
                     {
-                        std::lock_guard<std::mutex> lk(v.mission_mtx);
-                        if(v.mission_state == Mission::State::ACTIVE && v.mission_code[0] != 0){
+                        bool do_sync = false;
+                        {
+                            std::lock_guard<std::mutex> lk(v.mission_mtx);
+                            do_sync = (v.mission_state == Mission::State::ACTIVE && v.mission_code[0] != 0);
+                        }
+                        if(do_sync){
                             bewe_log_push(0, "[CLI-HOST] CONN_OPEN cid=%u → push mission_sync\n", cid);
                             v.mission_broadcast_sync();
                         }
