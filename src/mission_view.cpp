@@ -21,8 +21,10 @@
 #include <cstring>
 #include <ctime>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 // long_waterfall_view.cpp의 file-scope 함수 (별도 헤더에 선언 안 됨).
@@ -190,6 +192,19 @@ static double       g_dl_started_at = 0.0;
 static double       g_dl_last_sample_t = 0.0;
 static uint64_t     g_dl_last_sample_bytes = 0;
 static double       g_dl_speed_bps = 0.0;   // EWMA bytes/sec
+
+// ── Upload 진행 상태 (단일 동시 업로드, 워커 스레드 기반) ────────────────
+static std::mutex   g_ul_mtx;
+static std::string  g_ul_filename;        // LOCAL row 매칭용 basename
+static std::string  g_ul_full_path;
+static uint64_t     g_ul_total = 0;
+static uint64_t     g_ul_written = 0;
+static bool         g_ul_active = false;
+static double       g_ul_last_sample_t = 0.0;
+static uint64_t     g_ul_last_sample_bytes = 0;
+static double       g_ul_speed_bps = 0.0;
+static std::mutex   g_ul_toast_mtx;
+static std::string  g_ul_pending_toast;   // 워커 완료 후 UI 스레드에서 표시
 
 // ── 선택 상태 (Delete 키 + multi-upload; Ctrl+클릭 다중선택 지원) ──────────
 enum class SelKind : uint8_t { NONE, LOCAL, CENTRAL };
@@ -672,6 +687,34 @@ static void poll_dl_speed(){
     g_dl_last_sample_bytes = bytes_now;
 }
 
+// 업로드 진행률 폴링 + 워커 완료 토스트 (UI 스레드).
+static void poll_ul_speed(){
+    // 워커가 남긴 완료 토스트는 UI 스레드에서만 표시 (show_toast는 thread-safe 아님).
+    std::string pending;
+    {
+        std::lock_guard<std::mutex> lk(g_ul_toast_mtx);
+        if(!g_ul_pending_toast.empty()){
+            pending = g_ul_pending_toast;
+            g_ul_pending_toast.clear();
+        }
+    }
+    if(!pending.empty()) MissionView::show_toast(pending.c_str());
+
+    if(!g_ul_active) return;
+    double now = ImGui::GetTime();
+    double dt = now - g_ul_last_sample_t;
+    if(dt < 0.2) return;
+    uint64_t bytes_now;
+    {
+        std::lock_guard<std::mutex> lk(g_ul_mtx);
+        bytes_now = g_ul_written;
+    }
+    double inst = dt > 0 ? (double)(bytes_now - g_ul_last_sample_bytes) / dt : 0.0;
+    g_ul_speed_bps = (g_ul_speed_bps <= 0.0) ? inst : (g_ul_speed_bps * 0.5 + inst * 0.5);
+    g_ul_last_sample_t = now;
+    g_ul_last_sample_bytes = bytes_now;
+}
+
 static std::string fmt_size(uint64_t bytes){
     char b[32];
     if(bytes >= 1ull << 30) snprintf(b, sizeof(b), "%.2f GB", bytes / (double)(1ull<<30));
@@ -842,6 +885,13 @@ static void start_upload(NetClient* cli, FFTViewer& v,
         MissionView::show_toast("Upload: station unknown for selected mission");
         return;
     }
+    {
+        std::lock_guard<std::mutex> lk(g_ul_mtx);
+        if(g_ul_active){
+            MissionView::show_toast("Upload: another upload in progress");
+            return;
+        }
+    }
     FILE* fp = fopen(full_path.c_str(), "rb");
     if(!fp){
         MissionView::show_toast("Upload: cannot open file");
@@ -851,13 +901,15 @@ static void start_upload(NetClient* cli, FFTViewer& v,
     uint64_t total = (uint64_t)ftello(fp);
     fseeko(fp, 0, SEEK_SET);
 
-    char info_data[512] = {};
+    std::string info_data_str;
     {
         FILE* fi = fopen((full_path + ".info").c_str(), "r");
         if(fi){
-            size_t r = fread(info_data, 1, sizeof(info_data) - 1, fi);
+            char buf[512] = {};
+            size_t r = fread(buf, 1, sizeof(buf) - 1, fi);
             (void)r;
             fclose(fi);
+            info_data_str.assign(buf, strnlen(buf, sizeof(buf)));
         }
     }
 
@@ -868,28 +920,59 @@ static void start_upload(NetClient* cli, FFTViewer& v,
     strncpy(k.code,     g_sel_code.c_str(), sizeof(k.code)     - 1);
     strncpy(k.filename, filename.c_str(),   sizeof(k.filename) - 1);
 
-    uint8_t xid = alloc_upload_xfer_id();
-    cli->send_mission_file_push_meta(k, total, xid, /*mode=*/0, info_data);
-
-    constexpr uint32_t CHUNK = 256 * 1024;
-    std::vector<uint8_t> buf(CHUNK);
-    uint64_t off = 0;
-    bool ok = true;
-    if(total == 0){
-        cli->send_mission_file_push_data(xid, 0, nullptr, 0, /*is_last=*/true);
-    } else {
-        while(off < total){
-            uint32_t want = (uint32_t)std::min((uint64_t)CHUNK, total - off);
-            size_t got = fread(buf.data(), 1, want, fp);
-            if(got != want){ ok = false; break; }
-            bool last = (off + want >= total);
-            cli->send_mission_file_push_data(xid, off, buf.data(), want, last);
-            off += want;
-        }
+    // 진행률 상태 초기화 (UI 스레드).
+    {
+        std::lock_guard<std::mutex> lk(g_ul_mtx);
+        g_ul_active = true;
+        g_ul_filename = filename;
+        g_ul_full_path = full_path;
+        g_ul_total = total;
+        g_ul_written = 0;
+        g_ul_last_sample_t = ImGui::GetTime();
+        g_ul_last_sample_bytes = 0;
+        g_ul_speed_bps = 0.0;
     }
-    fclose(fp);
-    g_cf_last_req_time = 0;
-    MissionView::show_toast(ok ? "Upload complete" : "Upload aborted (read error)");
+
+    // 워커 스레드 — UI freeze 없이 청크 전송 + 진행률 갱신.
+    std::thread([cli, fp, k, total, info_data_str](){
+        uint8_t xid = alloc_upload_xfer_id();
+        cli->send_mission_file_push_meta(k, total, xid, /*mode=*/0, info_data_str.c_str());
+
+        constexpr uint32_t CHUNK = 256 * 1024;
+        std::vector<uint8_t> buf(CHUNK);
+        uint64_t off = 0;
+        bool ok = true;
+        if(total == 0){
+            cli->send_mission_file_push_data(xid, 0, nullptr, 0, /*is_last=*/true);
+        } else {
+            while(off < total){
+                uint32_t want = (uint32_t)std::min((uint64_t)CHUNK, total - off);
+                size_t got = fread(buf.data(), 1, want, fp);
+                if(got != want){ ok = false; break; }
+                bool last = (off + want >= total);
+                cli->send_mission_file_push_data(xid, off, buf.data(), want, last);
+                off += want;
+                {
+                    std::lock_guard<std::mutex> lk(g_ul_mtx);
+                    g_ul_written = off;
+                }
+            }
+        }
+        fclose(fp);
+        g_cf_last_req_time = 0;
+        {
+            std::lock_guard<std::mutex> lk(g_ul_mtx);
+            g_ul_active = false;
+            g_ul_filename.clear();
+            g_ul_full_path.clear();
+            g_ul_total = 0;
+            g_ul_written = 0;
+        }
+        {
+            std::lock_guard<std::mutex> lk(g_ul_toast_mtx);
+            g_ul_pending_toast = ok ? "Upload complete" : "Upload aborted (read error)";
+        }
+    }).detach();
 }
 
 // LOCAL row 우클릭 — Upload (이미 알려진 bucket subdir 로 미션 archive 에 push) / Delete (로컬 unlink).
@@ -1121,6 +1204,7 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
     ImGui::TextDisabled("%s", hdr);
     ImGui::Separator();
 
+    poll_ul_speed();
     ImGui::BeginChild("##loc_scroll", ImVec2(0, 0), false);
     int loc_i = 0;
     for(int s = 0; s < 3; s++){
@@ -1137,6 +1221,20 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
             float pw = ImGui::GetContentRegionAvail().x;
             const std::string& full = it.full;
             ImGui::PushID(loc_i++);
+
+            // 이 행이 현재 업로드 중인지 (basename + full_path 둘 다 일치해야 충돌 방지).
+            bool uploading = false;
+            double frac = 0.0;
+            uint64_t ul_total_now = 0, ul_written_now = 0;
+            {
+                std::lock_guard<std::mutex> lk(g_ul_mtx);
+                if(g_ul_active && g_ul_filename == it.name && g_ul_full_path == full){
+                    uploading = true;
+                    ul_total_now = g_ul_total;
+                    ul_written_now = g_ul_written;
+                    if(g_ul_total > 0) frac = (double)g_ul_written / (double)g_ul_total;
+                }
+            }
 
             bool sel = local_in_selection(full);
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.35f, 0.95f, 0.45f, 1.f));
@@ -1163,10 +1261,27 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
             }
             uint8_t bucket = (s == 0) ? MFS_IQ : (s == 1) ? MFS_AUDIO : MFS_HIST;
             local_context_menu(v, cli, full, it.name, bucket);
-            std::string info = fmt_size(it.size);
-            float tw = ImGui::CalcTextSize(info.c_str()).x;
+
+            char info[80];
+            if(uploading){
+                double speed_mb = g_ul_speed_bps / 1048576.0;
+                if(ul_total_now > 0){
+                    snprintf(info, sizeof(info), "%.0f%%  %.1fMB/s",
+                             frac * 100.0, speed_mb);
+                } else {
+                    snprintf(info, sizeof(info), "%.1fMB  %.1fMB/s",
+                             ul_written_now / 1048576.0, speed_mb);
+                }
+            } else {
+                std::string s2 = fmt_size(it.size);
+                snprintf(info, sizeof(info), "%s", s2.c_str());
+            }
+            float tw = ImGui::CalcTextSize(info).x;
             ImGui::SameLine(pw - tw - 4.f);
-            ImGui::TextDisabled("%s", info.c_str());
+            ImVec4 info_col = uploading
+                ? ImVec4(0.4f, 0.85f, 1.0f, 1.f)
+                : ImVec4(0.6f, 0.6f, 0.6f, 1.f);
+            ImGui::TextColored(info_col, "%s", info);
             ImGui::PopID();
         }
         ImGui::Spacing();
