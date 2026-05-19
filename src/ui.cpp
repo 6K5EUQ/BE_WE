@@ -6966,25 +6966,7 @@ void run_streaming_viewer(){
                             if(!any){
                                 ImGui::TextDisabled("  (none)");
                             } else {
-                                // 파일이 삭제된 finished 항목 정리 (2초마다, outer lock 취득 전)
-                                {
-                                    static float last_stale_check = -100.f;
-                                    float now_t2 = (float)ImGui::GetTime();
-                                    if(now_t2 - last_stale_check > 2.f){
-                                        last_stale_check = now_t2;
-                                        std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
-                                        v.rec_entries.erase(
-                                            std::remove_if(v.rec_entries.begin(), v.rec_entries.end(),
-                                                [](const FFTViewer::RecEntry& e){
-                                                    return e.finished && !e.path.empty() &&
-                                                           access(e.path.c_str(), F_OK) != 0;
-                                                }),
-                                            v.rec_entries.end());
-                                    }
-                                }
                                 // ── IQ 목록 ──────────────────────────────
-                                // rec_entries 전체 접근을 단일 lock으로 보호 (push_back reallocation race 방지)
-                                std::lock_guard<std::mutex> rec_render_lk(v.rec_entries_mtx);
                                 // Deny 타이머 감소 + 만료 항목 제거
                                 for(auto it=v.rec_entries.begin();it!=v.rec_entries.end();){
                                     if(it->req_state==FFTViewer::RecEntry::REQ_DENIED){
@@ -7025,6 +7007,21 @@ void run_streaming_viewer(){
                                         if(re.is_audio || re.finished || re.is_region) continue;
                                         if(re.ch_idx>=0 && !v.channels[re.ch_idx].filter_active){
                                             v.stop_iq_rec(re.ch_idx);
+                                        }
+                                    }
+                                    // 파일이 삭제된 finished 항목 정리 (2초마다)
+                                    {
+                                        static float last_stale_check = -100.f;
+                                        float now_t2 = (float)ImGui::GetTime();
+                                        if(now_t2 - last_stale_check > 2.f){
+                                            last_stale_check = now_t2;
+                                            v.rec_entries.erase(
+                                                std::remove_if(v.rec_entries.begin(), v.rec_entries.end(),
+                                                    [](const FFTViewer::RecEntry& e){
+                                                        return e.finished && !e.path.empty() &&
+                                                               access(e.path.c_str(), F_OK) != 0;
+                                                    }),
+                                                v.rec_entries.end());
                                         }
                                     }
                                     using RS = FFTViewer::RecEntry::ReqState;
