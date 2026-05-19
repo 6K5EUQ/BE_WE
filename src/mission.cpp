@@ -74,6 +74,12 @@ static int kst_day_id_now(){
     return (1900 + tm_kst.tm_year) * 1000 + tm_kst.tm_yday;
 }
 
+// KST 정시(매시 00분) HIST 파일 분할용. day_id 와 별도로 hour_id 도 추적.
+// hour_id = (epoch_seconds + KST_OFFSET) / 3600. 정각마다 1씩 증가.
+static int kst_hour_id_now(){
+    return (int)((time(nullptr) + KST::OFFSET_SEC) / 3600);
+}
+
 static void utc0_worker(FFTViewer* v){
     // KST 일자 단위 dedup — minute/hour gate 없음. sleep/suspend/restart 후 깬
     // 직후라도 day_id 변동 즉시 rollover 발동. .last_rolled 파일에 영속화 →
@@ -86,18 +92,29 @@ static void utc0_worker(FFTViewer* v){
         save_last_rolled_day_id(last_rolled_day_id);
         bewe_log_push(0, "[MISSION] utc0_worker init day_id=%d\n", last_rolled_day_id);
     }
+    // 시작 시각의 hour_id 로 초기화 — 부팅 직후 정각이 아니라면 다음 정각 도래 시까지 대기.
+    int last_hour_id = kst_hour_id_now();
     while(!g_utc0_stop.load()){
         std::this_thread::sleep_for(std::chrono::seconds(1));
         if(g_utc0_stop.load()) break;
         if(!v) continue;
-        int day_id = kst_day_id_now();
-        if(day_id == last_rolled_day_id) continue;
-        bewe_log_push(0, "[MISSION] day_id %d -> %d : rollover fire\n",
-                      last_rolled_day_id, day_id);
-        v->mission_rollover_utc0();
-        last_rolled_day_id = day_id;
-        save_last_rolled_day_id(day_id);
-        LongWaterfall::request_rotate();
+        int day_id  = kst_day_id_now();
+        int hour_id = kst_hour_id_now();
+        if(day_id != last_rolled_day_id){
+            bewe_log_push(0, "[MISSION] day_id %d -> %d : rollover fire\n",
+                          last_rolled_day_id, day_id);
+            v->mission_rollover_utc0();
+            last_rolled_day_id = day_id;
+            save_last_rolled_day_id(day_id);
+            LongWaterfall::request_rotate();
+            last_hour_id = hour_id;   // day rollover 가 hour 도 묶어 처리
+        } else if(hour_id != last_hour_id){
+            // KST 매 정각 — HIST 파일만 분할 (미션 자체는 유지).
+            bewe_log_push(0, "[MISSION] hour_id %d -> %d : HIST rotate\n",
+                          last_hour_id, hour_id);
+            LongWaterfall::request_rotate();
+            last_hour_id = hour_id;
+        }
     }
 }
 
