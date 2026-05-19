@@ -12153,17 +12153,15 @@ void run_streaming_viewer(){
                                             io.MousePos.y>=cby && io.MousePos.y<=cby+font_h;
                                 fg->AddText(ImVec2(cbx,cby), rhov?IM_COL32(255,255,255,255):IM_COL32(140,180,220,255), rlbl);
                                 if(rhov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
-                                    static const int bpr_opts[]={8,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768,65536,131072,262144,524288,1048576};
-                                    static const int N = (int)(sizeof(bpr_opts)/sizeof(bpr_opts[0]));
-                                    int ci=0; for(int i=0;i<N;i++) if(bpr_opts[i]==BPR) ci=i;
-                                    v.eid_bits_per_row = bpr_opts[(ci+1)%N];
+                                    static const int bpr_opts[]={8,16,32,64,128,256,512};
+                                    int ci=0; for(int i=0;i<7;i++) if(bpr_opts[i]==BPR) ci=i;
+                                    v.eid_bits_per_row = bpr_opts[(ci+1)%7];
                                     v.eid_bits_scroll = 0;
                                 }
                                 if(rhov && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                                    static const int bpr_opts[]={8,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768,65536,131072,262144,524288,1048576};
-                                    static const int N = (int)(sizeof(bpr_opts)/sizeof(bpr_opts[0]));
-                                    int ci=0; for(int i=0;i<N;i++) if(bpr_opts[i]==BPR) ci=i;
-                                    v.eid_bits_per_row = bpr_opts[(ci+N-1)%N];
+                                    static const int bpr_opts[]={8,16,32,64,128,256,512};
+                                    int ci=0; for(int i=0;i<7;i++) if(bpr_opts[i]==BPR) ci=i;
+                                    v.eid_bits_per_row = bpr_opts[(ci+6)%7];
                                     v.eid_bits_scroll = 0;
                                 }
                                 cbx += rsz.x + 16.f;
@@ -12525,7 +12523,7 @@ void run_streaming_viewer(){
                                 if(ImGui::IsKeyPressed(ImGuiKey_End,false)) v.eid_bits_scroll=999999;
                                 // 방향키: Up/Down = Bits/Row +-1, Left/Right = Offset +-1
                                 if(ImGui::IsKeyPressed(ImGuiKey_UpArrow,true)){
-                                    v.eid_bits_per_row = std::min(512, v.eid_bits_per_row + 1);
+                                    v.eid_bits_per_row = v.eid_bits_per_row + 1;
                                     v.eid_bits_scroll = 0;
                                 }
                                 if(ImGui::IsKeyPressed(ImGuiKey_DownArrow,true)){

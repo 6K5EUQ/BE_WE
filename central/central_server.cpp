@@ -937,7 +937,7 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         for(auto& je : room->joins){
             if(!je->alive.load() || je->fd < 0) continue;
             if(conn_id != 0xFFFF && conn_id != je->conn_id) continue;
-            if(is_fft && !je->authed) continue;
+            if(!je->authed && bewe_type != BEWE_TYPE_AUTH_ACK) continue;
             targets.push_back(je);
         }
     }
