@@ -610,6 +610,7 @@ void run_cli_host(){
         static std::atomic<uint32_t> g_req_id{1000};
         uint32_t req_id_val = g_req_id.fetch_add(1);
         std::thread([&v,srv,fl,fh,time_start_ms,time_end_ms,samp_start,samp_end,oidx,fname,sid,&central_cli,req_id_val](){
+          try {
             uint32_t req_id = req_id_val;
             for(int w=0;w<200&&v.rec_busy_flag.load();w++)
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -707,6 +708,13 @@ void run_cli_host(){
                 // Direct TCP send
                 srv->send_file_to((int)oidx, path.c_str(), 0);
             }
+          } catch(const std::exception& e){
+            bewe_log_push(0,"[CLI] region thread exception: %s\n", e.what());
+            v.rec_busy_flag.store(false);
+          } catch(...){
+            bewe_log_push(0,"[CLI] region thread unknown exception\n");
+            v.rec_busy_flag.store(false);
+          }
         }).detach();
     };
 

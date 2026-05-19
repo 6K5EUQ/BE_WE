@@ -164,6 +164,12 @@ std::string FFTViewer::do_region_save_work(){
     uint32_t sr=header.sample_rate;          // 61440000
     int64_t  max_total=tm_iq_total_samples;
 
+    if(!tm_iq_file_ready || tm_iq_fd < 0 || max_total <= 0){
+        bewe_log_push(0,"[region_save] FAIL: IQ ring not ready (ready=%d fd=%d total=%lld)\n",
+                      (int)tm_iq_file_ready, tm_iq_fd, (long long)max_total);
+        return "";
+    }
+
     // ── 주파수 계산 ───────────────────────────────────────────────────────
     float cf_abs_mhz=(region.freq_lo+region.freq_hi)*0.5f;
     float bw_mhz    = region.freq_hi - region.freq_lo;
