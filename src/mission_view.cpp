@@ -179,6 +179,11 @@ static int                            g_cf_req_year  = 0;
 static std::string                    g_cf_req_code;
 static char                           g_cf_req_station[64] = {};
 static double                         g_cf_last_req_time = 0.0;
+// LIST_REQ 가 in-flight 면 다음 refresh skip. 큰 다운로드 중 응답이 큐에
+// 쌓였다 한꺼번에 도착해 같은 파일이 여러 번 append 되는 문제 방지.
+// 안전 타임아웃 12초 — 응답이 영영 안 와도 갱신 복귀.
+static bool                           g_cf_req_pending = false;
+static double                         g_cf_req_sent_at = 0.0;
 
 // ── Download 진행 상태 (단일 동시 다운로드) ──────────────────────────────
 static std::mutex   g_dl_mtx;
@@ -578,6 +583,10 @@ static void maybe_request_central_list(FFTViewer& v, NetClient* cli){
                        (strncmp(g_cf_req_station, station, 64) != 0);
     double now = ImGui::GetTime();
     bool refresh_due = (now - g_cf_last_req_time) > 5.0;  // 5초마다 refresh
+    // 이전 LIST_REQ 의 응답을 기다리는 중이면 새 요청 막음 (12초 timeout 안전망).
+    // sel_changed 는 사용자 명시 의도라 강제 진행.
+    bool pending = g_cf_req_pending && (now - g_cf_req_sent_at) < 12.0;
+    if(!sel_changed && pending) return;
     if(sel_changed || refresh_due){
         {
             std::lock_guard<std::mutex> lk(g_cf_mtx);
@@ -589,6 +598,8 @@ static void maybe_request_central_list(FFTViewer& v, NetClient* cli){
         g_cf_req_code = g_sel_code;
         strncpy(g_cf_req_station, station, sizeof(g_cf_req_station) - 1);
         g_cf_last_req_time = now;
+        g_cf_req_pending = true;
+        g_cf_req_sent_at = now;
         cli->send_mission_file_list_req(station, (uint16_t)g_sel_year,
                                         g_sel_code.c_str(), /*subdir=*/0);
     }
@@ -1023,6 +1034,7 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
         ImGui::SameLine(ImGui::GetContentRegionMax().x - btn_size.x);
         if(ImGui::SmallButton("Refresh##cf")){
             g_cf_last_req_time = 0;
+            g_cf_req_pending = false;  // 강제 새로고침
         }
     }
     ImGui::Separator();
@@ -1679,7 +1691,10 @@ void on_mission_file_list_recv(const PktMissionFileList& page,
         r.mtime_unix = src.mtime_unix;
         g_cf_rows.push_back(r);
     }
-    if(page.is_last_page) g_cf_last_page = true;
+    if(page.is_last_page){
+        g_cf_last_page = true;
+        g_cf_req_pending = false;   // 다음 refresh 허용
+    }
 }
 
 void on_mission_file_dl_data_recv(const PktMissionFileDlData& d,
