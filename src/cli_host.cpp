@@ -1464,6 +1464,13 @@ void run_cli_host(){
         if(v.tm_iq_file_ready){
             v.tm_iq_on.store(true);
             bewe_log_push(0,"[BEWE CLI] IQ rolling enabled\n");
+            // mission_load_history 가 ACTIVE 로 복원한 경우 HIST worker 가 새 파일을 열도록
+            // 트리거. 정규 mission_start 경로 (mission.cpp:211) 는 request_rotate 를 호출하지만
+            // 자동 복원은 그 경로를 거치지 않아 worker 가 idle 인 채로 머묾.
+            if(v.mission_state == Mission::State::ACTIVE){
+                LongWaterfall::request_rotate();
+                bewe_log_push(0,"[BEWE CLI] HIST resume requested (mission ACTIVE restored)\n");
+            }
         }
     }
 
