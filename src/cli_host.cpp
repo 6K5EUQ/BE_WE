@@ -400,8 +400,9 @@ void run_cli_host(){
         idx = next++;
         if(next>MAX_OPERATORS) next=1;
         uint8_t new_idx = idx;
-        std::thread([srv, new_idx, &pub_owners](){
+        std::thread([srv, new_idx, &pub_owners, &v](){
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            v.mission_broadcast_sync(); // AUTH_ACK 이후 전송 — pre-auth skip 방지
             std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
             auto scan_pub = [&](const std::string& dir){
                 DIR* ds = opendir(dir.c_str());
@@ -1341,9 +1342,7 @@ void run_cli_host(){
                     if(!bp_pkt.empty())
                         central_cli.enqueue_relay_broadcast(bp_pkt.data(), bp_pkt.size(), true);
                     // LIVE_START는 JOIN이 STREAM 버튼으로 명시 요청(LWF_LIVE_REQ)할 때만 unicast.
-                    // 신규 JOIN에게 항상 mission sync 전달 (IDLE이어도 히스토리 포함)
-                    bewe_log_push(0, "[CLI-HOST] CONN_OPEN cid=%u → push mission_sync\n", cid);
-                    v.mission_broadcast_sync();
+                    // mission_sync는 on_auth 200ms 스레드에서 AUTH_ACK 이후에 전송 (pre-auth 전송 시 JOIN이 skip함)
                 });
 
                 // Worker → NetServer LIVE broadcast 연결.
