@@ -1341,18 +1341,9 @@ void run_cli_host(){
                     if(!bp_pkt.empty())
                         central_cli.enqueue_relay_broadcast(bp_pkt.data(), bp_pkt.size(), true);
                     // LIVE_START는 JOIN이 STREAM 버튼으로 명시 요청(LWF_LIVE_REQ)할 때만 unicast.
-                    // 미션이 ACTIVE면 신규 JOIN에게 즉시 mission sync 전달
-                    {
-                        bool do_sync = false;
-                        {
-                            std::lock_guard<std::mutex> lk(v.mission_mtx);
-                            do_sync = (v.mission_state == Mission::State::ACTIVE && v.mission_code[0] != 0);
-                        }
-                        if(do_sync){
-                            bewe_log_push(0, "[CLI-HOST] CONN_OPEN cid=%u → push mission_sync\n", cid);
-                            v.mission_broadcast_sync();
-                        }
-                    }
+                    // 신규 JOIN에게 항상 mission sync 전달 (IDLE이어도 히스토리 포함)
+                    bewe_log_push(0, "[CLI-HOST] CONN_OPEN cid=%u → push mission_sync\n", cid);
+                    v.mission_broadcast_sync();
                 });
 
                 // Worker → NetServer LIVE broadcast 연결.
