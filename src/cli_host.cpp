@@ -1315,6 +1315,10 @@ void run_cli_host(){
                     (void)op_index; (void)who;
                     v.mission_end();
                 };
+                srv->cb.on_mission_list_req = [&v](int op_index, const char* who){
+                    (void)op_index; (void)who;
+                    v.mission_broadcast_sync();
+                };
                 srv->cb.on_mission_delete = [&v](int op_index, const char* who,
                                                   const PktMissionDelete& d){
                     (void)op_index; (void)who;

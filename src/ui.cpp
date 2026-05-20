@@ -3068,6 +3068,7 @@ void run_streaming_viewer(){
         // (connect_fd 직후 host가 cached pkt를 push하는데 콜백 등록은 그보다 늦어 race 발생)
         cli->flush_pending_band_cat();
         cli->flush_pending_band_plan();
+        cli->send_mission_list_req(); // 접속 직후 HOST에 mission_sync 재요청
 
         // WF 이벤트 수신 콜백 (IQ Start/Stop 표시)
         cli->on_wf_event = [&](const PktWfEvent& ev){

@@ -490,6 +490,11 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
         if(cb.on_mission_end) cb.on_mission_end(c->op_index, c->name);
         break;
     }
+    case PacketType::MISSION_LIST_REQ: {
+        if(!c->authed) break;
+        if(cb.on_mission_list_req) cb.on_mission_list_req(c->op_index, c->name);
+        break;
+    }
     case PacketType::MISSION_DELETE: {
         if(!c->authed || len < sizeof(PktMissionDelete)) break;
         const auto* req = reinterpret_cast<const PktMissionDelete*>(payload);
