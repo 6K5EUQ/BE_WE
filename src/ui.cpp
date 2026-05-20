@@ -8144,6 +8144,9 @@ void run_streaming_viewer(){
             // 오른쪽>왼쪽: TM IQ AUD WF FFT LINK SDR
             float rx=disp_w-8.0f;
 
+            // FRZ — spectrum pause indicator (TM 오른쪽)
+            rx=draw_ind(rx,"FRZ", v.spectrum_pause.load() ? 1 : 0);
+
             // TM
             rx=draw_ind(rx,"TM", tm_on ? 1 : 0);
 
