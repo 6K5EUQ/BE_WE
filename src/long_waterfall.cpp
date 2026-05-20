@@ -127,7 +127,11 @@ bool open_new_file(uint64_t cf_hz, uint64_t sr_hz, uint32_t fft_size,
     // request_rotate 호출 시 다시 들어옴).
     std::string dir;
     if(g_v) dir = g_v->active_hist_dir();
-    if(dir.empty()) return false;
+    if(dir.empty()){
+        fprintf(stderr, "[LWF] open_new_file: active_hist_dir EMPTY "
+                "(mission inactive/code unset) — skip\n");
+        return false;
+    }
     mkdir(BEWEPaths::recordings_dir().c_str(), 0755);
 
     uint64_t now_utc = (uint64_t)time(nullptr);
@@ -289,6 +293,10 @@ void worker_loop(){
         // Rotate requested?
         int req = g_rotate_req_seq.load(std::memory_order_relaxed);
         if(req != g_rotate_seen_seq){
+            fprintf(stderr, "[LWF] rotate seq %d -> %d  tm_on=%d  active_dir='%s'\n",
+                    g_rotate_seen_seq, req,
+                    (int)g_v->tm_iq_on.load(),
+                    g_v->active_hist_dir().c_str());
             g_rotate_seen_seq = req;
             // Flush any pending row, close current file.
             flush_row_locked();
@@ -302,7 +310,10 @@ void worker_loop(){
         // Only record while TM IQ is rolling.
         bool tm_on = g_v->tm_iq_on.load(std::memory_order_relaxed);
         if(!tm_on){
-            if(g_fp){ flush_row_locked(); close_file_locked(); }
+            if(g_fp){
+                fprintf(stderr, "[LWF] tm_iq_on went FALSE — closing current file\n");
+                flush_row_locked(); close_file_locked();
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
             continue;
         }
@@ -325,10 +336,18 @@ void worker_loop(){
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 continue;
             }
+            static int s_open_fail_cnt = 0;
             if(!open_new_file(cf, sr, fsz, fis, dmin, dmax, lon, lat, sn.c_str())){
+                s_open_fail_cnt++;
+                if(s_open_fail_cnt == 1 || s_open_fail_cnt == 10 ||
+                   (s_open_fail_cnt % 120) == 0){
+                    fprintf(stderr, "[LWF] open_new_file FAILED x%d in a row\n",
+                            s_open_fail_cnt);
+                }
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
                 continue;
             }
+            s_open_fail_cnt = 0;
             // Initialize last_total_ffts so we don't dump pre-existing buffer.
             { std::lock_guard<std::mutex> lk(g_v->data_mtx);
               g_last_total_ffts = g_v->total_ffts; }
