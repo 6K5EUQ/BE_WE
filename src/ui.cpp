@@ -5276,6 +5276,14 @@ void run_streaming_viewer(){
 
         // ── CONNECT 모드: 연결 끊김 감지 > 자동 재연결 (백그라운드) ────────
         if(v.remote_mode && v.net_cli && !v.net_cli->is_connected()){
+            if(v.mission_state != Mission::State::IDLE){
+                v.mission_state         = Mission::State::IDLE;
+                v.mission_code[0]       = 0;
+                v.mission_year          = 0;
+                v.mission_started_by[0] = 0;
+                v.mission_start_utc     = 0;
+                v.mission_end_utc       = 0;
+            }
             static float reconn_timer = 0.f;
             // reconn_busy는 함수 상단에서 선언됨
             reconn_timer -= ImGui::GetIO().DeltaTime;

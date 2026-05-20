@@ -452,7 +452,6 @@ void FFTViewer::mission_load_history(){
     while(*p && *p != '[') p++;
     if(!*p) return;
     p++;
-    bool active_restored = false;
     while(*p){
         while(*p && (*p == ',' || *p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')) p++;
         if(*p == ']') break;
@@ -495,42 +494,15 @@ void FFTViewer::mission_load_history(){
             while(*p && (*p == ' ' || *p == '\t' || *p == '\n')) p++;
         }
         if(*p == '}') p++;
-        // end_utc=0 인 entry: 비정상 종료된 ACTIVE.
-        // 24/7 운용 정책 — start_utc 가 오늘 KST 자정 이후라면 ACTIVE 로 복원 (프로세스 재시작
-        // 직전까지의 미션을 그대로 이어감). 어제 이전이라면 stale 처리 (자동 종료).
         if(e.end_utc == 0 && e.start_utc > 0){
-            time_t now = time(nullptr);
-            // 오늘 KST 자정의 unix epoch — KST 로 shift 한 뒤 day boundary 로 round.
-            time_t shifted = now + KST::OFFSET_SEC;
-            time_t kst_midnight = (shifted / 86400) * 86400 - KST::OFFSET_SEC;
-            if(!active_restored && e.start_utc >= kst_midnight){
-                // 오늘 시작된 ACTIVE — 복원
-                mission_state         = Mission::State::ACTIVE;
-                mission_year          = e.year;
-                memcpy(mission_code,         e.code,         sizeof(mission_code));
-                memcpy(mission_started_by,   e.started_by,   sizeof(mission_started_by));
-                memcpy(mission_station_name, e.station_name, sizeof(mission_station_name));
-                memcpy(mission_host_name,    e.host_name,    sizeof(mission_host_name));
-                memcpy(mission_sdr_kind,     e.sdr_kind,     sizeof(mission_sdr_kind));
-                memcpy(mission_antenna,      e.antenna,      sizeof(mission_antenna));
-                mission_lat       = e.lat;
-                mission_lon       = e.lon;
-                mission_op_index  = e.op_index;
-                mission_start_utc = e.start_utc;
-                mission_end_utc   = 0;
-                active_restored   = true;
-                bewe_log_push(0, "[MISSION] resumed ACTIVE %04d/%s (started_by=%s)\n",
-                              e.year, e.code, e.started_by);
-                continue; // history 에 push 하지 않음 — 현재 ACTIVE 임
-            }
-            e.end_utc = e.start_utc;   // 어제 이전 stale → placeholder
-            bewe_log_push(0, "[MISSION] stale ACTIVE detected — closing %04d/%s\n",
+            e.end_utc = time(nullptr);
+            bewe_log_push(0, "[MISSION] stale ACTIVE -> force-closed %04d/%s\n",
                           e.year, e.code);
         }
         mission_history.push_back(e);
     }
-    bewe_log_push(0, "[MISSION] loaded %zu history entries (active_restored=%d)\n",
-                  mission_history.size(), (int)active_restored);
+    bewe_log_push(0, "[MISSION] loaded %zu history entries\n",
+                  mission_history.size());
 }
 
 // ── v3.20.0 마이그레이션 ─────────────────────────────────────────────────
