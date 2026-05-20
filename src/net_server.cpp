@@ -1055,7 +1055,10 @@ void NetServer::send_lwf_list_to_op(int op_index, const PktLwfList& list){
 // LAN 직결 + relay 양쪽 모두 지원.
 void NetServer::broadcast_lwf_live_start(const PktLwfLiveStart& s){
     auto pkt = make_packet(PacketType::LWF_LIVE_START, &s, sizeof(s));
-    if(cb.on_relay_broadcast && has_relay())
+    // Central archive가 stream tap으로 mirror 파일을 만들도록 항상 broadcast.
+    // has_relay() 게이트하면 JOIN이 한순간 끊겨있을 때 Central이 mirror를 못 만들고,
+    // 30초 후 stale-LIVE purge에 걸려 JOIN list 에서 사라짐.
+    if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
@@ -1071,7 +1074,8 @@ void NetServer::broadcast_lwf_live_row(const PktLwfLiveRowHdr& hdr,
     memcpy(body.data(), &hdr, sizeof(hdr));
     if(row_bytes && row) memcpy(body.data() + sizeof(hdr), row, row_bytes);
     auto pkt = make_packet(PacketType::LWF_LIVE_ROW, body.data(), (uint32_t)body.size());
-    if(cb.on_relay_broadcast && has_relay())
+    // Central archive mirror가 row 받아 mtime 갱신해야 stale purge에 안 걸림.
+    if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
@@ -1083,7 +1087,8 @@ void NetServer::broadcast_lwf_live_row(const PktLwfLiveRowHdr& hdr,
 
 void NetServer::broadcast_lwf_live_stop(const PktLwfLiveStop& s){
     auto pkt = make_packet(PacketType::LWF_LIVE_STOP, &s, sizeof(s));
-    if(cb.on_relay_broadcast && has_relay())
+    // Central이 mirror finalize 할 수 있도록 항상 broadcast.
+    if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
     std::lock_guard<std::mutex> lk(clients_mtx_);
     for(auto& c : clients_){
