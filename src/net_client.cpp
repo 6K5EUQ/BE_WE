@@ -312,20 +312,36 @@ void NetClient::handle_packet(PacketType type,
         // 수직바가 왼쪽 끝으로 밀려있으면 FFT 패킷 드롭 (큐에 쌓지 않음)
         if(!fft_recv_enabled.load(std::memory_order_relaxed)) break;
         auto* fh = reinterpret_cast<const PktFftFrame*>(payload);
+        bool quantized = (fh->fft_size & FFT_FLAG_QUANT_U8) != 0;
+        uint32_t real_fft_size = fh->fft_size & FFT_FFT_SIZE_MASK;
         uint32_t data_bytes = len - (uint32_t)sizeof(PktFftFrame);
-        if(data_bytes != fh->fft_size * sizeof(float)) break;
+        uint32_t expected   = quantized
+            ? real_fft_size                       // uint8 1 byte/bin
+            : real_fft_size * (uint32_t)sizeof(float);
+        if(data_bytes != expected) break;
 
         // 수신 시각 (steady_clock μs)
         auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
 
-        const float* fft_floats = reinterpret_cast<const float*>(
-                                      payload + sizeof(PktFftFrame));
         FftFrame frm;
-        frm.data.assign(fft_floats, fft_floats + fh->fft_size);
+        frm.data.resize(real_fft_size);
+        if(quantized){
+            // uint8 → float dequantize
+            const uint8_t* qd = payload + sizeof(PktFftFrame);
+            float range = fh->power_max - fh->power_min;
+            if(!(range > 0.f)) range = 1.f;
+            float scale = range / 255.f;
+            for(uint32_t i = 0; i < real_fft_size; i++)
+                frm.data[i] = fh->power_min + (float)qd[i] * scale;
+        } else {
+            const float* fft_floats = reinterpret_cast<const float*>(
+                                          payload + sizeof(PktFftFrame));
+            std::copy(fft_floats, fft_floats + real_fft_size, frm.data.begin());
+        }
         frm.cf_hz     = fh->center_freq_hz;
         frm.sr        = fh->sample_rate;
-        frm.fft_sz    = fh->fft_size;
+        frm.fft_sz    = real_fft_size;
         frm.pmin      = fh->power_min;
         frm.pmax      = fh->power_max;
         frm.wall_time = fh->wall_time;

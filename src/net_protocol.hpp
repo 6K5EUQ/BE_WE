@@ -116,16 +116,22 @@ struct __attribute__((packed)) PktAuthAck {
 
 // ── FFT_FRAME ─────────────────────────────────────────────────────────────
 // header followed by float[fft_size] (dB values)
+// fft_size 의 MSB(0x80000000) 가 set 이면 payload 가 uint8 quantized — 4배 압축.
+// uint8 value v → dB = power_min + (v/255.0) * (power_max - power_min).
+// MSB clear 시 기존 float32 payload (구버전 호환).
+static constexpr uint32_t FFT_FLAG_QUANT_U8 = 0x80000000u;
+static constexpr uint32_t FFT_FFT_SIZE_MASK = 0x7FFFFFFFu;
+
 struct __attribute__((packed)) PktFftFrame {
     uint64_t center_freq_hz;
     uint32_t sample_rate;
-    uint32_t fft_size;
+    uint32_t fft_size;          // MSB = FFT_FLAG_QUANT_U8 flag, 하위 31bit = 실제 fft_size
     float    power_min;
     float    power_max;
     int64_t  wall_time;  // unix timestamp (time_t), 0=none
     int64_t  iq_write_sample;   // HOST tm_iq_write_sample at broadcast (0=N/A)
     int64_t  iq_total_samples;  // HOST tm_iq_total_samples (rolling buffer capacity)
-    // float data[fft_size] follows (raw dB power per bin)
+    // payload 따라옴: FFT_FLAG_QUANT_U8 set 이면 uint8[fft_size], 아니면 float[fft_size]
 };
 
 // ── AUDIO_FRAME ───────────────────────────────────────────────────────────

@@ -548,21 +548,33 @@ void NetServer::broadcast_fft(const float* data, int fft_size,
                                float pmin, float pmax,
                                int64_t iq_write_sample, int64_t iq_total_samples){
     if(bcast_pause_.load(std::memory_order_relaxed)) return;
+    // v3.24.x: uint8 quantize 로 4배 압축. dB 범위 [pmin..pmax] 를 0..255 mapping.
+    // 시각적 손실 거의 없음 (256 단계 = ~0.4 dB resolution). 헤더 fft_size 의 MSB
+    // 에 FFT_FLAG_QUANT_U8 set 하여 수신측이 dequantize 알 수 있게.
     PktFftFrame hdr{};
     hdr.center_freq_hz = center_hz;
     hdr.sample_rate    = sr;
-    hdr.fft_size       = (uint32_t)fft_size;
+    hdr.fft_size       = (uint32_t)fft_size | FFT_FLAG_QUANT_U8;
     hdr.power_min      = pmin;
     hdr.power_max      = pmax;
     hdr.wall_time      = wall_time;
     hdr.iq_write_sample  = iq_write_sample;
     hdr.iq_total_samples = iq_total_samples;
 
-    uint32_t data_bytes = (uint32_t)(fft_size * sizeof(float));
+    uint32_t data_bytes = (uint32_t)fft_size;  // uint8 1 byte/bin
     uint32_t total = (uint32_t)(sizeof(PktFftFrame) + data_bytes);
     std::vector<uint8_t> payload(total);
     memcpy(payload.data(), &hdr, sizeof(PktFftFrame));
-    memcpy(payload.data() + sizeof(PktFftFrame), data, data_bytes);
+    uint8_t* qdata = payload.data() + sizeof(PktFftFrame);
+    float range = pmax - pmin;
+    if(!(range > 0.f)) range = 1.f;  // 안전망
+    float inv = 255.f / range;
+    for(int i = 0; i < fft_size; i++){
+        float v = (data[i] - pmin) * inv;
+        if(v < 0.f) v = 0.f;
+        if(v > 255.f) v = 255.f;
+        qdata[i] = (uint8_t)v;
+    }
 
     auto pkt = make_packet(PacketType::FFT_FRAME, payload.data(), total);
     if(cb.on_relay_broadcast){

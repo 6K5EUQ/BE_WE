@@ -52,7 +52,9 @@ struct HWConfig {
         return best;
     }
     // 워터폴 행 속도를 HW에 관계없이 동일하게 유지 (37.5 rows/sec 기준)
-    static constexpr float TARGET_ROWS_PER_SEC = 37.5f;
+    // 워터폴 갱신 속도 (1초당 행 수). 18 Hz 이상이면 인간 시각에 부드럽게 보임.
+    // 네트워크 트래픽 절약을 위해 기본 18 Hz. 너무 낮추면 (<10) 끊겨 보임.
+    static constexpr float TARGET_ROWS_PER_SEC = 18.0f;
 
     float eff_bw_mhz() const { return sample_rate_mhz * eff_bw_ratio; }
     float nyq_mhz()    const { return sample_rate_mhz * 0.5f; }
