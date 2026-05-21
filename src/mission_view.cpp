@@ -133,10 +133,18 @@ static std::vector<DiskMission> scan_disk_missions(){
     return out;
 }
 
-// 미션 목록 통합: disk 폴더 스캔 + mission_history (missions.json 으로 영속화된 종료
-// 미션) union. 종료 후 MissionPush 가 로컬 파일을 unlink 해도 history entry 가 살아있어
-// 좌측 트리/자동선택 양쪽이 같은 set 을 보게 함. 결과는 year DESC, code DESC 정렬.
-// cur_station 비어있으면 station 필터 없이 모두 통과 (LOCAL/legacy 모드).
+// Central archive 기반 미션 목록 캐시 (좌측 트리 source).
+// 광역 LIST_REQ(station, year=0, code="") 응답에서 unique (year, code, station)
+// 누적. mission_history 와 union 되어 disk/history 비어있어도 좌측 트리에 표시.
+struct KnownMission { int year; std::string code; std::string station; };
+static std::mutex                     g_cf_km_mtx;
+static std::vector<KnownMission>      g_cf_known_missions;
+static double                         g_cf_km_last_req_time = 0.0;
+static std::string                    g_cf_km_last_req_station;
+
+// 미션 목록 통합: disk 폴더 스캔 + mission_history + Central archive(g_cf_known_missions)
+// 3개 source union. Central 가 source-of-truth (영구 보관) — HOST 재부팅으로 메모리
+// history 손상돼도 Central 응답이 좌측 트리 채움. 결과 year DESC, code DESC.
 static std::vector<DiskMission> collect_visible_missions(FFTViewer& v,
                                                          const std::string& cur_station){
     auto out = scan_disk_missions();
@@ -156,6 +164,21 @@ static std::vector<DiskMission> collect_visible_missions(FFTViewer& v,
             out.push_back(std::move(dm));
         }
     }
+    {
+        std::lock_guard<std::mutex> lk(g_cf_km_mtx);
+        for(const auto& km : g_cf_known_missions){
+            if(km.year == 0 || km.code.empty()) continue;
+            bool dup = false;
+            for(const auto& d : out)
+                if(d.year == km.year && d.code == km.code){ dup = true; break; }
+            if(dup) continue;
+            DiskMission dm;
+            dm.year = km.year;
+            dm.code = km.code;
+            dm.station = km.station;
+            out.push_back(std::move(dm));
+        }
+    }
     if(!cur_station.empty()){
         out.erase(std::remove_if(out.begin(), out.end(),
             [&](const DiskMission& d){
@@ -167,6 +190,18 @@ static std::vector<DiskMission> collect_visible_missions(FFTViewer& v,
         return a.code > b.code;
     });
     return out;
+}
+
+// Central 광역 LIST_REQ — station 의 모든 미션 (year=0, code="") 요청.
+// 30초 캐시 (같은 station 광역 req 중복 방지). station 변경 시 캐시 무효화.
+// 응답은 on_mission_file_list_recv 에서 g_cf_known_missions 누적.
+static void maybe_request_all_missions(NetClient* cli, const std::string& station){
+    if(!cli || station.empty()) return;
+    double now = ImGui::GetTime();
+    if(station == g_cf_km_last_req_station && (now - g_cf_km_last_req_time) < 30.0) return;
+    g_cf_km_last_req_station = station;
+    g_cf_km_last_req_time = now;
+    cli->send_mission_file_list_req(station.c_str(), /*year=*/0, /*code=*/"", /*subdir=*/0);
 }
 
 struct FileItem { std::string name; uint64_t size; time_t mtime; };
@@ -224,6 +259,7 @@ static double                         g_cf_last_req_time = 0.0;
 // 안전 타임아웃 12초 — 응답이 영영 안 와도 갱신 복귀.
 static bool                           g_cf_req_pending = false;
 static double                         g_cf_req_sent_at = 0.0;
+
 
 // ── Download 진행 상태 (단일 동시 다운로드) ──────────────────────────────
 static std::mutex   g_dl_mtx;
@@ -1860,6 +1896,11 @@ void draw_modal(FFTViewer& v, NetClient* cli){
         }
         ImGui::Separator();
 
+        // Central 광역 LIST_REQ — station 의 모든 미션 목록을 좌측 트리에 표시하기 위해.
+        // 30초 캐시 (maybe_request_all_missions 내부). station 변경 시 즉시 재요청.
+        if(cli && !v.station_name.empty())
+            maybe_request_all_missions(cli, v.station_name);
+
         float left_w = 200.f;
         ImGui::BeginChild("##mission_left", ImVec2(left_w, 0), true);
         draw_left_tree(v);
@@ -1936,6 +1977,23 @@ void on_mission_file_list_recv(const PktMissionFileList& page,
         r.size_bytes = src.size_bytes;
         r.mtime_unix = src.mtime_unix;
         g_cf_rows.push_back(r);
+    }
+    // Central archive 의 unique (year, code, station) 누적 — 좌측 트리 source.
+    // 광역 LIST_REQ 응답이든 selection 응답이든 모두 통과 (멱등).
+    {
+        std::lock_guard<std::mutex> lkm(g_cf_km_mtx);
+        for(auto& src : rows){
+            if(src.year == 0 || src.code[0] == 0) continue;
+            std::string code_s(src.code, strnlen(src.code, sizeof(src.code)));
+            std::string st_s(src.station, strnlen(src.station, sizeof(src.station)));
+            bool dup = false;
+            for(auto& km : g_cf_known_missions){
+                if(km.year == (int)src.year && km.code == code_s && km.station == st_s){
+                    dup = true; break;
+                }
+            }
+            if(!dup) g_cf_known_missions.push_back({(int)src.year, code_s, st_s});
+        }
     }
     if(page.is_last_page){
         g_cf_last_page = true;
