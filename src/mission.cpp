@@ -80,6 +80,79 @@ static int kst_hour_id_now(){
     return (int)((time(nullptr) + KST::OFFSET_SEC) / 3600);
 }
 
+// rm -rf : 디렉토리 전체 재귀 삭제. mission_delete 의 rm_rf_dir 와 동일 패턴.
+static void cleanup_rm_rf(const std::string& path){
+    DIR* d = opendir(path.c_str());
+    if(!d){ unlink(path.c_str()); return; }
+    struct dirent* de;
+    while((de = readdir(d)) != nullptr){
+        if(!de->d_name) continue;
+        if(de->d_name[0]=='.' &&
+           (de->d_name[1]==0 || (de->d_name[1]=='.' && de->d_name[2]==0))) continue;
+        std::string full = path + "/" + de->d_name;
+        struct stat st{};
+        if(lstat(full.c_str(), &st) != 0) continue;
+        if(S_ISDIR(st.st_mode)) cleanup_rm_rf(full);
+        else                    unlink(full.c_str());
+    }
+    closedir(d);
+    rmdir(path.c_str());
+}
+
+// 미션 코드 prefix(월) 기준 두 달 전 prefix 의 HOST 로컬 미션 파일 삭제.
+// 예: G01 시작 시 → 'E*' (5월) 폴더 전부 unlink (IQ/audio/hist 모두).
+// 알파벳 wrap: A→K(전년), B→L(전년). 매 mission_start 마다 멱등 호출.
+//
+// **mission_history 는 보존** — 좌측 트리에 미션 entry 유지하여 사용자가
+// 옛 미션을 클릭하면 Central archive 의 데이터 (영구 보존) 에 접근 가능.
+// Central 영향 없음 (별도 기기, 별도 binary).
+static void cleanup_two_months_ago_missions(FFTViewer* v,
+                                             const char* cur_code, int cur_year){
+    (void)v;
+    if(!cur_code || !cur_code[0]) return;
+    char cur_letter = cur_code[0];
+    if(cur_letter < 'A' || cur_letter > 'L') return;
+    int cur_mon0 = cur_letter - 'A';
+    int tgt_mon0 = cur_mon0 - 2;
+    int tgt_year = cur_year;
+    if(tgt_mon0 < 0){ tgt_mon0 += 12; tgt_year -= 1; }
+    char tgt_letter = (char)('A' + tgt_mon0);
+
+    // 모든 station 의 <tgt_year>/<tgt_letter*>/ 폴더 unlink (디스크 공간 회수).
+    int removed_dirs = 0;
+    std::string root = BEWEPaths::missions_root();
+    DIR* dr = opendir(root.c_str());
+    if(dr){
+        struct dirent* de;
+        while((de = readdir(dr)) != nullptr){
+            if(!de->d_name || de->d_name[0]=='.') continue;
+            char yb[16]; snprintf(yb, sizeof(yb), "%04d", tgt_year);
+            std::string ydir = root + "/" + de->d_name + "/" + yb;
+            DIR* dy = opendir(ydir.c_str());
+            if(!dy) continue;
+            std::vector<std::string> targets;
+            struct dirent* dc;
+            while((dc = readdir(dy)) != nullptr){
+                if(!dc->d_name || dc->d_name[0]=='.') continue;
+                if(dc->d_name[0] == tgt_letter) targets.push_back(dc->d_name);
+            }
+            closedir(dy);
+            for(auto& code : targets){
+                std::string cdir = ydir + "/" + code;
+                cleanup_rm_rf(cdir);
+                removed_dirs++;
+            }
+        }
+        closedir(dr);
+    }
+    if(removed_dirs > 0){
+        bewe_log_push(0,
+            "[MISSION] cleanup: removed %d %c* mission dirs of %04d (2-month rotation, current=%c). "
+            "History entries kept — Central archive 로 접근 가능.\n",
+            removed_dirs, tgt_letter, tgt_year, cur_letter);
+    }
+}
+
 static void utc0_worker(FFTViewer* v){
     // KST 일자 단위 dedup — minute/hour gate 없음. sleep/suspend/restart 후 깬
     // 직후라도 day_id 변동 즉시 rollover 발동. .last_rolled 파일에 영속화 →
@@ -230,6 +303,9 @@ bool FFTViewer::mission_start(const char* started_by, uint8_t op_index, bool rol
     LongWaterfall::finalize_stale_live_all();
     mission_save_meta_to_disk();
     mission_broadcast_sync();
+    // HOST 로컬 디스크: 2개월 전 prefix 미션 데이터 전체 삭제.
+    // (예: G01 시작 시 E*(5월) 폴더 + history entry 모두 unlink.) Central 영향 없음.
+    Mission::cleanup_two_months_ago_missions(this, mission_code, mission_year);
     return true;
 }
 
