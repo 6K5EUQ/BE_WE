@@ -135,8 +135,7 @@ bool push_one(const QueueItem& it){
         station = g_v->mission_active_station_name();
     }
     if(station.empty()){
-        fprintf(stderr, "[MissionPush] no station_name (mission inactive?) — skip %s\n",
-                it.path.c_str());
+        // 미션 IDLE 또는 station 미설정 → 조용히 skip + 큐 후미로 재시도.
         fclose(fp);
         return false;
     }
@@ -222,12 +221,16 @@ bool push_one(const QueueItem& it){
         return false;
     }
 
-    // ACK 대기 (최대 60s)
+    // ACK 대기 — 파일 크기 비례. 200KB/s 가정 (네트워크 매우 느린 경우까지 cover) +
+    // 60s base. 큰 hist 파일(수백 MB) 도 안정. 최소 60s, 최대 1시간 cap.
+    uint64_t timeout_sec = 60 + total / (200ULL * 1024ULL);
+    if(timeout_sec < 60)   timeout_sec = 60;
+    if(timeout_sec > 3600) timeout_sec = 3600;
     bool ack_ok = false;
     PktMissionFilePushAck ack{};
     {
         std::unique_lock<std::mutex> lk(ack_mtx);
-        ack_cv.wait_for(lk, std::chrono::seconds(60), [&]{
+        ack_cv.wait_for(lk, std::chrono::seconds(timeout_sec), [&]{
             auto it2 = ack_map.find(tid);
             return it2 == ack_map.end() || it2->second.received || !running.load();
         });
@@ -290,16 +293,35 @@ void start(FFTViewer* v, CentralClient* cli){
         [](const uint8_t* bewe, size_t len){
             if(len < 9 + sizeof(PktMissionFilePushAck)) return;
             const auto* a = reinterpret_cast<const PktMissionFilePushAck*>(bewe + 9);
-            std::lock_guard<std::mutex> lk(ack_mtx);
-            auto it = ack_map.find(a->transfer_id);
-            if(it == ack_map.end()){
-                fprintf(stderr, "[MissionPush] stray ACK tid=%u (no waiting xfer)\n",
-                        a->transfer_id);
-                return;
+            {
+                std::lock_guard<std::mutex> lk(ack_mtx);
+                auto it = ack_map.find(a->transfer_id);
+                if(it != ack_map.end()){
+                    it->second.received = true;
+                    it->second.ack = *a;
+                    ack_cv.notify_all();
+                    return;
+                }
             }
-            it->second.received = true;
-            it->second.ack = *a;
-            ack_cv.notify_all();
+            // stray ACK: 클라가 timeout 으로 FAIL 처리한 후 늦게 도착한 ACK.
+            // Central 측은 실제로 성공이므로, 같은 path 가 큐에 retry 로 들어가
+            // 있으면 제거 + 로컬 unlink. 무한 retry loop 방지.
+            if(a->status != 0) return;
+            std::string fn(a->key.filename, strnlen(a->key.filename, sizeof(a->key.filename)));
+            std::string code(a->key.code,   strnlen(a->key.code,   sizeof(a->key.code)));
+            int year = (int)a->key.year;
+            std::lock_guard<std::mutex> lk(q_mtx);
+            for(auto it = q.begin(); it != q.end(); ){
+                if(it->year == year && it->code == code && it->filename == fn){
+                    fprintf(stderr, "[MissionPush] late ACK tid=%u — drop dup queued %s + unlink\n",
+                            a->transfer_id, it->path.c_str());
+                    unlink(it->path.c_str());
+                    unlink((it->path + ".info").c_str());
+                    it = q.erase(it);
+                } else {
+                    ++it;
+                }
+            }
         });
     running.store(true);
     worker_thr = std::thread(worker_loop);

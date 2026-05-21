@@ -1378,6 +1378,11 @@ void run_cli_host(){
                 *reconnect_fn = [&v, &central_cli,
                                  rh = std::string(central_host), rp = central_port,
                                  reconnect_fn](){
+                    // Central 연결 끊김 — 현재 HIST 파일을 dirty 표시.
+                    // 끊긴 동안의 LIVE row 가 Central 에 도달 못 했을 수 있으므로
+                    // finalize 시 통파일 push 로 보완.
+                    LongWaterfall::mark_dirty();
+                    bewe_log_push(0,"[CLI] Central disconnected — mark HIST file dirty\n");
                     std::thread([&v, &central_cli, rh, rp, reconnect_fn](){
                         for(int attempt=1; ; attempt++){
                             // 5초 대기를 0.1초 단위로 쪼개어 shutdown 즉시 반응

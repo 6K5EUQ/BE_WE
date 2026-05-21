@@ -64,6 +64,11 @@ void stop_worker();
 // Called from capture/IO or UI on SR/CF/fft_size/IQ on-off events.
 void request_rotate();
 
+// 현재 열린 HIST 파일을 "dirty" 표시 — Central 연결 끊김이 발생했음을 의미.
+// finalize 시점에 dirty 면 통파일을 MissionPush 로 enqueue (LIVE row 누락분 보완).
+// dirty 아니면 LIVE tap 만으로 도달했다고 가정하고 push skip.
+void mark_dirty();
+
 // Currently-open file path (empty if worker idle / not recording). Thread-safe snapshot.
 std::string current_file_path();
 

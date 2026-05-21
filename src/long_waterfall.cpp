@@ -28,6 +28,10 @@ namespace {
 std::atomic<bool>   g_running{false};
 std::atomic<int>    g_rotate_req_seq{0};   // ++ when external code calls request_rotate()
 int                 g_rotate_seen_seq = 0; // worker tracks last seen
+// 현재 열린 파일의 "Central 연결 안정성" 표시. LIVE row stream 이 끊긴 적이 있으면
+// finalize 시 file push 로 보완. 연결 내내 안정이면 push 생략 (LIVE tap 만으로 충분).
+// open_new_file 마다 false 로 reset. cli_host 의 reconnect 흐름이 mark_dirty() 호출.
+std::atomic<bool>   g_file_dirty{false};
 std::thread         g_thr;
 FFTViewer*          g_v = nullptr;
 
@@ -103,10 +107,22 @@ void close_file_locked(){
     }
     g_acc_db.clear();
     g_acc_count = 0;
-    // Mission File Push (Phase 2): HIST 파일이 미션 dir 안이면 Central archive로 업로드 후 unlink.
-    // path 형식이 ~/BE_WE/recordings/missions/<year>/<code>/hist/... 일 때만 enqueue가 처리.
+    // Mission File Push (B 정책, v3.22.x): LIVE row stream 이 안정적으로 도달했으면
+    // (g_file_dirty==false) push 생략 — Central 의 mirror 파일이 곧 final 결과물.
+    // Central 연결이 끊긴 적 있으면 (dirty==true) 통파일 push 로 누락 row 보완.
+    // path 형식이 mission_hist_dir 안이어야 MissionPush::enqueue 가 실제 처리.
     if(!finalized_path.empty()){
-        MissionPush::enqueue(finalized_path, MFS_HIST);
+        bool was_dirty = g_file_dirty.exchange(false);
+        if(was_dirty){
+            printf("[LongWaterfall] file finalize DIRTY (Central was down) — enqueue push: %s\n",
+                   finalized_path.c_str());
+            MissionPush::enqueue(finalized_path, MFS_HIST);
+        } else {
+            // LIVE tap 만으로 충분 → 파일 push 생략 + 로컬 파일은 디스크에 남김
+            // (HOST 측 로컬 보존 정책. 디스크 가득 차면 별도 cleanup 정책 필요).
+            printf("[LongWaterfall] file finalize CLEAN — LIVE tap delivered, skip push: %s\n",
+                   finalized_path.c_str());
+        }
     }
 }
 
@@ -128,8 +144,7 @@ bool open_new_file(uint64_t cf_hz, uint64_t sr_hz, uint32_t fft_size,
     std::string dir;
     if(g_v) dir = g_v->active_hist_dir();
     if(dir.empty()){
-        fprintf(stderr, "[LWF] open_new_file: active_hist_dir EMPTY "
-                "(mission inactive/code unset) — skip\n");
+        // 미션 IDLE → 조용히 skip. worker 가 500ms 후 재시도.
         return false;
     }
     mkdir(BEWEPaths::recordings_dir().c_str(), 0755);
@@ -177,6 +192,7 @@ bool open_new_file(uint64_t cf_hz, uint64_t sr_hz, uint32_t fft_size,
     g_hdr_cur = h;
     g_acc_db.assign(fft_size, -200.0f);  // very-low init for max-hold
     g_acc_count = 0;
+    g_file_dirty.store(false);  // 새 파일 = LIVE tap 안정 가정으로 시작
     {
         std::lock_guard<std::mutex> lk(g_path_mtx);
         g_cur_path = full;
@@ -293,10 +309,6 @@ void worker_loop(){
         // Rotate requested?
         int req = g_rotate_req_seq.load(std::memory_order_relaxed);
         if(req != g_rotate_seen_seq){
-            fprintf(stderr, "[LWF] rotate seq %d -> %d  tm_on=%d  active_dir='%s'\n",
-                    g_rotate_seen_seq, req,
-                    (int)g_v->tm_iq_on.load(),
-                    g_v->active_hist_dir().c_str());
             g_rotate_seen_seq = req;
             // Flush any pending row, close current file.
             flush_row_locked();
@@ -310,10 +322,7 @@ void worker_loop(){
         // Only record while TM IQ is rolling.
         bool tm_on = g_v->tm_iq_on.load(std::memory_order_relaxed);
         if(!tm_on){
-            if(g_fp){
-                fprintf(stderr, "[LWF] tm_iq_on went FALSE — closing current file\n");
-                flush_row_locked(); close_file_locked();
-            }
+            if(g_fp){ flush_row_locked(); close_file_locked(); }
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
             continue;
         }
@@ -403,6 +412,12 @@ void stop_worker(){
 
 void request_rotate(){
     g_rotate_req_seq.fetch_add(1, std::memory_order_relaxed);
+}
+
+// Central 연결이 끊겼을 때 cli_host 가 호출. 현재 열려있는 HIST 파일에 dirty flag set.
+// finalize 시점에 dirty 면 MissionPush 로 통파일 push (LIVE tap 동안 누락 row 보완).
+void mark_dirty(){
+    g_file_dirty.store(true);
 }
 
 std::string current_file_path(){
