@@ -6,6 +6,10 @@ build_cli/
 # Claude Code project instructions (machine-local, not shared via git)
 CLAUDE.md
 
+# Per-HOST configuration (seeded with defaults on first run; edits accumulate locally)
+band_plan.json
+band_categories.json
+
 # Recordings / IQ data
 recordings/
 
