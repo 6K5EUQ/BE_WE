@@ -586,19 +586,10 @@ static void maybe_request_central_list(FFTViewer& v, NetClient* cli){
     if(sel_changed || refresh_due){
         {
             std::lock_guard<std::mutex> lk(g_cf_mtx);
-            // 새 LIST_REQ 송신 시 해당 (station, year, code) rows 선제 클리어 —
-            // 응답 중첩 시 UI에 stale + new 동시 노출 방지.
-            if(sel_changed){
-                g_cf_rows.clear();
-            } else {
-                auto same_mission = [&](const CentralFileRow& r){
-                    return r.year == (uint16_t)g_sel_year &&
-                           strncmp(r.code, g_sel_code.c_str(), 8) == 0 &&
-                           strncmp(r.station, station, 64) == 0;
-                };
-                g_cf_rows.erase(std::remove_if(g_cf_rows.begin(), g_cf_rows.end(), same_mission),
-                                g_cf_rows.end());
-            }
+            // 같은 mission 만 비워 (다른 mission rows 는 유지해도 무방하나 단순화).
+            // refresh-due 경로에서는 선제 비우지 않음 — 응답 지연 시 화면이 일시 비어 보이는
+            // 부작용 방지. 응답 도착 시 page-level dedup (on_mission_file_list_recv) 이 멱등 갱신.
+            if(sel_changed) g_cf_rows.clear();
             g_cf_last_page = false;
         }
         g_cf_req_year = g_sel_year;
