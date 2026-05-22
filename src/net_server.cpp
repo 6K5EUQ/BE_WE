@@ -354,62 +354,6 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
         c->alive.store(false);
         break;
 
-    case PacketType::SHARE_DOWNLOAD_REQ: {
-        if(!c->authed || len < sizeof(PktShareDownloadReq)) break;
-        auto* req = reinterpret_cast<const PktShareDownloadReq*>(payload);
-        char fname[129]; strncpy(fname, req->filename, 128); fname[128]='\0';
-        if(cb.on_share_download_req) cb.on_share_download_req(c->op_index, fname);
-        break;
-    }
-
-    case PacketType::SHARE_UPLOAD_META: {
-        if(!c->authed || len < sizeof(PktShareUploadMeta)) break;
-        auto* m = reinterpret_cast<const PktShareUploadMeta*>(payload);
-        // 기존 업로드 중인 파일 닫기
-        if(c->upload.fp){ fclose(c->upload.fp); c->upload.fp=nullptr; }
-        strncpy(c->upload.filename, m->filename, 127); c->upload.filename[127]='\0';
-        c->upload.total_bytes  = m->total_bytes;
-        c->upload.recv_bytes   = 0;
-        c->upload.transfer_id  = m->transfer_id;
-        c->upload.active       = true;
-        // 임시 저장 경로: /tmp/bewe_up_<name>
-        snprintf(c->upload.save_path, sizeof(c->upload.save_path),
-                 "/tmp/bewe_up_%s", c->upload.filename);
-        c->upload.fp = fopen(c->upload.save_path, "wb");
-        if(!c->upload.fp){
-            bewe_log_push(0, "SHARE_UPLOAD_META: fopen failed %s\n", c->upload.save_path);
-            c->upload.active=false;
-        }
-        break;
-    }
-
-    case PacketType::SHARE_UPLOAD_DATA: {
-        if(!c->authed || !c->upload.active || !c->upload.fp) break;
-        if(len < sizeof(PktShareUploadData)) break;
-        auto* d = reinterpret_cast<const PktShareUploadData*>(payload);
-        if(d->transfer_id != c->upload.transfer_id) break;
-        uint32_t data_bytes = d->chunk_bytes;
-        if((uint32_t)len < (uint32_t)sizeof(PktShareUploadData) + data_bytes) break;
-        const uint8_t* data_ptr = payload + sizeof(PktShareUploadData);
-        fwrite(data_ptr, 1, data_bytes, c->upload.fp);
-        c->upload.recv_bytes += data_bytes;
-        if(d->is_last){
-            fclose(c->upload.fp); c->upload.fp=nullptr;
-            c->upload.active=false;
-            if(cb.on_share_upload_done)
-                cb.on_share_upload_done(c->op_index, c->name, c->upload.save_path);
-        }
-        break;
-    }
-
-    case PacketType::PUB_DELETE_REQ: {
-        if(!c->authed || len < sizeof(PktPubDeleteReq)) break;
-        auto* req = reinterpret_cast<const PktPubDeleteReq*>(payload);
-        char fname[129]; strncpy(fname, req->filename, 128); fname[128]='\0';
-        if(cb.on_pub_delete_req) cb.on_pub_delete_req(c->name, fname);
-        break;
-    }
-
     case PacketType::DB_DELETE_REQ: {
         if(!c->authed || len < sizeof(PktDbDeleteReq)) break;
         auto* req = reinterpret_cast<const PktDbDeleteReq*>(payload);
@@ -987,29 +931,6 @@ void NetServer::send_file_via_pipe(int pipe_fd, const char* path, uint32_t req_i
 
     broadcast_progress(total, 2);  // Done
     if(progress_cb) progress_cb(total, total);
-}
-
-void NetServer::send_share_list(int op_index,
-                                 const std::vector<std::tuple<std::string,uint64_t,std::string>>& files){
-    uint16_t cnt = (uint16_t)std::min((size_t)files.size(), (size_t)UINT16_MAX);
-    size_t payload_size = sizeof(PktShareList) + cnt * sizeof(ShareFileEntry);
-    std::vector<uint8_t> payload(payload_size, 0);
-    auto* hdr = reinterpret_cast<PktShareList*>(payload.data());
-    hdr->count = cnt;
-    ShareFileEntry* entries = reinterpret_cast<ShareFileEntry*>(payload.data() + sizeof(PktShareList));
-    for(uint16_t i = 0; i < cnt; i++){
-        strncpy(entries[i].filename, std::get<0>(files[i]).c_str(), 127);
-        entries[i].size_bytes = std::get<1>(files[i]);
-        strncpy(entries[i].uploader, std::get<2>(files[i]).c_str(), 31);
-    }
-    std::lock_guard<std::mutex> lk(clients_mtx_);
-    for(auto& c : clients_){
-        if(!c->authed || !c->alive.load()) continue;
-        if(op_index >= 0 && c->op_index != (uint8_t)op_index) continue;
-        auto pkt = make_packet(PacketType::SHARE_LIST, payload.data(), (uint32_t)payload_size);
-        std::lock_guard<std::mutex> slk(c->send_mtx);
-        send_all(c->fd, pkt.data(), pkt.size());
-    }
 }
 
 void NetServer::broadcast_db_list(const std::vector<DbFileEntry>& entries){

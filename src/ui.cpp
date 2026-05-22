@@ -2212,25 +2212,9 @@ void run_streaming_viewer(){
     // Private 탭: 이전 세션 녹음 (private/iq, private/audio)
     static std::vector<std::string> priv_iq_files;
     static std::vector<std::string> priv_audio_files;
-    // Public 탭 (HOST 로컬): public/iq, public/audio
-    static std::vector<std::string> pub_iq_files;
-    static std::vector<std::string> pub_audio_files;
-    // Share 탭: 다운로드된 파일 (share/iq, share/audio)
-    static std::vector<std::string> share_iq_files;
-    static std::vector<std::string> share_audio_files;
     // 레거시: priv_files > priv_iq+priv_audio 합산 (일부 기존 코드 참조용)
     static std::vector<std::string> priv_files; // 스캔 후 priv_iq+priv_audio 합산
     static std::map<std::string,std::string> priv_extra_paths; // filename > full path
-    static std::vector<std::string> shared_files; // 스캔 후 pub_iq+pub_audio 합산
-    static std::vector<std::string> downloaded_files; // 스캔 후 share_iq+share_audio 합산
-    // JOIN: HOST Public 파일 목록 (filename, size_bytes, uploader)
-    struct JoinShareEntry { std::string filename; uint64_t size_bytes=0; std::string uploader; };
-    static std::vector<JoinShareEntry> join_share_files;
-    static std::mutex join_share_mtx;
-    // HOST: Public 파일 다운로드 리스너 추적 (filename > 다운로드한 op_name 목록)
-    static std::map<std::string,std::vector<std::string>> pub_listeners;
-    // Public 파일 소유자 추적 (filename > uploader_name): 업로드한 사람만 삭제 가능
-    static std::map<std::string,std::string> pub_owners;
     static std::atomic<bool> ch_sync_dirty_flag{false};
     do {
     do_main_menu = false;
@@ -3193,23 +3177,6 @@ void run_streaming_viewer(){
                     rgn_start_wt, v.utc_offset_hours());
                 bool f2=false; for(auto& s:rec_iq_files) if(s==name){f2=true;break;}
                 if(!f2) rec_iq_files.push_back(name);
-            } else {
-                // Public 다운로드 파일 > share 폴더 (share/iq 또는 share/audio)
-                std::string share_iq  = BEWEPaths::share_iq_dir();
-                std::string share_aud = BEWEPaths::share_audio_dir();
-                if(path.find(share_iq) == 0 || path.find(share_aud) == 0){
-                    bool found=false;
-                    for(auto& df:downloaded_files) if(df==name){found=true;break;}
-                    if(!found) downloaded_files.push_back(name);
-                    // share_iq_files / share_audio_files 에도 추가
-                    if(path.find(share_iq) == 0){
-                        bool f2=false; for(auto& s:share_iq_files) if(s==name){f2=true;break;}
-                        if(!f2) share_iq_files.push_back(name);
-                    } else {
-                        bool f2=false; for(auto& s:share_audio_files) if(s==name){f2=true;break;}
-                        if(!f2) share_audio_files.push_back(name);
-                    }
-                }
             }
         };
 
@@ -3560,41 +3527,14 @@ void run_streaming_viewer(){
             }
         };
 
-        cli->on_share_list = [&](const std::vector<std::tuple<std::string,uint64_t,std::string>>& files){
-            std::lock_guard<std::mutex> lk(join_share_mtx);
-            // 목록 갱신
-            for(auto& f : files){
-                const std::string& fn  = std::get<0>(f);
-                uint64_t           fsz = std::get<1>(f);
-                const std::string& upl = std::get<2>(f);
-                bool found=false;
-                for(auto& e : join_share_files)
-                    if(e.filename==fn){ e.size_bytes=fsz; if(!upl.empty()) e.uploader=upl; found=true; break; }
-                if(!found){ JoinShareEntry e; e.filename=fn; e.size_bytes=fsz; e.uploader=upl; join_share_files.push_back(e); }
-            }
-            // HOST 목록에 없는 항목은 제거
-            join_share_files.erase(std::remove_if(join_share_files.begin(),join_share_files.end(),
-                [&](const JoinShareEntry& e){
-                    for(auto& f:files) if(std::get<0>(f)==e.filename) return false;
-                    return true;
-                }), join_share_files.end());
-        };
-
-        // JOIN: 수신 파일 저장 경로 결정
-        // - region IQ 요청 결과 (REQ_TRANSFERRING 상태) > record/iq
-        // - Public 다운로드 IQ_ / sa_                  > share/iq
-        // - Public 다운로드 Audio_                      > share/audio
+        // JOIN: 수신 파일 저장 경로 결정 (region IQ 요청 결과 → record/iq)
         cli->on_get_save_dir = [&v](const std::string& filename) -> std::string {
-            // region IQ 요청 여부 확인
-            // on_get_save_dir은 on_file_meta보다 먼저 호출되므로 e.filename이 아직 비어있음.
-            // REQ_CONFIRMED/TRANSFERRING 상태의 region 항목이 있으면 이 파일이 region IQ 결과임.
             bool is_region = false;
             {
                 std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                 for(auto& e : v.rec_entries)
                     if(e.is_region && (e.req_state==FFTViewer::RecEntry::REQ_CONFIRMED
                                     || e.req_state==FFTViewer::RecEntry::REQ_TRANSFERRING)){
-                        // 파일명을 여기서 미리 기록 (on_file_meta에서도 덮어씀)
                         if(e.filename.empty()) e.filename = filename;
                         is_region = true; break;
                     }
@@ -3604,11 +3544,7 @@ void run_streaming_viewer(){
                 struct stat sd{}; if(stat(dir.c_str(),&sd)!=0) mkdir(dir.c_str(),0755);
                 return dir;
             }
-            // Public 다운로드: IQ/Audio 구분
-            bool is_iq = is_iq_filename(filename);
-            std::string dir = is_iq ? BEWEPaths::share_iq_dir() : BEWEPaths::share_audio_dir();
-            struct stat sd{}; if(stat(dir.c_str(),&sd)!=0) mkdir(dir.c_str(),0755);
-            return dir;
+            return std::string();
         };
 
         // 오퍼레이터 목록 팝업 - 건너뜀 (바로 메인으로 진입)
@@ -3757,48 +3693,15 @@ void run_streaming_viewer(){
         }
 
         if(mode_sel==1){
-            // HOST: 서버 시작 (public 목록 + 소유자/리스너 초기화)
-            shared_files.clear(); pub_iq_files.clear(); pub_audio_files.clear();
-            pub_listeners.clear(); pub_owners.clear();
+            // HOST: 서버 시작
             ch_sync_dirty_flag.store(false);
             srv = new NetServer();
             // 인증: 로그인 시스템과 동일하게 처리 (여기서는 간단히 항상 허용)
             srv->cb.on_auth = [&,srv](const char* id, const char* pw,
                                    uint8_t tier, uint8_t& idx) -> bool {
-                // TODO: 실제 인증 로직 연결
                 static uint8_t next=1;
                 idx = next++;
                 if(next>MAX_OPERATORS) next=1;
-                // 인증 성공 시 현재 share 목록 전송 (join 초기 동기화)
-                // 백그라운드 스레드에서 약간 지연 후 전송 (AUTH_ACK 후 처리)
-                uint8_t new_idx = idx;
-                // pub_owners를 캡처하여 업로더 정보 포함 전송
-                std::thread([srv, new_idx](){
-                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-                    std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
-                    auto scan_pub = [&](const std::string& dir){
-                        DIR* ds = opendir(dir.c_str());
-                        if(!ds) return;
-                        struct dirent* ent;
-                        while((ent=readdir(ds))!=nullptr){
-                            const char* n = ent->d_name;
-                            size_t nl = strlen(n);
-                            if(nl>4 && strcmp(n+nl-4,".wav")==0){
-                                std::string fp = dir+"/"+n;
-                                struct stat st{}; uint64_t fsz=0;
-                                if(stat(fp.c_str(),&st)==0) fsz=(uint64_t)st.st_size;
-                                std::string upl;
-                                auto it=pub_owners.find(n);
-                                if(it!=pub_owners.end()) upl=it->second;
-                                slist.push_back({n, fsz, upl});
-                            }
-                        }
-                        closedir(ds);
-                    };
-                    scan_pub(BEWEPaths::public_iq_dir());
-                    scan_pub(BEWEPaths::public_audio_dir());
-                    if(!slist.empty()) srv->send_share_list((int)new_idx, slist);
-                }).detach();
                 return true;
             };
             // 서버 콜백 > FFTViewer 직접 제어
@@ -4095,85 +3998,6 @@ void run_streaming_viewer(){
             srv->cb.on_start_rec  = [&](int){ v.start_rec(); };
             srv->cb.on_stop_rec   = [&](){ v.stop_rec(); };
             srv->cb.on_chat       = [&](const char*,const char*){};
-            // HOST: JOIN이 public 파일 다운로드 요청
-            srv->cb.on_share_download_req = [&](uint8_t op_idx, const char* filename){
-                // IQ/Audio 구분하여 올바른 폴더에서 찾기
-                std::string fn(filename);
-                bool is_iq = is_iq_filename(fn);
-                std::string path = (is_iq ? BEWEPaths::public_iq_dir() : BEWEPaths::public_audio_dir()) + "/" + fn;
-                struct stat st{};
-                if(stat(path.c_str(),&st)!=0){ fprintf(stderr,"share_download: file not found: %s\n",path.c_str()); return; }
-                // 다운로드 요청자 이름 기록
-                {
-                    auto ops = srv->get_operators();
-                    for(auto& op : ops){
-                        if(op.index == op_idx){
-                            std::string fn(filename);
-                            auto& listeners = pub_listeners[fn];
-                            bool already = false;
-                            for(auto& s : listeners) if(s==std::string(op.name)){already=true;break;}
-                            if(!already) listeners.push_back(std::string(op.name));
-                            break;
-                        }
-                    }
-                }
-                uint8_t tid = v.next_transfer_id.fetch_add(1);
-                // 백그라운드 스레드에서 전송: client_loop 스레드 블로킹 방지
-                // (inline 호출 시 send_audio가 send_mtx를 기다리며 demod 스레드 블로킹 > HOST 오디오 끊김)
-                std::string path_copy = path;
-                int op_int = (int)op_idx;
-                std::thread([srv, path_copy, op_int, tid](){
-                    srv->send_file_to(op_int, path_copy.c_str(), tid);
-                }).detach();
-            };
-            // HOST: JOIN이 파일을 업로드 완료 > public/iq 또는 public/audio로 이동 + 목록 갱신
-            srv->cb.on_share_upload_done = [&](uint8_t /*op_idx*/, const char* op_name, const char* tmp_path){
-                const char* fn = strrchr(tmp_path, '/'); fn = fn ? fn+1 : tmp_path;
-                // "bewe_up_" 접두사 제거
-                if(strncmp(fn,"bewe_up_",8)==0) fn+=8;
-                // IQ/Audio 구분
-                bool is_iq = is_iq_filename(fn);
-                std::string pub_dir = is_iq ? BEWEPaths::public_iq_dir() : BEWEPaths::public_audio_dir();
-                struct stat sd{}; if(stat(pub_dir.c_str(),&sd)!=0) mkdir(pub_dir.c_str(),0755);
-                std::string dst = pub_dir + "/" + fn;
-                // 임시 파일 > public 폴더로 복사
-                FILE* fin = fopen(tmp_path,"rb"); FILE* fout = fopen(dst.c_str(),"wb");
-                if(fin&&fout){ char buf[65536]; size_t n; while((n=fread(buf,1,sizeof(buf),fin))>0) fwrite(buf,1,n,fout); }
-                if(fin) fclose(fin); if(fout) fclose(fout);
-                remove(tmp_path); // 임시 파일 삭제
-                std::string fname(fn);
-                // pub_owners: 업로드한 사람 기록
-                pub_owners[fname] = std::string(op_name);
-                // pub_iq_files / pub_audio_files / shared_files 갱신
-                if(is_iq){
-                    bool dup=false; for(auto& sf:pub_iq_files) if(sf==fname){dup=true;break;}
-                    if(!dup) pub_iq_files.push_back(fname);
-                } else {
-                    bool dup=false; for(auto& sf:pub_audio_files) if(sf==fname){dup=true;break;}
-                    if(!dup) pub_audio_files.push_back(fname);
-                }
-                {
-                    bool dup=false; for(auto& sf:shared_files) if(sf==fname){dup=true;break;}
-                    if(!dup) shared_files.push_back(fname);
-                }
-                // 모든 JOIN에게 갱신된 public 목록 브로드캐스트
-                {
-                    std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
-                    for(auto& sf : shared_files){
-                        bool siq = is_iq_filename(sf);
-                        std::string sfp = (siq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+sf;
-                        struct stat sst{}; uint64_t fsz=0;
-                        if(stat(sfp.c_str(),&sst)==0) fsz=(uint64_t)sst.st_size;
-                        std::string upl;
-                        auto it=pub_owners.find(sf);
-                        if(it!=pub_owners.end()) upl=it->second;
-                        slist.push_back({sf,fsz,upl});
-                    }
-                    srv->send_share_list(-1, slist);
-                }
-                bewe_log_push(2,"Public upload done: %s (from %s)\n", fn, op_name);
-            };
-            // JOIN이 /chassis 1 reset 명령 전송 > HOST 측에서 재시작
             // JOIN > HOST: FFT size 변경 (HOST 적용 후 FFT_FRAME으로 자동 동기화)
             srv->cb.on_set_fft_size = [&](const char* who, uint32_t size){
                 bewe_log_push(0, "[CMD:%s] FFT size > %u\n", who, size);
@@ -4271,36 +4095,6 @@ void run_streaming_viewer(){
             srv->cb.on_rx_start = [&](const char* who){
                 bewe_log_push(0, "[CMD:%s] /rx start\n", who);
                 pending_rx_start.store(true);
-            };
-            // JOIN이 public 파일 삭제 요청 > 소유자 확인 후 삭제 + 브로드캐스트
-            srv->cb.on_pub_delete_req = [&](const char* op_name, const char* filename){
-                std::string fname(filename);
-                // 소유자만 삭제 허용
-                auto oit = pub_owners.find(fname);
-                if(oit == pub_owners.end() || oit->second != std::string(op_name)) return;
-                // 실제 파일 삭제
-                bool is_iq = is_iq_filename(fname);
-                std::string fp = (is_iq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+fname;
-                remove(fp.c_str());
-                remove((fp + ".info").c_str());
-                // 목록에서 제거
-                auto rm_from = [&](std::vector<std::string>& vec){
-                    vec.erase(std::remove(vec.begin(),vec.end(),fname),vec.end());
-                };
-                rm_from(pub_iq_files); rm_from(pub_audio_files); rm_from(shared_files);
-                pub_owners.erase(fname);
-                pub_listeners.erase(fname);
-                // 갱신된 목록 브로드캐스트
-                std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
-                for(auto& sf : shared_files){
-                    bool siq2 = is_iq_filename(sf);
-                    std::string sfp = (siq2?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+sf;
-                    struct stat sst{}; uint64_t fsz=0;
-                    if(stat(sfp.c_str(),&sst)==0) fsz=(uint64_t)sst.st_size;
-                    std::string upl; auto it=pub_owners.find(sf); if(it!=pub_owners.end()) upl=it->second;
-                    slist.push_back({sf,fsz,upl});
-                }
-                srv->send_share_list(-1, slist);
             };
 
             // port 0 > OS가 빈 포트 자동 할당
@@ -4671,7 +4465,6 @@ void run_streaming_viewer(){
     struct FileCtxMenu {
         bool open=false; float x=0,y=0;
         std::string filepath, filename;
-        bool is_public=false; // Public 탭 파일 (소유자만 삭제)
         bool selected=false;  // 좌클릭 선택 상태
         // Del 키 처리 분기용 (좌클릭 시 셋팅)
         enum Type : uint8_t { FT_LOCAL=0, FT_DB=1 } type = FT_LOCAL;
@@ -5684,49 +5477,22 @@ void run_streaming_viewer(){
                     file_ctx.selected=false;
                 } else if(file_ctx.selected && !file_ctx.filepath.empty()){
                     // 선택된 로컬 파일 DEL 키로 삭제
-                    bool can_delete = true;
-                    if(file_ctx.is_public){
-                        auto it = pub_owners.find(file_ctx.filename);
-                        if(it != pub_owners.end()){
-                            const char* my_id = login_get_id();
-                            can_delete = (it->second == std::string(my_id));
-                        }
+                    remove(file_ctx.filepath.c_str());
+                    remove((file_ctx.filepath + ".info").c_str()); // 동반 info 삭제
+                    auto rm_from = [&](std::vector<std::string>& v2){
+                        v2.erase(std::remove(v2.begin(),v2.end(),file_ctx.filename),v2.end());
+                    };
+                    rm_from(rec_iq_files); rm_from(rec_audio_files);
+                    rm_from(priv_iq_files); rm_from(priv_audio_files);
+                    rm_from(priv_files);
+                    priv_extra_paths.erase(file_ctx.filename);
+                    {
+                        std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
+                        v.rec_entries.erase(std::remove_if(v.rec_entries.begin(),v.rec_entries.end(),
+                            [&](const FFTViewer::RecEntry& e){return e.path==file_ctx.filepath;}),
+                            v.rec_entries.end());
                     }
-                    if(can_delete){
-                        remove(file_ctx.filepath.c_str());
-                        remove((file_ctx.filepath + ".info").c_str()); // 동반 info 삭제
-                        auto rm_from = [&](std::vector<std::string>& v2){
-                            v2.erase(std::remove(v2.begin(),v2.end(),file_ctx.filename),v2.end());
-                        };
-                        rm_from(rec_iq_files); rm_from(rec_audio_files);
-                        rm_from(priv_iq_files); rm_from(priv_audio_files);
-                        rm_from(pub_iq_files); rm_from(pub_audio_files);
-                        rm_from(share_iq_files); rm_from(share_audio_files);
-                        rm_from(priv_files); rm_from(shared_files); rm_from(downloaded_files);
-                        priv_extra_paths.erase(file_ctx.filename);
-                        pub_owners.erase(file_ctx.filename);
-                        pub_listeners.erase(file_ctx.filename);
-                        {
-                            std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
-                            v.rec_entries.erase(std::remove_if(v.rec_entries.begin(),v.rec_entries.end(),
-                                [&](const FFTViewer::RecEntry& e){return e.path==file_ctx.filepath;}),
-                                v.rec_entries.end());
-                        }
-                        if(v.net_srv && file_ctx.is_public){
-                            std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
-                            for(auto& sf : shared_files){
-                                bool siq = is_iq_filename(sf);
-                                std::string sfp = (siq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+sf;
-                                struct stat sst{}; uint64_t fsz=0;
-                                if(stat(sfp.c_str(),&sst)==0) fsz=(uint64_t)sst.st_size;
-                                std::string upl;
-                                auto oit=pub_owners.find(sf); if(oit!=pub_owners.end()) upl=oit->second;
-                                slist.push_back({sf,fsz,upl});
-                            }
-                            v.net_srv->send_share_list(-1, slist);
-                        }
-                        file_ctx.selected=false; file_ctx.filepath=""; file_ctx.filename="";
-                    }
+                    file_ctx.selected=false; file_ctx.filepath=""; file_ctx.filename="";
                 }
             }
         }
@@ -6538,18 +6304,6 @@ void run_streaming_viewer(){
                     priv_files.insert(priv_files.end(), priv_iq_files.begin(),    priv_iq_files.end());
                     priv_files.insert(priv_files.end(), priv_audio_files.begin(), priv_audio_files.end());
 
-                    scan_dir(BEWEPaths::public_iq_dir(),    pub_iq_files,    fsz_cache);
-                    scan_dir(BEWEPaths::public_audio_dir(), pub_audio_files, fsz_cache);
-                    shared_files.clear();
-                    shared_files.insert(shared_files.end(), pub_iq_files.begin(),    pub_iq_files.end());
-                    shared_files.insert(shared_files.end(), pub_audio_files.begin(), pub_audio_files.end());
-
-                    scan_dir(BEWEPaths::share_iq_dir(),    share_iq_files,    fsz_cache);
-                    scan_dir(BEWEPaths::share_audio_dir(), share_audio_files, fsz_cache);
-                    downloaded_files.clear();
-                    downloaded_files.insert(downloaded_files.end(), share_iq_files.begin(),    share_iq_files.end());
-                    downloaded_files.insert(downloaded_files.end(), share_audio_files.begin(), share_audio_files.end());
-
                     // Database 로컬 스캔 (네트워크 소스 없을 때)
                     bool has_net_db = (v.net_cli != nullptr) ||
                                       (v.net_srv && v.net_srv->cb.on_relay_broadcast);
@@ -7320,83 +7074,6 @@ void run_streaming_viewer(){
                         ImGui::Spacing();
 
                     }
-                    // ── Archive ──────────────────────────────────────────
-                    // 공통 파일 리스트 렌더 헬퍼 (IQ/Audio 분리)
-                    auto draw_file_list = [&](
-                        const std::string& child_id,
-                        const std::vector<std::string>& iq_files,
-                        const std::vector<std::string>& audio_files,
-                        const std::string& iq_dir,
-                        const std::string& audio_dir,
-                        int id_base,
-                        std::function<void(const std::string& fp, const std::string& fn)> on_hover = nullptr,
-                        bool is_public_section = false)
-                    {
-                        int total_rows = (int)iq_files.size() + (int)audio_files.size()
-                            + (!iq_files.empty()?1:0) + (!audio_files.empty()?1:0);
-                        float ph = std::min(total_rows*18.f+4.f, 160.f);
-                        if(ph < 36.f) ph = 36.f;
-                        ImGui::BeginChild(child_id.c_str(), ImVec2(0, ph), true);
-                        if(!iq_files.empty()){
-                            ImGui::TextDisabled("  IQ");
-                            for(int fi=0;fi<(int)iq_files.size();fi++){
-                                ImGui::PushID(id_base+fi);
-                                std::string fp = iq_dir+"/"+iq_files[fi];
-                                auto it_sz=fsz_cache.find(iq_files[fi]);
-                                const std::string& szstr=(it_sz!=fsz_cache.end())?it_sz->second:fmt_filesize("",fp);
-                                std::string display = "  "+iq_files[fi];
-                                if(!szstr.empty()) display += "  "+szstr;
-                                bool is_sel = file_ctx.selected && file_ctx.filepath==fp;
-                                ImGui::Selectable(display.c_str(), is_sel);
-                                if(ImGui::IsItemHovered()){
-                                    if(on_hover) on_hover(fp, iq_files[fi]);
-                                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
-                                        file_ctx.selected=true; file_ctx.open=false;
-                                        file_ctx.filepath=fp; file_ctx.filename=iq_files[fi];
-                                        file_ctx.is_public=is_public_section;
-                                    }
-                                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                                        file_ctx={true,io.MousePos.x,io.MousePos.y,fp,iq_files[fi]};
-                                        file_ctx.is_public=is_public_section;
-                                        file_ctx.selected=true;
-                                    }
-                                }
-                                ImGui::PopID();
-                            }
-                        }
-                        if(!audio_files.empty()){
-                            ImGui::TextDisabled("  DEMOD");
-                            for(int fi=0;fi<(int)audio_files.size();fi++){
-                                ImGui::PushID(id_base+500+fi);
-                                std::string fp = audio_dir+"/"+audio_files[fi];
-                                auto it_sz2=fsz_cache.find(audio_files[fi]);
-                                const std::string& szstr=(it_sz2!=fsz_cache.end())?it_sz2->second:fmt_filesize("",fp);
-                                std::string display = "  "+audio_files[fi];
-                                if(!szstr.empty()) display += "  "+szstr;
-                                bool is_sel2 = file_ctx.selected && file_ctx.filepath==fp;
-                                ImGui::Selectable(display.c_str(), is_sel2);
-                                if(ImGui::IsItemHovered()){
-                                    if(on_hover) on_hover(fp, audio_files[fi]);
-                                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
-                                        file_ctx.selected=true; file_ctx.open=false;
-                                        file_ctx.filepath=fp; file_ctx.filename=audio_files[fi];
-                                        file_ctx.is_public=is_public_section;
-                                    }
-                                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                                        file_ctx={true,io.MousePos.x,io.MousePos.y,fp,audio_files[fi]};
-                                        file_ctx.is_public=is_public_section;
-                                        file_ctx.selected=true;
-                                    }
-                                }
-                                ImGui::PopID();
-                            }
-                        }
-                        if(iq_files.empty() && audio_files.empty()) ImGui::TextDisabled("  (empty)");
-                        ImGui::EndChild();
-                    };
-
-                    // Archive는 별도 ARCHIVE 탭으로 이동됨
-
                     ImGui::Spacing();
 
                     ImGui::EndChild(); // ##link_scroll
@@ -8210,7 +7887,6 @@ void run_streaming_viewer(){
             file_ctx.y         = v.pending_file_ctx.y;
             file_ctx.filepath  = v.pending_file_ctx.filepath;
             file_ctx.filename  = v.pending_file_ctx.filename;
-            file_ctx.is_public = false;
             file_ctx.selected  = false;
             file_ctx.type      = FileCtxMenu::FT_LOCAL;
         }
@@ -8419,54 +8095,24 @@ void run_streaming_viewer(){
 
             ImGui::Separator();
 
-            // Delete > 파일 삭제 (Public은 소유자만 가능)
+            // Delete > 파일 삭제
             {
-                bool can_delete = true;
-                if(file_ctx.is_public){
-                    // 소유자 확인
-                    auto it = pub_owners.find(file_ctx.filename);
-                    if(it != pub_owners.end()){
-                        const char* my_id = login_get_id();
-                        can_delete = (it->second == std::string(my_id));
-                    }
-                }
-                ImGui::PushStyleColor(ImGuiCol_Text,
-                    can_delete ? ImVec4(1.f,0.35f,0.35f,1.f) : ImVec4(0.4f,0.4f,0.4f,1.f));
-                if(ImGui::Selectable("  Delete") && can_delete){
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f,0.35f,0.35f,1.f));
+                if(ImGui::Selectable("  Delete")){
                     remove(file_ctx.filepath.c_str());
                     remove((file_ctx.filepath + ".info").c_str()); // 동반 info 삭제
-                    // 모든 파일 목록에서 제거
                     auto rm_from = [&](std::vector<std::string>& v2){
                         v2.erase(std::remove(v2.begin(),v2.end(),file_ctx.filename),v2.end());
                     };
                     rm_from(rec_iq_files); rm_from(rec_audio_files);
                     rm_from(priv_iq_files); rm_from(priv_audio_files);
-                    rm_from(pub_iq_files); rm_from(pub_audio_files);
-                    rm_from(share_iq_files); rm_from(share_audio_files);
-                    rm_from(priv_files); rm_from(shared_files); rm_from(downloaded_files);
+                    rm_from(priv_files);
                     priv_extra_paths.erase(file_ctx.filename);
-                    pub_owners.erase(file_ctx.filename);
-                    pub_listeners.erase(file_ctx.filename);
-                    // rec_entries 목록에서도 제거
                     {
                         std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                         v.rec_entries.erase(std::remove_if(v.rec_entries.begin(),v.rec_entries.end(),
                             [&](const FFTViewer::RecEntry& e){return e.path==file_ctx.filepath;}),
                             v.rec_entries.end());
-                    }
-                    // HOST: public 파일이 삭제됐으면 JOIN들에게 갱신된 목록 브로드캐스트
-                    if(v.net_srv && file_ctx.is_public){
-                        std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
-                        for(auto& sf : shared_files){
-                            bool siq = is_iq_filename(sf);
-                            std::string sfp = (siq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+sf;
-                            struct stat sst{}; uint64_t fsz=0;
-                            if(stat(sfp.c_str(),&sst)==0) fsz=(uint64_t)sst.st_size;
-                            std::string upl;
-                            auto oit=pub_owners.find(sf); if(oit!=pub_owners.end()) upl=oit->second;
-                            slist.push_back({sf,fsz,upl});
-                        }
-                        v.net_srv->send_share_list(-1, slist);
                     }
                     file_ctx.open = false;
                 }

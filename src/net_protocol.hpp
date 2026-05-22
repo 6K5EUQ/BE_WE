@@ -30,12 +30,7 @@ enum class PacketType : uint8_t {
     FILE_DATA        = 0x0D,  // server → client: region file transfer chunk
     FILE_META        = 0x0E,  // server → client: file transfer start info
     REGION_RESPONSE  = 0x0F,  // server → client: region request allow/deny
-    SHARE_LIST         = 0x10,  // server → all clients: list of shared files
-    SHARE_DOWNLOAD_REQ = 0x11,  // client → server: request download of shared file
-    SHARE_UPLOAD_META  = 0x12,  // client → server: upload file meta (start)
-    SHARE_UPLOAD_DATA  = 0x13,  // client → server: upload file chunk
     HEARTBEAT          = 0x14,  // server → all clients: 3s keepalive + state
-    PUB_DELETE_REQ     = 0x15,  // client → server: request delete of public file (owner only)
     IQ_PROGRESS        = 0x16,  // server → all: IQ 파일 전송 진행상황 (REC/Transferring/Done)
     IQ_CHUNK           = 0x20,  // HOST → JOIN (MUX): IQ 파일 청크 전송
     REPORT_ADD         = 0x23,  // client → central: ingest report into emitter DB
@@ -439,45 +434,6 @@ struct __attribute__((packed)) PktFileData {
     uint32_t chunk_bytes;
     uint64_t offset;
     // uint8_t data[chunk_bytes] follows
-};
-
-// ── SHARE_LIST ─────────────────────────────────────────────────────────────
-// Variable-length payload: count (uint16_t) followed by count entries
-struct __attribute__((packed)) ShareFileEntry {
-    char     filename[128];
-    uint64_t size_bytes;
-    char     uploader[32];  // 업로드한 사람 이름 (HOST 이름 또는 JOIN 이름)
-};
-struct __attribute__((packed)) PktShareList {
-    uint16_t count;
-    // ShareFileEntry entries[count] follow
-};
-
-// ── SHARE_DOWNLOAD_REQ ─────────────────────────────────────────────────────
-struct __attribute__((packed)) PktShareDownloadReq {
-    char filename[128];
-};
-
-// ── SHARE_UPLOAD_META (client → server) ────────────────────────────────────
-struct __attribute__((packed)) PktShareUploadMeta {
-    char     filename[128];
-    uint64_t total_bytes;
-    uint8_t  transfer_id;
-};
-
-// ── SHARE_UPLOAD_DATA (client → server) ────────────────────────────────────
-struct __attribute__((packed)) PktShareUploadData {
-    uint8_t  transfer_id;
-    uint8_t  is_last;
-    uint32_t chunk_bytes;
-    uint64_t offset;
-    // uint8_t data[chunk_bytes] follows
-};
-
-// ── PUB_DELETE_REQ (client → server) ─────────────────────────────────────
-// JOIN sends this to request deletion of a public file they own.
-struct __attribute__((packed)) PktPubDeleteReq {
-    char filename[128];  // null-terminated filename (no path)
 };
 
 // ── HEARTBEAT (server → all clients) ─────────────────────────────────────

@@ -376,9 +376,6 @@ void run_cli_host(){
     int host_port = 0;
 
     // Static state shared with callbacks
-    std::map<std::string,std::string> pub_owners;
-    std::map<std::string,std::vector<std::string>> pub_listeners;
-    std::vector<std::string> shared_files, pub_iq_files, pub_audio_files;
     std::vector<std::string> rec_iq_files;
     std::atomic<bool> pending_chassis1_reset{false};
     std::atomic<bool> pending_chassis2_reset{false};
@@ -399,33 +396,9 @@ void run_cli_host(){
         static uint8_t next=1;
         idx = next++;
         if(next>MAX_OPERATORS) next=1;
-        uint8_t new_idx = idx;
-        std::thread([srv, new_idx, &pub_owners, &v](){
+        std::thread([&v](){
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
             v.mission_broadcast_sync(); // AUTH_ACK 이후 전송 — pre-auth skip 방지
-            std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
-            auto scan_pub = [&](const std::string& dir){
-                DIR* ds = opendir(dir.c_str());
-                if(!ds) return;
-                struct dirent* ent;
-                while((ent=readdir(ds))!=nullptr){
-                    const char* n = ent->d_name;
-                    size_t nl = strlen(n);
-                    if(nl>4 && strcmp(n+nl-4,".wav")==0){
-                        std::string fp = dir+"/"+n;
-                        struct stat st{}; uint64_t fsz=0;
-                        if(stat(fp.c_str(),&st)==0) fsz=(uint64_t)st.st_size;
-                        std::string upl;
-                        auto it=pub_owners.find(n);
-                        if(it!=pub_owners.end()) upl=it->second;
-                        slist.push_back({n, fsz, upl});
-                    }
-                }
-                closedir(ds);
-            };
-            scan_pub(BEWEPaths::public_iq_dir());
-            scan_pub(BEWEPaths::public_audio_dir());
-            if(!slist.empty()) srv->send_share_list((int)new_idx, slist);
         }).detach();
         bewe_log_push(0,"[CLI] Client authenticated: idx=%d\n", idx);
         return true;
@@ -747,52 +720,6 @@ void run_cli_host(){
         bewe_log_push(0,"[CHAT] %s: %s\n", from, msg);
     };
 
-    // Share download
-    srv->cb.on_share_download_req = [&](uint8_t op_idx, const char* filename){
-        std::string fn(filename);
-        bool is_iq = is_iq_filename(fn);
-        std::string path = (is_iq ? BEWEPaths::public_iq_dir() : BEWEPaths::public_audio_dir()) + "/" + fn;
-        struct stat st{};
-        if(stat(path.c_str(),&st)!=0) return;
-        uint8_t tid = v.next_transfer_id.fetch_add(1);
-        int op_int = (int)op_idx;
-        std::string path_copy = path;
-        std::thread([srv, path_copy, op_int, tid](){
-            srv->send_file_to(op_int, path_copy.c_str(), tid);
-        }).detach();
-    };
-
-    // Share upload done
-    srv->cb.on_share_upload_done = [&](uint8_t, const char* op_name, const char* tmp_path){
-        const char* fn = strrchr(tmp_path, '/'); fn = fn ? fn+1 : tmp_path;
-        if(strncmp(fn,"bewe_up_",8)==0) fn+=8;
-        bool is_iq = is_iq_filename(fn);
-        std::string pub_dir = is_iq ? BEWEPaths::public_iq_dir() : BEWEPaths::public_audio_dir();
-        struct stat sd{}; if(stat(pub_dir.c_str(),&sd)!=0) mkdir(pub_dir.c_str(),0755);
-        std::string dst = pub_dir + "/" + fn;
-        FILE* fin = fopen(tmp_path,"rb"); FILE* fout = fopen(dst.c_str(),"wb");
-        if(fin&&fout){ char buf[65536]; size_t n; while((n=fread(buf,1,sizeof(buf),fin))>0) fwrite(buf,1,n,fout); }
-        if(fin) fclose(fin); if(fout) fclose(fout);
-        remove(tmp_path);
-        std::string fname(fn);
-        pub_owners[fname] = std::string(op_name);
-        if(is_iq){ bool dup=false; for(auto& sf:pub_iq_files) if(sf==fname){dup=true;break;} if(!dup) pub_iq_files.push_back(fname); }
-        else     { bool dup=false; for(auto& sf:pub_audio_files) if(sf==fname){dup=true;break;} if(!dup) pub_audio_files.push_back(fname); }
-        { bool dup=false; for(auto& sf:shared_files) if(sf==fname){dup=true;break;} if(!dup) shared_files.push_back(fname); }
-        // Broadcast updated list
-        std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
-        for(auto& sf : shared_files){
-            bool siq = is_iq_filename(sf);
-            std::string sfp = (siq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+sf;
-            struct stat sst{}; uint64_t fsz=0;
-            if(stat(sfp.c_str(),&sst)==0) fsz=(uint64_t)sst.st_size;
-            std::string upl; auto it=pub_owners.find(sf); if(it!=pub_owners.end()) upl=it->second;
-            slist.push_back({sf,fsz,upl});
-        }
-        srv->send_share_list(-1, slist);
-        bewe_log_push(0,"[CLI] Public upload done: %s (from %s)\n", fn, op_name);
-    };
-
     srv->cb.on_set_fft_size = [&](const char* who, uint32_t size){
         bewe_log_push(0, "[CMD:%s] FFT size > %u\n", who, size);
         static const int valid[]={512,1024,2048,4096,8192,16384};
@@ -954,29 +881,6 @@ void run_cli_host(){
     srv->cb.on_net_reset     = [&](const char* who){ bewe_log_push(0,"[CMD:%s] /chassis 2 reset\n",who); pending_chassis2_reset.store(true); };
     srv->cb.on_rx_stop       = [&](const char* who){ bewe_log_push(0,"[CMD:%s] /rx stop\n",who); pending_rx_stop.store(true); };
     srv->cb.on_rx_start      = [&](const char* who){ bewe_log_push(0,"[CMD:%s] /rx start\n",who); pending_rx_start.store(true); };
-    srv->cb.on_pub_delete_req = [&](const char* op_name, const char* filename){
-        std::string fname(filename);
-        auto oit = pub_owners.find(fname);
-        if(oit == pub_owners.end() || oit->second != std::string(op_name)) return;
-        bool is_iq = is_iq_filename(fname);
-        std::string fp = (is_iq?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+fname;
-        remove(fp.c_str());
-        auto rm_from = [&](std::vector<std::string>& vec){
-            vec.erase(std::remove(vec.begin(),vec.end(),fname),vec.end());
-        };
-        rm_from(pub_iq_files); rm_from(pub_audio_files); rm_from(shared_files);
-        pub_owners.erase(fname); pub_listeners.erase(fname);
-        std::vector<std::tuple<std::string,uint64_t,std::string>> slist;
-        for(auto& sf : shared_files){
-            bool siq2 = is_iq_filename(sf);
-            std::string sfp = (siq2?BEWEPaths::public_iq_dir():BEWEPaths::public_audio_dir())+"/"+sf;
-            struct stat sst{}; uint64_t fsz=0;
-            if(stat(sfp.c_str(),&sst)==0) fsz=(uint64_t)sst.st_size;
-            std::string upl; auto it=pub_owners.find(sf); if(it!=pub_owners.end()) upl=it->second;
-            slist.push_back({sf,fsz,upl});
-        }
-        srv->send_share_list(-1, slist);
-    };
 
     // ── DB Save: JOIN이 파일을 Central DB에 저장 → HOST가 대행 ──────
     static struct { FILE* fp=nullptr; std::string path; uint8_t tid=0; } db_recv;

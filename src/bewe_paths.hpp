@@ -15,10 +15,6 @@
 //     record/audio/    ← 세션 중 실시간 녹음 (Audio)
 //     private/iq/      ← 이전 세션 녹음 (프로그램 종료 시 record에서 이동)
 //     private/audio/
-//     public/iq/       ← Public으로 올린 파일 (서버 공유)
-//     public/audio/
-//     share/iq/        ← Public에서 다운받은 파일 (JOIN)
-//     share/audio/
 //     Time_temp/       ← TM IQ rolling (기존 유지)
 
 namespace BEWEPaths {
@@ -74,16 +70,6 @@ static inline std::string record_audio_dir() { return record_dir()+"/audio"; }
 static inline std::string private_dir()       { return recordings_dir()+"/private"; }
 static inline std::string private_iq_dir()    { return private_dir()+"/iq"; }
 static inline std::string private_audio_dir() { return private_dir()+"/audio"; }
-
-// ── Public 공유 폴더 (서버 업로드) ───────────────────────────────────────
-static inline std::string public_dir()       { return recordings_dir()+"/public"; }
-static inline std::string public_iq_dir()    { return public_dir()+"/iq"; }
-static inline std::string public_audio_dir() { return public_dir()+"/audio"; }
-
-// ── 다운로드된 Public 파일 (JOIN 수신) ───────────────────────────────────
-static inline std::string share_dir()       { return recordings_dir()+"/share"; }
-static inline std::string share_iq_dir()    { return share_dir()+"/iq"; }
-static inline std::string share_audio_dir() { return share_dir()+"/audio"; }
 
 // ── Database (Central Server 로컬 저장) ──────────────────────────────────
 // Central server의 ./BE_WE/DataBase/{operator}/ 에 저장
@@ -184,8 +170,6 @@ static inline std::string legacy_mission_dir(int year, const std::string& code){
 }
 
 // 디렉터리 없으면 자동 생성 (실제 입출력이 일어나는 폴더만)
-// public/share: ARCHIVE 패널/share-upload 호출처가 모두 dead 상태라 mkdir 생략.
-//               (호환용 path helper 함수 정의는 유지 — dead use 컴파일 위해)
 static inline void ensure_dirs(){
     auto mk=[](const std::string& p){ mkdir(p.c_str(),0755); };
     mk(data_dir());

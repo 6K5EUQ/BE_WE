@@ -604,25 +604,6 @@ void NetClient::handle_packet(PacketType type,
         break;
     }
 
-    case PacketType::SHARE_LIST: {
-        if(len < sizeof(PktShareList)) break;
-        auto* hdr = reinterpret_cast<const PktShareList*>(payload);
-        uint16_t cnt = hdr->count;
-        size_t expected = sizeof(PktShareList) + cnt * sizeof(ShareFileEntry);
-        if(len < expected) break;
-        const ShareFileEntry* entries = reinterpret_cast<const ShareFileEntry*>(
-            payload + sizeof(PktShareList));
-        std::vector<std::tuple<std::string,uint64_t,std::string>> files;
-        files.reserve(cnt);
-        for(uint16_t i = 0; i < cnt; i++){
-            char fn[129]; strncpy(fn, entries[i].filename, 128); fn[128]='\0';
-            char up[33]; strncpy(up, entries[i].uploader, 32); up[32]='\0';
-            files.push_back({fn, entries[i].size_bytes, up});
-        }
-        if(on_share_list) on_share_list(files);
-        break;
-    }
-
     case PacketType::IQ_PROGRESS: {
         if(len < sizeof(PktIqProgress)) break;
         auto* p = reinterpret_cast<const PktIqProgress*>(payload);
@@ -915,11 +896,6 @@ bool NetClient::cmd_lwf_delete_req(const char* filename){
     if(filename) strncpy(r.filename, filename, sizeof(r.filename)-1);
     return raw_send(PacketType::LWF_DELETE_REQ, &r, sizeof(r));
 }
-bool NetClient::cmd_delete_pub_file(const char* filename){
-    PktPubDeleteReq req{};
-    strncpy(req.filename, filename, sizeof(req.filename)-1);
-    return send_packet(fd_, PacketType::PUB_DELETE_REQ, &req, sizeof(req));
-}
 bool NetClient::cmd_request_region(int32_t fft_top, int32_t fft_bot,
                                     float freq_lo, float freq_hi,
                                     int64_t time_start_ms, int64_t time_end_ms,
@@ -1148,9 +1124,3 @@ bool NetClient::cmd_update_ch_range(int idx, float s, float e){
     c.update_ch_range.s=s; c.update_ch_range.e=e;
     return send_cmd(c);
 }
-bool NetClient::cmd_request_share_download(const char* filename){
-    PktShareDownloadReq req{};
-    strncpy(req.filename, filename, 127);
-    return raw_send(PacketType::SHARE_DOWNLOAD_REQ, &req, sizeof(req));
-}
-

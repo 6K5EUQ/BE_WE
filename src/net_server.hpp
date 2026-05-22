@@ -129,17 +129,6 @@ struct ClientConn {
         }
     }
 
-    // 업로드 수신 상태 (SHARE_UPLOAD_META/DATA)
-    struct UploadRecv {
-        char     filename[128] = {};
-        uint64_t total_bytes   = 0;
-        uint64_t recv_bytes    = 0;
-        uint8_t  transfer_id   = 0;
-        FILE*    fp            = nullptr;
-        bool     active        = false;
-        char     save_path[512]= {};
-    } upload{};
-
     ClientConn() = default;
     ClientConn(const ClientConn&) = delete;
     ClientConn& operator=(const ClientConn&) = delete;
@@ -173,9 +162,6 @@ struct ServerCallbacks {
                        int64_t time_start_ms, int64_t time_end_ms,
                        int64_t samp_start, int64_t samp_end)> on_request_region;
     std::function<void(const char* from, const char* msg)> on_chat;
-    std::function<void(uint8_t op_idx, const char* filename)> on_share_download_req;
-    // JOIN이 파일 업로드 완료: op_idx, op_name, 저장된 절대경로
-    std::function<void(uint8_t op_idx, const char* op_name, const char* saved_path)> on_share_upload_done;
     std::function<void(uint8_t op_idx, const char* who, uint8_t ch_idx)> on_start_iq_rec;
     std::function<void(uint8_t op_idx, const char* who, uint8_t ch_idx)> on_stop_iq_rec;
     // 예약 녹음: JOIN → server add/remove
@@ -191,8 +177,6 @@ struct ServerCallbacks {
     std::function<void(const char* who, uint32_t size)> on_set_fft_size;
     std::function<void(const char* who, float msps)>    on_set_sr;
     std::function<void(const char* who, const char* antenna)> on_set_antenna;
-    // JOIN이 public 파일 삭제 요청: op_name, filename (소유자 검증은 ui.cpp에서)
-    std::function<void(const char* op_name, const char* filename)> on_pub_delete_req;
     // SET_HW: JOIN이 HOST SDR 종류 변경 요청 ("bladerf"/"pluto"/"rtlsdr")
     std::function<void(const char* who, const char* sdr_name)> on_set_hw;
     // DB save: JOIN/HOST가 파일을 Central DB에 저장 요청
@@ -330,11 +314,6 @@ public:
 
     // Chat → all clients
     void broadcast_chat(const char* from, const char* msg);
-
-    // Share list → specific client (or all clients if op_index==-1)
-    // tuple: (filename, size_bytes, uploader_name)
-    void send_share_list(int op_index,
-                         const std::vector<std::tuple<std::string,uint64_t,std::string>>& files);
 
     // DB list → all clients
     void broadcast_db_list(const std::vector<DbFileEntry>& entries);

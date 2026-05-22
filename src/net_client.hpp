@@ -205,9 +205,6 @@ public:
     std::function<void(uint32_t req_id, uint32_t seq,
                        const char* filename, uint64_t filesize,
                        const uint8_t* data, uint32_t data_len)> on_iq_chunk;
-    // SHARE_LIST: called when HOST sends updated share file list
-    // vector of (filename, size_bytes, uploader)
-    std::function<void(const std::vector<std::tuple<std::string,uint64_t,std::string>>&)> on_share_list;
 
     // ── Operator list ─────────────────────────────────────────────────────
     mutable std::mutex   op_mtx;
@@ -291,10 +288,8 @@ public:
                              int64_t samp_start=0, int64_t samp_end=0);
     bool cmd_start_iq_rec(int ch_idx);
     bool cmd_stop_iq_rec(int ch_idx);
-    bool cmd_request_share_download(const char* filename);
     bool cmd_chassis_reset();            // JOIN → HOST: trigger chassis 1 reset
     bool cmd_net_reset();               // JOIN → HOST: trigger chassis 2 (net-only) reset
-    bool cmd_delete_pub_file(const char* filename);  // JOIN → HOST: delete public file
     bool cmd_rx_stop();                   // JOIN → HOST: /rx stop
     bool cmd_rx_start();                  // JOIN → HOST: /rx start
     bool cmd_set_fft_size(uint32_t size); // JOIN → HOST: FFT 크기 변경
