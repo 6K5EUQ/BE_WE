@@ -1,356 +1,249 @@
-# BE_WE
+# BEWE
 
-> Multi-station collaborative SDR — every operator sees the same waterfall, share channels and recordings live across continents.
+**Distributed SIGINT Collection and Analysis Platform**
 
-![Globe with SOI satellite overlay and station markers](assets/globe_sat_soi.png)
+A multi-site signals intelligence system for continuous wideband RF
+surveillance, persistent waterfall archive, and cross-station emitter
+characterization. Designed for sustained, unattended collection at
+geographically dispersed receiver sites under a single operator command.
 
----
-
-## Table of Contents
-
-- [What is BE_WE](#what-is-be_we)
-- [Discover & Connect](#discover--connect)
-- [Operate](#operate)
-- [Deep Inspect](#deep-inspect)
-- [Collaboration](#collaboration)
-- [Mission Archive](#mission-archive)
-- [Headless CLI HOST](#headless-cli-host)
-- [Supported Hardware](#supported-hardware)
-- [Build & Quick Start](#build--quick-start)
-- [Key Bindings](#key-bindings)
-- [Raspberry Pi 5 Deployment](#raspberry-pi-5-deployment)
-- [Troubleshooting](#troubleshooting)
+![Global station view with satellite overlay](assets/globe_sat_soi.png)
 
 ---
 
-## What is BE_WE
+## Capability Summary
 
-A Linux-native SDR app where **one HOST captures RF and many JOIN clients watch the same live spectrum together** — drop demodulator channels, share recordings, chat, all from separate machines anywhere. A headless **CLI HOST** build turns a Raspberry Pi 5 into a remote base station indistinguishable from a GUI HOST.
-
-- **Multi-station collaboration** — every operator sees the same waterfall; channels, chat, file sharing live
-- **3D Globe + satellite overlay** — find stations and SOI satellites on a real Earth, no IP addresses
-- **Multi-window operations** — keep the globe open as mission control, run several stations at once on separate monitors
-- **Time Machine** — 60-second IQ rewind; recover the signal you just missed
-- **Signal Library** — cross-session emitter DB; sightings auto-aggregate by frequency, operators confirm matches
-- **Single-port relay** — Central handles HOST/JOIN/Library on port 7700, no LAN/WAN configuration
-
----
-
-## Discover & Connect
-
-### 3D Globe Station Discovery
-
-Stations broadcast their lat/lon to Central; you see them as glowing markers on the Earth. Click a marker, hit **Join**. No IP addresses, no port forwarding. Hover anywhere for live coordinates; click an empty spot to **Host** a new station at that location.
-
-### Satellite Overlay
-
-Toggle **ALL / SOI / OFF** in the bottom-left **Satellite Tracker** panel. ALL shows every catalog satellite (Starlink, GNSS, GEO); SOI shows only your custom watch list. Click any satellite to draw its orbit trace — past arc solid, future dotted, color-coded by altitude band (LEO / MEO / GEO).
-
-The 4-tier TLE catalog (**Starlink / SOT / ETC / SOI**) auto-fetches from celestrak.org on startup and caches under `assets/tle/`. Your SOI list lives in `assets/tle/SOI_tle.txt` and is never overwritten.
-
-### Multi-Window Sessions
-
-Click **Join** or **Host** on a station marker — a **separate OS window** opens with that station's operation panel. The globe stays open as your mission-control view. Drag windows to other monitors; one user can run several JOIN sessions in parallel.
-
-The globe's bottom-right **Active Station** panel lists each live child (mode, station name, PID) with a per-window close button. HOST is capped at 1 per machine (the SDR is exclusive); JOIN has no cap.
-
-![Multi-window sessions](assets/multiwindow.png)
+- **Distributed collection across multiple sites** under one operator
+  workstation. No per-site IP configuration required.
+- **Persistent waterfall archive** — every spectrum frame committed to a
+  permanent record; scroll back hours, days, or months from any analyst
+  workstation.
+- **Mission-scoped operations** with automatic consolidation of IQ captures,
+  demodulated audio, and waterfall segments under a single mission code.
+- **Forensic analyst workbench** with multi-domain views and automatic
+  signal characterization (PRI, PRF, pulse duration, baud, modulation).
+- **Cross-station emitter library** — sightings from every site aggregate
+  into a single institutional record.
+- **Headless collection nodes** suitable for forward-deployed sites on
+  low-power hardware (Raspberry Pi class).
 
 ---
 
-## Operate
+## Operational Context
 
-### Spectrum + Waterfall
+BEWE was built for organizations operating multiple receiver sites that must
+behave as a single, coherent intelligence asset. The platform replaces the
+common pattern of disconnected single-site collection — where each operator
+maintains their own recordings, notes, and signal knowledge — with a unified
+architecture in which every site contributes to one persistent archive and
+one shared emitter database.
 
-Live FFT with a GPU waterfall. Drag to pan, scroll to zoom, auto-scale or lock the range.
+Typical deployment profiles:
 
-![Spectrum](assets/spectrum.png)
+- **Fixed surveillance stations** at multiple regional sites, command-and-controlled
+  from a central operations room.
+- **Forward-deployed collection nodes** on low-cost hardware (BladeRF / RTL-SDR on
+  Raspberry Pi 5) at remote or austere locations, reporting back to a hardened
+  Central Server.
+- **Combined fixed + mobile** networks where an analyst workstation roams across
+  active sites depending on the tasking.
 
-### Max Hold & Max Decay
-
-Click the power axis to cycle through peak-holding modes. Sweep a band once and every signal that appeared stays visible — with optional fade so you can tell old peaks from new ones.
-
-![Max Decay](assets/max_decay.png)
-
-### Band Plan Overlay
-
-Toggle **BAND** in the bottom bar to see allocation segments above the spectrum (AIR / Amateur / Marine / TV·DAB / …). Right-click any band to edit label, frequency range, category, and description in place. Categories are user-defined with custom colors, and each HOST owns its own `band_plan.json` — edits broadcast to all JOINs automatically.
-
-![Band Plan](assets/band_plan.png)
-
-### Channels, Holding List, and Notch Filters
-
-Up to 10 demodulator channels at once (**AM / FM**). Retune away from a channel and it slides into the **Holding** list with its squelch timer intact — come back and it rejoins automatically. Unwanted carriers can be killed with a global **Notch filter pool** that persists across sample-rate changes.
-
-![Channels + Holding + Notch](assets/channels_holding.png)
-
-### Time Machine & Region IQ Export
-
-Press `T` for a 60-second rolling IQ buffer, `Space` to freeze and scroll back, and `Ctrl+Right-drag` on the waterfall to mark a time-frequency region — the box shows live `BW / Duration` and `R` exports it as an IQ file.
-
-![Time Machine](assets/Screen2.png)
-
-### HISTORY — Long-Term Waterfall Archive
-
-Press `H` to open the long-waterfall archive. Every HOST keeps a continuous record of what its receiver saw, with mission-coded filenames and a header that embeds station name, lat/lon, and UTC range. Frequency changes auto-rotate to a fresh segment so each file is single-CF. `Ctrl+Right-drag` marks any region for a `BW / Duration` measurement; opt-in live streaming lets a JOIN watch the archive grow row-by-row, and remote delete cleans up from either side. Multi-GB archives stay smooth — the viewer is mmap-backed so pan and zoom touch only resident pages.
-
-![HISTORY](assets/history.png)
-
-### Recording with Auto-Populated File Info
-
-Per-channel IQ capture is squelch-gated — press `I` and stop thinking about it. Scheduled recordings fire on time, the WAV is live-analyzable while it records, and a **File Info** modal auto-fills frequency, bandwidth, modulation, recorder, and UTC up/down times so your archive stays self-describing.
-
-![File Info modal](assets/file_info.png)
+The system is designed to remain operational under degraded network
+conditions. Collection at each site is continuous and local; the link to
+Central determines only how quickly observations propagate to the
+institutional archive, not whether collection occurs.
 
 ---
 
-## Deep Inspect
+## Core Capabilities
 
-### Signal Analyzer (SA)
+### Distributed Collection
 
-Open any WAV/IQ file for offline inspection. Tabs across the top switch domains:
-`Spectrogram · Amp · Freq · Phase · I/Q · Const · Audio · Power · Bits`. Press `1`–`9` to flip between domains (or `B` for Bits when SA is open). Built-in band-pass filter, arrow-key carrier sweep (`←/→` ±1 Hz, `↑/↓` ±10 Hz), and percentile-based auto-scaling so different files compare fairly.
+Receiver sites publish their geographic position to Central. The operator
+workstation displays all live sites as illuminated markers on a 3D globe; a
+single click assumes control of the chosen site. No port or address
+management is exposed to the operator. Concurrent operation of multiple sites
+from one workstation is supported.
 
-SA doubles as an **emitter-ID workbench** — verify transmitter identity, detect spoofed or cloned radios, and characterize oscillator stability via per-domain RF fingerprints (envelope, I/Q, instantaneous phase / frequency, constellation, M-th power spectrum).
+![Globe view with active stations](assets/globe_sat_soi.png)
 
-#### Spectrogram
+### Real-Time Surveillance
 
-Jet-colored FFT-vs-time with region select, zoom/pan, and selectable window (Hann / Blackman-Harris).
+Each site presents a continuous wideband waterfall and live power spectrum
+with up to ten concurrent demodulator channels. Channels persist their state
+across retuning and frequency excursions.
 
-![Spectrogram](assets/analyzer_spectrogram.png)
+![Live spectrum and waterfall](assets/spectrum.png)
 
-#### Freq — Preamble Detection + PRI / PRF
+### Persistent Waterfall Archive
 
-Instantaneous frequency view auto-detects a repeating preamble and reports **PRI / PRF / Pulse Duration / Baud** — characterize an unknown FSK or pulsed signal in seconds.
+Every spectrum row produced by every site is committed to a permanent archive
+on the Central Server. Analysts scroll backward through hours, days, or
+months of capture from the workstation. Archive files are mission-coded with
+embedded station identity, geographic coordinates, and UTC bounds.
 
-![Freq + PRI](assets/analyzer_freq_pri.png)
+![Long-term waterfall archive](assets/history.png)
 
-#### Bits — BIN / HEX / BITMAP
+### Mission Workflow
 
-Demodulated bit stream rendered as a 2D bitmap — frame sync patterns, scramblers, and periodicity become visually obvious at a glance.
+Operations are scoped as **missions**. Each mission has an auto-generated
+code (alphabetical month + day; for example `J15` = October 15). All
+recordings produced during the mission — IQ, demodulated audio, hourly
+waterfall segments — are tagged with the mission code and consolidated under
+a single directory tree on the Central archive at mission end.
 
-![Bits view](assets/analyzer_bits.png)
+The workflow is network-resilient: collection at the site is continuous and
+local, regardless of Central connectivity. When the link to Central is
+interrupted, the affected segments are flagged and pushed to Central on
+reconnect, restoring complete archive coverage.
 
-#### Other Tabs
+![File metadata with auto-populated frequency, bandwidth, and timing](assets/file_info.png)
 
-- **Amp** — envelope (bursts, keying, pulse timing)
-- **Phase** — instantaneous phase with `←/→` / `↑/↓` carrier offset sweep
-- **I/Q** — raw baseband
-- **Const** — constellation with automatic carrier recovery
-- **Audio** — demodulated WAV playback inside the analyzer
-- **Power** — M-th power spectrum (M = 1 / 2 / 4 / 8) for cyclostationary analysis
+### Analyst Workbench
 
-### Signal Library (LIB)
+A built-in forensic analyzer operates on any captured IQ file with nine
+domain views: spectrogram, envelope, instantaneous frequency, instantaneous
+phase, raw I/Q, constellation, demodulated audio, M-th power spectrum, and
+demodulated bit stream.
 
-Press `L` to open the Library overlay. Whenever an operator presses **Report** on a recording, the full `.info` file is shipped to Central, which aggregates sightings into a single **emitter record** keyed by **operator-entered fields** — frequency (within tolerance), modulation, protocol, and explicit ID tokens (e.g. `MMSI:...`, `callsign:...`) typed into Tags.
+The analyzer is intended as an emitter-identification workbench. Applications
+include:
 
-If a report lacks identifying tags, frequency alone caps the match score and the sighting drops into a **Pending** queue for human Confirm / Reject — no silent merges. Confirmed sightings accumulate across all stations and sessions: `first_seen`, `last_seen`, contributing-station list, and operator notes live on one record. The overlay has a sortable table (Name / Freq / Mod / Count / Last seen), full-text filter, an editable detail pane, and a sightings timeline with per-row Confirm / Reject / Split actions.
+- **Emitter ID and RF fingerprinting** — verify transmitter identity across
+  envelope, I/Q, phase, and frequency-domain signatures
+- **Modulation recognition** — automatic preamble detection with reporting of
+  PRI, PRF, pulse duration, and symbol rate
+- **Digital protocol analysis** — bit-stream rendered as 2D bitmap, hex, or
+  binary; frame sync patterns and periodicity become visually obvious
 
-The result: a station that missed a transmission gets it filled in by another that caught it, and "that 405.10 FM repeater" stops living in one operator's head.
+![Spectrogram view](assets/analyzer_spectrogram.png)
 
-![Signal Library](assets/signal_library.png)
+![Instantaneous frequency with automatic PRI / PRF / PD / Baud detection](assets/analyzer_freq_pri.png)
+
+![Demodulated bit stream](assets/analyzer_bits.png)
+
+### Cross-Station Emitter Library
+
+Every recording carries operator-entered metadata: frequency, modulation,
+protocol, identifying tokens such as MMSI or callsign. When an operator
+issues a **Report** on a recording, Central aggregates the sighting into a
+unified emitter record keyed by the identifying fields. Sightings without
+identifiers drop into a confirmation queue for explicit operator
+adjudication — silent merges are not permitted.
+
+Confirmed emitter records accumulate across all sites and all sessions, with
+first-seen timestamp, last-seen timestamp, contributing-site list, and
+operator notes consolidated on a single record. A transmission missed by one
+site is filled in by another that captured it; institutional knowledge
+replaces single-operator memory.
+
+![Cross-station emitter library](assets/signal_library.png)
+
+### Time Machine — Continuous IQ Buffer
+
+A 60-second IQ buffer is maintained continuously at every site. When a
+transient signal of interest has already passed, the operator freezes the
+buffer, scrolls back, and exports the relevant time-frequency region as a
+forensic IQ file. The operational interval between "I just saw something"
+and a permanent recording is reduced to seconds.
+
+![Time Machine scroll-back](assets/Screen2.png)
+
+### Multi-Window Operations
+
+A single operator workstation may run multiple site operations concurrently,
+each in its own window distributable across monitors. The 3D globe persists
+as the master station selector and overall tasking view.
+
+![Multi-window operations across stations](assets/multiwindow.png)
 
 ---
 
-## Collaboration
+## System Architecture
 
-Real-time chat, file sharing, tier-based permissions, per-channel audio routing to specific operators. JOINs can re-tune the HOST, change FFT size, and swap the HOST's SDR via the **Receiver** popup when permitted.
+```
+                       ┌──────────────────────────┐
+                       │      Central Server      │
+                       │   Permanent archive +    │
+                       │   Emitter database       │
+                       └─────────────┬────────────┘
+                                     │
+              ┌──────────────────────┼──────────────────────┐
+              │                      │                      │
+       ┌──────┴───────┐       ┌──────┴───────┐       ┌──────┴───────┐
+       │   Site A     │       │   Site B     │       │   Site C     │
+       │   HOST +     │       │   HOST +     │       │   HOST +     │
+       │   Receiver   │       │   Receiver   │       │   Receiver   │
+       └──────────────┘       └──────────────┘       └──────────────┘
 
----
-
-## Mission Archive
-
-Press `M` to open the Mission Archive modal. A **mission** is a named collection window — IQ captures, DEMOD audio, and HIST segments recorded during an operation are all tagged with the same mission code (e.g. `A03` = January 3rd, `B17` = February 17th). Files land in `recordings/missions/<station>/<year>/<code>/{iq,audio,hist}/`.
-
-- **Start / End** — manually start or end a mission; `Ctrl+C` also ends the active mission
-- **UTC 0 rollover** — at midnight UTC the active mission closes automatically and the day counter advances
-- **Central push** — HOST auto-pushes completed files to Central; JOIN operators can list, download, delete, or rename files from any station in the archive tree
-- **Station-keyed layout** — the left tree filters to the current station; multi-file selection with `Ctrl+click`
-
----
-
-## Headless CLI HOST
-
-Compile with `-DCLI=ON` for a zero-GPU build. Interactive prompt-based startup; `/status`, `/clients`, `/shutdown`, `/Update TLEs` commands; free text broadcasts as chat.
-
----
-
-## Supported Hardware
-
-| Device | Frequency Range | Gain |
-|---|---|---|
-| **BladeRF** | 47 MHz – 6 GHz | 0 – 60 dB |
-| **ADALM-Pluto** | 70 MHz – 6 GHz | 0 – 71 dB |
-| **RTL-SDR** | 500 kHz – 1.766 GHz | 0 – 49.6 dB |
-
-Auto-detected at startup (priority: BladeRF → Pluto → RTL-SDR) and switchable at runtime — click the **Receiver** field to swap without restarting. With no SDR connected you can still JOIN a remote HOST.
-
----
-
-## Build & Quick Start
-
-### Dependencies (Ubuntu 24.04)
-
-```bash
-sudo apt install -y build-essential cmake pkg-config \
-  libbladerf-dev librtlsdr-dev libiio-dev libad9361-dev \
-  libfftw3-dev libasound2-dev libmpg123-dev libvolk-dev \
-  libglew-dev libglfw3-dev libgl-dev libpng-dev libstb-dev
+                       ┌──────────────────────────┐
+                       │  Analyst Workstations    │
+                       │  (JOIN — observe and     │
+                       │   control any site)      │
+                       └──────────────────────────┘
 ```
 
-### USB Permissions (fresh Linux install)
-
-On a fresh install the SDR USB nodes are root-owned, so `bladerf_open` / `iio` / `rtl_*` will fail with *insufficient permissions*. Install udev rules and add yourself to `plugdev`:
-
-```bash
-# BladeRF (covers 2.0 micro PID 5250 and original PID 5246)
-sudo tee /etc/udev/rules.d/88-bladerf.rules >/dev/null <<'EOF'
-ATTR{idVendor}=="2cf0", ATTR{idProduct}=="5250", MODE="0660", GROUP="plugdev"
-ATTR{idVendor}=="2cf0", ATTR{idProduct}=="5246", MODE="0660", GROUP="plugdev"
-EOF
-
-# ADALM-Pluto
-sudo tee /etc/udev/rules.d/53-adalm-pluto.rules >/dev/null <<'EOF'
-SUBSYSTEM=="usb", ATTR{idVendor}=="0456", ATTR{idProduct}=="b673", MODE="0660", GROUP="plugdev"
-EOF
-
-# RTL-SDR — also blacklist the kernel DVB driver that grabs the dongle
-sudo tee /etc/udev/rules.d/20-rtlsdr.rules >/dev/null <<'EOF'
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", MODE="0660", GROUP="plugdev"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2832", MODE="0660", GROUP="plugdev"
-EOF
-echo "blacklist dvb_usb_rtl28xxu" | sudo tee /etc/modprobe.d/blacklist-rtlsdr.conf
-
-# Reload + add user to plugdev
-sudo udevadm control --reload-rules && sudo udevadm trigger
-sudo usermod -aG plugdev $USER
-```
-
-Log out and back in (or reboot) for the group change to apply, then re-plug the SDR.
-
-### Compile & Run
-
-```bash
-git clone https://github.com/6K5EUQ/BE_WE.git
-cd BE_WE && mkdir build && cd build
-cmake ..                 # add -DCLI=ON for headless CLI host
-make -j$(nproc)
-./BE_WE
-```
-
-The Central relay (single-port HOST/JOIN/Library backend, default port 7700) is a separate executable:
-
-```bash
-cd central && mkdir -p build && cd build
-cmake .. && make -j
-./bewe_central           # runs in foreground; logs to stdout
-```
-
-`~/BE_WE/DataBase/_emitters/` and `_sightings/` are created on first run; if `_reports/` already has `.info` files from earlier sessions they migrate automatically.
-
-### First Run
-
-1. Log in with ID / password — `Ctrl+1 / 2 / 3` picks the tier
-2. On the globe, click your location and press **HOST** (or click an existing station marker and press **JOIN**) — a new operation window opens, the globe stays for more sessions
-3. In the operation window, right-click in the waterfall to drop demodulator channels
-
----
-
-## Key Bindings
-
-Overlays are mutually exclusive — opening one closes whichever is currently up. LOG has no hotkey; toggle it from the bottom bar.
-
-| Key | Action |
+| Component | Role |
 |---|---|
-| `T` | Start/stop Time Machine rolling recording |
-| `Space` | Freeze waterfall (Time Machine view) |
-| `Ctrl+Right-drag` | Mark region (shows BW / Duration); `R` to save as IQ |
-| `Scroll` | Zoom frequency axis |
-| `I` | Start/stop per-channel IQ recording |
-| `P` | Pause / resume spectrum display (FFT freeze) |
-| `E` | Toggle Signal Analyzer (SA) overlay |
-| `H` | Toggle HISTORY overlay (long-waterfall archive) |
-| `L` | Toggle Signal Library (LIB) overlay |
-| `M` | Toggle Mission Archive modal |
-| `S` | Show / hide STATUS right panel |
-| `B` | Toggle BAND overlay — or baud-mode lines when SA is open |
-| `RightShift` | Toggle chat panel |
-| `1` – `9` | Switch domain inside the SA overlay |
-| `F11` | Fullscreen / windowed |
-| `← / →` · `↑ / ↓` (SA Phase) | Carrier sweep ±1 Hz / ±10 Hz |
+| **HOST** | Collection node. Owns the receiver; produces the live waterfall, demodulator channels, IQ captures, and HIST archive segments. Operates attended (GUI) or unattended (headless CLI). |
+| **Central Server** | Single-port relay between HOST and JOIN. Holds the permanent archive of all sites and the cross-station emitter database. |
+| **JOIN** | Analyst workstation. Observes and commands any authorized HOST. Multiple JOINs may share a single HOST. |
 
 ---
 
-## Raspberry Pi 5 Deployment
+## Data Retention
 
-```bash
-# 1. CLI-only dependencies (no GPU)
-sudo apt install -y build-essential cmake pkg-config \
-  libbladerf-dev librtlsdr-dev libfftw3-dev libasound2-dev \
-  libmpg123-dev libvolk-dev libpng-dev
+| Tier | Retention | Notes |
+|---|---|---|
+| HOST local disk | Approximately 2 months, rotating | Auto-purge on mission code rollover (older monthly cohort dropped when a new month opens). Storage requirements bounded. |
+| Central Server | Permanent | Bounded only by provisioned storage. The institutional system of record. |
+| Analyst workstation | At operator discretion | Download cache; no automatic purge. |
 
-# 2. Build
-cd ~ && git clone https://github.com/6K5EUQ/BE_WE.git
-cd BE_WE && mkdir build_cli && cd build_cli
-cmake -DCLI=ON .. && make -j4
-
-# 3. Performance tuning (CPU governor, disable WiFi powersave / USB autosuspend, etc.)
-sudo bash ~/BE_WE/setup_pi_performance.sh && sudo reboot
-
-# 4. Run
-cd ~/BE_WE/build_cli && ./BE_WE
-```
-
-The tuning script locks the CPU at max clock, disables WiFi power management and USB autosuspend, and enlarges network buffers — settings persist across reboots. Use a short USB extension to keep the RTL-SDR away from the Pi's heat.
+The 2-month HOST retention exists to bound storage at austere or low-cost
+sites. The Central archive is the system of record and is preserved
+indefinitely.
 
 ---
 
-## Troubleshooting
+## Receiver Compatibility
 
-<details>
-<summary>Waterfall stutters on JOIN over WiFi</summary>
+| Receiver | Frequency Coverage | Typical Application |
+|---|---|---|
+| Nuand BladeRF 2.0 | 47 MHz – 6 GHz | Primary wideband collection; fixed sites |
+| ADALM-Pluto (AD9361) | 70 MHz – 6 GHz | Portable / forward deployment |
+| RTL-SDR | 24 MHz – 1.7 GHz | Distributed low-cost coverage |
 
-```bash
-sudo iwconfig <interface> power off
-# Permanent:
-sudo tee /etc/NetworkManager/conf.d/wifi-powersave-off.conf <<'EOF'
-[connection]
-wifi.powersave = 2
-EOF
-sudo systemctl restart NetworkManager
-```
-</details>
-
-<details>
-<summary>SDR not detected (BladeRF / Pluto / RTL-SDR)</summary>
-
-```bash
-# BladeRF udev rule
-sudo tee /etc/udev/rules.d/88-bladerf.rules <<'EOF'
-ATTR{idVendor}=="2cf0", ATTR{idProduct}=="5246", MODE="0660", GROUP="plugdev"
-EOF
-sudo udevadm control --reload-rules
-
-# Pluto scan test ("Bad URI: 'usb:'" with no device attached is normal)
-iio_info -s
-
-# RTL-SDR claimed by kernel DVB driver
-sudo modprobe -r dvb_usb_rtl28xxu
-echo "blacklist dvb_usb_rtl28xxu" | sudo tee /etc/modprobe.d/blacklist-rtlsdr.conf
-```
-</details>
-
-<details>
-<summary>GPU reports <code>llvmpipe</code> (software renderer)</summary>
-
-```bash
-sudo apt install nvidia-driver-535      # NVIDIA
-sudo apt install mesa-vulkan-drivers    # Intel / AMD
-```
-</details>
+Receivers are auto-detected at startup. With no receiver attached, the
+workstation runs as a JOIN-only client observing remote sites.
 
 ---
 
-## License
+## Deployment Profile
 
-TBD
+- **Operator workstation**: Ubuntu 24.04 LTS, x86_64, GPU with OpenGL 3+
+- **Headless collection node**: Raspberry Pi 5 with RTL-SDR or BladeRF;
+  Raspberry Pi OS 64-bit
+- **Central Server**: Ubuntu 24.04 LTS, x86_64; storage provisioned per
+  retention policy
+- **Network**: Single TCP port between Central and each site; mesh VPN
+  (Tailscale or WireGuard) recommended for multi-site deployments over
+  public networks
+
+The full deployment procedure, including receiver permissions and
+Raspberry Pi tuning, is documented in [`INSTALL.md`](INSTALL.md).
+
+---
+
+## Documentation
+
+| Document | Audience |
+|---|---|
+| `README.md` | Program officers, procurement, operations leadership |
+| [`INSTALL.md`](INSTALL.md) | Systems administrators provisioning sites and the Central Server |
+| [`OPERATOR.md`](OPERATOR.md) | Analysts and shift operators (key bindings, daily workflows, troubleshooting) |
+
+---
+
+## Licensing
+
+Contact for licensing inquiries.

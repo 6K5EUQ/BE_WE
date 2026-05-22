@@ -3,6 +3,9 @@ build/
 central/build/
 build_cli/
 
+# Claude Code project instructions (machine-local, not shared via git)
+CLAUDE.md
+
 # Recordings / IQ data
 recordings/
 

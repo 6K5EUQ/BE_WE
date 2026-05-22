@@ -1,0 +1,15 @@
+{
+  "categories": [
+    {"id":0,"r":255,"g":180,"b":80,"name":"Broadcast"},
+    {"id":1,"r":80,"g":180,"b":255,"name":"Aero"},
+    {"id":2,"r":80,"g":255,"b":180,"name":"Marine"},
+    {"id":3,"r":255,"g":255,"b":80,"name":"Amateur"},
+    {"id":4,"r":180,"g":80,"b":255,"name":"Cell"},
+    {"id":5,"r":255,"g":80,"b":180,"name":"ISM"},
+    {"id":6,"r":120,"g":200,"b":255,"name":"WiFi-BT"},
+    {"id":7,"r":200,"g":100,"b":100,"name":"Mil"},
+    {"id":8,"r":150,"g":180,"b":200,"name":"Public-Safety"},
+    {"id":9,"r":180,"g":150,"b":200,"name":"Government"},
+    {"id":10,"r":160,"g":160,"b":160,"name":"Other"}
+  ]
+}
