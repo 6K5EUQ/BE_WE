@@ -1,9 +1,31 @@
 # Build directories
 build/
 central/build/
+build_cli/
 
 # Recordings / IQ data
 recordings/
+
+# Download cache (multi-GB, machine-local)
+downloads/
+
+# Central server runtime archive (machine-local on Central host)
+DataBase/
+
+# Auto-fetched TLE catalogs (regenerated from celestrak.org on startup).
+# SOI_tle.txt is operator-defined and IS tracked.
+assets/tle/starlink_tle.txt
+assets/tle/etc_tle.txt
+assets/tle/SOT_tle.txt
+
+# Mission persistence (machine-local state)
+missions.json
+.last_rolled
+
+# Raw capture / sidecar files (never commit)
+*.bewehist
+*.bewewf
+*.info
 
 # IDE / editor
 *.swp
