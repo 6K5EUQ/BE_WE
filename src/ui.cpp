@@ -11040,7 +11040,7 @@ void run_streaming_viewer(){
                                     ? BPR * bit_cw + (GROUPS-1) * grp_gap
                                     : GROUPS * hex_byte_w;
 
-                                // 헤더: [AIS] [ADS-B] [UAV] 디코더 버튼
+                                // 헤더: BIN / HEX / BITMAP 뷰 토글 버튼
                                 float cy = data_y0 + 2.f;
                                 {
                                     // BIN / HEX / BITMAP (우측 정렬)

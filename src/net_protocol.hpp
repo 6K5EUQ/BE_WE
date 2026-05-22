@@ -583,7 +583,7 @@ struct __attribute__((packed)) PktDbDeleteReq {
 
 // ── Signal Library / Emitter DB (0x41–0x47) ──────────────────────────────
 // 운영자가 .info에 직접 적은 값 + 녹음 시점 자동 기재값만 매칭에 사용.
-// 자동 디코더 결과(AIS/ADS-B/PRI)는 .info 자체에 자동 stamp되지 않으므로
+// 자동 검출 결과(PRI 등 SA 분석 산출물)는 .info 에 자동 stamp 되지 않으므로
 // 본 패킷 페이로드에도 들어오지 않음.
 constexpr int EMITTER_UID_LEN     = 16;     // "e_<8hex>"
 constexpr int EMITTER_NAME_LEN    = 64;

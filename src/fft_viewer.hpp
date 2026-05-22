@@ -44,8 +44,6 @@ extern void bewe_log(const char* fmt, ...);
 // LOG 오버레이용 글로벌 로그 (col: 0=HOST 1=SERVER 2=JOIN)
 extern void bewe_log_push(int col, const char* fmt, ...);
 
-// ── DIGITAL DECODE 오버레이용 글로벌 로그 (tab: 0=AIS, 1=ADS-B, 2=UAV) ──
-
 // ── 녹음 .info 자동 생성 (이미 존재하면 덮어쓰지 않음) ─────────────────────
 // source_type: "IQ Recording" / "Audio Recording" / "Region IQ" / "Scheduled IQ"
 // modulation: "AM"/"FM"/"MAGIC"/"" 등
