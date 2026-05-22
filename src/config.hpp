@@ -3,7 +3,7 @@
 
 // ── BEWE version (창 제목 및 About 표시용) ──────────────────────────────────
 // SemVer: vMAJOR.MINOR.PATCH — 자세한 정책은 CLAUDE.md 참조
-#define BEWE_VERSION "v3.25.4"
+#define BEWE_VERSION "v3.25.5"
 
 #ifdef BEWE_HEADLESS
   typedef uint32_t ImU32;
@@ -19,7 +19,7 @@
 #define RTLSDR_RX_GAIN_TENTHS  396   // 39.6 dB
 
 // ── FFT / Display ─────────────────────────────────────────────────────────
-#define DEFAULT_FFT_SIZE       4096
+#define DEFAULT_FFT_SIZE       8192
 #define FFT_PAD_FACTOR         4      // zero-padding 배수 (시각적 해상도 향상)
 #define TIME_AVERAGE           200
 #define MAX_FFTS_MEMORY        2500   // ~1분

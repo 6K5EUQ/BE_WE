@@ -5626,7 +5626,7 @@ void run_streaming_viewer(){
         // ── FFT size combo ────────────────────────────────────────────────
         static const int fft_sizes[]={512,1024,2048,4096,8192,16384};
         static const char* fft_lbls[]={"512","1024","2048","4096","8192","16384"};
-        static int fft_si=3; // 기본 4096
+        static int fft_si=4; // 기본 8192
         {
             float tw2=ImGui::CalcTextSize(fft_lbls[fft_si]).x;
             float box_w2=72.0f;
