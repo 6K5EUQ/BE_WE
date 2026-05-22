@@ -586,8 +586,19 @@ static void maybe_request_central_list(FFTViewer& v, NetClient* cli){
     if(sel_changed || refresh_due){
         {
             std::lock_guard<std::mutex> lk(g_cf_mtx);
-            // 같은 mission 만 비워 (다른 mission rows 는 유지해도 무방하나 단순화)
-            if(sel_changed) g_cf_rows.clear();
+            // 새 LIST_REQ 송신 시 해당 (station, year, code) rows 선제 클리어 —
+            // 응답 중첩 시 UI에 stale + new 동시 노출 방지.
+            if(sel_changed){
+                g_cf_rows.clear();
+            } else {
+                auto same_mission = [&](const CentralFileRow& r){
+                    return r.year == (uint16_t)g_sel_year &&
+                           strncmp(r.code, g_sel_code.c_str(), 8) == 0 &&
+                           strncmp(r.station, station, 64) == 0;
+                };
+                g_cf_rows.erase(std::remove_if(g_cf_rows.begin(), g_cf_rows.end(), same_mission),
+                                g_cf_rows.end());
+            }
             g_cf_last_page = false;
         }
         g_cf_req_year = g_sel_year;
@@ -1811,19 +1822,21 @@ void draw_modal(FFTViewer& v, NetClient* cli){
 void on_mission_file_list_recv(const PktMissionFileList& page,
                                const std::vector<MissionFileEntry>& rows){
     std::lock_guard<std::mutex> lk(g_cf_mtx);
-    // 같은 mission_year/code 의 기존 entries 제거 (refresh 모드)
-    auto same_mission = [&](const CentralFileRow& r){
-        return r.year == g_cf_req_year &&
-               strncmp(r.code, g_cf_req_code.c_str(), 8) == 0 &&
-               (g_cf_req_station[0] == 0 ||
-                strncmp(r.station, g_cf_req_station, 64) == 0);
+    // 페이지 단위 멱등 갱신: 이 페이지에 포함된 (station,year,code,subdir,filename)
+    // 키와 일치하는 기존 row를 제거 후 append. 응답이 중첩으로 도착해도 중복 누적 방지.
+    auto in_page = [&](const CentralFileRow& r) -> bool {
+        for(auto& src : rows){
+            if(r.year == src.year &&
+               r.subdir == src.subdir &&
+               strncmp(r.station, src.station, sizeof(r.station)) == 0 &&
+               strncmp(r.code, src.code, sizeof(r.code)) == 0 &&
+               strncmp(r.filename, src.filename, sizeof(r.filename)) == 0)
+                return true;
+        }
+        return false;
     };
-    // 첫 page (g_cf_last_page=false) 시 기존 동일 mission rows 제거
-    if(!g_cf_last_page){
-        g_cf_rows.erase(std::remove_if(g_cf_rows.begin(), g_cf_rows.end(), same_mission),
-                        g_cf_rows.end());
-        g_cf_last_page = true;  // 첫 page 처리 완료 마크 (아래에서 추가)
-    }
+    g_cf_rows.erase(std::remove_if(g_cf_rows.begin(), g_cf_rows.end(), in_page),
+                    g_cf_rows.end());
     for(auto& src : rows){
         CentralFileRow r{};
         memcpy(r.station, src.station, sizeof(r.station));
