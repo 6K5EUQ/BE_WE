@@ -137,8 +137,6 @@ operator notes consolidated on a single record. A transmission missed by one
 site is filled in by another that captured it; institutional knowledge
 replaces single-operator memory.
 
-![Cross-station emitter library](assets/signal_library.png)
-
 ### Time Machine — Continuous IQ Buffer
 
 A 60-second IQ buffer is maintained continuously at every site. When a
@@ -154,8 +152,6 @@ and a permanent recording is reduced to seconds.
 A single operator workstation may run multiple site operations concurrently,
 each in its own window distributable across monitors. The 3D globe persists
 as the master station selector and overall tasking view.
-
-![Multi-window operations across stations](assets/multiwindow.png)
 
 ---
 

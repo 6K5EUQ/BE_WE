@@ -17,8 +17,6 @@ static constexpr uint32_t PLUTO_MAX_SR     = 61440000; // 61.44 MSPS (AD9361 최
 static constexpr int      PLUTO_BUF_MIN    = 8192;     // iio_buffer 최소 샘플 수
 static constexpr int      PLUTO_BUF_SAMPS  = 8192;     // 초기 iio_buffer 샘플 수 (FFT size 변경 시 확장됨)
 
-static struct iio_context*  g_ctx_fallback = nullptr;
-
 // ── URI 후보 순회 (USB → IP) ─────────────────────────────────────────────
 static struct iio_context* pluto_open_ctx(){
     struct iio_context* ctx = nullptr;

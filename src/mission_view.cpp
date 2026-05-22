@@ -318,15 +318,6 @@ static bool central_in_selection(const CentralSelKey& k){
     return false;
 }
 
-// ── Rename submodal 상태 ─────────────────────────────────────────────────
-static bool         g_rn_open = false;
-static char         g_rn_station[64] = {};
-static int          g_rn_year = 0;
-static char         g_rn_code[8] = {};
-static uint8_t      g_rn_subdir = 0;
-static char         g_rn_old[128] = {};
-static char         g_rn_new[128] = {};
-
 // ── Start / End 서브모달 ────────────────────────────────────────────────
 static void draw_start_submodal(FFTViewer& v, NetClient* cli){
     // OpenPopup은 IDLE→OPEN 전환 1회만 호출. 매 프레임 호출하면 popup 내부 상태가
@@ -559,77 +550,6 @@ static void draw_meta_block(FFTViewer& v){
     row("Antenna:", antenna);
 }
 
-static void draw_current_session(FFTViewer& v){
-    bool show = false;
-    {
-        std::lock_guard<std::mutex> lk(v.mission_mtx);
-        show = (v.mission_state == Mission::State::ACTIVE &&
-                g_sel_year == v.mission_year &&
-                (g_sel_code.empty() || g_sel_code == v.mission_code));
-    }
-    if(!show) return;
-    ImGui::Spacing();
-    ImGui::TextColored(ImVec4(0.6f,0.85f,1.f,1.f), "Current Session");
-    ImGui::Separator();
-    bool any = false;
-    if(v.rec_on.load()){
-        float el = v.rec_sr > 0 ? (float)v.rec_frames.load()/(float)v.rec_sr : 0.f;
-        uint64_t fr = v.rec_frames.load();
-        float mb = (float)(fr*4) / 1048576.0f;
-        ImGui::TextColored(ImVec4(1.0f,0.4f,0.4f,1.f),
-            "[REC] main IQ  %s  %.1f MB", fmt_hms((int)el).c_str(), mb);
-        any = true;
-    }
-    for(int i = 0; i < MAX_CHANNELS; ++i){
-        Channel& ch = v.channels[i];
-        if(ch.iq_rec_on.load()){
-            uint64_t fr = ch.iq_rec_frames;
-            uint32_t sr = ch.iq_rec_sr ? ch.iq_rec_sr : 1;
-            int sec = (int)(fr / sr);
-            float mb = (float)(fr*8) / 1048576.0f;
-            ImGui::TextColored(ImVec4(1.0f,0.55f,0.35f,1.f),
-                "[IQ ch%d] %s  %.1f MB", i, fmt_hms(sec).c_str(), mb);
-            any = true;
-        }
-        if(ch.audio_rec_on.load()){
-            uint64_t fr = ch.audio_rec_frames;
-            uint32_t sr = ch.audio_rec_sr ? ch.audio_rec_sr : 1;
-            int sec = (int)(fr / sr);
-            float mb = (float)(fr*2) / 1048576.0f;
-            ImGui::TextColored(ImVec4(1.0f,0.8f,0.4f,1.f),
-                "[Audio ch%d] %s  %.1f MB", i, fmt_hms(sec).c_str(), mb);
-            any = true;
-        }
-    }
-    if(v.spectrum_pause.load()){
-        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.0f, 1.f),
-            "[PAUSED]  spectrum frozen");
-        any = true;
-    }
-    {
-        std::lock_guard<std::mutex> lk(v.sched_mtx);
-        if(v.sched_active_idx >= 0){
-            auto& se = v.sched_entries[v.sched_active_idx];
-            float el = (float)std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::now() - se.rec_started).count();
-            float remain = se.duration_sec - el;
-            if(remain < 0) remain = 0;
-            ImGui::TextColored(ImVec4(1.0f,0.45f,0.45f,1.f),
-                "[SCHED REC] %.3f MHz  remain %.0fs", se.freq_mhz, remain);
-            any = true;
-        }
-        int waiting = 0;
-        for(auto& se : v.sched_entries)
-            if(se.status == FFTViewer::SchedEntry::WAITING) waiting++;
-        if(waiting > 0){
-            ImGui::TextColored(ImVec4(0.85f,0.85f,0.45f,1.f),
-                "[SCHED] %d waiting", waiting);
-            any = true;
-        }
-    }
-    if(!any) ImGui::TextDisabled("  (idle)");
-}
-
 // ── Helper: send LIST_REQ if mission selection changed or auto-refresh due ──
 static void maybe_request_central_list(FFTViewer& v, NetClient* cli){
     if(!cli) return;
@@ -688,24 +608,6 @@ static const char* subdir_label(uint8_t s){
         case MFS_HIST:  return "HIST";
         default:        return "?";
     }
-}
-
-// LOCAL 다운로드 파일을 IQ/DEMOD/HIST 로 분류 (filename 기반 fallback;
-// 미션 모달 LOCAL 탭에서는 bucket index 가 직접 전달되므로 이 함수는 미사용 경로용).
-// .bewehist        → HIST
-// "DE_..."/"Audio_..."/"SCHED_AUDIO_..."/"DEMOD_..."  → DEMOD
-// 나머지 (.wav 포함) → IQ
-static uint8_t classify_local_file(const std::string& name){
-    size_t n = name.size();
-    if(n >= 9 && name.compare(n - 9, 9, ".bewehist") == 0) return MFS_HIST;
-    if(name.rfind("DE_", 0) == 0 ||              // legacy DEMOD prefix
-       name.rfind("DEMOD_", 0) == 0 ||
-       name.rfind("Audio_", 0) == 0 ||           // legacy
-       name.rfind("SCHED_AUDIO_", 0) == 0 ||
-       name.rfind("Demod_", 0) == 0 ||
-       name.find("_DE_") != std::string::npos)   // station-prefixed DEMOD
-        return MFS_AUDIO;
-    return MFS_IQ;
 }
 
 // .info sidecar 인지.
@@ -1564,50 +1466,6 @@ static void draw_db_list(FFTViewer& v, NetClient* cli){
     ImGui::EndChild();
 }
 
-static void draw_rename_submodal(NetClient* cli){
-    if(!g_rn_open) return;
-    ImGui::SetNextWindowSize(ImVec2(480, 0));
-    ImGui::OpenPopup("Rename##cf_rn");
-    bool open = true;
-    if(ImGui::BeginPopupModal("Rename##cf_rn", &open,
-        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize)){
-        ImGui::TextDisabled("Central archive rename");
-        ImGui::Text("%s/%04d/%s/%s", g_rn_station, g_rn_year, g_rn_code,
-                    subdir_label(g_rn_subdir));
-        ImGui::TextDisabled("Old:");
-        ImGui::SameLine(); ImGui::TextWrapped("%s", g_rn_old);
-        ImGui::PushItemWidth(-1);
-        ImGui::InputText("##rn_new", g_rn_new, sizeof(g_rn_new));
-        ImGui::PopItemWidth();
-        ImGui::Spacing();
-        if(ImGui::Button("Cancel", ImVec2(120, 0))){
-            g_rn_open = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        bool empty_or_same = (g_rn_new[0] == 0) || (strcmp(g_rn_new, g_rn_old) == 0);
-        if(empty_or_same) ImGui::BeginDisabled();
-        if(ImGui::Button("Rename", ImVec2(120, 0))){
-            if(cli){
-                MissionFileKey k{};
-                strncpy(k.station, g_rn_station, sizeof(k.station) - 1);
-                k.year = (uint16_t)g_rn_year;
-                k.subdir = g_rn_subdir;
-                strncpy(k.code,     g_rn_code, sizeof(k.code)     - 1);
-                strncpy(k.filename, g_rn_old,  sizeof(k.filename) - 1);
-                cli->send_mission_file_rename(k, g_rn_new);
-                g_cf_last_req_time = 0;
-                MissionView::show_toast("Rename requested");
-            }
-            g_rn_open = false;
-            ImGui::CloseCurrentPopup();
-        }
-        if(empty_or_same) ImGui::EndDisabled();
-        ImGui::EndPopup();
-    }
-    if(!open) g_rn_open = false;
-}
-
 // 미션창 활성 + sub-modal/viewer 아닐 때 1/2/3/4 키로 탭 강제 선택.
 // SetSelected 는 그 프레임만 적용 — 다음 프레임부터 사용자 마우스 클릭 평소대로.
 static int g_tab_request = -1;   // 0=IQ 1=DEMOD 2=HIST 3=LOCAL
@@ -1941,7 +1799,6 @@ void draw_modal(FFTViewer& v, NetClient* cli){
     draw_start_submodal(v, cli);
     draw_end_confirm_submodal(v, cli);
     draw_delete_confirm_submodal(v, cli);
-    // draw_rename_submodal: Rename 기능 제거됨 (사용자 요청)
 
     // 미션 모달 활성 시 Delete 키 → 선택 파일 삭제
     process_delete_key(cli);

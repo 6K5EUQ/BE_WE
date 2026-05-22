@@ -19,7 +19,6 @@
 
 static constexpr uint8_t CENTRAL_MAGIC[4] = {'B','R','L','Y'};
 static constexpr int      CENTRAL_PORT    = 7700;
-static constexpr int      CENTRAL_PIPE_PORT = 7702; // IQ 파일 전송 전용 포트
 
 // 기본 Central 호스트 (raspb2 Tailscale IP). 로그인창 / cli_host 기본값에서 참조.
 // 운영 서버 이전 시 이 줄만 수정.

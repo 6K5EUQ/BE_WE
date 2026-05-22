@@ -3464,7 +3464,7 @@ void run_streaming_viewer(){
             g_db_list = entries;
         };
 
-        // DB 파일명 → subdir 분류 (mission_view::classify_local_file 와 동일 규칙).
+        // DB 파일명 → subdir 분류 (.bewehist→hist, _DE_→audio, else→iq).
         auto db_classify = [](const char* fn) -> const char* {
             if(!fn || !fn[0]) return "iq";
             size_t n = strlen(fn);

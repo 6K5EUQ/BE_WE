@@ -42,7 +42,6 @@ void FFTViewer::dem_worker(int ch_idx){
     const float AGC_RELEASE=0.0001f;
 
     double aac=0; int acnt=0;
-    size_t aac_detect_pos=0;
 
     // 스컬치는 UI 스레드에서 FFT 기반으로 중앙 관리 (sq_gate 읽기만)
     bool gate_open=false;

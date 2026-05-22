@@ -47,7 +47,6 @@ static void flush_host_send_queue(std::shared_ptr<HostRoom>& room){
 }
 
 // ── DB subdir 분류 + 자동 rename 헬퍼 ──────────────────────────────────
-// classify_local_file (mission_view.cpp:622) 와 동일 규칙:
 //   .bewehist 끝남     → "hist"
 //   이름에 _DE_ 포함   → "audio"
 //   그 외              → "iq"
@@ -132,23 +131,6 @@ static void db_migrate_flat_to_subdirs(){
     }
     closedir(d);
     if(moved) printf("[Central] DB migration: %d file(s) moved into subdirs\n", moved);
-}
-
-// ── BEWE 타입 이름 (디버그용) ──────────────────────────────────────────────
-static const char* bewe_type_name(uint8_t t){
-    switch(t){
-        case BEWE_TYPE_AUTH_REQ:  return "AUTH_REQ";
-        case BEWE_TYPE_AUTH_ACK:  return "AUTH_ACK";
-        case BEWE_TYPE_FFT:      return "FFT";
-        case BEWE_TYPE_AUDIO:    return "AUDIO";
-        case BEWE_TYPE_CMD:      return "CMD";
-        case BEWE_TYPE_CHAT:     return "CHAT";
-        case BEWE_TYPE_STATUS:   return "STATUS";
-        case BEWE_TYPE_OP_LIST:  return "OP_LIST";
-        case BEWE_TYPE_CH_SYNC:  return "CH_SYNC";
-        case BEWE_TYPE_HEARTBEAT:return "HEARTBEAT";
-        default: return "UNKNOWN";
-    }
 }
 
 static const char* mux_type_name(uint8_t t){
