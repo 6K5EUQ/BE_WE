@@ -305,6 +305,25 @@ void CentralServer::handle_mission_file_list_req(std::shared_ptr<HostRoom> room,
             strncpy(e.filename, n, sizeof(e.filename)-1);
             e.size_bytes = (uint64_t)st.st_size;
             e.mtime_unix = (int64_t)st.st_mtime;
+            // .info sidecar 의 "Operator:" 추출 — DB 탭과 동일 표시용.
+            FILE* fi = fopen((full + ".info").c_str(), "r");
+            if(fi){
+                char buf[512]; size_t br = fread(buf, 1, sizeof(buf)-1, fi); buf[br]=0;
+                fclose(fi);
+                const char* p = buf;
+                while(p && *p){
+                    char k[64]={}, val[128]={};
+                    if(sscanf(p, "%63[^:]: %127[^\n]", k, val) >= 2){
+                        if(strcmp(k, "Operator") == 0){
+                            strncpy(e.operator_name, val, sizeof(e.operator_name)-1);
+                            break;
+                        }
+                    }
+                    const char* nl = strchr(p, '\n');
+                    if(!nl) break;
+                    p = nl + 1;
+                }
+            }
             rows.push_back(e);
         }
         closedir(d);

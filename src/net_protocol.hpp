@@ -770,6 +770,7 @@ struct __attribute__((packed)) MissionFileEntry {
     char     filename[128];
     uint64_t size_bytes;
     int64_t  mtime_unix;
+    char     operator_name[32];   // .info "Operator:" 필드 (Central 측 파싱)
 };
 
 // Central → caller: 파일 목록 응답 (count > MAX → 다중 패킷)

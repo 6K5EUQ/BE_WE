@@ -246,6 +246,7 @@ struct CentralFileRow {
     char     filename[128];
     uint64_t size_bytes;
     int64_t  mtime_unix;
+    char     operator_name[32];   // wire 의 MissionFileEntry::operator_name 사본
 };
 static std::mutex                     g_cf_mtx;
 static std::vector<CentralFileRow>    g_cf_rows;            // 모든 mission 합쳐서 누적
@@ -715,6 +716,26 @@ static std::string fmt_size(uint64_t bytes){
     return b;
 }
 
+// 우측 칼럼: [operator] + size 두 영역 우측 정렬 — 행마다 동일 X 좌표 고정.
+// pw = ContentRegionAvail.x. col = 텍스트 색상.
+static void render_name_size_cols(float pw, const char* operator_name,
+                                  uint64_t size_bytes, ImVec4 col){
+    const float SIZE_W = 70.f;
+    const float NAME_W = 110.f;
+    const float GAP    = 8.f;
+    std::string s = fmt_size(size_bytes);
+    float size_tw = ImGui::CalcTextSize(s.c_str()).x;
+    if(operator_name && operator_name[0]){
+        char nm[40];
+        snprintf(nm, sizeof(nm), "[%s]", operator_name);
+        float name_tw = ImGui::CalcTextSize(nm).x;
+        ImGui::SameLine(pw - SIZE_W - GAP - NAME_W + (NAME_W - name_tw));
+        ImGui::TextColored(col, "%s", nm);
+    }
+    ImGui::SameLine(pw - SIZE_W + (SIZE_W - size_tw) - 4.f);
+    ImGui::TextColored(col, "%s", s.c_str());
+}
+
 // Start download: 기존 LOCAL 파일이 있으면 그 크기를 start_offset 으로 resume 다운로드.
 // 없으면 처음부터.
 static bool start_download(NetClient* cli, const CentralFileRow& row){
@@ -1130,9 +1151,12 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
         }
         central_context_menu(cli, r);
 
-        // 우측 표시: 다운로드 중이면 진행률+속도, 아니면 파일 크기
-        char info[80];
+        // 우측 표시: 다운로드 중이면 진행률+속도, 아니면 [operator] + 크기 두 컬럼.
+        ImVec4 info_col = downloading
+            ? ImVec4(0.4f, 0.85f, 1.0f, 1.f)
+            : ImVec4(0.6f, 0.6f, 0.6f, 1.f);
         if(downloading){
+            char info[80];
             double speed_mb = g_dl_speed_bps / 1048576.0;
             if(dl_total_now > 0){
                 snprintf(info, sizeof(info), "%.0f%%  %.1fMB/s",
@@ -1141,16 +1165,12 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
                 snprintf(info, sizeof(info), "%.1fMB  %.1fMB/s",
                          dl_written_now / 1048576.0, speed_mb);
             }
+            float tw = ImGui::CalcTextSize(info).x;
+            ImGui::SameLine(pw - tw - 4.f);
+            ImGui::TextColored(info_col, "%s", info);
         } else {
-            std::string s = fmt_size(r.size_bytes);
-            snprintf(info, sizeof(info), "%s", s.c_str());
+            render_name_size_cols(pw, r.operator_name, r.size_bytes, info_col);
         }
-        float tw = ImGui::CalcTextSize(info).x;
-        ImGui::SameLine(pw - tw - 4.f);
-        ImVec4 info_col = downloading
-            ? ImVec4(0.4f, 0.85f, 1.0f, 1.f)
-            : ImVec4(0.6f, 0.6f, 0.6f, 1.f);
-        ImGui::TextColored(info_col, "%s", info);
         ImGui::PopID();
     }
     ImGui::EndChild();
@@ -1488,25 +1508,7 @@ static void draw_db_list(FFTViewer& v, NetClient* cli){
                 ImGui::SameLine(pw - tw - 4.f);
                 ImGui::TextColored(info_col, "%s", info);
             } else {
-                // 고정 폭 영역 두 개로 분리해 행마다 동일 위치에 보이도록 한다.
-                //   [name]    size
-                //   ←NAME_W →←SIZE_W→
-                // 각 영역 내에서 우측 정렬. 영역을 넘는 텍스트는 클리핑되지만
-                // 일반 사용 케이스(이름 ≤ 12자, 용량 ≤ "999.9 MB")는 모두 수용됨.
-                const float SIZE_W = 70.f;
-                const float NAME_W = 110.f;
-                const float GAP    = 8.f;
-                std::string s = fmt_size(e.size_bytes);
-                float size_tw = ImGui::CalcTextSize(s.c_str()).x;
-                if(e.operator_name[0]){
-                    char nm[40];
-                    snprintf(nm, sizeof(nm), "[%s]", e.operator_name);
-                    float name_tw = ImGui::CalcTextSize(nm).x;
-                    ImGui::SameLine(pw - SIZE_W - GAP - NAME_W + (NAME_W - name_tw));
-                    ImGui::TextColored(info_col, "%s", nm);
-                }
-                ImGui::SameLine(pw - SIZE_W + (SIZE_W - size_tw) - 4.f);
-                ImGui::TextColored(info_col, "%s", s.c_str());
+                render_name_size_cols(pw, e.operator_name, e.size_bytes, info_col);
             }
 
             ImGui::PopID();
@@ -1518,7 +1520,7 @@ static void draw_db_list(FFTViewer& v, NetClient* cli){
 
 // 미션창 활성 + sub-modal/viewer 아닐 때 1/2/3/4/5 키로 탭 강제 선택.
 // SetSelected 는 그 프레임만 적용 — 다음 프레임부터 사용자 마우스 클릭 평소대로.
-static int g_tab_request = -1;   // 0=HIST 1=IQ 2=DEMOD 3=LOCAL 4=DB
+static int g_tab_request = -1;   // 0=HIST 1=IQ 2=DEMOD 3=DB 4=LOCAL
 
 static void poll_tab_keys(FFTViewer& v){
     // 미션 modal window 가 키보드 focus 일 때만 처리 — 다른 입력에 영향 X.
@@ -1540,15 +1542,15 @@ static void draw_file_tabs(FFTViewer& v, NetClient* cli){
         return (g_tab_request == idx) ? ImGuiTabItemFlags_SetSelected : 0;
     };
     if(g_sel_year == 0 || g_sel_code.empty()){
-        // mission 선택 없음 — LOCAL + DB 만 표시 (DB 는 mission-agnostic)
+        // mission 선택 없음 — DB + LOCAL 만 표시 (DB 는 mission-agnostic)
         ImGui::Spacing();
         if(ImGui::BeginTabBar("##mission_file_tabs_idle")){
-            if(ImGui::BeginTabItem("LOCAL", nullptr, tab_flags(3))){
-                draw_local_list(v, cli);
+            if(ImGui::BeginTabItem("DB", nullptr, tab_flags(3))){
+                draw_db_list(v, cli);
                 ImGui::EndTabItem();
             }
-            if(ImGui::BeginTabItem("DB", nullptr, tab_flags(4))){
-                draw_db_list(v, cli);
+            if(ImGui::BeginTabItem("LOCAL", nullptr, tab_flags(4))){
+                draw_local_list(v, cli);
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
@@ -1570,12 +1572,12 @@ static void draw_file_tabs(FFTViewer& v, NetClient* cli){
             draw_central_list(v, cli, MFS_AUDIO);
             ImGui::EndTabItem();
         }
-        if(ImGui::BeginTabItem("LOCAL", nullptr, tab_flags(3))){
-            draw_local_list(v, cli);
+        if(ImGui::BeginTabItem("DB", nullptr, tab_flags(3))){
+            draw_db_list(v, cli);
             ImGui::EndTabItem();
         }
-        if(ImGui::BeginTabItem("DB", nullptr, tab_flags(4))){
-            draw_db_list(v, cli);
+        if(ImGui::BeginTabItem("LOCAL", nullptr, tab_flags(4))){
+            draw_local_list(v, cli);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -1885,6 +1887,7 @@ void on_mission_file_list_recv(const PktMissionFileList& page,
         memcpy(r.filename, src.filename, sizeof(r.filename));
         r.size_bytes = src.size_bytes;
         r.mtime_unix = src.mtime_unix;
+        memcpy(r.operator_name, src.operator_name, sizeof(r.operator_name));
         g_cf_rows.push_back(r);
     }
     // Central archive 의 unique (year, code, station) 누적 — 좌측 트리 source.
