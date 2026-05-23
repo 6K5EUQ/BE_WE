@@ -147,15 +147,19 @@ static std::string                    g_cf_km_last_req_station;
 // history 손상돼도 Central 응답이 좌측 트리 채움. 결과 year DESC, code DESC.
 static std::vector<DiskMission> collect_visible_missions(FFTViewer& v,
                                                          const std::string& cur_station){
-    auto out = scan_disk_missions();
-    {
+    // JOIN 모드: Central archive (g_cf_known_missions) 가 유일한 source-of-truth.
+    // 디스크 스캔/mission_history 는 이 머신이 과거 HOST/LOCAL 로 돌렸을 때 남은 잔존 데이터로
+    // 트리에 stale 항목을 만들기만 함 (downloads/ 도 별도 폴더라 scan_disk_missions 안 잡힘).
+    std::vector<DiskMission> out;
+    bool join_mode = v.remote_mode;
+    if(!join_mode){
+        out = scan_disk_missions();
         std::lock_guard<std::mutex> lk(v.mission_mtx);
         for(const auto& e : v.mission_history){
             if(e.year == 0 || e.code[0] == 0) continue;
             std::string ecode(e.code, strnlen(e.code, sizeof(e.code)));
             std::string estation(e.station_name, strnlen(e.station_name, sizeof(e.station_name)));
             // dedup 키에 station 포함 — 다른 station 의 같은 (year,code) 와 충돌 방지.
-            // (이전엔 station 무시해서 disk 에 DGS-2/E23 있으면 Central 의 DGS-1/E23 가 dedup 되어 사라짐)
             bool dup = false;
             for(const auto& d : out)
                 if(d.year == e.year && d.code == ecode && d.station == estation){ dup = true; break; }
