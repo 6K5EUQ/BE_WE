@@ -1232,6 +1232,8 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
             bool uploading = false;
             double frac = 0.0;
             uint64_t ul_total_now = 0, ul_written_now = 0;
+            double xfer_bps = 0.0;
+            bool xfer_is_db = false;
             {
                 std::lock_guard<std::mutex> lk(g_ul_mtx);
                 if(g_ul_active && g_ul_filename == it.name && g_ul_full_path == full){
@@ -1239,6 +1241,39 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
                     ul_total_now = g_ul_total;
                     ul_written_now = g_ul_written;
                     if(g_ul_total > 0) frac = (double)g_ul_written / (double)g_ul_total;
+                }
+            }
+            // 위 Upload 진행 아니면 DB Save 업로드 진행도 동일하게 인라인 표시.
+            if(!uploading){
+                std::lock_guard<std::mutex> lk(v.file_xfer_mtx);
+                for(auto& x : v.file_xfers){
+                    if(x.filename == it.name && !x.finished
+                       && x.dir == FFTViewer::FileXfer::DIR_UPLOAD){
+                        uploading = true;
+                        xfer_is_db = true;
+                        ul_total_now   = x.total_bytes;
+                        ul_written_now = x.done_bytes;
+                        if(x.total_bytes > 0)
+                            frac = (double)x.done_bytes / (double)x.total_bytes;
+                        // EWMA bps 갱신 (DB 탭이 안 열려 있어도 LOCAL 탭에서 직접 계산)
+                        int64_t now_us = (int64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch()).count();
+                        if(x.last_steady_us == 0){
+                            x.last_steady_us = now_us; x.last_done_bytes = (int64_t)x.done_bytes;
+                        } else if(now_us - x.last_steady_us >= 200000){
+                            int64_t db = (int64_t)x.done_bytes - x.last_done_bytes;
+                            double  dt = (now_us - x.last_steady_us) / 1e6;
+                            if(dt > 0){
+                                double inst = (db > 0) ? (double)db / dt : 0.0;
+                                x.bps_ewma = (x.bps_ewma == 0.0) ? inst
+                                                                 : x.bps_ewma * 0.7 + inst * 0.3;
+                            }
+                            x.last_steady_us  = now_us;
+                            x.last_done_bytes = (int64_t)x.done_bytes;
+                        }
+                        xfer_bps = x.bps_ewma;
+                        break;
+                    }
                 }
             }
 
@@ -1270,7 +1305,8 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
 
             char info[80];
             if(uploading){
-                double speed_mb = g_ul_speed_bps / 1048576.0;
+                double speed_bps = xfer_is_db ? xfer_bps : g_ul_speed_bps;
+                double speed_mb = speed_bps / 1048576.0;
                 if(ul_total_now > 0){
                     snprintf(info, sizeof(info), "%.0f%%  %.1fMB/s",
                              frac * 100.0, speed_mb);
@@ -1326,10 +1362,8 @@ static void draw_db_list(FFTViewer& v, NetClient* cli){
         entries = ::g_db_list;
     }
 
-    // 헤더
-    char hdr[80];
-    snprintf(hdr, sizeof(hdr), "DB: shared (mission-agnostic) — %zu file(s)", entries.size());
-    ImGui::TextDisabled("%s", hdr);
+    // 헤더 — 다른 탭과 동일한 경로 표시 스타일.
+    ImGui::TextDisabled("Central: DataBase");
     ImGui::SameLine();
     float rgt = ImGui::GetContentRegionMax().x;
     const char* rb = "Refresh";
@@ -1450,7 +1484,7 @@ static void draw_db_list(FFTViewer& v, NetClient* cli){
             } else {
                 std::string s = fmt_size(e.size_bytes);
                 if(e.operator_name[0])
-                    snprintf(info, sizeof(info), "%s  [%s]", s.c_str(), e.operator_name);
+                    snprintf(info, sizeof(info), "[%s]  %s", e.operator_name, s.c_str());
                 else
                     snprintf(info, sizeof(info), "%s", s.c_str());
             }
@@ -1468,9 +1502,9 @@ static void draw_db_list(FFTViewer& v, NetClient* cli){
     ImGui::EndChild();
 }
 
-// 미션창 활성 + sub-modal/viewer 아닐 때 1/2/3/4 키로 탭 강제 선택.
+// 미션창 활성 + sub-modal/viewer 아닐 때 1/2/3/4/5 키로 탭 강제 선택.
 // SetSelected 는 그 프레임만 적용 — 다음 프레임부터 사용자 마우스 클릭 평소대로.
-static int g_tab_request = -1;   // 0=IQ 1=DEMOD 2=HIST 3=LOCAL
+static int g_tab_request = -1;   // 0=HIST 1=IQ 2=DEMOD 3=LOCAL 4=DB
 
 static void poll_tab_keys(FFTViewer& v){
     // 미션 modal window 가 키보드 focus 일 때만 처리 — 다른 입력에 영향 X.
@@ -1510,16 +1544,16 @@ static void draw_file_tabs(FFTViewer& v, NetClient* cli){
     }
     ImGui::Spacing();
     if(ImGui::BeginTabBar("##mission_file_tabs")){
-        if(ImGui::BeginTabItem("IQ", nullptr, tab_flags(0))){
+        if(ImGui::BeginTabItem("HIST", nullptr, tab_flags(0))){
+            draw_central_list(v, cli, MFS_HIST);
+            ImGui::EndTabItem();
+        }
+        if(ImGui::BeginTabItem("IQ", nullptr, tab_flags(1))){
             draw_central_list(v, cli, MFS_IQ);
             ImGui::EndTabItem();
         }
-        if(ImGui::BeginTabItem("DEMOD", nullptr, tab_flags(1))){
+        if(ImGui::BeginTabItem("DEMOD", nullptr, tab_flags(2))){
             draw_central_list(v, cli, MFS_AUDIO);
-            ImGui::EndTabItem();
-        }
-        if(ImGui::BeginTabItem("HIST", nullptr, tab_flags(2))){
-            draw_central_list(v, cli, MFS_HIST);
             ImGui::EndTabItem();
         }
         if(ImGui::BeginTabItem("LOCAL", nullptr, tab_flags(3))){
