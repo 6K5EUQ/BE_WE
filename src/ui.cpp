@@ -414,14 +414,17 @@ void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float 
 
     // ── Single click: resize edge or move ────────────────────────────────
     if(in_graph&&ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
-        // Check edge first
+        // Ctrl+click: skip edge grab — 협대역 필터에서 이동만 잡히도록 강제
+        bool ctrl_held = ImGui::GetIO().KeyCtrl;
         int edge_ch=-1; int edge_side=0;
-        for(int i=0;i<MAX_CHANNELS;i++){
-            if(!channels[i].filter_active) continue;
-            float x0=abs_to_x(std::min(channels[i].s,channels[i].e),gx,gw);
-            float x1=abs_to_x(std::max(channels[i].s,channels[i].e),gx,gw);
-            if(fabsf(m.x-x0)<EDGE_GRAB){ edge_ch=i; edge_side=-1; break; }
-            if(fabsf(m.x-x1)<EDGE_GRAB){ edge_ch=i; edge_side= 1; break; }
+        if(!ctrl_held){
+            for(int i=0;i<MAX_CHANNELS;i++){
+                if(!channels[i].filter_active) continue;
+                float x0=abs_to_x(std::min(channels[i].s,channels[i].e),gx,gw);
+                float x1=abs_to_x(std::max(channels[i].s,channels[i].e),gx,gw);
+                if(fabsf(m.x-x0)<EDGE_GRAB){ edge_ch=i; edge_side=-1; break; }
+                if(fabsf(m.x-x1)<EDGE_GRAB){ edge_ch=i; edge_side= 1; break; }
+            }
         }
         if(edge_ch>=0){
             // Select + start resize
