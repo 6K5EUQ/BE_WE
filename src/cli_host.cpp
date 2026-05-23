@@ -1933,10 +1933,75 @@ void run_cli_host(){
                         bewe_log_push(0,"[CLI] RX start failed - SDR not found.\n");
                     }
                 }
+            } else if(line.rfind("/freq", 0) == 0){
+                // /freq <MHz> — 중심 주파수 변경 (HOST 자기 SDR + JOIN sync)
+                const char* arg = line.c_str() + 5;
+                while(*arg == ' ') arg++;
+                if(*arg == 0){
+                    bewe_log_push(0,"  Current CF=%.4f MHz. Usage: /freq <MHz>\n",
+                                  v.header.center_frequency/1e6);
+                } else {
+                    float cf = (float)atof(arg);
+                    if(cf < 0.1f || cf > 6000.f){
+                        bewe_log_push(0,"  Invalid freq (0.1~6000 MHz): %s\n", arg);
+                    } else {
+                        bewe_log_push(0,"[CMD:CLI] /freq → %.4f MHz\n", cf);
+                        v.set_frequency(cf);
+                        if(v.net_srv){
+                            uint8_t hwt = (v.hw.type==HWType::RTLSDR) ? 1 :
+                                          (v.hw.type==HWType::PLUTO)  ? 2 : 0;
+                            v.net_srv->broadcast_status(cf, v.gain_db,
+                                                        v.header.sample_rate, hwt);
+                        }
+                    }
+                }
+                fflush(stdout);
+            } else if(line.rfind("/mission", 0) == 0){
+                // /mission start [comment]  /  /mission end  /  /mission status
+                std::string sub = line.substr(8);
+                while(!sub.empty() && sub.front() == ' ') sub.erase(sub.begin());
+                if(sub == "status" || sub.empty()){
+                    std::lock_guard<std::mutex> lk(v.mission_mtx);
+                    if(v.mission_state == Mission::State::ACTIVE){
+                        time_t now = time(nullptr);
+                        long elapsed = (long)(now - v.mission_start_utc);
+                        bewe_log_push(0,"  Mission: ACTIVE  %04d/%s  started by '%s'  elapsed=%lds\n",
+                                      v.mission_year, v.mission_code, v.mission_started_by, elapsed);
+                    } else {
+                        bewe_log_push(0,"  Mission: IDLE\n");
+                    }
+                } else if(sub.rfind("start", 0) == 0){
+                    // mission_start 가 내부적으로 mission_broadcast_sync 호출
+                    const char* who = login_get_id();
+                    bool ok = v.mission_start(who ? who : "cli", /*op_index=*/0, /*rollover=*/false);
+                    if(ok){
+                        bewe_log_push(0,"[CMD:CLI] Mission started: %04d/%s\n",
+                                      v.mission_year, v.mission_code);
+                        if(v.net_srv) v.net_srv->broadcast_chat("SYSTEM", "Mission started");
+                    } else {
+                        bewe_log_push(0,"  Mission start failed (already ACTIVE? use /mission end)\n");
+                    }
+                } else if(sub == "end"){
+                    // mission_end 도 내부에서 mission_broadcast_sync 호출
+                    bool ok = v.mission_end();
+                    if(ok){
+                        bewe_log_push(0,"[CMD:CLI] Mission ended.\n");
+                        if(v.net_srv) v.net_srv->broadcast_chat("SYSTEM", "Mission ended");
+                    } else {
+                        bewe_log_push(0,"  Mission end failed (none ACTIVE)\n");
+                    }
+                } else {
+                    bewe_log_push(0,"  Usage: /mission [start|end|status]\n");
+                }
+                fflush(stdout);
             } else if(line == "/help"){
                 bewe_log_push(0,"Commands:\n");
                 bewe_log_push(0,"  /status          - Show system status\n");
                 bewe_log_push(0,"  /clients         - List connected operators\n");
+                bewe_log_push(0,"  /freq <MHz>      - Change center frequency\n");
+                bewe_log_push(0,"  /mission start   - Begin a new mission\n");
+                bewe_log_push(0,"  /mission end     - End active mission\n");
+                bewe_log_push(0,"  /mission status  - Show current mission state\n");
                 bewe_log_push(0,"  /chassis 1 reset - USB SDR hardware reset\n");
                 bewe_log_push(0,"  /chassis 2 reset - Network broadcast reset\n");
                 bewe_log_push(0,"  /rx stop         - Stop SDR capture\n");
