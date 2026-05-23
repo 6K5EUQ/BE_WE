@@ -320,6 +320,12 @@ struct SelAnchor {
 };
 static SelAnchor g_sel_anchor;
 
+// 현재 그려지는 탭의 scope. Delete 키 처리 시 이 scope 와 일치하는 선택만 삭제.
+// 각 draw_* 함수가 진입 시 갱신. 5개 탭이 서로 독립 작동하도록 보장.
+// CENTRAL: scope = subdir(MFS_IQ/AUDIO/HIST)  /  LOCAL,DB: scope = -1 (탭 전체)
+static SelKind g_active_tab_kind  = SelKind::NONE;
+static int     g_active_tab_scope = -1;
+
 // Central / DB 의 5초 자동 refresh 타이머. 0 으로 reset 하면 즉시 새로고침.
 static double g_db_last_req_time = 0.0;
 
@@ -643,19 +649,30 @@ static void clear_selection(){
     g_sel_anchor = SelAnchor{};
 }
 
-// Delete 키 → 선택된 모든 파일 삭제. 미션 모달 활성 시 매 프레임 호출.
+// Delete 키 → 현재 활성 탭의 선택만 삭제. 5개 탭 독립 동작.
+// HIST/IQ/DEMOD 는 g_sel_central_keys 를 공유하지만 subdir 필터로 격리.
 static void process_delete_key(NetClient* cli){
     if(g_sel_local_paths.empty() && g_sel_central_keys.empty() && g_sel_db_files.empty()) return;
     if(!ImGui::IsKeyPressed(ImGuiKey_Delete, false)) return;
-    int n_local = 0;
-    for(const std::string& full : g_sel_local_paths){
-        unlink(full.c_str());
-        unlink((full + ".info").c_str());
-        n_local++;
+
+    int n_local = 0, n_central = 0, n_db = 0;
+
+    // LOCAL 탭 활성 시에만 local 삭제.
+    if(g_active_tab_kind == SelKind::LOCAL){
+        for(const std::string& full : g_sel_local_paths){
+            unlink(full.c_str());
+            unlink((full + ".info").c_str());
+            n_local++;
+        }
+        g_sel_local_paths.clear();
     }
-    int n_central = 0;
-    if(cli && !g_sel_central_keys.empty()){
+
+    // CENTRAL 탭 (HIST/IQ/DEMOD) 활성 시 — subdir 일치하는 항목만 삭제.
+    if(g_active_tab_kind == SelKind::CENTRAL && cli){
+        uint8_t want_sub = (uint8_t)g_active_tab_scope;
+        std::vector<CentralSelKey> kept;
         for(auto& s : g_sel_central_keys){
+            if(s.subdir != want_sub){ kept.push_back(s); continue; }
             MissionFileKey k{};
             strncpy(k.station,  s.station,  sizeof(k.station)  - 1);
             k.year   = s.year;
@@ -665,40 +682,48 @@ static void process_delete_key(NetClient* cli){
             cli->send_mission_file_delete(k);
             n_central++;
         }
-        // 옵티미스틱 로컬 제거 — 응답 기다리지 말고 g_cf_rows 에서 즉시 삭제.
-        {
+        if(n_central > 0){
+            // 옵티미스틱 로컬 제거 — 응답 기다리지 말고 g_cf_rows 에서 즉시 삭제.
             std::lock_guard<std::mutex> lk(g_cf_mtx);
             g_cf_rows.erase(std::remove_if(g_cf_rows.begin(), g_cf_rows.end(),
-                [](const CentralFileRow& r){
+                [want_sub](const CentralFileRow& r){
+                    if(r.subdir != want_sub) return false;
                     CentralSelKey k{}; strncpy(k.station, r.station, sizeof(k.station)-1);
                     k.year=r.year; k.subdir=r.subdir;
                     strncpy(k.code, r.code, sizeof(k.code)-1);
                     strncpy(k.filename, r.filename, sizeof(k.filename)-1);
                     return central_in_selection(k);
                 }), g_cf_rows.end());
+            g_cf_last_req_time = 0;
         }
-        g_cf_last_req_time = 0;
+        g_sel_central_keys = std::move(kept);
     }
-    int n_db = 0;
-    if(cli && !g_sel_db_files.empty()){
+
+    // DB 탭 활성 시.
+    if(g_active_tab_kind == SelKind::DB && cli){
         const char* op = login_get_id();
         for(const std::string& fn : g_sel_db_files){
             cli->cmd_db_delete(fn.c_str(), op ? op : "");
             n_db++;
         }
-        // 옵티미스틱 로컬 제거 — g_db_list 에서 즉시 삭제.
-        {
+        if(n_db > 0){
             std::lock_guard<std::mutex> lk(::g_db_list_mtx);
             ::g_db_list.erase(std::remove_if(::g_db_list.begin(), ::g_db_list.end(),
                 [](const DbFileEntry& e){ return g_sel_db_files.count(e.filename) > 0; }),
                 ::g_db_list.end());
+            g_db_last_req_time = 0;
         }
-        g_db_last_req_time = 0;
+        g_sel_db_files.clear();
     }
+
+    if(n_local + n_central + n_db == 0) return;
     char tbuf[128];
     snprintf(tbuf, sizeof(tbuf), "Deleted: %d local, %d central, %d db", n_local, n_central, n_db);
     MissionView::show_toast(tbuf);
-    clear_selection();
+    // anchor 정리 — 삭제된 키가 anchor 였을 수 있으므로.
+    g_sel_anchor = SelAnchor{};
+    if(g_sel_local_paths.empty() && g_sel_central_keys.empty() && g_sel_db_files.empty())
+        g_sel_kind = SelKind::NONE;
 }
 
 // 다운로드 진행률 폴링 (UI 스레드 — main).
@@ -1075,6 +1100,8 @@ static void local_context_menu(FFTViewer& v, NetClient* cli,
 }
 
 static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
+    g_active_tab_kind  = SelKind::CENTRAL;
+    g_active_tab_scope = (int)subdir;
     maybe_request_central_list(v, cli);
     std::vector<CentralFileRow> rows;
     {
@@ -1258,6 +1285,8 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
 struct LocalFileEntry { std::string name; uint64_t size; time_t mtime; std::string full; };
 
 static void draw_local_list(FFTViewer& v, NetClient* cli){
+    g_active_tab_kind  = SelKind::LOCAL;
+    g_active_tab_scope = -1;
     // 미션별 LOCAL: 두 위치를 합쳐 표시.
     //   (a) ~/BE_WE/downloads/<station>/<year>/<code>/{iq,audio,hist}/   ← 다운로드 캐시
     //   (b) ~/BE_WE/recordings/missions/<year>/<code>/{iq,audio,hist}/   ← 머신 로컬 녹음
@@ -1465,6 +1494,8 @@ static const char* db_classify_sub(const char* fn){
 }
 
 static void draw_db_list(FFTViewer& v, NetClient* cli){
+    g_active_tab_kind  = SelKind::DB;
+    g_active_tab_scope = -1;
     // 5초마다 list refresh 요청 (단, 무한 요청 방지 위해 cli 있을 때만).
     if(cli){
         double now = ImGui::GetTime();
