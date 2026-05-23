@@ -147,6 +147,9 @@ public:
     // ── System monitor (bottom bar) ───────────────────────────────────────
     float sysmon_cpu=0, sysmon_ghz=0, sysmon_ram=0, sysmon_io=0;
     std::atomic<int> sysmon_cpu_temp_c{0};  // CPU 온도 (정수 °C, heartbeat 전송용)
+    // 자기 머신의 recordings 디스크 여유 (JOIN 의 "Local" 표시용 / HOST 자기 disk_stat 송신 시 참조 가능)
+    std::atomic<uint64_t> local_disk_free{0};
+    std::atomic<uint64_t> local_disk_total{0};
 
     // ── Timemachine ───────────────────────────────────────────────────────
     // 워터폴/스펙트럼: 항상 2500행 메모리 유지 (위 MAX_FFTS_MEMORY)

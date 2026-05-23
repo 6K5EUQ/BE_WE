@@ -13,6 +13,7 @@
 #include <ifaddrs.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <dirent.h>
 
 static constexpr int HOST_TIMEOUT_SEC  = 3;   // HB 간격 1s 가정, 3초 미수신 시 dead 처리 (globe에서 즉시 제거)
@@ -1863,19 +1864,48 @@ std::shared_ptr<HostRoom> CentralServer::find_room(const std::string& id) const 
 }
 
 void CentralServer::watchdog_loop(){
+    int tick = 0;
     while(running_.load()){
         std::this_thread::sleep_for(std::chrono::seconds(1));
         auto now = std::chrono::steady_clock::now();
-        std::lock_guard<std::mutex> lk(rooms_mtx_);
-        for(auto& r : rooms_){
-            if(!r->alive.load()) continue;
-            auto age = std::chrono::duration_cast<std::chrono::seconds>(
-                now - r->last_hb).count();
-            if(age > HOST_TIMEOUT_SEC && r->fd >= 0){
-                printf("[Central] WATCHDOG timeout: room='%s' age=%llds (limit=%ds) — closing\n",
-                       r->station_id.c_str(), (long long)age, HOST_TIMEOUT_SEC);
-                shutdown(r->fd, SHUT_RDWR); close(r->fd); r->fd=-1;
-                r->alive.store(false);
+        {
+            std::lock_guard<std::mutex> lk(rooms_mtx_);
+            for(auto& r : rooms_){
+                if(!r->alive.load()) continue;
+                auto age = std::chrono::duration_cast<std::chrono::seconds>(
+                    now - r->last_hb).count();
+                if(age > HOST_TIMEOUT_SEC && r->fd >= 0){
+                    printf("[Central] WATCHDOG timeout: room='%s' age=%llds (limit=%ds) — closing\n",
+                           r->station_id.c_str(), (long long)age, HOST_TIMEOUT_SEC);
+                    shutdown(r->fd, SHUT_RDWR); close(r->fd); r->fd=-1;
+                    r->alive.store(false);
+                }
+            }
+        }
+        // ── Disk stat broadcast (5s 주기): Central DataBase 디스크 여유공간을 모든 JOIN 에 ──
+        if(++tick % 5 == 0){
+            struct statvfs vfs{};
+            std::string db = db_base_dir();
+            if(statvfs(db.c_str(), &vfs) == 0){
+                uint64_t free_b  = (uint64_t)vfs.f_bavail * vfs.f_frsize;
+                uint64_t total_b = (uint64_t)vfs.f_blocks * vfs.f_frsize;
+                // PktDiskStat: source=1 (CENTRAL), station="" (Central 은 공용)
+                // wire layout: source(1) + _pad(7) + free(8) + total(8) + station[64] = 88 bytes
+                uint8_t payload[88] = {};
+                payload[0] = 1;
+                memcpy(payload + 8,  &free_b,  8);
+                memcpy(payload + 16, &total_b, 8);
+                // payload[24..87] station[64] = 0 (Central)
+                auto bewe = make_bewe_packet(BEWE_TYPE_DISK_STAT, payload, sizeof(payload));
+                std::lock_guard<std::mutex> rlk(rooms_mtx_);
+                for(auto& r : rooms_){
+                    if(!r->alive.load()) continue;
+                    std::lock_guard<std::mutex> jlk(r->joins_mtx);
+                    for(auto& je : r->joins){
+                        if(!je->alive.load() || je->fd < 0 || !je->authed) continue;
+                        je->enqueue_ctrl(bewe.data(), bewe.size());
+                    }
+                }
             }
         }
     }

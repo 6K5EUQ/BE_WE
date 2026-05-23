@@ -19,6 +19,7 @@
 #include <cstdarg>
 #include <csignal>
 #include <ctime>
+#include <sys/statvfs.h>
 #include <string>
 #include <vector>
 #include <map>
@@ -1558,6 +1559,22 @@ void run_cli_host(){
                 const char* sk = v.dev_blade ? "BladeRF" : v.pluto_ctx ? "Pluto" : v.dev_rtl ? "RTL-SDR" : "Unknown";
                 v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st, iq_st,
                                                cpu_pct, ram_pct, cpu_temp, v.host_antenna, sk);
+            }
+        }
+
+        // ── Disk stat (5s): HOST recordings 디스크 여유공간 broadcast ────
+        if(v.net_srv){
+            static auto disk_stat_last = clk::now();
+            float el = std::chrono::duration<float>(clk::now()-disk_stat_last).count();
+            if(el >= 5.0f){
+                disk_stat_last = clk::now();
+                struct statvfs vfs{};
+                std::string rec = BEWEPaths::recordings_dir();
+                if(statvfs(rec.c_str(), &vfs) == 0){
+                    uint64_t free_b  = (uint64_t)vfs.f_bavail * vfs.f_frsize;
+                    uint64_t total_b = (uint64_t)vfs.f_blocks * vfs.f_frsize;
+                    v.net_srv->broadcast_disk_stat(free_b, total_b, v.station_name.c_str());
+                }
             }
         }
 

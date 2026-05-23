@@ -566,6 +566,19 @@ void NetClient::handle_packet(PacketType type,
         connected_.store(false);
         break;
 
+    case PacketType::DISK_STAT: {
+        if(len < sizeof(PktDiskStat)) break;
+        auto* d = reinterpret_cast<const PktDiskStat*>(payload);
+        if(d->source == 0){
+            remote_host_disk_free.store(d->free_bytes,  std::memory_order_relaxed);
+            remote_host_disk_total.store(d->total_bytes, std::memory_order_relaxed);
+        } else if(d->source == 1){
+            remote_central_disk_free.store(d->free_bytes,  std::memory_order_relaxed);
+            remote_central_disk_total.store(d->total_bytes, std::memory_order_relaxed);
+        }
+        break;
+    }
+
     case PacketType::HEARTBEAT: {
         if(len < 4) break; // 최소 기존 4바이트 호환
         auto* hb = reinterpret_cast<const PktHeartbeat*>(payload);

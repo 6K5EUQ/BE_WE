@@ -299,6 +299,9 @@ public:
                              uint8_t host_cpu_pct = 0, uint8_t host_ram_pct = 0, uint8_t host_cpu_temp_c = 0,
                              const char* antenna = nullptr, const char* sdr_kind = nullptr);
 
+    // DISK_STAT → all clients (HOST 측 recordings/missions 디스크 여유공간)
+    void broadcast_disk_stat(uint64_t free_bytes, uint64_t total_bytes, const char* station);
+
     // /chassis 2 reset: FFT+오디오 방송 일시 중단 / 재개
     void pause_broadcast()  { bcast_pause_.store(true,  std::memory_order_relaxed); }
     void resume_broadcast() { bcast_pause_.store(false, std::memory_order_relaxed); }

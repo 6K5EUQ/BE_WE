@@ -1788,8 +1788,33 @@ static void draw_left_tree(FFTViewer& v){
 
     if(!cur_station.empty()){
         ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.0f, 1.f), "Station: %s", cur_station.c_str());
-        ImGui::Separator();
     }
+
+    // ── 디스크 여유공간 표시 (Central / Host / Local 순서, <10GB 빨간색) ──
+    auto fmt_free = [](uint64_t b) -> std::string {
+        char buf[24];
+        if(b >= (1ull<<40))       snprintf(buf, sizeof(buf), "%.2f TB", b/(double)(1ull<<40));
+        else if(b >= (1ull<<30))  snprintf(buf, sizeof(buf), "%.1f GB", b/(double)(1ull<<30));
+        else if(b >= (1ull<<20))  snprintf(buf, sizeof(buf), "%.0f MB", b/(double)(1ull<<20));
+        else                      snprintf(buf, sizeof(buf), "%llu B",  (unsigned long long)b);
+        return buf;
+    };
+    auto disk_color = [](uint64_t b) -> ImVec4 {
+        if(b == 0)                  return ImVec4(0.55f, 0.55f, 0.55f, 1.f);   // gray (no data)
+        if(b < (10ull<<30))         return ImVec4(1.00f, 0.40f, 0.40f, 1.f);   // red (<10GB)
+        return ImVec4(0.65f, 0.65f, 0.65f, 1.f);                                // dim default
+    };
+    uint64_t cf = v.net_cli ? v.net_cli->remote_central_disk_free.load() : 0;
+    uint64_t hf = v.net_cli ? v.net_cli->remote_host_disk_free.load()    : 0;
+    uint64_t lf = v.local_disk_free.load();
+    // LOCAL/HOST 모드는 자기 머신이 곧 HOST → HOST 칸 = local_disk_free, Central 은 미연결 시 0.
+    if(!v.remote_mode){
+        hf = lf;
+    }
+    ImGui::TextColored(disk_color(cf), "Central: %s", cf ? fmt_free(cf).c_str() : "—");
+    ImGui::TextColored(disk_color(hf), "Host:    %s", hf ? fmt_free(hf).c_str() : "—");
+    ImGui::TextColored(disk_color(lf), "Local:   %s", lf ? fmt_free(lf).c_str() : "—");
+    ImGui::Separator();
 
     // disk 폴더 + mission_history union (종료 후 push&unlink 된 미션도 표시).
     auto disk = collect_visible_missions(v, cur_station);

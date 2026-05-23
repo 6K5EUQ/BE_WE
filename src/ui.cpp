@@ -27,6 +27,7 @@
 #include <thread>
 #include <mutex>
 #include <cstdarg>
+#include <sys/statvfs.h>
 #include <dirent.h>
 #include <signal.h>
 #include <sys/stat.h>
@@ -4706,6 +4707,15 @@ void run_streaming_viewer(){
                 v.sysmon_ghz=read_ghz();
                 v.sysmon_ram=read_ram();
                 v.sysmon_io =io_pct;
+                // 자기 머신의 recordings 디스크 여유 측정 (1초마다 — 미션창 좌측 트리 Local 표시용)
+                {
+                    struct statvfs vfs{};
+                    std::string rec = BEWEPaths::recordings_dir();
+                    if(statvfs(rec.c_str(), &vfs) == 0){
+                        v.local_disk_free.store((uint64_t)vfs.f_bavail * vfs.f_frsize);
+                        v.local_disk_total.store((uint64_t)vfs.f_blocks * vfs.f_frsize);
+                    }
+                }
                 glfwSetWindowTitle(win,"BEWE (" BEWE_VERSION ")");
             }
         }

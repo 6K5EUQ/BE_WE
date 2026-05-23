@@ -148,6 +148,11 @@ public:
     std::atomic<uint8_t>  remote_host_cpu{0};         // HOST CPU %
     std::atomic<uint8_t>  remote_host_ram{0};         // HOST RAM %
     std::atomic<uint8_t>  remote_host_cpu_temp{0};    // HOST CPU 온도 °C
+    // ── 디스크 여유공간 (DISK_STAT 패킷 수신 시 갱신, JOIN UI 표시용) ──
+    std::atomic<uint64_t> remote_host_disk_free{0};
+    std::atomic<uint64_t> remote_host_disk_total{0};
+    std::atomic<uint64_t> remote_central_disk_free{0};
+    std::atomic<uint64_t> remote_central_disk_total{0};
     std::atomic<double>   last_heartbeat_time{0.0};  // glfwGetTime() at last HB
     std::mutex            remote_antenna_mtx;
     char                  remote_antenna[32] = {};    // HOST의 안테나 (HB 수신 시 갱신)

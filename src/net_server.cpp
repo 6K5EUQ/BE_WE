@@ -711,6 +711,23 @@ void NetServer::broadcast_heartbeat(uint8_t host_state, uint8_t sdr_temp_c, uint
     }
 }
 
+// ── Broadcast disk stat ───────────────────────────────────────────────────
+void NetServer::broadcast_disk_stat(uint64_t free_bytes, uint64_t total_bytes, const char* station){
+    PktDiskStat s{};
+    s.source      = 0;   // HOST
+    s.free_bytes  = free_bytes;
+    s.total_bytes = total_bytes;
+    if(station) strncpy(s.station, station, sizeof(s.station)-1);
+    auto pkt = make_packet(PacketType::DISK_STAT, &s, sizeof(s));
+    if(cb.on_relay_broadcast)
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
+    std::lock_guard<std::mutex> lk(clients_mtx_);
+    for(auto& c : clients_){
+        if(c->is_relay || !c->authed || !c->alive.load()) continue;
+        c->enqueue(pkt, false);
+    }
+}
+
 // ── Broadcast status ──────────────────────────────────────────────────────
 void NetServer::broadcast_status(float cf_mhz, float gain_db,
                                   uint32_t sr, uint8_t hw_type){

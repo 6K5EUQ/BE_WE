@@ -31,6 +31,7 @@ enum class PacketType : uint8_t {
     FILE_META        = 0x0E,  // server → client: file transfer start info
     REGION_RESPONSE  = 0x0F,  // server → client: region request allow/deny
     HEARTBEAT          = 0x14,  // server → all clients: 3s keepalive + state
+    DISK_STAT          = 0x15,  // HOST/Central → all: periodic disk free/total broadcast
     IQ_PROGRESS        = 0x16,  // server → all: IQ 파일 전송 진행상황 (REC/Transferring/Done)
     IQ_CHUNK           = 0x20,  // HOST → JOIN (MUX): IQ 파일 청크 전송
     REPORT_ADD         = 0x23,  // client → central: ingest report into emitter DB
@@ -434,6 +435,17 @@ struct __attribute__((packed)) PktFileData {
     uint32_t chunk_bytes;
     uint64_t offset;
     // uint8_t data[chunk_bytes] follows
+};
+
+// ── DISK_STAT (HOST/Central → all clients) ──────────────────────────────
+// 5초 주기 broadcast. JOIN 측 미션창 좌측 트리에 Central / Host / Local 여유공간 표시.
+// source: 0=HOST(자기 station 의 recordings/missions 디스크), 1=CENTRAL(DataBase 디스크)
+struct __attribute__((packed)) PktDiskStat {
+    uint8_t  source;       // 0=HOST, 1=CENTRAL
+    uint8_t  _pad[7];
+    uint64_t free_bytes;
+    uint64_t total_bytes;
+    char     station[64];  // HOST: 자기 station_name / Central: 빈문자열
 };
 
 // ── HEARTBEAT (server → all clients) ─────────────────────────────────────
