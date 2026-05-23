@@ -107,10 +107,10 @@ void close_file_locked(){
     }
     g_acc_db.clear();
     g_acc_count = 0;
-    // Mission File Push (B 정책, v3.22.x): LIVE row stream 이 안정적으로 도달했으면
-    // (g_file_dirty==false) push 생략 — Central 의 mirror 파일이 곧 final 결과물.
-    // Central 연결이 끊긴 적 있으면 (dirty==true) 통파일 push 로 누락 row 보완.
-    // path 형식이 mission_hist_dir 안이어야 MissionPush::enqueue 가 실제 처리.
+    // Mission File Push: LIVE row stream 이 안정적으로 도달했으면 (g_file_dirty==false)
+    //   → push 생략하고 로컬 파일도 즉시 unlink (Central mirror 만 source-of-truth).
+    // 연결이 끊긴 적 있으면 (dirty==true) → 통파일 push (MissionPush 가 ACK 후 unlink 함).
+    // 어느 경로든 HOST 로컬엔 .bewehist 가 남지 않음 → 디스크 누적 방지 (v4.4.0).
     if(!finalized_path.empty()){
         bool was_dirty = g_file_dirty.exchange(false);
         if(was_dirty){
@@ -118,10 +118,11 @@ void close_file_locked(){
                    finalized_path.c_str());
             MissionPush::enqueue(finalized_path, MFS_HIST);
         } else {
-            // LIVE tap 만으로 충분 → 파일 push 생략 + 로컬 파일은 디스크에 남김
-            // (HOST 측 로컬 보존 정책. 디스크 가득 차면 별도 cleanup 정책 필요).
-            printf("[LongWaterfall] file finalize CLEAN — LIVE tap delivered, skip push: %s\n",
+            // LIVE tap 만으로 Central 에 동일 파일이 이미 finalize 됨 → 로컬 사본 불필요.
+            printf("[LongWaterfall] file finalize CLEAN — unlink local (Central has mirror): %s\n",
                    finalized_path.c_str());
+            unlink(finalized_path.c_str());
+            unlink((finalized_path + ".info").c_str());
         }
     }
 }
