@@ -288,12 +288,11 @@ static double       g_ul_speed_bps = 0.0;
 static std::mutex   g_ul_toast_mtx;
 static std::string  g_ul_pending_toast;   // 워커 완료 후 UI 스레드에서 표시
 
-// ── 선택 상태 (Delete 키 + multi-upload; Ctrl+클릭 다중선택 지원) ──────────
-enum class SelKind : uint8_t { NONE, LOCAL, CENTRAL };
-// 마지막-선택 트랙(highlight 우선순위/색 통일용). 두 집합은 동시 사용 가능 (Mix 가능).
+// ── 선택 상태 (Delete 키 + multi-upload; Ctrl/Shift+클릭 다중선택) ──────────
+enum class SelKind : uint8_t { NONE, LOCAL, CENTRAL, DB };
 static SelKind     g_sel_kind = SelKind::NONE;
 
-// 다중선택 집합 — LOCAL: full path 들, CENTRAL: 5-tuple 들.
+// 다중선택 집합 — LOCAL: full path / CENTRAL: 5-tuple / DB: filename(unique).
 struct CentralSelKey {
     char     station[64];
     uint16_t year;
@@ -307,16 +306,32 @@ struct CentralSelKey {
             && strncmp(filename, o.filename, sizeof(filename)) == 0;
     }
 };
-static std::set<std::string>      g_sel_local_paths;     // LOCAL 다중선택
-static std::vector<CentralSelKey> g_sel_central_keys;    // CENTRAL 다중선택
+static std::set<std::string>      g_sel_local_paths;
+static std::vector<CentralSelKey> g_sel_central_keys;
+static std::set<std::string>      g_sel_db_files;        // DB: filename 만으로 unique
 
-// 컨텍스트 메뉴 등 단일행 액션이 selection-aware 인지 확인 헬퍼.
+// Shift+클릭 range 기준 anchor — 마지막 plain/ctrl 클릭 위치.
+// scope 가 일치할 때만 (같은 kind + 같은 subdir/sub_index) range 적용.
+struct SelAnchor {
+    SelKind     kind   = SelKind::NONE;
+    int         scope  = -1;     // CENTRAL: subdir / DB,LOCAL: sub_index(0..2)
+    std::string key;             // LOCAL: full path / DB: filename / CENTRAL: filename
+    // CENTRAL 의 station/year/code 는 같은 미션 단일 scope 가정 (현재 UI 가 그러함)
+};
+static SelAnchor g_sel_anchor;
+
+// Central / DB 의 5초 자동 refresh 타이머. 0 으로 reset 하면 즉시 새로고침.
+static double g_db_last_req_time = 0.0;
+
 static bool local_in_selection(const std::string& full){
     return g_sel_local_paths.count(full) > 0;
 }
 static bool central_in_selection(const CentralSelKey& k){
     for(auto& e : g_sel_central_keys) if(e.eq(k)) return true;
     return false;
+}
+static bool db_in_selection(const std::string& filename){
+    return g_sel_db_files.count(filename) > 0;
 }
 
 // ── Start / End 서브모달 ────────────────────────────────────────────────
@@ -619,16 +634,18 @@ static bool is_info_file(const std::string& name){
     return n >= 5 && name.compare(n - 5, 5, ".info") == 0;
 }
 
-// 선택 초기화 (LOCAL + CENTRAL 모두).
+// 선택 초기화 (모든 kind).
 static void clear_selection(){
     g_sel_kind = SelKind::NONE;
     g_sel_local_paths.clear();
     g_sel_central_keys.clear();
+    g_sel_db_files.clear();
+    g_sel_anchor = SelAnchor{};
 }
 
 // Delete 키 → 선택된 모든 파일 삭제. 미션 모달 활성 시 매 프레임 호출.
 static void process_delete_key(NetClient* cli){
-    if(g_sel_local_paths.empty() && g_sel_central_keys.empty()) return;
+    if(g_sel_local_paths.empty() && g_sel_central_keys.empty() && g_sel_db_files.empty()) return;
     if(!ImGui::IsKeyPressed(ImGuiKey_Delete, false)) return;
     int n_local = 0;
     for(const std::string& full : g_sel_local_paths){
@@ -637,7 +654,7 @@ static void process_delete_key(NetClient* cli){
         n_local++;
     }
     int n_central = 0;
-    if(cli){
+    if(cli && !g_sel_central_keys.empty()){
         for(auto& s : g_sel_central_keys){
             MissionFileKey k{};
             strncpy(k.station,  s.station,  sizeof(k.station)  - 1);
@@ -648,15 +665,38 @@ static void process_delete_key(NetClient* cli){
             cli->send_mission_file_delete(k);
             n_central++;
         }
-        if(n_central > 0) g_cf_last_req_time = 0;
+        // 옵티미스틱 로컬 제거 — 응답 기다리지 말고 g_cf_rows 에서 즉시 삭제.
+        {
+            std::lock_guard<std::mutex> lk(g_cf_mtx);
+            g_cf_rows.erase(std::remove_if(g_cf_rows.begin(), g_cf_rows.end(),
+                [](const CentralFileRow& r){
+                    CentralSelKey k{}; strncpy(k.station, r.station, sizeof(k.station)-1);
+                    k.year=r.year; k.subdir=r.subdir;
+                    strncpy(k.code, r.code, sizeof(k.code)-1);
+                    strncpy(k.filename, r.filename, sizeof(k.filename)-1);
+                    return central_in_selection(k);
+                }), g_cf_rows.end());
+        }
+        g_cf_last_req_time = 0;
     }
-    char tbuf[96];
-    if(n_local && n_central)
-        snprintf(tbuf, sizeof(tbuf), "Deleted: %d local, %d central", n_local, n_central);
-    else if(n_local)
-        snprintf(tbuf, sizeof(tbuf), "Deleted %d local file(s)", n_local);
-    else
-        snprintf(tbuf, sizeof(tbuf), "Deleted %d central file(s)", n_central);
+    int n_db = 0;
+    if(cli && !g_sel_db_files.empty()){
+        const char* op = login_get_id();
+        for(const std::string& fn : g_sel_db_files){
+            cli->cmd_db_delete(fn.c_str(), op ? op : "");
+            n_db++;
+        }
+        // 옵티미스틱 로컬 제거 — g_db_list 에서 즉시 삭제.
+        {
+            std::lock_guard<std::mutex> lk(::g_db_list_mtx);
+            ::g_db_list.erase(std::remove_if(::g_db_list.begin(), ::g_db_list.end(),
+                [](const DbFileEntry& e){ return g_sel_db_files.count(e.filename) > 0; }),
+                ::g_db_list.end());
+        }
+        g_db_last_req_time = 0;
+    }
+    char tbuf[128];
+    snprintf(tbuf, sizeof(tbuf), "Deleted: %d local, %d central, %d db", n_local, n_central, n_db);
     MissionView::show_toast(tbuf);
     clear_selection();
 }
@@ -827,6 +867,18 @@ static void central_context_menu(NetClient* cli, const CentralFileRow& row){
             strncpy(k.code,     row.code,     sizeof(k.code)     - 1);
             strncpy(k.filename, row.filename, sizeof(k.filename) - 1);
             if(cli) cli->send_mission_file_delete(k);
+            // 옵티미스틱 로컬 제거 — Central 응답 기다리지 말고 g_cf_rows 에서 즉시 빼서
+            // 로컬 다운로드 사본이 있어도 행이 사라지도록.
+            {
+                std::lock_guard<std::mutex> lk(g_cf_mtx);
+                g_cf_rows.erase(std::remove_if(g_cf_rows.begin(), g_cf_rows.end(),
+                    [&](const CentralFileRow& r){
+                        return r.year == row.year && r.subdir == row.subdir
+                            && strncmp(r.station,  row.station,  sizeof(r.station))  == 0
+                            && strncmp(r.code,     row.code,     sizeof(r.code))     == 0
+                            && strncmp(r.filename, row.filename, sizeof(r.filename)) == 0;
+                    }), g_cf_rows.end());
+            }
             g_cf_last_req_time = 0;
             MissionView::show_toast("Delete requested");
         }
@@ -1128,10 +1180,34 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
         ImGui::PopStyleColor();
 
         if(clicked){
-            // 단일 클릭 = 선택; Ctrl+클릭 = 토글; 더블클릭 = open/download
-            bool ctrl = ImGui::GetIO().KeyCtrl;
+            // 단일 클릭 = 선택; Ctrl+클릭 = 토글; Shift+클릭 = anchor~click range; 더블클릭 = open/download
+            bool ctrl  = ImGui::GetIO().KeyCtrl;
+            bool shift = ImGui::GetIO().KeyShift;
             g_sel_kind = SelKind::CENTRAL;
-            if(ctrl){
+            if(shift && g_sel_anchor.kind == SelKind::CENTRAL
+                     && g_sel_anchor.scope == (int)r.subdir){
+                // anchor 의 index 를 현재 rows 에서 찾고, [min..max] 모두 add (기존 선택 유지).
+                int a = -1;
+                for(int i = 0; i < (int)rows.size(); i++){
+                    if(strncmp(rows[i].filename, g_sel_anchor.key.c_str(),
+                               sizeof(rows[i].filename)) == 0){ a = i; break; }
+                }
+                if(a >= 0){
+                    int lo = std::min(a, cf_i), hi = std::max(a, cf_i);
+                    for(int i = lo; i <= hi; i++){
+                        CentralSelKey rk{};
+                        strncpy(rk.station,  rows[i].station,  sizeof(rk.station)  - 1);
+                        rk.year   = rows[i].year;
+                        rk.subdir = rows[i].subdir;
+                        strncpy(rk.code,     rows[i].code,     sizeof(rk.code)     - 1);
+                        strncpy(rk.filename, rows[i].filename, sizeof(rk.filename) - 1);
+                        if(!central_in_selection(rk)) g_sel_central_keys.push_back(rk);
+                    }
+                } else {
+                    // anchor 가 현재 list 에 없으면 단일 선택으로 fallback.
+                    g_sel_central_keys = { row_k };
+                }
+            } else if(ctrl){
                 if(sel){
                     for(auto it = g_sel_central_keys.begin(); it != g_sel_central_keys.end(); ++it){
                         if(it->eq(row_k)){ g_sel_central_keys.erase(it); break; }
@@ -1139,10 +1215,13 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
                 } else {
                     g_sel_central_keys.push_back(row_k);
                 }
+                g_sel_anchor = { SelKind::CENTRAL, (int)r.subdir, std::string(r.filename) };
             } else {
                 g_sel_local_paths.clear();
                 g_sel_central_keys.clear();
+                g_sel_db_files.clear();
                 g_sel_central_keys.push_back(row_k);
+                g_sel_anchor = { SelKind::CENTRAL, (int)r.subdir, std::string(r.filename) };
             }
         }
         if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
@@ -1304,17 +1383,37 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
                 ImVec2(pw, 0));
             ImGui::PopStyleColor();
             if(clicked){
-                bool ctrl = ImGui::GetIO().KeyCtrl;
+                bool ctrl  = ImGui::GetIO().KeyCtrl;
+                bool shift = ImGui::GetIO().KeyShift;
                 g_sel_kind = SelKind::LOCAL;
-                if(ctrl){
-                    // 토글
+                if(shift && g_sel_anchor.kind == SelKind::LOCAL
+                         && g_sel_anchor.scope == s){
+                    // 같은 subgroup 안에서 anchor index 찾기.
+                    int a = -1;
+                    for(int i = 0; i < (int)by[s].size(); i++){
+                        if(by[s][i].full == g_sel_anchor.key){ a = i; break; }
+                    }
+                    int cur = -1;
+                    for(int i = 0; i < (int)by[s].size(); i++){
+                        if(by[s][i].full == full){ cur = i; break; }
+                    }
+                    if(a >= 0 && cur >= 0){
+                        int lo = std::min(a, cur), hi = std::max(a, cur);
+                        for(int i = lo; i <= hi; i++)
+                            g_sel_local_paths.insert(by[s][i].full);
+                    } else {
+                        g_sel_local_paths.insert(full);
+                    }
+                } else if(ctrl){
                     if(sel) g_sel_local_paths.erase(full);
                     else    g_sel_local_paths.insert(full);
+                    g_sel_anchor = { SelKind::LOCAL, s, full };
                 } else {
-                    // 단일 선택 — 전체 reset 후 추가
                     g_sel_local_paths.clear();
                     g_sel_central_keys.clear();
+                    g_sel_db_files.clear();
                     g_sel_local_paths.insert(full);
+                    g_sel_anchor = { SelKind::LOCAL, s, full };
                 }
             }
             if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
@@ -1354,8 +1453,7 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
 // ── DB 탭 (mission-agnostic 공유 저장소) ────────────────────────────────
 // g_db_list / g_db_list_mtx 는 fft_viewer.cpp 의 글로벌 (namespace 밖) 정의.
 // MissionView namespace 안에서 사용 시 :: 명시 필요.
-
-static double g_db_last_req_time = 0.0;  // 5초마다 cmd_request_db_list
+// (g_db_last_req_time 은 process_delete_key 가 먼저 참조하므로 앞쪽에서 선언함.)
 
 // DB 파일명 → "iq" / "audio" / "hist" 분류 (Central side 와 동일 규칙).
 static const char* db_classify_sub(const char* fn){
@@ -1453,14 +1551,48 @@ static void draw_db_list(FFTViewer& v, NetClient* cli){
             }
 
             float pw = ImGui::GetContentRegionAvail().x;
+            bool sel = db_in_selection(e.filename);
             ImVec4 tcol = already_dl
                 ? ImVec4(0.35f, 0.95f, 0.45f, 1.f)
                 : ImGui::GetStyleColorVec4(ImGuiCol_Text);
             ImGui::PushStyleColor(ImGuiCol_Text, tcol);
-            ImGui::Selectable(e.filename, false,
+            bool clicked = ImGui::Selectable(e.filename, sel,
                 ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick,
                 ImVec2(pw, 0));
             ImGui::PopStyleColor();
+            if(clicked){
+                bool ctrl  = ImGui::GetIO().KeyCtrl;
+                bool shift = ImGui::GetIO().KeyShift;
+                std::string fn = e.filename;
+                g_sel_kind = SelKind::DB;
+                if(shift && g_sel_anchor.kind == SelKind::DB
+                         && g_sel_anchor.scope == si){
+                    // 같은 sub-section 안에서 anchor index 찾기.
+                    int a = -1, cur = -1;
+                    for(int k = 0; k < (int)idx_by_sub[si].size(); k++){
+                        const char* nm = entries[idx_by_sub[si][k]].filename;
+                        if(g_sel_anchor.key == nm) a = k;
+                        if(fn == nm) cur = k;
+                    }
+                    if(a >= 0 && cur >= 0){
+                        int lo = std::min(a, cur), hi = std::max(a, cur);
+                        for(int k = lo; k <= hi; k++)
+                            g_sel_db_files.insert(entries[idx_by_sub[si][k]].filename);
+                    } else {
+                        g_sel_db_files.insert(fn);
+                    }
+                } else if(ctrl){
+                    if(sel) g_sel_db_files.erase(fn);
+                    else    g_sel_db_files.insert(fn);
+                    g_sel_anchor = { SelKind::DB, si, fn };
+                } else {
+                    g_sel_local_paths.clear();
+                    g_sel_central_keys.clear();
+                    g_sel_db_files.clear();
+                    g_sel_db_files.insert(fn);
+                    g_sel_anchor = { SelKind::DB, si, fn };
+                }
+            }
 
             // 우클릭: Delete
             if(ImGui::BeginPopupContextItem("##db_ctx")){
@@ -1473,7 +1605,16 @@ static void draw_db_list(FFTViewer& v, NetClient* cli){
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.35f, 0.35f, 1.f));
                 if(ImGui::MenuItem("Delete (DB)")){
                     const char* op = login_get_id();
-                    cli->cmd_db_delete(e.filename, op ? op : "");
+                    std::string fn_copy = e.filename;
+                    cli->cmd_db_delete(fn_copy.c_str(), op ? op : "");
+                    // 옵티미스틱 로컬 제거.
+                    {
+                        std::lock_guard<std::mutex> lk(::g_db_list_mtx);
+                        ::g_db_list.erase(std::remove_if(::g_db_list.begin(), ::g_db_list.end(),
+                            [&](const DbFileEntry& x){ return fn_copy == x.filename; }),
+                            ::g_db_list.end());
+                    }
+                    g_db_last_req_time = 0;
                     MissionView::show_toast("DB delete requested");
                 }
                 ImGui::PopStyleColor();
