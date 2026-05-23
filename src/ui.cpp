@@ -2824,6 +2824,7 @@ void run_streaming_viewer(){
                                        s_central_join_station_id);
         if(rfd >= 0){
             cli = new NetClient();
+            cli->stat_room_id = s_central_join_station_id;
             if(!cli->connect_fd(rfd, connect_id, connect_pw, connect_tier)){
                 close(rfd);
                 delete cli; cli = nullptr;
@@ -5099,6 +5100,7 @@ void run_streaming_viewer(){
                     if(!station_id.empty()){
                         int rfd = central_ptr->join_room(central_host, central_port, station_id);
                         if(rfd >= 0){
+                            cli_ptr->stat_room_id = station_id;
                             ok = cli_ptr->connect_fd(rfd, c_id.c_str(), c_pw.c_str(), c_tier);
                             if(!ok) close(rfd);
                         }

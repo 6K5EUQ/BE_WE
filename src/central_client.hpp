@@ -95,7 +95,10 @@ public:
             else if(bt == BEWE_TYPE_AUDIO) stat_tx_audio_bytes.fetch_add(tot, std::memory_order_relaxed);
             else if(bt == BEWE_TYPE_IQ_CHUNK
                  || bt == BEWE_TYPE_DB_SAVE_META || bt == BEWE_TYPE_DB_SAVE_DATA
-                 || bt == BEWE_TYPE_DB_DL_DATA   || bt == BEWE_TYPE_DB_DL_INFO)
+                 || bt == BEWE_TYPE_DB_DL_DATA   || bt == BEWE_TYPE_DB_DL_INFO
+                 || bt == BEWE_TYPE_MISSION_FILE_PUSH_META
+                 || bt == BEWE_TYPE_MISSION_FILE_PUSH_DATA
+                 || bt == BEWE_TYPE_MISSION_FILE_DL_DATA)
                 stat_tx_file_bytes.fetch_add(tot, std::memory_order_relaxed);
             else if(bt == BEWE_TYPE_LWF_LIVE_ROW)
                 stat_tx_hist_bytes.fetch_add(tot, std::memory_order_relaxed);
