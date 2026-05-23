@@ -1471,9 +1471,12 @@ static void draw_db_list(FFTViewer& v, NetClient* cli){
                 }
             }
 
-            // 우측 표시: 진행률 / 크기 + uploader
-            char info[96];
+            // 우측 표시: 진행률 (xfer 중) / [이름]·용량 — 두 컬럼 고정 영역으로 정렬.
+            ImVec4 info_col = xfer_active
+                ? ImVec4(0.4f, 0.85f, 1.0f, 1.f)
+                : ImVec4(0.6f, 0.6f, 0.6f, 1.f);
             if(xfer_active){
+                char info[96];
                 double mb_s = bps / 1048576.0;
                 if(total_now > 0)
                     snprintf(info, sizeof(info), "%s  %.0f%%  %.1fMB/s",
@@ -1481,19 +1484,30 @@ static void draw_db_list(FFTViewer& v, NetClient* cli){
                 else
                     snprintf(info, sizeof(info), "%s  %.1fMB",
                              xfer_up ? "UL" : "DL", done_now / 1048576.0);
+                float tw = ImGui::CalcTextSize(info).x;
+                ImGui::SameLine(pw - tw - 4.f);
+                ImGui::TextColored(info_col, "%s", info);
             } else {
+                // 고정 폭 영역 두 개로 분리해 행마다 동일 위치에 보이도록 한다.
+                //   [name]    size
+                //   ←NAME_W →←SIZE_W→
+                // 각 영역 내에서 우측 정렬. 영역을 넘는 텍스트는 클리핑되지만
+                // 일반 사용 케이스(이름 ≤ 12자, 용량 ≤ "999.9 MB")는 모두 수용됨.
+                const float SIZE_W = 70.f;
+                const float NAME_W = 110.f;
+                const float GAP    = 8.f;
                 std::string s = fmt_size(e.size_bytes);
-                if(e.operator_name[0])
-                    snprintf(info, sizeof(info), "[%s]  %s", e.operator_name, s.c_str());
-                else
-                    snprintf(info, sizeof(info), "%s", s.c_str());
+                float size_tw = ImGui::CalcTextSize(s.c_str()).x;
+                if(e.operator_name[0]){
+                    char nm[40];
+                    snprintf(nm, sizeof(nm), "[%s]", e.operator_name);
+                    float name_tw = ImGui::CalcTextSize(nm).x;
+                    ImGui::SameLine(pw - SIZE_W - GAP - NAME_W + (NAME_W - name_tw));
+                    ImGui::TextColored(info_col, "%s", nm);
+                }
+                ImGui::SameLine(pw - SIZE_W + (SIZE_W - size_tw) - 4.f);
+                ImGui::TextColored(info_col, "%s", s.c_str());
             }
-            float tw = ImGui::CalcTextSize(info).x;
-            ImGui::SameLine(pw - tw - 4.f);
-            ImVec4 info_col = xfer_active
-                ? ImVec4(0.4f, 0.85f, 1.0f, 1.f)
-                : ImVec4(0.6f, 0.6f, 0.6f, 1.f);
-            ImGui::TextColored(info_col, "%s", info);
 
             ImGui::PopID();
         }
