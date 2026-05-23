@@ -234,6 +234,7 @@ public:
     std::atomic<uint64_t> stat_rx_db_bytes{0};  // DB 파일 송수신 (DB_SAVE_* / DB_DOWNLOAD_*)
     std::atomic<uint64_t> stat_tx_db_bytes{0};  // 업로드 측 누적 (cmd_db_save 호출 시 추적)
     std::atomic<uint64_t> stat_rx_hist_bytes{0};  // LWF LIVE row 누적 (HIST 실시간 스트림)
+    std::atomic<uint64_t> stat_rx_file_bytes{0};  // MISSION_FILE_DL_DATA (미션 파일 다운로드 청크)
     std::string           stat_room_id;        // JOIN 접속 station_id
 
     struct NetStats {

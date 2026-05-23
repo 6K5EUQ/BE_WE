@@ -177,9 +177,7 @@ void NetClient::recv_loop(){
     uint64_t stats_prev_total = stat_rx_bytes.load();
     uint64_t stats_prev_fft = stat_rx_fft_bytes.load();
     uint64_t stats_prev_aud = stat_rx_audio_bytes.load();
-    uint64_t stats_prev_hb  = stat_rx_hb_bytes.load();
-    uint64_t stats_prev_db  = stat_rx_db_bytes.load() + stat_tx_db_bytes.load();
-    uint64_t stats_prev_hist = stat_rx_hist_bytes.load();
+    uint64_t stats_prev_file = stat_rx_file_bytes.load();
     auto print_stats = [&](){
         auto now = std::chrono::steady_clock::now();
         double win_sec = std::chrono::duration_cast<std::chrono::milliseconds>(now - stats_last).count() / 1000.0;
@@ -188,24 +186,16 @@ void NetClient::recv_loop(){
         uint64_t t  = stat_rx_bytes.load();
         uint64_t fb = stat_rx_fft_bytes.load();
         uint64_t ab = stat_rx_audio_bytes.load();
-        uint64_t hb = stat_rx_hb_bytes.load();
-        uint64_t db = stat_rx_db_bytes.load() + stat_tx_db_bytes.load();
-        uint64_t hi = stat_rx_hist_bytes.load();
-        NetStats ns = collect_stats();
-        bewe_log_push(0,"[JOIN] [STATS] room='%s' uptime=%llds | recv: %.1f KB/s | hb=%.1f KB/s fft=%.1f KB/s audio=%.1f KB/s File=%.1f KB/s hist=%.1f KB/s | ur=%llu drop=%llu\n",
+        uint64_t fi = stat_rx_file_bytes.load();
+        bewe_log_push(0,"[JOIN] [STATS] room='%s' uptime=%llds | recv: %.1f KB/s | fft=%.1f KB/s audio=%.1f KB/s File=%.2f MB/s\n",
             stat_room_id.c_str(), uptime,
             (double)(t  - stats_prev_total) / win_sec / 1024.0,
-            (double)(hb - stats_prev_hb)    / win_sec / 1024.0,
             (double)(fb - stats_prev_fft)   / win_sec / 1024.0,
             (double)(ab - stats_prev_aud)   / win_sec / 1024.0,
-            (double)(db - stats_prev_db)    / win_sec / 1024.0,
-            (double)(hi - stats_prev_hist)  / win_sec / 1024.0,
-            (unsigned long long)ns.underruns,
-            (unsigned long long)ns.drops);
+            (double)(fi - stats_prev_file)  / win_sec / (1024.0*1024.0));
         stats_last = now;
         stats_prev_total = t; stats_prev_fft = fb;
-        stats_prev_aud = ab;  stats_prev_hb = hb;
-        stats_prev_db  = db;  stats_prev_hist = hi;
+        stats_prev_aud = ab;  stats_prev_file = fi;
     };
     while(connected_.load()){
         print_stats();
@@ -265,6 +255,8 @@ void NetClient::recv_loop(){
                 stat_rx_db_bytes.fetch_add(total_bytes, std::memory_order_relaxed); break;
             case PacketType::LWF_LIVE_ROW:
                 stat_rx_hist_bytes.fetch_add(total_bytes, std::memory_order_relaxed); break;
+            case PacketType::MISSION_FILE_DL_DATA:
+                stat_rx_file_bytes.fetch_add(total_bytes, std::memory_order_relaxed); break;
             default: break;
         }
         handle_packet(static_cast<PacketType>(hdr.type), payload.data(), len);
