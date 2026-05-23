@@ -5081,6 +5081,22 @@ void run_streaming_viewer(){
             }
         }
 
+        // ── CONNECT 모드: 60초마다 active 채널의 recv 상태 재선언 (자가치유) ──
+        // HOST audio_mask 의 JOIN 비트가 어떤 경로로든 사라져서 audio=0 stuck 되어도
+        // idempotent TOGGLE_RECV 로 Central rebuild 트리거 → HOST mask 회복. v4.1.2 fix.
+        if(v.remote_mode && v.net_cli && v.net_cli->is_connected()){
+            static double last_recv_resync = 0.0;
+            double now = ImGui::GetTime();
+            if(now - last_recv_resync > 60.0){
+                last_recv_resync = now;
+                for(int ci=0; ci<MAX_CHANNELS; ci++){
+                    if(!v.channels[ci].filter_active) continue;
+                    bool mute = (v.local_ch_out[ci]==3);
+                    v.net_cli->cmd_toggle_recv(ci, !mute);
+                }
+            }
+        }
+
         // ── CONNECT 모드: 연결 끊김 감지 > 자동 재연결 (백그라운드) ────────
         if(v.remote_mode && v.net_cli && !v.net_cli->is_connected()){
             if(v.mission_state != Mission::State::IDLE){
@@ -5118,8 +5134,15 @@ void run_streaming_viewer(){
                         }
                     }
                     if(ok){
-                        for(int ci=0;ci<MAX_CHANNELS;ci++)
-                            if(v_ptr->local_ch_out[ci]==3) cli_ptr->cmd_toggle_recv(ci,false);
+                        // 재연결 후 모든 active 채널의 desired recv 상태를 Central 에 명시 재선언.
+                        // 이전엔 muted(lco=3) 만 보냈는데, unmuted 도 안 보내면 Central recv_audio[ch]
+                        // 가 새 op_index 에 대해 갱신되지 않아 HOST audio_mask 가 JOIN 비트를 못 얻고
+                        // 영구 stuck → audio=0 버그 (v4.1.2 fix).
+                        for(int ci=0;ci<MAX_CHANNELS;ci++){
+                            if(!v_ptr->channels[ci].filter_active) continue;
+                            bool mute = (v_ptr->local_ch_out[ci]==3);
+                            cli_ptr->cmd_toggle_recv(ci, !mute);
+                        }
                         v_ptr->join_manual_scale=false;
                         { std::lock_guard<std::mutex> wlk(v_ptr->wf_events_mtx);
                           v_ptr->wf_events.clear(); }

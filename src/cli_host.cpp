@@ -975,8 +975,17 @@ void run_cli_host(){
                     if(len < 9 + entry_sz*10) return;
                     const uint8_t* payload = pkt + 9;
                     for(int i=0; i<MAX_CHANNELS && i<10; i++){
+                        uint32_t old_mask = v.channels[i].audio_mask.load();
                         uint32_t mask;
                         memcpy(&mask, payload + i*entry_sz + 12, sizeof(mask));
+                        // 진단: active 채널의 audio_mask 가 JOIN 비트 보유 → HOST 비트만 으로 collapse
+                        // 되는 순간 로깅. v4.1.2 audio=0 stuck 추적용.
+                        if(v.channels[i].filter_active
+                           && (old_mask & ~0x1u) != 0
+                           && (mask & ~0x1u) == 0){
+                            bewe_log_push(0, "[CH%d] audio_mask collapsed 0x%x -> 0x%x\n",
+                                          i, old_mask, mask);
+                        }
                         v.channels[i].audio_mask.store(mask);
                     }
                 });
