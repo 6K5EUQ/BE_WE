@@ -153,14 +153,17 @@ static std::vector<DiskMission> collect_visible_missions(FFTViewer& v,
         for(const auto& e : v.mission_history){
             if(e.year == 0 || e.code[0] == 0) continue;
             std::string ecode(e.code, strnlen(e.code, sizeof(e.code)));
+            std::string estation(e.station_name, strnlen(e.station_name, sizeof(e.station_name)));
+            // dedup 키에 station 포함 — 다른 station 의 같은 (year,code) 와 충돌 방지.
+            // (이전엔 station 무시해서 disk 에 DGS-2/E23 있으면 Central 의 DGS-1/E23 가 dedup 되어 사라짐)
             bool dup = false;
             for(const auto& d : out)
-                if(d.year == e.year && d.code == ecode){ dup = true; break; }
+                if(d.year == e.year && d.code == ecode && d.station == estation){ dup = true; break; }
             if(dup) continue;
             DiskMission dm;
             dm.year = e.year;
             dm.code = ecode;
-            dm.station.assign(e.station_name, strnlen(e.station_name, sizeof(e.station_name)));
+            dm.station = estation;
             out.push_back(std::move(dm));
         }
     }
@@ -170,7 +173,7 @@ static std::vector<DiskMission> collect_visible_missions(FFTViewer& v,
             if(km.year == 0 || km.code.empty()) continue;
             bool dup = false;
             for(const auto& d : out)
-                if(d.year == km.year && d.code == km.code){ dup = true; break; }
+                if(d.year == km.year && d.code == km.code && d.station == km.station){ dup = true; break; }
             if(dup) continue;
             DiskMission dm;
             dm.year = km.year;
