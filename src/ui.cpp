@@ -435,6 +435,15 @@ void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float 
         } else {
             // Normal move
             int ci=channel_at_x(m.x,gx,gw);
+            // Ctrl+click + 매우 협대역: 엄밀 hit-test 실패 시 ±EDGE_GRAB 마진으로 재시도
+            if(ci < 0 && ctrl_held){
+                for(int i=0;i<MAX_CHANNELS;i++){
+                    if(!channels[i].filter_active) continue;
+                    float x0=abs_to_x(std::min(channels[i].s,channels[i].e),gx,gw);
+                    float x1=abs_to_x(std::max(channels[i].s,channels[i].e),gx,gw);
+                    if(m.x >= x0 - EDGE_GRAB && m.x <= x1 + EDGE_GRAB){ ci=i; break; }
+                }
+            }
             if(selected_ch>=0) channels[selected_ch].selected=false;
             if(ci>=0){
                 selected_ch=ci; channels[ci].selected=true;
