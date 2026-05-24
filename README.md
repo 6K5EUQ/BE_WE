@@ -1,189 +1,219 @@
 # BEWE
 
-**Distributed SIGINT Collection and Analysis Platform**
+**Korean Distributed SIGINT Platform**
+*Behind Everyone We Hear Everything*
 
-A multi-site signals intelligence system for continuous wideband RF
-surveillance, persistent waterfall archive, and cross-station emitter
-characterization. Designed for sustained, unattended collection at
-geographically dispersed receiver sites under a single operator command.
+Wideband · Distributed · Persistent Signal Intelligence Platform
 
 ![Global station view with satellite overlay](assets/globe_sat_soi.png)
 
 ---
 
-## Capability Summary
+## Background — RF Threats Dominate the Modern Battlefield
 
-- **Distributed collection across multiple sites** under one operator
-  workstation. No per-site IP configuration required.
-- **Persistent waterfall archive** — every spectrum frame committed to a
-  permanent record; scroll back hours, days, or months from any analyst
-  workstation.
-- **Mission-scoped operations** with automatic consolidation of IQ captures,
-  demodulated audio, and waterfall segments under a single mission code.
-- **Forensic analyst workbench** with multi-domain views and automatic
-  signal characterization (PRI, PRF, pulse duration, baud, modulation).
-- **Cross-station emitter library** — sightings from every site aggregate
-  into a single institutional record.
-- **Headless collection nodes** suitable for forward-deployed sites on
-  low-power hardware (Raspberry Pi class).
+GPS jamming · UAS infiltration · missile guidance · tactical communications.
+In the modern battlefield, the first thing to arrive is not the weapon — it is the RF signal.
+
+| Threat | Reality |
+|---|---|
+| **GPS Jamming** | Since 2010, North Korea has repeatedly transmitted high-power GPS jamming signals across the West Sea. A single jamming campaign disables the navigation systems of 200+ civil aircraft and disrupts the return paths of military UAS. |
+| **UAS Infiltration** | North Korean small UAS have penetrated Paju (2014), Seongju (2017), and as deep as 3 km over Seoul Yongsan (2022). Radar cannot detect low-altitude low-speed aircraft — the RF control link is the only detection cue. |
+| **Missile Pre-launch RF** | Ballistic and cruise missile guidance subsystems (GPS receivers, active radar seekers, telemetry) emit RF signals before launch. Capturing these emissions yields tens of seconds of pre-launch warning. |
+| **Adversary Communications** | DPRK HF/VHF/UHF tactical voice, frequency-hopping digital data links, UAS control links — without distributed, persistent collection, signal patterns and adversary intent cannot be discerned. |
 
 ---
 
-## Operational Context
+## Why SIGINT — From Defense to Pre-emption
 
-BEWE was built for organizations operating multiple receiver sites that must
-behave as a single, coherent intelligence asset. The platform replaces the
-common pattern of disconnected single-site collection — where each operator
-maintains their own recordings, notes, and signal knowledge — with a unified
-architecture in which every site contributes to one persistent archive and
-one shared emitter database.
+THAAD · Patriot · Hyunmoo — all of these activate **after** an attack has begun.
+No defensive system, however capable, achieves 100% interception.
 
-Typical deployment profiles:
+The world's intelligence services operate a three-pillar collection model for pre-emptive warning: **HUMINT · IMINT · SIGINT**.
 
-- **Fixed surveillance stations** at multiple regional sites, command-and-controlled
-  from a central operations room.
-- **Forward-deployed collection nodes** on low-cost hardware (BladeRF / RTL-SDR on
-  Raspberry Pi 5) at remote or austere locations, reporting back to a hardened
-  Central Server.
-- **Combined fixed + mobile** networks where an analyst workstation roams across
-  active sites depending on the tasking.
+| Pillar | Means | Characteristics |
+|---|---|---|
+| **HUMINT** | Agents and informants | Provides deep context; long acquisition timeline |
+| **IMINT** | Satellite and aerial imagery | Reveals facilities, equipment, and disposition; constrained by weather and revisit interval |
+| **SIGINT** | Electromagnetic signals | Real-time read on adversary capability and intent; independent of weather, time of day, and line of sight |
 
-The system is designed to remain operational under degraded network
-conditions. Collection at each site is continuous and local; the link to
-Central determines only how quickly observations propagate to the
-institutional archive, not whether collection occurs.
+**BEWE is the distributed collection and analysis platform for the SIGINT pillar.**
 
 ---
 
-## Core Capabilities
+## Existing Korean SIGINT Assets and Structural Gaps
 
-### Distributed Collection
+| Asset | Capability | Structural Limitation |
+|---|---|---|
+| **Baekdu / Geumgang** (RC-800 family) | Manned COMINT/ELINT collection | Coverage only during sortie flight — no persistent coverage |
+| **425 reconnaissance satellite** | SAR / EO imagery | RF SIGINT collection limited; revisit interval constraint |
+| **777th Brigade** (DIC) | Dedicated ELINT collection | Fixed-site operation; no simultaneous coverage of the full forward line |
+| **Ground fixed listening posts** | Strategic forward sites | Limited real-time inter-site data fusion; dependent on individual analyst memory |
 
-Receiver sites publish their geographic position to Central. The operator
-workstation displays all live sites as illuminated markers on a 3D globe; a
-single click assumes control of the chosen site. No port or address
-management is exposed to the operator. Concurrent operation of multiple sites
-from one workstation is supported.
-
-![Globe view with active stations](assets/globe_sat_soi.png)
-
-### Real-Time Surveillance
-
-Each site presents a continuous wideband waterfall and live power spectrum
-with up to ten concurrent demodulator channels. Channels persist their state
-across retuning and frequency excursions.
-
-![Live spectrum and waterfall](assets/spectrum.png)
-
-### Persistent Waterfall Archive
-
-Every spectrum row produced by every site is committed to a permanent archive
-on the Central Server. Analysts scroll backward through hours, days, or
-months of capture from the workstation. Archive files are mission-coded with
-embedded station identity, geographic coordinates, and UTC bounds.
-
-![Long-term waterfall archive](assets/history.png)
-
-### Mission Workflow
-
-Operations are scoped as **missions**. Each mission has an auto-generated
-code (alphabetical month + day; for example `J15` = October 15). All
-recordings produced during the mission — IQ, demodulated audio, hourly
-waterfall segments — are tagged with the mission code and consolidated under
-a single directory tree on the Central archive at mission end.
-
-The workflow is network-resilient: collection at the site is continuous and
-local, regardless of Central connectivity. When the link to Central is
-interrupted, the affected segments are flagged and pushed to Central on
-reconnect, restoring complete archive coverage.
-
-![File metadata with auto-populated frequency, bandwidth, and timing](assets/file_info.png)
-
-### Analyst Workbench
-
-A built-in forensic analyzer operates on any captured IQ file with nine
-domain views: spectrogram, envelope, instantaneous frequency, instantaneous
-phase, raw I/Q, constellation, demodulated audio, M-th power spectrum, and
-demodulated bit stream.
-
-The analyzer is intended as an emitter-identification workbench. Applications
-include:
-
-- **Emitter ID and RF fingerprinting** — verify transmitter identity across
-  envelope, I/Q, phase, and frequency-domain signatures
-- **Modulation recognition** — automatic preamble detection with reporting of
-  PRI, PRF, pulse duration, and symbol rate
-- **Digital protocol analysis** — bit-stream rendered as 2D bitmap, hex, or
-  binary; frame sync patterns and periodicity become visually obvious
-
-![Spectrogram view](assets/analyzer_spectrogram.png)
-
-![Instantaneous frequency with automatic PRI / PRF / PD / Baud detection](assets/analyzer_freq_pri.png)
-
-![Demodulated bit stream](assets/analyzer_bits.png)
-
-### Cross-Station Emitter Library
-
-Every recording carries operator-entered metadata: frequency, modulation,
-protocol, identifying tokens such as MMSI or callsign. When an operator
-issues a **Report** on a recording, Central aggregates the sighting into a
-unified emitter record keyed by the identifying fields. Sightings without
-identifiers drop into a confirmation queue for explicit operator
-adjudication — silent merges are not permitted.
-
-Confirmed emitter records accumulate across all sites and all sessions, with
-first-seen timestamp, last-seen timestamp, contributing-site list, and
-operator notes consolidated on a single record. A transmission missed by one
-site is filled in by another that captured it; institutional knowledge
-replaces single-operator memory.
-
-### Time Machine — Continuous IQ Buffer
-
-A 60-second IQ buffer is maintained continuously at every site. When a
-transient signal of interest has already passed, the operator freezes the
-buffer, scrolls back, and exports the relevant time-frequency region as a
-forensic IQ file. The operational interval between "I just saw something"
-and a permanent recording is reduced to seconds.
-
-![Time Machine scroll-back](assets/Screen2.png)
-
-### Multi-Window Operations
-
-A single operator workstation may run multiple site operations concurrently,
-each in its own window distributable across monitors. The 3D globe persists
-as the master station selector and overall tasking view.
+**Coverage Gaps:**
+- Persistent DMZ / NLL monitoring during Baekdu / Geumgang ground time
+- Sub-3-second burst FH data links and UAS control links
+- Multi-site real-time fusion — no TDOA geolocation across assets
 
 ---
 
-## System Architecture
+## How BEWE Complements Existing Systems
+
+BEWE does not replace existing SIGINT assets. **It densely fills the low-altitude, persistent, distributed domain that high-cost platforms cannot economically cover.**
+
+| Existing Limitation | BEWE Response |
+|---|---|
+| Stovepiped data across assets | Single Central fusion server · all-node real-time correlation |
+| High-cost platform coverage ceiling | COTS nodes at low single-digit hardware cost — dense deployment along the 250 km forward line |
+| Burst-signal collection gap | 60-second rolling IQ buffer · post-event replay of burst transmissions |
+| Tribal knowledge dependency | Auto-accumulating emitter database · persists across personnel turnover |
+
+---
+
+## Platform Overview
+
+Forward collection nodes (HOST) · analyst command and control (JOIN) · SIGINT fusion server (Central) — three tiers operating as a single platform.
 
 ```
                        ┌──────────────────────────┐
                        │      Central Server      │
-                       │   Permanent archive +    │
-                       │   Emitter database       │
+                       │  Permanent archive +     │
+                       │  cross-station emitter DB│
                        └─────────────┬────────────┘
                                      │
               ┌──────────────────────┼──────────────────────┐
               │                      │                      │
        ┌──────┴───────┐       ┌──────┴───────┐       ┌──────┴───────┐
-       │   Site A     │       │   Site B     │       │   Site C     │
-       │   HOST +     │       │   HOST +     │       │   HOST +     │
-       │   Receiver   │       │   Receiver   │       │   Receiver   │
+       │   DGS-1      │       │   DGS-2      │       │   DGS-3      │
+       │  HOST + SDR  │       │  HOST + SDR  │       │  HOST + SDR  │
        └──────────────┘       └──────────────┘       └──────────────┘
 
                        ┌──────────────────────────┐
                        │  Analyst Workstations    │
                        │  (JOIN — observe and     │
-                       │   control any site)      │
+                       │   command any HOST)      │
                        └──────────────────────────┘
 ```
 
 | Component | Role |
 |---|---|
-| **HOST** | Collection node. Owns the receiver; produces the live waterfall, demodulator channels, IQ captures, and HIST archive segments. Operates attended (GUI) or unattended (headless CLI). |
-| **Central Server** | Single-port relay between HOST and JOIN. Holds the permanent archive of all sites and the cross-station emitter database. |
-| **JOIN** | Analyst workstation. Observes and commands any authorized HOST. Multiple JOINs may share a single HOST. |
+| **HOST** | Forward collection node. Owns the receiver; produces live waterfall, demodulator channels, IQ captures, and HIST archive segments. Operates attended (GUI) or unattended (headless CLI). |
+| **Central Server** | Single-port (7700) relay between HOST and JOIN. Holds the permanent archive of all sites and the cross-station emitter database. |
+| **JOIN** | Analyst workstation. Observes and commands any authorized HOST. Multiple JOINs may share a single HOST simultaneously. |
+
+---
+
+## Core Capabilities
+
+### UAS RF Detection and Geolocation
+
+Low-altitude small UAS that radar misses — the RF control link and FPV downlink are the only detection cues.
+
+- **Automatic 2.4 / 5.8 GHz control-link classification** — commercial UAS protocols (DJI Ocusync, FPV, FHSS) fingerprinted by PRI and modulation analysis
+- **Multi-site TDOA geolocation** — emitter coordinates triangulated from time-of-arrival differences across three or more nodes
+- **Automatic burst IQ capture** — sub-second control bursts caught in the rolling IQ buffer
+
+![Max Hold spectrum](assets/max_decay.png)
+
+### Tactical Communications Intercept (COMINT)
+
+HF · VHF · UHF concurrent demodulation across ten channels — the Holding List preserves tracking regardless of where the adversary moves the frequency.
+
+- **Ten concurrent demodulators** (AM · FM · USB · LSB · CW)
+- **Real-time tactical band-plan sync** — DPRK frequency allocations, UAS control bands, satellite downlink bands defined by category and color, propagated to all JOIN analyst displays
+- **Frequency-hopping (FH) capture** — 60-second rolling IQ buffer enables post-event replay and analysis
+
+![Tactical band plan](assets/band_plan.png)
+
+### Electronic Intelligence (ELINT) and Missile Signal Analysis
+
+Radar, missile seeker, and telemetry signals — automatic parameter extraction across nine analysis domains.
+
+| Domains | Outputs |
+|---|---|
+| Spectrogram · Freq · Amp · Phase · I/Q · Constellation · Audio · M-th Power · Bits | Auto-measured PRI · PRF · Pulse Duration · Baud · modulation type |
+
+![Spectrogram view](assets/analyzer_spectrogram.png)
+![Frequency domain with PRI / PRF / PD / Baud](assets/analyzer_freq_pri.png)
+![Demodulated bit stream](assets/analyzer_bits.png)
+
+### GPS Jamming Source Detection and Impact Mapping
+
+A single receive site cannot bound the jamming footprint. Only distributed nodes can produce real-time triangulation.
+
+- **Continuous wideband GNSS monitoring** — GPS L1/L2, GLONASS, BeiDou, Galileo
+- **Multi-site TDOA jamming source estimation** — not possible with single-site listening posts
+- **Automatic jamming-event IQ preservation** — post-event signal characterization and admissible evidence for international filings
+- **3D globe footprint visualization** — per-node signal strength mapped in real time
+
+### Adversary Satellite Downlink Surveillance
+
+Chinese, Russian, and DPRK ISR satellites — every overhead pass automatically captured and recorded.
+
+- **Auto-updated TLE and pass prediction** — Celestrak catalog synchronization; collection schedule auto-populated from overflight times
+- **Per-pass automatic IQ recording** — mission-coded auto-classification; signals available for Doppler-corrected modulation analysis
+- **Distributed Doppler fingerprinting** — Doppler curves compared across receive sites to disambiguate satellite mission (comms / ISR / GNSS jamming)
+
+![3D Globe satellite view](assets/globe_sat_soi.png)
+
+### Persistent SIGINT Archive
+
+A single analyst's discovery becomes a permanent enterprise asset.
+
+- **Mission-scoped auto-classification** — mission code (e.g. A03 = January 3) anchors IQ, audio, and HIST files into a consolidated Central archive
+- **Auto-accumulating emitter database** — frequency and identifying tags (MMSI, callsign, unit identifiers) drive automatic matching; unidentified signals queue for analyst adjudication
+- **Knowledge transfer without rotation loss** — first-seen and last-seen timestamps, contributing stations, and analyst notes consolidated on a single record
+
+![Long-term waterfall archive](assets/history.png)
+![File metadata](assets/file_info.png)
+
+---
+
+## Operational Scenario — GPS Jamming Response
+
+From the moment North Korea activates a GPS jammer to JCS notification — BEWE closes the loop in under two minutes.
+
+| Time | THREAT | BEWE |
+|---|---|---|
+| **T + 0s** | GPS jammer activated. 1575 MHz high-power jamming transmitted | Three nodes detect simultaneously. Anomaly alert on L1 band · IQ buffered |
+| **T + 15s** | Footprint expands. Navigation degradation across 200 km radius | TDOA triangulation. Source coordinates auto-computed · CEP <500 m |
+| **T + 30s** | Aircraft anomaly reported. ATC begins receiving nav-fault reports | Signal analysis complete. Modulation parameters · auto-correlated against ESM DB |
+| **T + 2min** | Jamming continues. Hours-long sustained operation possible | JCS notification packaged. Coordinates · evidentiary IQ · analysis report delivered |
+
+---
+
+## Operational Views
+
+### C2 Integrated Display
+
+Live spectrum from forward HOSTs commanded by analysts from anywhere.
+
+![BEWE C2 main page](assets/Main_Page.png)
+
+### Channels and Holding List
+
+![Channels with holding list](assets/channels_holding.png)
+
+### IQ Analysis and Monitor
+
+![IQ analysis](assets/IQ_Analy.png)
+![Monitor view](assets/Monitor.png)
+
+---
+
+## Forward-Deployed Hardware — COTS Collection Nodes
+
+RPi5 + commercial SDR — an unattended SIGINT collection node built from low single-digit hardware cost, deployable to any forward site in hours.
+
+| SDR | Frequency Coverage | Gain | Primary Application |
+|---|---|---|---|
+| **Nuand BladeRF 2.0 (xA4/xA9)** | 47 MHz – 6 GHz | 0 – 60 dB | Wideband collection · UAS · satellite downlinks |
+| **ADALM-Pluto (AD9361)** | 70 MHz – 6 GHz | 0 – 71 dB | VHF/UHF tactical comms · C-UAS |
+| **RTL-SDR v4** | 500 kHz – 1.766 GHz | 0 – 49.6 dB | HF intercept · GPS band monitoring |
+
+- Auto-detected receiver priority (BladeRF → Pluto → RTL-SDR)
+- RPi5 headless CLI — boots and starts collection on power-up
+- Hot-swap receivers at runtime (no reboot)
+- Tailscale mesh VPN — single port 7700 connects every node to Central
 
 ---
 
@@ -191,42 +221,46 @@ as the master station selector and overall tasking view.
 
 | Tier | Retention | Notes |
 |---|---|---|
-| HOST local disk | Approximately 2 months, rotating | Auto-purge on mission code rollover (older monthly cohort dropped when a new month opens). Storage requirements bounded. |
+| HOST local disk | Approximately 2 months, rotating | Auto-purge on mission-code rollover. Bounds storage at austere or low-cost sites. |
 | Central Server | Permanent | Bounded only by provisioned storage. The institutional system of record. |
-| Analyst workstation | At operator discretion | Download cache; no automatic purge. |
+| Analyst workstation | Operator discretion | Download cache; no automatic purge. |
 
-The 2-month HOST retention exists to bound storage at austere or low-cost
-sites. The Central archive is the system of record and is preserved
-indefinitely.
+The 2-month HOST retention exists to bound storage at forward and low-cost sites. The Central archive is the system of record and is preserved indefinitely.
 
 ---
 
-## Receiver Compatibility
+## Security / OPSEC
 
-| Receiver | Frequency Coverage | Typical Application |
-|---|---|---|
-| Nuand BladeRF 2.0 | 47 MHz – 6 GHz | Primary wideband collection; fixed sites |
-| ADALM-Pluto (AD9361) | 70 MHz – 6 GHz | Portable / forward deployment |
-| RTL-SDR | 24 MHz – 1.7 GHz | Distributed low-cost coverage |
+| Domain | Design |
+|---|---|
+| **Network isolation** | Tailscale mesh VPN dedicated transport · single port 7700 only · air-gapped deployment supported |
+| **Authentication and access control** | Three analyst tiers — Tier 1 (collection) / Tier 2 (analysis) / Tier 3 (command) · per-station ID/PW authentication |
+| **Data classification and isolation** | IQ · audio · HIST partitioned by mission code · local disk primary · Central download restricted to authorized analysts |
+| **Audit and supply chain** | Analyst sessions and recording start times automatically logged · COTS firmware verifiable · open-source codebase available for audit |
 
-Receivers are auto-detected at startup. With no receiver attached, the
-workstation runs as a JOIN-only client observing remote sites.
+---
+
+## BEWE vs Legacy SIGINT Platforms
+
+| Criterion | **BEWE (COTS)** | L3Harris / BAE | Dedicated Ground Systems |
+|---|---|---|---|
+| Per-node cost | **Low single-digit hardware cost** (RPi5 + BladeRF) | Hundreds of thousands to millions USD | Multi-million USD |
+| Forward deployment time | **Hours** | Weeks to months | Months to years |
+| Multi-analyst real-time collaboration | **Built-in** (unlimited JOINs) | Separate C2 system required | Not supported |
+| Persistent IQ archive | **Mission-scoped, automatic** | Option (additional cost) | Limited |
+| Receiver extensibility | **Fully open** (any compatible SDR) | Vendor-locked hardware | Proprietary platform |
+| Minimum operating staff | **Single operator capable** | Dedicated team required | Dedicated team required |
 
 ---
 
 ## Deployment Profile
 
-- **Operator workstation**: Ubuntu 24.04 LTS, x86_64, GPU with OpenGL 3+
-- **Headless collection node**: Raspberry Pi 5 with RTL-SDR or BladeRF;
-  Raspberry Pi OS 64-bit
-- **Central Server**: Ubuntu 24.04 LTS, x86_64; storage provisioned per
-  retention policy
-- **Network**: Single TCP port between Central and each site; mesh VPN
-  (Tailscale or WireGuard) recommended for multi-site deployments over
-  public networks
+- **Operator workstation**: Ubuntu 24.04 LTS, x86_64, OpenGL 3+ GPU
+- **Headless collection node**: Raspberry Pi 5 with RTL-SDR or BladeRF; Raspberry Pi OS 64-bit
+- **Central Server**: Ubuntu 24.04 LTS, x86_64; storage provisioned per retention policy
+- **Network**: Single TCP port between Central and each site; mesh VPN (Tailscale or WireGuard) recommended for multi-site deployments over public networks
 
-The full deployment procedure, including receiver permissions and
-Raspberry Pi tuning, is documented in [`INSTALL.md`](INSTALL.md).
+Full deployment procedure including receiver permissions and Raspberry Pi tuning is documented in [`INSTALL.md`](INSTALL.md).
 
 ---
 
@@ -240,6 +274,6 @@ Raspberry Pi tuning, is documented in [`INSTALL.md`](INSTALL.md).
 
 ---
 
-## Licensing
+## Inquiries
 
-Contact for licensing inquiries.
+Procurement, technical partnership, and demonstration requests — **bewe.co.kr**
