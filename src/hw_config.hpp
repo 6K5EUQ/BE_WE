@@ -21,8 +21,10 @@ struct HWConfig {
     float    iq_scale        = 2048.0f; // int16→float 정규화
     float    iq_offset       = 0.0f;    // uint8 중심값 (RTL=127.5, BladeRF=0)
 
-    // 유효 대역폭 비율 (SDR 롤오프 고려)
-    float    eff_bw_ratio    = 0.875f;  // 87.5% 공통
+    // 유효 대역폭 비율. v4.4.2 — full nyquist (1.0) 로 통일.
+    // 가장자리 12.5% 도 실 운용 시 노이즈/진폭 약함 큰 문제 없어 채널 demod 도 허용.
+    // (이전엔 0.875 — 가장자리에 채널 두면 update_dem_by_freq 가 Holding 처리)
+    float    eff_bw_ratio    = 1.0f;
 
     // 표시용 이름
     const char* name         = "Unknown";
@@ -80,7 +82,7 @@ inline HWConfig make_bladerf_config(uint32_t actual_sr){
     c.freq_max_hz     = 6000e6;
     c.iq_scale        = 2048.0f;
     c.iq_offset       = 0.0f;
-    c.eff_bw_ratio    = 0.875f;
+    c.eff_bw_ratio    = 1.0f;
     c.name            = "BladeRF";
     c.gain_min        = 0.0f;
     c.gain_max        = 60.0f;
@@ -98,7 +100,7 @@ inline HWConfig make_pluto_config(uint32_t actual_sr){
     c.freq_max_hz     = 6000e6;     // firmware hack 없으면 3800MHz
     c.iq_scale        = 2048.0f;    // libiio 12-bit signed
     c.iq_offset       = 0.0f;
-    c.eff_bw_ratio    = 0.875f;
+    c.eff_bw_ratio    = 1.0f;
     c.name            = "ADALM-Pluto";
     c.gain_min        = 0.0f;       // AD9363 manual gain 0..71
     c.gain_max        = 71.0f;
@@ -126,7 +128,7 @@ inline HWConfig make_rtlsdr_config(uint32_t actual_sr){
     c.freq_max_hz     = 1766e6;
     c.iq_scale        = 127.5f;
     c.iq_offset       = 127.5f;
-    c.eff_bw_ratio    = 0.875f;
+    c.eff_bw_ratio    = 1.0f;
     c.name            = "RTL-SDR";
     c.gain_min        = 0.0f;
     c.gain_max        = 49.6f;
