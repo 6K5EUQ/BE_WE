@@ -1798,6 +1798,10 @@ void run_cli_host(){
                     bg_join_started = false;
                     cap_joined.store(false);
                     usb_reset_in_progress.store(false);
+                    // v4.4.4 — SDR 재연결 후 dem_worker 들이 죽은 상태로 stuck 되어 있음.
+                    // sdr_stream_error 가 true 였을 때 dem_worker loop 가 exit 했지만
+                    // dem_run 은 true 그대로 → start_dem 도 무시. 강제 stop+start 사이클 트리거.
+                    v.dem_restart_needed.store(true);
                     v.set_gain(v.gain_db);
                     if(v.hw.type == HWType::BLADERF)
                         cap = std::thread(&FFTViewer::capture_and_process, &v);
