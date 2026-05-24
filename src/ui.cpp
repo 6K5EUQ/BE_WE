@@ -581,13 +581,13 @@ void FFTViewer::handle_zoom_scroll(float gx, float gw, float mouse_x){
         return;
     }
 
-    // 일반 휠: 주파수 줌
-    float nyq=header.sample_rate/2.0f/1e6f, eff=nyq*0.875f, rng=2*eff;
+    // 일반 휠: 주파수 줌. v4.4.1 — full nyquist 범위 (get_disp 와 일치).
+    float nyq=header.sample_rate/2.0f/1e6f, rng=2*nyq;
     float mx=(mouse_x-gx)/gw; mx=std::max(0.0f,std::min(1.0f,mx));
-    float fmx=-eff+freq_pan*rng+mx*(rng/freq_zoom);
+    float fmx=-nyq+freq_pan*rng+mx*(rng/freq_zoom);
     freq_zoom*=(1+wheel*0.15f); freq_zoom=std::max(1.0f,std::min(200.0f,freq_zoom));
     float nw=rng/freq_zoom, ns=fmx-mx*nw;
-    freq_pan=(ns+eff)/rng; freq_pan=std::max(0.0f,std::min(1-1/freq_zoom,freq_pan));
+    freq_pan=(ns+nyq)/rng; freq_pan=std::max(0.0f,std::min(1-1/freq_zoom,freq_pan));
 }
 
 void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, float total_w, float total_h){

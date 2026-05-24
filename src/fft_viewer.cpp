@@ -178,10 +178,14 @@ void FFTViewer::update_wf_row(int fi){
 }
 
 // ── Display helpers ───────────────────────────────────────────────────────
+// v4.4.1: 표시 범위를 full nyquist (100%) 로 확장 — HIST 와 동일 범위 유지.
+// (이전엔 87.5% 만 보였음. 가장자리 12.5% 는 SDR anti-alias rolloff 영역으로
+// 노이즈/aliasing 가능. 채널 배치/demod 는 여전히 hw.eff_bw_ratio (87.5%)
+// 안에서만 정상 동작 — 가장자리 두면 update_dem_by_freq 가 Holding 처리.)
 void FFTViewer::get_disp(float& ds, float& de) const {
-    float nyq=header.sample_rate/2.0f/1e6f, eff=nyq*0.875f, rng=2*eff;
-    ds=-eff+freq_pan*rng; de=ds+rng/freq_zoom;
-    ds=std::max(-eff,ds); de=std::min(eff,de);
+    float nyq=header.sample_rate/2.0f/1e6f, rng=2*nyq;
+    ds=-nyq+freq_pan*rng; de=ds+rng/freq_zoom;
+    ds=std::max(-nyq,ds); de=std::min(nyq,de);
 }
 
 float FFTViewer::x_to_abs(float x, float gx, float gw) const {
