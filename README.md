@@ -5,7 +5,7 @@
 
 Wideband · Distributed · Persistent Signal Intelligence Platform
 
-![Global station view with satellite overlay](assets/globe_sat_soi.png)
+![BEWE Login](assets/BEWE_Login_Page.png)
 
 ---
 
@@ -178,25 +178,6 @@ From the moment North Korea activates a GPS jammer to JCS notification — BEWE 
 | **T + 15s** | Footprint expands. Navigation degradation across 200 km radius | TDOA triangulation. Source coordinates auto-computed · CEP <500 m |
 | **T + 30s** | Aircraft anomaly reported. ATC begins receiving nav-fault reports | Signal analysis complete. Modulation parameters · auto-correlated against ESM DB |
 | **T + 2min** | Jamming continues. Hours-long sustained operation possible | JCS notification packaged. Coordinates · evidentiary IQ · analysis report delivered |
-
----
-
-## Operational Views
-
-### C2 Integrated Display
-
-Live spectrum from forward HOSTs commanded by analysts from anywhere.
-
-![BEWE C2 main page](assets/Main_Page.png)
-
-### Channels and Holding List
-
-![Channels with holding list](assets/channels_holding.png)
-
-### IQ Analysis and Monitor
-
-![IQ analysis](assets/IQ_Analy.png)
-![Monitor view](assets/Monitor.png)
 
 ---
 
