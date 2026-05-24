@@ -48,16 +48,27 @@ pid_t spawn_session_child(const std::string& mode,
     argv.push_back(nullptr);
 
     // Forward login token via env vars (login.cpp reads BEWE_AUTO_*).
-    setenv("BEWE_AUTO_ID",     login_get_id()     ? login_get_id()     : "", 1);
-    setenv("BEWE_AUTO_PW",     login_get_pw()     ? login_get_pw()     : "", 1);
+    // v4.4.3 — child 전용 envp 빌드. 이전엔 setenv() 가 부모 환경까지 오염시켜
+    // /logout 후 execv 시 BEWE_AUTO_* 가 남아있어 login 화면이 자동 건너뛰어졌음.
     char tier_buf[8];
     snprintf(tier_buf, sizeof(tier_buf), "%d", login_get_tier());
-    setenv("BEWE_AUTO_TIER",   tier_buf, 1);
-    setenv("BEWE_AUTO_SERVER", login_get_server() ? login_get_server() : "", 1);
+    std::vector<std::string> env_strs;
+    env_strs.push_back(std::string("BEWE_AUTO_ID=")     + (login_get_id()     ? login_get_id()     : ""));
+    env_strs.push_back(std::string("BEWE_AUTO_PW=")     + (login_get_pw()     ? login_get_pw()     : ""));
+    env_strs.push_back(std::string("BEWE_AUTO_TIER=")   + tier_buf);
+    env_strs.push_back(std::string("BEWE_AUTO_SERVER=") + (login_get_server() ? login_get_server() : ""));
+    // 부모 환경 복사 (기존 BEWE_AUTO_* 는 제외 — 새로 위에서 정의)
+    for(char** e = environ; *e; e++){
+        if(strncmp(*e, "BEWE_AUTO_", 10) == 0) continue;
+        env_strs.push_back(*e);
+    }
+    std::vector<char*> envp;
+    for(auto& s : env_strs) envp.push_back(const_cast<char*>(s.c_str()));
+    envp.push_back(nullptr);
 
     pid_t pid = -1;
     int rc = posix_spawn(&pid, exe.c_str(), nullptr, nullptr,
-                         argv.data(), environ);
+                         argv.data(), envp.data());
     if(rc != 0){
         fprintf(stderr, "[BEWE] spawn_session_child failed: %s\n", strerror(rc));
         return -1;
