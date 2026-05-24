@@ -1802,6 +1802,11 @@ void run_cli_host(){
                     // sdr_stream_error 가 true 였을 때 dem_worker loop 가 exit 했지만
                     // dem_run 은 true 그대로 → start_dem 도 무시. 강제 stop+start 사이클 트리거.
                     v.dem_restart_needed.store(true);
+                    // v4.4.5 — 재연결 후 autoscale 재수행. 새 SDR session 의 noise floor 가
+                    // 미세하게 다를 수 있어 워터폴 색 대비 통일성 유지를 위해 강제 재캘리브.
+                    v.autoscale_active = true;
+                    v.autoscale_init   = false;
+                    v.autoscale_accum.clear();
                     v.set_gain(v.gain_db);
                     if(v.hw.type == HWType::BLADERF)
                         cap = std::thread(&FFTViewer::capture_and_process, &v);
