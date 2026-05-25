@@ -1892,7 +1892,7 @@ static void draw_delete_confirm_submodal(FFTViewer& v, NetClient* cli){
             "PERMANENTLY DELETE mission %04d/%s ?",
             g_del_year, g_del_code.c_str());
         ImGui::Separator();
-        // station 은 history 에서 lookup (못 찾으면 _unknown_)
+        // station 은 history → active → g_cf_known_missions (JOIN 모드에선 history 비어있음) 순서로 lookup.
         std::string del_station;
         {
             std::lock_guard<std::mutex> lk(v.mission_mtx);
@@ -1907,6 +1907,17 @@ static void draw_delete_confirm_submodal(FFTViewer& v, NetClient* cli){
                v.mission_year == g_del_year &&
                strncmp(v.mission_code, g_del_code.c_str(), sizeof(v.mission_code)) == 0){
                 if(v.mission_station_name[0]) del_station = v.mission_station_name;
+            }
+        }
+        if(del_station.empty()){
+            // JOIN 모드 — Central widescan 캐시 (g_cf_known_missions) 에서 station 찾기.
+            // 현재 station_name 우선 매칭 (같은 (year,code) 다른 station 미션 있을 수 있음).
+            std::lock_guard<std::mutex> lk(g_cf_km_mtx);
+            for(auto& km : g_cf_known_missions){
+                if(km.year == g_del_year && km.code == g_del_code){
+                    if(km.station == v.station_name){ del_station = km.station; break; }
+                    if(del_station.empty()) del_station = km.station;
+                }
             }
         }
         if(del_station.empty()) del_station = "_unknown_";
@@ -1936,7 +1947,7 @@ static void draw_delete_confirm_submodal(FFTViewer& v, NetClient* cli){
             // HOST: 직접 mission_delete (rm_rf + history erase + broadcast).
             if(cli) cli->send_mission_delete(g_del_year, g_del_code.c_str());
             v.mission_delete(g_del_year, g_del_code.c_str());
-            // Central archive 캐시도 즉시 정리 — 다음 LIST_REQ 가 빈 결과 받을 때까지 갭 방지.
+            // Central archive 캐시 즉시 정리 — 다음 LIST_REQ 가 빈 결과 받을 때까지 갭 방지.
             {
                 std::lock_guard<std::mutex> lk(g_cf_mtx);
                 g_cf_rows.erase(std::remove_if(g_cf_rows.begin(), g_cf_rows.end(),
@@ -1944,6 +1955,16 @@ static void draw_delete_confirm_submodal(FFTViewer& v, NetClient* cli){
                         return r.year == g_del_year &&
                                strncmp(r.code, g_del_code.c_str(), 8) == 0;
                     }), g_cf_rows.end());
+            }
+            // 좌측 트리 source (g_cf_known_missions) 도 즉시 정리. 안 그러면 JOIN 트리에
+            // 빈 (Central 도 0개) 미션 코드가 계속 보임 — accumulator 라 자동 제거 안 됨.
+            {
+                std::lock_guard<std::mutex> lk(g_cf_km_mtx);
+                g_cf_known_missions.erase(std::remove_if(
+                    g_cf_known_missions.begin(), g_cf_known_missions.end(),
+                    [&](const KnownMission& km){
+                        return km.year == g_del_year && km.code == g_del_code;
+                    }), g_cf_known_missions.end());
             }
             g_cf_last_req_time = 0;  // 다음 프레임 즉시 refresh
             if(g_sel_year == g_del_year && g_sel_code == g_del_code){
