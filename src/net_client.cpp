@@ -187,12 +187,12 @@ void NetClient::recv_loop(){
         uint64_t fb = stat_rx_fft_bytes.load();
         uint64_t ab = stat_rx_audio_bytes.load();
         uint64_t fi = stat_rx_file_bytes.load();
-        bewe_log_push(0,"[JOIN] room='%s' uptime=%llds | recv: %.1f KB/s | fft=%.1f KB/s audio=%.1f KB/s File=%.2f MB/s\n",
+        bewe_log_push(0,"[JOIN] room='%s' uptime=%llds | recv: %.1f KB/s | fft=%.1f KB/s audio=%.1f KB/s File=%.0f KB/s\n",
             stat_room_id.c_str(), uptime,
             (double)(t  - stats_prev_total) / win_sec / 1024.0,
             (double)(fb - stats_prev_fft)   / win_sec / 1024.0,
             (double)(ab - stats_prev_aud)   / win_sec / 1024.0,
-            (double)(fi - stats_prev_file)  / win_sec / (1024.0*1024.0));
+            (double)(fi - stats_prev_file)  / win_sec / 1024.0);
         stats_last = now;
         stats_prev_total = t; stats_prev_fft = fb;
         stats_prev_aud = ab;  stats_prev_file = fi;

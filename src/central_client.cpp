@@ -327,12 +327,12 @@ void CentralClient::mux_loop(int central_fd,
         uint64_t a=stat_tx_audio_bytes.load();
         uint64_t fl=stat_tx_file_bytes.load();
         uint64_t hi=stat_tx_hist_bytes.load();
-        bewe_log_push(0,"[HOST] room='%s' uptime=%llds | trans: %.1f KB/s | fft=%.1f KB/s audio=%.1f KB/s File=%.2f MB/s hist=%.1f KB/s\n",
+        bewe_log_push(0,"[HOST] room='%s' uptime=%llds | trans: %.1f KB/s | fft=%.1f KB/s audio=%.1f KB/s File=%.0f KB/s hist=%.1f KB/s\n",
             stat_room_id.c_str(), uptime,
             (double)(t-sp_tot)/win_sec/1024.0,
             (double)(f-sp_fft)/win_sec/1024.0,
             (double)(a-sp_aud)/win_sec/1024.0,
-            (double)(fl-sp_file)/win_sec/(1024.0*1024.0),
+            (double)(fl-sp_file)/win_sec/1024.0,
             (double)(hi-sp_hist)/win_sec/1024.0);
         stats_last=now; sp_tot=t; sp_fft=f; sp_aud=a; sp_file=fl; sp_hist=hi;
     };
