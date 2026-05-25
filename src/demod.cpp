@@ -33,7 +33,13 @@ void FFTViewer::dem_worker(int ch_idx){
     { float cn=(bw_hz*0.5f)/(float)actual_inter; if(cn>0.45f)cn=0.45f; lpi.set(cn); lpq.set(cn); }
     float prev_i=0,prev_q=0,am_dc=0;
     float am_dc_alpha=1.0f-expf(-2.0f*M_PI*30.0f/(float)actual_inter);
-    IIR1 alf; alf.set(8000.0/actual_inter);
+    // v4.5.0 — alf 적응형: 채널 BW/2 와 12 kHz 중 작은 쪽 (좁은 채널 → 좁은 LPF → 잡음 ↓).
+    // 이전엔 고정 8 kHz 라 narrowband 무전기 (BW 3 kHz) 도 8 kHz 까지 통과시켜 SNR 손해.
+    float alf_cut_hz = std::min(12000.0f, bw_hz * 0.5f);
+    IIR1 alf; alf.set(alf_cut_hz / (float)actual_inter);
+    // v4.5.0 — FM 50 µs de-emphasis (turnover 3183 Hz). 송신측 pre-emphasis 보정 +
+    // FM 의 f² 잡음 분포 cut. 한국 방송 FM 표준 (50 µs) 와 매칭. AM 은 미적용.
+    IIR1 deemph; deemph.set(3183.0f / (float)actual_inter);
 
     // ── AM AGC ────────────────────────────────────────────────────────────
     float agc_rms=0.01f;
@@ -109,7 +115,8 @@ void FFTViewer::dem_worker(int ch_idx){
                     // FM: phase discriminator
                     float cross=fi*prev_q-fq*prev_i, dot=fi*prev_i+fq*prev_q;
                     float d=atan2f(cross,dot+1e-12f); prev_i=fi; prev_q=fq;
-                    samp=alf.p(d)*4.0f;
+                    // alf (적응형 채널 BW LPF) → deemph (50 µs 6dB/oct from 3.18 kHz) → 4배 gain
+                    samp = deemph.p(alf.p(d)) * 4.0f;
                 }
                 aac+=samp; acnt++;
                 if(acnt>=(int)actual_ad){
