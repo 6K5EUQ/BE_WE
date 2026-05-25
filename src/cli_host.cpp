@@ -1392,6 +1392,9 @@ void run_cli_host(){
     auto status_last   = clk::now();
     auto heartbeat_last= clk::now();
     auto status_print_last = clk::now();
+    // v4.5.2 — SDR 재연결 후 autoscale 지연 트리거 (RTL settling time 확보).
+    // time_point{} 이면 대기 없음, 그 외 값이면 그 시각에 autoscale_active=true 적용.
+    clk::time_point pending_autoscale_at{};
     auto loop_last     = clk::now();
 
     // SDR reconnect state
@@ -1747,6 +1750,15 @@ void run_cli_host(){
             }
         }
 
+        // ── 지연 autoscale 트리거 (SDR 재연결 settling 끝난 후 발동) ──────
+        if(pending_autoscale_at != clk::time_point{} && clk::now() >= pending_autoscale_at){
+            pending_autoscale_at = clk::time_point{};
+            v.autoscale_active = true;
+            v.autoscale_init   = false;
+            v.autoscale_accum.clear();
+            bewe_log_push(0, "[autoscale] post-reconnect trigger (2s settling done)\n");
+        }
+
         // ── SDR reconnect logic ──────────────────────────────────────────
         if(!v.remote_mode && v.sdr_stream_error.load() && !v.rx_stopped.load()){
             if(!bg_join_started && v.hw.type == HWType::BLADERF)
@@ -1802,11 +1814,11 @@ void run_cli_host(){
                     // sdr_stream_error 가 true 였을 때 dem_worker loop 가 exit 했지만
                     // dem_run 은 true 그대로 → start_dem 도 무시. 강제 stop+start 사이클 트리거.
                     v.dem_restart_needed.store(true);
-                    // v4.4.5 — 재연결 후 autoscale 재수행. 새 SDR session 의 noise floor 가
-                    // 미세하게 다를 수 있어 워터폴 색 대비 통일성 유지를 위해 강제 재캘리브.
-                    v.autoscale_active = true;
-                    v.autoscale_init   = false;
-                    v.autoscale_accum.clear();
+                    // v4.5.2 — autoscale 즉시 트리거하지 않고 2초 지연. 첫 1초 의 FFT 에는
+                    // RTL-SDR 의 DC offset 정리 + USB 버퍼 transient 가 섞여 noise floor
+                    // 추정이 +10 dB 가량 biased 됨 → pmin 잘못 잡혀 워터폴 contrast 어색.
+                    // 2초 settling 후 깨끗한 신호로 캘리브.
+                    pending_autoscale_at = clk::now() + std::chrono::seconds(2);
                     v.set_gain(v.gain_db);
                     if(v.hw.type == HWType::BLADERF)
                         cap = std::thread(&FFTViewer::capture_and_process, &v);
