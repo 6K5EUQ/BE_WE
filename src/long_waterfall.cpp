@@ -270,12 +270,16 @@ bool ingest_new_rows(FFTViewer* v){
     int now = v->total_ffts;
     if(now <= g_last_total_ffts){ return false; }
 
-    int fft_size = v->fft_size;
-    if(fft_size <= 0) return false;
-    if((int)g_acc_db.size() != fft_size){
+    // v4.5.3 — 소스는 4× padded (fft_size), HIST 저장은 1× (fft_input_size).
+    // 4 bin 묶음 max-hold 로 폴딩 — 좁은 피크 보존.
+    int src_fft = v->fft_size;
+    int dst_fft = v->fft_input_size;
+    if(src_fft <= 0 || dst_fft <= 0) return false;
+    int pad = src_fft / dst_fft; if(pad < 1) pad = 1;
+    if((int)g_acc_db.size() != dst_fft){
         // size mismatch — safest: flush whatever we had and resize.
         // (Worker should have rotated already on fft_size change; handle defensively.)
-        g_acc_db.assign(fft_size, -200.0f);
+        g_acc_db.assign(dst_fft, -200.0f);
         g_acc_count = 0;
     }
 
@@ -288,10 +292,19 @@ bool ingest_new_rows(FFTViewer* v){
     int start_abs = now - new_rows;
     for(int abs_idx = start_abs; abs_idx < now; abs_idx++){
         int fi = abs_idx % MAX_FFTS_MEMORY;
-        const float* rowp = v->fft_data.data() + (size_t)fi * fft_size;
-        for(int i=0; i<fft_size; i++){
-            float d = rowp[i];
-            if(d > g_acc_db[i]) g_acc_db[i] = d;
+        const float* rowp = v->fft_data.data() + (size_t)fi * src_fft;
+        if(pad == 1){
+            for(int i=0; i<dst_fft; i++){
+                float d = rowp[i];
+                if(d > g_acc_db[i]) g_acc_db[i] = d;
+            }
+        } else {
+            for(int o=0; o<dst_fft; o++){
+                const float* gp = rowp + (size_t)o * pad;
+                float mx = gp[0];
+                for(int k=1; k<pad; k++){ if(gp[k] > mx) mx = gp[k]; }
+                if(mx > g_acc_db[o]) g_acc_db[o] = mx;
+            }
         }
         g_acc_count++;
     }
@@ -335,8 +348,10 @@ void worker_loop(){
             uint32_t fsz, fis;
             float    dmin, dmax;
             { std::lock_guard<std::mutex> lk(g_v->data_mtx);
-              fsz  = (uint32_t)g_v->fft_size;
+              // v4.5.3 — HIST 파일은 1× FFT (fft_input_size) 로 저장.
+              // 4× zero-pad 는 display 전용 — HIST 디스크 소비 4× 절감.
               fis  = (uint32_t)g_v->fft_input_size;
+              fsz  = fis;
               dmin = g_v->display_power_min;
               dmax = g_v->display_power_max; }
             float    lon = g_v->station_lon;
