@@ -17,7 +17,7 @@
 #endif
 
 namespace {
-    enum SatMode { SAT_OFF = 0, SAT_SOI = 1, SAT_ALL = 2, SAT_LEO = 3 };
+    enum SatMode { SAT_SOI = 0, SAT_LEO = 1, SAT_ALL = 2 };
 
     std::vector<TleElem> g_sats;
     std::set<int>        g_soi_ids;       // catalog_nums listed in SOI_tle.txt
@@ -25,7 +25,7 @@ namespace {
     bool                 g_all_loaded = false; // starlink+etc loaded yet?
     bool                 g_leo_loaded = false; // leo_tle loaded yet?
     int                  g_selected = -1;
-    int                  g_mode     = SAT_SOI;
+    int                  g_mode     = SAT_SOI;   // default
     const double         R_EARTH_KM = 6378.137;
 
     // Cached propagator output, reused while the UTC second is unchanged.
@@ -46,12 +46,12 @@ namespace {
     OrbitPath g_orbit;
     const int ORBIT_K = 720;
 
-    // Priority: Starlink=white > SOI=red > LEO=blue > MEO=yellow > GEO=light-blue
+    // Priority: Starlink=white > SOI=red > LEO(<2000km)=blue > MEO=yellow > GEO=light-blue
     ImU32 sat_color(size_t i, double alt_km) {
         const TleElem& e = g_sats[i];
-        if (e.is_starlink) return IM_COL32(255, 255, 255, 0);
+        if (e.is_starlink)                  return IM_COL32(255, 255, 255, 0);
         if (g_soi_ids.count(e.catalog_num)) return IM_COL32(255,  60,  60, 0);
-        if (e.is_leo || alt_km < 2000.0)    return IM_COL32( 80, 160, 255, 0);
+        if (alt_km < 2000.0)                return IM_COL32( 80, 160, 255, 0);
         if (alt_km < 35000.0)               return IM_COL32(255, 220,  60, 0);
         return                                     IM_COL32(120, 200, 255, 0);
     }
@@ -71,10 +71,14 @@ namespace {
     }
 
     bool sat_visible(size_t i) {
-        if (g_mode == SAT_OFF) return false;
         if (g_mode == SAT_ALL) return true;
-        if (g_mode == SAT_LEO) return g_sats[i].is_leo && !g_sats[i].is_starlink;
-        return g_soi_ids.count(g_sats[i].catalog_num) > 0;
+        if (g_mode == SAT_LEO) {
+            const TleElem& e = g_sats[i];
+            if (e.is_starlink) return false;
+            double alt_km = e.semi_major_km - 6378.137;
+            return alt_km < 2000.0;
+        }
+        return g_soi_ids.count(g_sats[i].catalog_num) > 0;  // SAT_SOI
     }
 
     void update_position(size_t i, time_t now_utc) {
@@ -91,8 +95,9 @@ namespace {
         orbit_cache_clear();
         if (sat_idx < 0 || sat_idx >= (int)g_sats.size()) return;
         const TleElem& e = g_sats[sat_idx];
-        if (e.mean_motion_revs_per_day <= 0.0) return;
-        double period = 86400.0 / e.mean_motion_revs_per_day;
+        if (e.semi_major_km <= 0.0) return;
+        double n_rps = sqrt(398600.4418 / (e.semi_major_km * e.semi_major_km * e.semi_major_km));
+        double period = 2.0 * M_PI / n_rps;  // seconds
         g_orbit.sat_idx = sat_idx;
         g_orbit.t_start = t_click - (time_t)(period * 0.5);
         g_orbit.t_end   = t_click + (time_t)(period * 0.5);
@@ -303,18 +308,30 @@ namespace {
         if (g_leo_loaded) return;
         g_leo_loaded = true;
         std::string dir = BEWEPaths::assets_dir() + "/tle";
+
+        // leo_tle.txt (GROUP=active) contains Starlink too. Skip those —
+        // they're either loaded separately by ensure_all_loaded() or hidden.
+        std::set<int> starlink_ids;
+        {
+            std::vector<TleElem> sl;
+            tle_load(dir + "/starlink_tle.txt", sl);
+            for (auto& s : sl) starlink_ids.insert(s.catalog_num);
+        }
+
         std::vector<TleElem> leo;
         tle_load(dir + "/leo_tle.txt", leo);
-        for (auto& e : leo) e.is_leo = true;
-        int kept = 0;
+        int kept = 0, skipped_sl = 0;
         g_sats.reserve(g_sats.size() + leo.size());
         for (auto& e : leo) {
+            if (starlink_ids.count(e.catalog_num)) { skipped_sl++; continue; }
             if (g_seen_ids.insert(e.catalog_num).second) {
+                e.is_leo = true;
                 g_sats.push_back(std::move(e)); kept++;
             }
         }
         g_pos_cache.assign(g_sats.size(), PosCache{});
-        fprintf(stderr, "[sat_view] LEO: +%d sats; %zu total\n", kept, g_sats.size());
+        fprintf(stderr, "[sat_view] LEO: +%d sats (-%d starlink filtered); %zu total\n",
+                kept, skipped_sl, g_sats.size());
     }
 }
 
@@ -348,35 +365,30 @@ void sat_view_draw(GlobeRenderer& globe, ImGuiIO& io, time_t now_utc) {
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - ts.x) * 0.5f);
         ImGui::TextUnformatted(title);
         ImGui::Separator();
-        // Single row: ALL / LEO / SOI / OFF
+        // Single row: SOI / LEO / ALL
         float frame_h  = ImGui::GetFrameHeight();
         float inner_sp = ImGui::GetStyle().ItemInnerSpacing.x;
         float item_sp  = ImGui::GetStyle().ItemSpacing.x;
-        float lw_all   = ImGui::CalcTextSize("ALL").x;
-        float lw_leo   = ImGui::CalcTextSize("LEO").x;
         float lw_soi   = ImGui::CalcTextSize("SOI").x;
-        float lw_off   = ImGui::CalcTextSize("OFF").x;
-        float row_w    = (frame_h + inner_sp) * 4
-                       + lw_all + lw_leo + lw_soi + lw_off + item_sp * 3;
+        float lw_leo   = ImGui::CalcTextSize("LEO").x;
+        float lw_all   = ImGui::CalcTextSize("ALL").x;
+        float row_w    = (frame_h + inner_sp) * 3
+                       + lw_soi + lw_leo + lw_all + item_sp * 2;
         float avail_w  = ImGui::GetContentRegionAvail().x;
         if (avail_w > row_w)
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail_w - row_w) * 0.5f);
-        if (ImGui::RadioButton("ALL", &g_mode, SAT_ALL)) { ensure_all_loaded(); ensure_leo_loaded(); }
+        ImGui::RadioButton("SOI", &g_mode, SAT_SOI);
         ImGui::SameLine();
         if (ImGui::RadioButton("LEO", &g_mode, SAT_LEO)) ensure_leo_loaded();
         ImGui::SameLine();
-        ImGui::RadioButton("SOI", &g_mode, SAT_SOI);
-        ImGui::SameLine();
-        ImGui::RadioButton("OFF", &g_mode, SAT_OFF);
+        if (ImGui::RadioButton("ALL", &g_mode, SAT_ALL)) { ensure_all_loaded(); ensure_leo_loaded(); }
 
         // (Update TLE 버튼 제거 — chat 입력 `/Update TLEs` 명령어로 트리거)
         ImGui::End();
         ImGui::PopStyleColor();
         ImGui::PopStyleVar();
     }
-    if (g_mode == SAT_OFF) return;
     if (g_sats.empty()) return;
-
     ImDrawList* fdl = ImGui::GetForegroundDrawList();
 
     // ── Selected satellite orbit (frozen at click time) ──────────────────
@@ -452,7 +464,7 @@ void sat_view_draw(GlobeRenderer& globe, ImGuiIO& io, time_t now_utc) {
 }
 
 bool sat_view_handle_click(GlobeRenderer& globe, float mx, float my) {
-    if (g_sats.empty() || g_mode == SAT_OFF) return false;
+    if (g_sats.empty()) return false;
     time_t now = time(nullptr);
     int best_idx = -1;
     float best_d2 = 25.f * 25.f;

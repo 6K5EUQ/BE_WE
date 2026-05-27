@@ -1,4 +1,5 @@
 #include "sat_tle.hpp"
+#include "MathTimeLib.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -8,84 +9,110 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-extern "C" time_t timegm(struct tm*);  // glibc
-
-static time_t doy_frac_to_utc(int yy, double doy_frac) {
-    int year = (yy < 57) ? 2000 + yy : 1900 + yy;
-    int doy_int = (int)doy_frac;
-    double frac = doy_frac - (double)doy_int;
-    struct tm tmv;
-    memset(&tmv, 0, sizeof tmv);
-    tmv.tm_year = year - 1900;
-    tmv.tm_mon  = 0;
-    tmv.tm_mday = doy_int;       // tm_mday > 31 is normalized by timegm
-    time_t t = timegm(&tmv);
-    return t + (time_t)(frac * 86400.0);
-}
-
-static double gmst_rad(time_t utc) {
-    // J2000.0 = 2000-01-01 12:00:00 UTC = unix 946728000
-    double d = ((double)utc - 946728000.0) / 86400.0;
-    double gmst_deg = 280.46061837 + 360.98564736629 * d;
-    gmst_deg = fmod(gmst_deg, 360.0);
-    if (gmst_deg < 0) gmst_deg += 360.0;
-    return gmst_deg * M_PI / 180.0;
-}
-
-static double parse_field(const char* line, int len, int start, int width) {
-    if (start + width > len) return 0.0;
+// Parse a fixed-width decimal field from a TLE line (1-indexed columns → 0-indexed here)
+static double pf(const char* line, int start, int width) {
     char buf[32];
     if (width >= (int)sizeof buf) width = (int)sizeof buf - 1;
     memcpy(buf, line + start, width);
-    buf[width] = 0;
+    buf[width] = '\0';
     return atof(buf);
 }
-
-static int parse_field_int(const char* line, int len, int start, int width) {
-    if (start + width > len) return 0;
+static int pfi(const char* line, int start, int width) {
     char buf[32];
     if (width >= (int)sizeof buf) width = (int)sizeof buf - 1;
     memcpy(buf, line + start, width);
-    buf[width] = 0;
+    buf[width] = '\0';
     return atoi(buf);
+}
+
+// TLE decimal-point-implied exponent field: " 12345-3" → 0.12345e-3
+static double tle_exp_field(const char* line, int start, int width) {
+    char buf[32];
+    if (width >= (int)sizeof buf) width = (int)sizeof buf - 1;
+    memcpy(buf, line + start, width);
+    buf[width] = '\0';
+    char* p = buf;
+    while (*p == ' ') p++;                // skip leading spaces
+    int sign = 1;
+    if (*p == '+') { p++; } else if (*p == '-') { sign = -1; p++; }
+    char mant[16] = "0.";
+    int mi = 2;
+    while (*p && *p >= '0' && *p <= '9') mant[mi++] = *p++;
+    mant[mi] = '\0';
+    int exp = atoi(p);                    // p now at sign of exponent
+    return sign * atof(mant) * pow(10.0, (double)exp);
 }
 
 bool tle_load(const std::string& path, std::vector<TleElem>& out) {
     out.clear();
     FILE* fp = fopen(path.c_str(), "r");
     if (!fp) return false;
-    char l0[128], l1[128], l2[128];
+
+    char l0[256], l1[256], l2[256];
     while (fgets(l0, sizeof l0, fp)) {
+        // skip blank/comment lines
         if (l0[0] == '#' || l0[0] == '\n' || l0[0] == '\r') continue;
         if (!fgets(l1, sizeof l1, fp)) break;
         if (!fgets(l2, sizeof l2, fp)) break;
         if (l1[0] != '1' || l2[0] != '2') continue;
-        int len1 = (int)strlen(l1);
-        int len2 = (int)strlen(l2);
-        if (len1 < 64 || len2 < 64) continue;
+        if ((int)strlen(l1) < 69 || (int)strlen(l2) < 69) continue;
 
+        // ── name ──────────────────────────────────────────────────────────
         TleElem e;
-        std::string nm(l0);
-        while (!nm.empty() && (nm.back()=='\n'||nm.back()=='\r'||nm.back()==' '||nm.back()=='\t'))
-            nm.pop_back();
-        e.name = nm;
+        {
+            std::string nm(l0);
+            while (!nm.empty() && (nm.back()=='\n'||nm.back()=='\r'||
+                                   nm.back()==' ' ||nm.back()=='\t'))
+                nm.pop_back();
+            e.name = nm;
+        }
 
-        e.catalog_num    = parse_field_int(l1, len1, 2, 5);
-        int yy           = parse_field_int(l1, len1, 18, 2);
-        double doy       = parse_field(l1, len1, 20, 12);
-        e.epoch_utc      = doy_frac_to_utc(yy, doy);
+        e.catalog_num = pfi(l1, 2, 5);
 
-        e.inclination_deg          = parse_field(l2, len2, 8, 8);
-        e.raan_deg                 = parse_field(l2, len2, 17, 8);
-        e.arg_perigee_deg          = parse_field(l2, len2, 34, 8);
-        e.mean_anomaly_deg         = parse_field(l2, len2, 43, 8);
-        e.mean_motion_revs_per_day = parse_field(l2, len2, 52, 11);
+        // ── epoch → Julian date ──────────────────────────────────────────
+        int    ep_yy  = pfi(l1, 18, 2);
+        double ep_doy = pf (l1, 20, 12);
+        int    year   = (ep_yy < 57) ? 2000 + ep_yy : 1900 + ep_yy;
+        int    mon, day, hr, minute; double sec;
+        MathTimeLib::days2mdhms(year, ep_doy, mon, day, hr, minute, sec);
+        double jd, jdF;
+        MathTimeLib::jday(year, mon, day, hr, minute, sec, jd, jdF);
+        double epoch_days = (jd + jdF) - 2433281.5;  // days since 1949-12-31 00:00 UT
 
-        if (e.mean_motion_revs_per_day <= 0.0) continue;
-        const double mu = 398600.4418;
-        double n_rps = e.mean_motion_revs_per_day * 2.0 * M_PI / 86400.0;
-        e.semi_major_km = pow(mu / (n_rps * n_rps), 1.0/3.0);
-        out.push_back(e);
+        // ── TLE fields. xpdotp converts rev/day ↔ rad/min ───────────────
+        const double xpdotp = 1440.0 / (2.0 * M_PI);
+        double bstar   = tle_exp_field(l1, 53, 8);
+        double ndot    = pf(l1, 33, 10) / (xpdotp * 1440.0);
+        double nddot   = tle_exp_field(l1, 44, 8) / (xpdotp * 1440.0 * 1440.0);
+        double inclo   = pf(l2,  8, 8) * M_PI / 180.0;
+        double nodeo   = pf(l2, 17, 8) * M_PI / 180.0;
+        double ecco    = pf(l2, 26, 7) * 1e-7;
+        double argpo   = pf(l2, 34, 8) * M_PI / 180.0;
+        double mo      = pf(l2, 43, 8) * M_PI / 180.0;
+        double no_koz  = pf(l2, 52, 11) / xpdotp;     // rev/day → rad/min
+
+        // satnum: 5-char string (left-padded with zeros)
+        char satn[10];
+        snprintf(satn, sizeof satn, "%05d", e.catalog_num);
+
+        // sgp4init does NOT populate jdsatepoch — caller must set it.
+        memset(&e.satrec, 0, sizeof(e.satrec));
+        e.satrec.jdsatepoch  = jd;
+        e.satrec.jdsatepochF = jdF;
+        e.satrec.classification = 'U';
+
+        SGP4Funcs::sgp4init(wgs72, 'i', satn, epoch_days,
+                            bstar, ndot, nddot, ecco, argpo,
+                            inclo, mo, no_koz, nodeo, e.satrec);
+
+        // semi_major for LEO detection (µ=398600.4418, n_rad/s)
+        if (no_koz > 0.0) {
+            double n_rps = no_koz / 60.0;
+            e.semi_major_km = pow(398600.4418 / (n_rps * n_rps), 1.0/3.0);
+        }
+
+        if (e.satrec.error == 0)
+            out.push_back(std::move(e));
     }
     fclose(fp);
     return true;
@@ -93,47 +120,37 @@ bool tle_load(const std::string& path, std::vector<TleElem>& out) {
 
 void tle_propagate(const TleElem& e, time_t now_utc,
                    double& lat_deg, double& lon_deg, double& alt_km) {
-    double minutes = ((double)now_utc - (double)e.epoch_utc) / 60.0;
-    double M_deg = e.mean_anomaly_deg + e.mean_motion_revs_per_day * 0.25 * minutes;
-    M_deg = fmod(M_deg, 360.0);
-    if (M_deg < 0) M_deg += 360.0;
-    double M = M_deg * M_PI / 180.0;
-    double a = e.semi_major_km;
+    // tsince = minutes since TLE epoch
+    // jdsatepoch + jdsatepochF = epoch in Julian days
+    double jd_now = 2440587.5 + (double)now_utc / 86400.0;
+    double tsince  = (jd_now - (e.satrec.jdsatepoch + e.satrec.jdsatepochF)) * 1440.0;
 
-    // Orbit plane (e=0: r=a, true anomaly = mean anomaly)
-    double xp = a * cos(M);
-    double yp = a * sin(M);
+    elsetrec satrec = e.satrec;   // SGP4 mutates satrec.t — copy per call
+    double r[3], v[3];
+    if (!SGP4Funcs::sgp4(satrec, tsince, r, v)) {
+        lat_deg = lon_deg = alt_km = 0.0;
+        return;
+    }
 
-    // Rotate by argp around Z
-    double argp = e.arg_perigee_deg * M_PI / 180.0;
-    double ca = cos(argp), sa = sin(argp);
-    double x1 = ca*xp - sa*yp;
-    double y1 = sa*xp + ca*yp;
-    double z1 = 0.0;
+    // ECI (km) → geodetic lat/lon/alt
+    // GMST via SGP4's own gstime
+    double jdF_now = (jd_now - (long)jd_now);
+    double gst = SGP4Funcs::gstime_SGP4(jd_now);
 
-    // Rotate by inclination around X
-    double inc = e.inclination_deg * M_PI / 180.0;
-    double ci = cos(inc), si = sin(inc);
-    double x2 = x1;
-    double y2 = ci*y1 - si*z1;
-    double z2 = si*y1 + ci*z1;
+    double xe =  r[0]*cos(gst) + r[1]*sin(gst);
+    double ye = -r[0]*sin(gst) + r[1]*cos(gst);
+    double ze =  r[2];
 
-    // Rotate by RAAN around Z → ECI
-    double raan = e.raan_deg * M_PI / 180.0;
-    double cr = cos(raan), sr = sin(raan);
-    double xeci = cr*x2 - sr*y2;
-    double yeci = sr*x2 + cr*y2;
-    double zeci = z2;
-
-    // ECI → ECEF: rotate by -GMST around Z
-    double th = gmst_rad(now_utc);
-    double cT = cos(th), sT = sin(th);
-    double xe =  cT*xeci + sT*yeci;
-    double ye = -sT*xeci + cT*yeci;
-    double ze = zeci;
-
-    double r = sqrt(xe*xe + ye*ye + ze*ze);
-    lat_deg = asin(ze / r) * 180.0 / M_PI;
-    lon_deg = atan2(ye, xe) * 180.0 / M_PI;
-    alt_km  = r - 6378.137;
+    double p   = sqrt(xe*xe + ye*ye);
+    const double a_e = 6378.137, f = 1.0/298.257223563;
+    double e2  = 2*f - f*f;
+    double lat = atan2(ze, p);
+    for (int i = 0; i < 5; i++) {
+        double N = a_e / sqrt(1.0 - e2*sin(lat)*sin(lat));
+        lat = atan2(ze + e2*N*sin(lat), p);
+    }
+    double N   = a_e / sqrt(1.0 - e2*sin(lat)*sin(lat));
+    alt_km     = (p / cos(lat)) - N;
+    lat_deg    = lat * 180.0 / M_PI;
+    lon_deg    = atan2(ye, xe) * 180.0 / M_PI;
 }

@@ -122,6 +122,8 @@ else()
         src/net_stream.cpp
         src/globe.cpp
         src/sat_tle.cpp
+        src/SGP4.cpp
+        src/MathTimeLib.cpp
         src/sat_view.cpp
         src/central_client.cpp
         src/host_band_plan.cpp
