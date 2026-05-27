@@ -17,12 +17,13 @@
 #endif
 
 namespace {
-    enum SatMode { SAT_OFF = 0, SAT_SOI = 1, SAT_ALL = 2 };
+    enum SatMode { SAT_OFF = 0, SAT_SOI = 1, SAT_ALL = 2, SAT_LEO = 3 };
 
     std::vector<TleElem> g_sats;
     std::set<int>        g_soi_ids;       // catalog_nums listed in SOI_tle.txt
     std::set<int>        g_seen_ids;      // catalog_nums already in g_sats (dedupe)
     bool                 g_all_loaded = false; // starlink+etc loaded yet?
+    bool                 g_leo_loaded = false; // leo_tle loaded yet?
     int                  g_selected = -1;
     int                  g_mode     = SAT_SOI;
     const double         R_EARTH_KM = 6378.137;
@@ -45,10 +46,14 @@ namespace {
     OrbitPath g_orbit;
     const int ORBIT_K = 720;
 
-    ImU32 band_color_rgb(double alt_km) {
-        if (alt_km < 2000.0)  return IM_COL32(255,  90,  90, 0);
-        if (alt_km < 35000.0) return IM_COL32(255, 220,  60, 0);
-        return                       IM_COL32(120, 200, 255, 0);
+    // Priority: Starlink=white > SOI=red > LEO=blue > MEO=yellow > GEO=light-blue
+    ImU32 sat_color(size_t i, double alt_km) {
+        const TleElem& e = g_sats[i];
+        if (e.is_starlink) return IM_COL32(255, 255, 255, 0);
+        if (g_soi_ids.count(e.catalog_num)) return IM_COL32(255,  60,  60, 0);
+        if (e.is_leo || alt_km < 2000.0)    return IM_COL32( 80, 160, 255, 0);
+        if (alt_km < 35000.0)               return IM_COL32(255, 220,  60, 0);
+        return                                     IM_COL32(120, 200, 255, 0);
     }
     ImU32 with_alpha(ImU32 c, unsigned a) {
         return (c & 0x00FFFFFFu) | ((a & 0xFFu) << 24);
@@ -68,6 +73,7 @@ namespace {
     bool sat_visible(size_t i) {
         if (g_mode == SAT_OFF) return false;
         if (g_mode == SAT_ALL) return true;
+        if (g_mode == SAT_LEO) return g_sats[i].is_leo && !g_sats[i].is_starlink;
         return g_soi_ids.count(g_sats[i].catalog_num) > 0;
     }
 
@@ -119,7 +125,8 @@ void sat_tle_fetch(bool force) {
     // starlink_tle.txt = GROUP=starlink. etc_tle.txt = GROUP=gnss + GROUP=geo.
     bool starlink_fresh = !force && file_age_under(dir + "/starlink_tle.txt", WEEK);
     bool etc_fresh      = !force && file_age_under(dir + "/etc_tle.txt",      WEEK);
-    if (starlink_fresh && etc_fresh) {
+    bool leo_fresh      = !force && file_age_under(dir + "/leo_tle.txt",      WEEK);
+    if (starlink_fresh && etc_fresh && leo_fresh) {
         fprintf(stderr, "[sat_tle] cached files <1 week old, skipping fetch\n");
         return;
     }
@@ -173,6 +180,7 @@ void sat_tle_fetch(bool force) {
 
     if (!starlink_fresh) fetch_single  ("starlink",       "starlink_tle.txt");
     if (!etc_fresh)      fetch_combined("gnss", "geo",    "etc_tle.txt");
+    if (!leo_fresh)      fetch_single  ("active",         "leo_tle.txt");
 }
 
 // Refresh SOI_tle.txt every 24h via per-satellite CATNR queries (parallel).
@@ -231,6 +239,7 @@ void sat_view_init() {
     g_soi_ids.clear();
     g_seen_ids.clear();
     g_all_loaded = false;
+    g_leo_loaded = false;
     g_selected = -1;
     orbit_cache_clear();
 
@@ -289,13 +298,32 @@ namespace {
         fprintf(stderr, "[sat_view] ALL: +%d starlink +%d etc; %zu total\n",
                 sl_kept, etc_kept, g_sats.size());
     }
+
+    void ensure_leo_loaded() {
+        if (g_leo_loaded) return;
+        g_leo_loaded = true;
+        std::string dir = BEWEPaths::assets_dir() + "/tle";
+        std::vector<TleElem> leo;
+        tle_load(dir + "/leo_tle.txt", leo);
+        for (auto& e : leo) e.is_leo = true;
+        int kept = 0;
+        g_sats.reserve(g_sats.size() + leo.size());
+        for (auto& e : leo) {
+            if (g_seen_ids.insert(e.catalog_num).second) {
+                g_sats.push_back(std::move(e)); kept++;
+            }
+        }
+        g_pos_cache.assign(g_sats.size(), PosCache{});
+        fprintf(stderr, "[sat_view] LEO: +%d sats; %zu total\n", kept, g_sats.size());
+    }
 }
 
 void sat_view_update_tle() {
     sat_tle_fetch(true);
     sat_tle_refresh_soi(true);
     sat_view_init();
-    if (g_mode == SAT_ALL) ensure_all_loaded();
+    if (g_mode == SAT_ALL) { ensure_all_loaded(); ensure_leo_loaded(); }
+    if (g_mode == SAT_LEO) ensure_leo_loaded();
     fprintf(stderr, "[sat_view] TLE manually updated\n");
 }
 
@@ -320,18 +348,25 @@ void sat_view_draw(GlobeRenderer& globe, ImGuiIO& io, time_t now_utc) {
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - ts.x) * 0.5f);
         ImGui::TextUnformatted(title);
         ImGui::Separator();
-        // Center the radio row.
-        float frame_h    = ImGui::GetFrameHeight();
-        float inner_sp   = ImGui::GetStyle().ItemInnerSpacing.x;
-        float item_sp    = ImGui::GetStyle().ItemSpacing.x;
-        float label_w    = ImGui::CalcTextSize("ALL").x;     // ALL/SOI/OFF same width
-        float row_w      = (frame_h + inner_sp + label_w) * 3 + item_sp * 2;
-        float avail_w    = ImGui::GetContentRegionAvail().x;
+        // Single row: ALL / LEO / SOI / OFF
+        float frame_h  = ImGui::GetFrameHeight();
+        float inner_sp = ImGui::GetStyle().ItemInnerSpacing.x;
+        float item_sp  = ImGui::GetStyle().ItemSpacing.x;
+        float lw_all   = ImGui::CalcTextSize("ALL").x;
+        float lw_leo   = ImGui::CalcTextSize("LEO").x;
+        float lw_soi   = ImGui::CalcTextSize("SOI").x;
+        float lw_off   = ImGui::CalcTextSize("OFF").x;
+        float row_w    = (frame_h + inner_sp) * 4
+                       + lw_all + lw_leo + lw_soi + lw_off + item_sp * 3;
+        float avail_w  = ImGui::GetContentRegionAvail().x;
         if (avail_w > row_w)
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail_w - row_w) * 0.5f);
-        if (ImGui::RadioButton("ALL", &g_mode, SAT_ALL)) ensure_all_loaded();
+        if (ImGui::RadioButton("ALL", &g_mode, SAT_ALL)) { ensure_all_loaded(); ensure_leo_loaded(); }
         ImGui::SameLine();
-        ImGui::RadioButton("SOI", &g_mode, SAT_SOI); ImGui::SameLine();
+        if (ImGui::RadioButton("LEO", &g_mode, SAT_LEO)) ensure_leo_loaded();
+        ImGui::SameLine();
+        ImGui::RadioButton("SOI", &g_mode, SAT_SOI);
+        ImGui::SameLine();
         ImGui::RadioButton("OFF", &g_mode, SAT_OFF);
 
         // (Update TLE 버튼 제거 — chat 입력 `/Update TLEs` 명령어로 트리거)
@@ -349,10 +384,7 @@ void sat_view_draw(GlobeRenderer& globe, ImGuiIO& io, time_t now_utc) {
         && sat_visible((size_t)g_selected) && !g_orbit.wpts.empty()) {
         const TleElem& e = g_sats[g_selected];
         double sel_alt   = e.semi_major_km - R_EARTH_KM;
-        // Starlink 는 점이 흰색이라 궤도도 흰색으로 통일.
-        ImU32  col_orbit = e.is_starlink
-                         ? with_alpha(IM_COL32(255, 255, 255, 0), 220)
-                         : with_alpha(band_color_rgb(sel_alt), 220);
+        ImU32  col_orbit = with_alpha(sat_color((size_t)g_selected, sel_alt), 220);
 
         int N = (int)g_orbit.wpts.size();
         double dur = (double)(g_orbit.t_end - g_orbit.t_start);
@@ -390,10 +422,7 @@ void sat_view_draw(GlobeRenderer& globe, ImGuiIO& io, time_t now_utc) {
         if (!globe.project_world(pc.wx, pc.wy, pc.wz, sx, sy)) continue;
 
         bool   selected = ((int)i == g_selected);
-        // Starlink overrides altitude band → plain white dot regardless of LEO.
-        ImU32  c        = g_sats[i].is_starlink
-                        ? IM_COL32(255, 255, 255, 0)
-                        : band_color_rgb(pc.alt);
+        ImU32  c        = sat_color(i, pc.alt);
         const int LAYERS = 8;
         float scale = selected ? 2.0f : 1.0f;
         float r_out = 4.5f * scale;

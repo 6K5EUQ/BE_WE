@@ -17,6 +17,7 @@ struct TleElem {
     double mean_motion_revs_per_day = 0.0;
     double semi_major_km   = 0.0;    // derived from mean motion (mu / n^2)^(1/3)
     bool   is_starlink     = false;  // tagged at load time (from starlink_tle.txt)
+    bool   is_leo          = false;  // tagged at load time (from leo_tle.txt)
 };
 
 bool tle_load(const std::string& path, std::vector<TleElem>& out);
