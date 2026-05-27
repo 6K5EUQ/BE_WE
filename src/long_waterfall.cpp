@@ -63,12 +63,14 @@ void close_file_locked(){
     // Live broadcast STOP first (so JOIN closes its mirror file).
     PktLwfLiveStop stop_pkt{};
     bool had_state = false;
+    uint32_t rows_snapshot = 0;
     {
         std::lock_guard<std::mutex> lk(g_live_state_mtx);
         if(g_live_state_valid){
             memcpy(stop_pkt.filename, g_live_state.filename, sizeof(stop_pkt.filename));
             had_state = true;
         }
+        rows_snapshot = g_live_row_idx;
         g_live_state_valid = false;
         g_live_row_idx = 0;
     }
@@ -79,6 +81,30 @@ void close_file_locked(){
     }
 
     if(g_fp){ fflush(g_fp); fclose(g_fp); g_fp = nullptr; }
+
+    // Empty file (header-only, no rows flushed) — discard instead of finalize.
+    // Common at midnight rollover: mission_end + mission_start + utc0_worker call
+    // request_rotate() three times within seconds; one cycle opens 0000-LIVE and
+    // closes it immediately, leaving a 128B 0000-0000.bewehist.
+    if(rows_snapshot == 0){
+        std::string discard_path;
+        {
+            std::lock_guard<std::mutex> lk(g_path_mtx);
+            discard_path = g_cur_path;
+            g_cur_path.clear();
+        }
+        if(!discard_path.empty()){
+            printf("[LongWaterfall] discard empty file (no rows): %s\n",
+                   discard_path.c_str());
+            unlink(discard_path.c_str());
+            unlink((discard_path + ".info").c_str());
+        }
+        g_acc_db.clear();
+        g_acc_count = 0;
+        g_file_dirty.store(false);
+        return;
+    }
+
     // Finalize: -LIVE → -<HHMM>Z based on close time.
     std::string finalized_path;
     {
