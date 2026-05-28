@@ -802,12 +802,14 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         return;
     }
 
-    // ── LWF live stream tap: archive에 동시 기록 (fall-through to dispatch) ──
+    // ── LWF live stream tap: Central archive 전용 (JOIN으로는 relay 안 함) ──
+    // JOIN은 미션창에서 archive 파일을 수동 다운로드만 — 실시간 row 스트림 불필요.
+    // 예전엔 fall-through 로 JOIN에 broadcast 했으나 80+ KB/s 대역폭만 낭비 (v4.6.0).
     if(bewe_type == BEWE_TYPE_LWF_LIVE_START &&
        bewe_len >= BEWE_HDR_SIZE + sizeof(PktLwfLiveStart)){
         const auto* ls = reinterpret_cast<const PktLwfLiveStart*>(bewe_pkt + BEWE_HDR_SIZE);
         archive_hist_on_live_start(room, *ls);
-        // fall-through: JOIN들에게도 broadcast
+        return;
     }
     if(bewe_type == BEWE_TYPE_LWF_LIVE_ROW &&
        bewe_len >= BEWE_HDR_SIZE + sizeof(PktLwfLiveRowHdr)){
@@ -815,11 +817,13 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         uint32_t row_bytes = (uint32_t)(bewe_len - BEWE_HDR_SIZE - sizeof(PktLwfLiveRowHdr));
         const uint8_t* row = bewe_pkt + BEWE_HDR_SIZE + sizeof(PktLwfLiveRowHdr);
         archive_hist_on_live_row(room, *h, row, row_bytes);
+        return;
     }
     if(bewe_type == BEWE_TYPE_LWF_LIVE_STOP &&
        bewe_len >= BEWE_HDR_SIZE + sizeof(PktLwfLiveStop)){
         const auto* s = reinterpret_cast<const PktLwfLiveStop*>(bewe_pkt + BEWE_HDR_SIZE);
         archive_hist_on_live_stop(room, *s);
+        return;
     }
 
     // ── CHANNEL_SYNC 인터셉트: 캐시 저장 → audio_mask 재작성 후 broadcast

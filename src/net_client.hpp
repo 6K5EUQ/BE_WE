@@ -168,11 +168,6 @@ public:
     std::function<void(const PktLwfList&)>     on_lwf_list;
     // payload includes header (PktLwfDlData) followed by chunk_bytes raw.
     std::function<void(const PktLwfDlData&, const uint8_t* /*chunk*/, uint32_t /*chunk_len*/)> on_lwf_dl_data;
-    // LIVE 스트리밍 콜백
-    std::function<void(const PktLwfLiveStart&)> on_lwf_live_start;
-    std::function<void(const PktLwfLiveRowHdr&, const uint8_t* /*row*/, uint32_t /*bytes*/)> on_lwf_live_row;
-    std::function<void(const PktLwfLiveStop&)>  on_lwf_live_stop;
-
     // ── SIGINT Mission System ────────────────────────────────────────────
     std::function<void(const PktMissionSync&)> on_mission_sync;
 
@@ -238,7 +233,6 @@ public:
     std::atomic<uint64_t> stat_rx_hb_bytes{0};
     std::atomic<uint64_t> stat_rx_db_bytes{0};  // DB 파일 송수신 (DB_SAVE_* / DB_DOWNLOAD_*)
     std::atomic<uint64_t> stat_tx_db_bytes{0};  // 업로드 측 누적 (cmd_db_save 호출 시 추적)
-    std::atomic<uint64_t> stat_rx_hist_bytes{0};  // LWF LIVE row 누적 (HIST 실시간 스트림)
     std::atomic<uint64_t> stat_rx_file_bytes{0};  // MISSION_FILE_DL_DATA (미션 파일 다운로드 청크)
     std::string           stat_room_id;        // JOIN 접속 station_id
 
@@ -314,7 +308,6 @@ public:
     bool cmd_band_cat_delete(uint8_t id);
     bool cmd_lwf_list_req();
     bool cmd_lwf_dl_req(const char* filename);
-    bool cmd_lwf_live_req();
     bool cmd_lwf_delete_req(const char* filename);
     bool cmd_db_delete(const char* filename, const char* operator_name);
     bool cmd_db_download(const char* filename, const char* operator_name);

@@ -131,25 +131,6 @@ struct DlState {
 DlState  g_dl;
 std::mutex g_dl_mtx;
 
-// LIVE 수신 상태
-struct LiveRecv {
-    std::string filename;        // JOIN local 저장 파일명 (wall-clock 기반, 충돌 회피)
-    std::string host_filename;   // host의 LIVE 파일명 (LIVE_ROW 라우팅 매칭용)
-    FILE*       fp = nullptr;
-    LongWaterfall::FileHeader hdr{};
-    uint32_t    rows = 0;
-};
-LiveRecv  g_live;
-std::mutex g_live_mtx;
-bool      g_live_dirty = false;   // 새 row가 들어왔을 때 viewer에 알림용
-// STREAM opt-in 게이트: false면 LIVE_START/ROW/STOP 모두 drop (디스크 안 씀).
-std::atomic<bool> g_stream_on{false};
-
-// LIVE 디렉토리(hist/live/) 캐시 — active + closed 모두 표시
-std::vector<HistFileEntry> g_live_files;
-time_t                      g_live_dir_mtime  = 0;
-bool                        g_live_list_dirty = true;
-
 // 표시용 — 파일명에서 .bewehist/.bewewf 확장자 제거 (공간 절약)
 static std::string strip_hist_ext(const std::string& s){
     if(s.size() >= 9 && s.compare(s.size()-9, 9, ".bewehist")==0) return s.substr(0, s.size()-9);
@@ -182,19 +163,6 @@ static void hist_row_tooltip(const char* station_name, float station_lat, float 
         ImGui::Text("Stop      : %s", fmt_local(end_utc).c_str());
     }
     ImGui::EndTooltip();
-}
-
-static void purge_hist_live_dir(){
-    DIR* d = opendir(BEWEPaths::hist_live_dir().c_str());
-    if(!d) return;
-    struct dirent* de;
-    while((de = readdir(d)) != nullptr){
-        const char* n = de->d_name;
-        if(!n || n[0]=='.') continue;
-        std::string full = BEWEPaths::hist_live_dir() + "/" + n;
-        unlink(full.c_str());
-    }
-    closedir(d);
 }
 
 // LWF list cached from host (JOIN side)
@@ -275,10 +243,9 @@ static void hist_click_select(const std::string& id, int section, bool ctrl,
 // Delete a single HIST item by section. Caller must pass cli (may be null in HOST mode).
 static void hist_delete_one(const std::string& id, int section, NetClient* cli){
     switch(section){
-        case 0: // LIVE local file (full path)
+        case 0: // (legacy LIVE section removed in v4.6.0 — kept for backward enum compat)
             if(g_open.path == id) close_open();
             unlink(id.c_str());
-            g_live_list_dirty = true;
             break;
         case 1: // HOST local file (full path)
             if(g_open.path == id) close_open();
@@ -554,109 +521,8 @@ void register_dl_callbacks_once(NetClient* cli){
         if(prev_done) prev_done(path, name);
     };
 
-    // ── LIVE 수신 콜백 ────────────────────────────────────────────────
-    // STREAM ON 또는 host 파일 rotation 시 새 segment 파일 시작.
-    // - 파일명: JOIN local wall-clock 기반 (host filename 그대로 쓰면 OFF/ON 시 collision으로 덮어씀)
-    // - start_utc_unix: JOIN 측 wall-clock으로 덮어 — 마우스 hover 시간이 실제 수신 시점과 일치
-    // - 이전 active 파일은 close만 (디스크에 보존 → LIVE 탭에 closed 행으로 남음)
-    cli->on_lwf_live_start = [](const PktLwfLiveStart& s){
-        if(!g_stream_on.load()) return;
-        std::lock_guard<std::mutex> lk(g_live_mtx);
-        // 같은 host 파일을 이미 받고 있으면 no-op (중복 LIVE_START 보호)
-        if(g_live.fp && g_live.host_filename == s.filename) return;
-        // 이전 segment finalize: -LIVE → -<HHMM>Z rename (closed 파일은 LIVE 탭 closed 행으로)
-        if(g_live.fp){
-            fclose(g_live.fp); g_live.fp = nullptr;
-            if(!g_live.filename.empty()){
-                std::string old_full = BEWEPaths::hist_live_dir() + "/" + g_live.filename;
-                std::string fin = LongWaterfall::build_hist_filename_finalize(
-                    g_live.filename, (uint64_t)time(nullptr),
-                    (int)g_live.hdr.utc_offset_hours);
-                if(fin != g_live.filename){
-                    std::string new_full = BEWEPaths::hist_live_dir() + "/" + fin;
-                    rename(old_full.c_str(), new_full.c_str());
-                }
-            }
-        }
-        std::string dir = BEWEPaths::hist_live_dir();
-        mkdir(BEWEPaths::recordings_dir().c_str(), 0755);
-        mkdir(BEWEPaths::hist_dir().c_str(), 0755);
-        mkdir(dir.c_str(), 0755);
-        // JOIN local wall-clock 기반 — 파일명은 mission-code 양식, start_utc도 wall-clock으로 덮음 (시간 보정).
-        // HHMM은 host TZ로 통일 (s.utc_offset_hours).
-        time_t now_t = time(nullptr);
-        std::string fname = LongWaterfall::build_hist_filename_live(
-            (uint64_t)now_t, s.center_freq_hz, (int)s.utc_offset_hours);
-        std::string out = dir + "/" + fname;
-        for(int n=2; access(out.c_str(), F_OK)==0 && n<100; ++n){
-            auto pos = fname.rfind("-LIVE.bewehist");
-            if(pos == std::string::npos) break;
-            std::string base_part = fname.substr(0, pos);
-            // 같은 분에 이미 _2 등 suffix 있으면 마지막 _N을 N+1로 갱신
-            // 단순화: 새로 _<n>-LIVE.bewehist 끝붙이기
-            fname = base_part + "_" + std::to_string(n) + "-LIVE.bewehist";
-            out   = dir + "/" + fname;
-        }
-        FILE* fp = fopen(out.c_str(), "wb");
-        if(!fp) return;
-        LongWaterfall::FileHeader h{};
-        memcpy(h.magic, "BWWF", 4);
-        h.version          = LongWaterfall::FILE_VERSION;
-        h.fft_size         = s.fft_size;
-        h.sample_rate_hz   = s.sample_rate_hz;
-        h.center_freq_hz   = s.center_freq_hz;
-        h.row_rate_hz      = s.row_rate_hz;
-        h.db_min           = s.db_min;
-        h.db_max           = s.db_max;
-        h.start_utc_unix   = (uint64_t)now_t;
-        h.station_lon      = s.station_lon;
-        h.fft_input_size   = s.fft_input_size;
-        h.utc_offset_hours = s.utc_offset_hours;
-        h.station_lat      = s.station_lat;
-        memcpy(h.station_name, s.station_name, sizeof(h.station_name));
-        fwrite(&h, 1, sizeof(h), fp);
-        fflush(fp);
-        g_live.filename      = fname;
-        g_live.host_filename = s.filename;
-        g_live.fp            = fp;
-        g_live.hdr           = h;
-        g_live.rows          = 0;
-        g_live_list_dirty    = true;
-    };
-    cli->on_lwf_live_row = [](const PktLwfLiveRowHdr& hdr,
-                              const uint8_t* row, uint32_t row_bytes){
-        if(!g_stream_on.load()) return;
-        std::lock_guard<std::mutex> lk(g_live_mtx);
-        if(!g_live.fp) return;
-        if(g_live.host_filename != hdr.filename) return;  // 다른 host 파일에서 온 stale row
-        if(row_bytes != g_live.hdr.fft_size) return;
-        fwrite(row, 1, row_bytes, g_live.fp);
-        fflush(g_live.fp);
-        g_live.rows++;
-        g_live_dirty = true;
-    };
-    cli->on_lwf_live_stop = [](const PktLwfLiveStop& s){
-        if(!g_stream_on.load()) return;
-        std::lock_guard<std::mutex> lk(g_live_mtx);
-        // host가 파일을 닫음 → 현재 active segment 마무리 + finalize rename
-        if(g_live.fp && g_live.host_filename == s.filename){
-            fclose(g_live.fp); g_live.fp = nullptr;
-            if(!g_live.filename.empty()){
-                std::string old_full = BEWEPaths::hist_live_dir() + "/" + g_live.filename;
-                std::string fin = LongWaterfall::build_hist_filename_finalize(
-                    g_live.filename, (uint64_t)time(nullptr),
-                    (int)g_live.hdr.utc_offset_hours);
-                if(fin != g_live.filename){
-                    std::string new_full = BEWEPaths::hist_live_dir() + "/" + fin;
-                    rename(old_full.c_str(), new_full.c_str());
-                }
-            }
-            g_live.filename.clear();
-            g_live.host_filename.clear();
-            g_live.rows = 0;
-            g_live_list_dirty = true;
-        }
-    };
+    // LIVE 수신 콜백 (v4.6.0 제거): JOIN은 실시간 hist row 스트림을 받지 않음.
+    // Central archive 가 source-of-truth — 미션창에서 수동 다운로드.
 }
 
 // ── Info modal renderer ──────────────────────────────────────────────────
@@ -799,10 +665,8 @@ void draw_modal(FFTViewer& v, NetClient* cli){
     if(!g_open_loaded){
         // (안내문 제거 — 빈 viewer 표시)
     } else {
-        // host의 LIVE 파일 OR JOIN의 hist/live/ 임시 파일이면 file size를 폴링하며 갱신.
-        std::string live_dir_prefix = BEWEPaths::hist_live_dir() + "/";
-        bool is_join_live = (g_open.path.compare(0, live_dir_prefix.size(), live_dir_prefix) == 0);
-        if(g_open.path == live_path || is_join_live) refresh_size_live();
+        // host의 LIVE 파일이면 file size 폴링 (JOIN 측 hist/live/ mirror 는 v4.6.0 에서 제거).
+        if(g_open.path == live_path) refresh_size_live();
         const auto& h = g_open.hdr;
         int off_h = header_utc_offset(h);
         uint32_t row_rate = (uint32_t)std::max(1.0f, h.row_rate_hz);
@@ -1116,173 +980,8 @@ void draw_modal(FFTViewer& v, NetClient* cli){
             return FFTViewer::format_file_info(sec, bytes);
         };
 
-        // ── LIVE section (JOIN only — opt-in stream from host) ───────
-        if(is_join_mode){
-            ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-            ImGui::SetNextItemAllowOverlap();
-            bool live_open = ImGui::CollapsingHeader("LIVE##lwf_live_sec",
-                ImGuiTreeNodeFlags_DefaultOpen);
-            // Reload 패턴 동일 — 헤더 우측 SmallButton (STREAM 토글)
-            bool stream_on = g_stream_on.load();
-            ImU32 btn_col = stream_on ? IM_COL32(40,160,60,255) : IM_COL32(180,40,40,255);
-            ImU32 btn_hov = stream_on ? IM_COL32(60,180,80,255) : IM_COL32(200,60,60,255);
-            ImU32 btn_act = stream_on ? IM_COL32(80,200,100,255) : IM_COL32(220,80,80,255);
-            ImGui::PushStyleColor(ImGuiCol_Button,        btn_col);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, btn_hov);
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  btn_act);
-            ImGui::PushStyleColor(ImGuiCol_Text,          IM_COL32(255,255,255,255));
-            ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - 60.f);
-            bool clicked = ImGui::SmallButton("STREAM##lwf_stream");
-            ImGui::PopStyleColor(4);
-            if(clicked){
-                if(!stream_on){
-                    g_stream_on.store(true);
-                    cli->cmd_lwf_live_req();
-                } else {
-                    // STREAM OFF: active segment close + finalize rename (디스크 보존 → LIVE 탭 closed 행).
-                    // hist/live/ 일괄 삭제는 서버 disconnect 또는 모달 close 시에만.
-                    g_stream_on.store(false);
-                    {
-                        std::lock_guard<std::mutex> lk(g_live_mtx);
-                        if(g_live.fp){ fclose(g_live.fp); g_live.fp = nullptr; }
-                        if(!g_live.filename.empty()){
-                            std::string old_full = BEWEPaths::hist_live_dir() + "/" + g_live.filename;
-                            std::string fin = LongWaterfall::build_hist_filename_finalize(
-                                g_live.filename, (uint64_t)time(nullptr),
-                                (int)g_live.hdr.utc_offset_hours);
-                            if(fin != g_live.filename){
-                                std::string new_full = BEWEPaths::hist_live_dir() + "/" + fin;
-                                rename(old_full.c_str(), new_full.c_str());
-                            }
-                        }
-                        g_live.filename.clear();
-                        g_live.host_filename.clear();
-                        g_live.rows = 0;
-                    }
-                    g_live_list_dirty = true;
-                }
-            }
-            if(live_open){
-                // hist/live/ 디렉토리 스캔 (mtime 기반 캐시) — active segment + closed segments 모두 표시.
-                struct stat dst{};
-                time_t cur_mtime = 0;
-                if(stat(BEWEPaths::hist_live_dir().c_str(), &dst) == 0) cur_mtime = dst.st_mtime;
-                if(cur_mtime != g_live_dir_mtime || g_live_list_dirty){
-                    g_live_dir_mtime  = cur_mtime;
-                    g_live_list_dirty = false;
-                    g_live_files.clear();
-                    DIR* d = opendir(BEWEPaths::hist_live_dir().c_str());
-                    if(d){
-                        struct dirent* de;
-                        while((de = readdir(d)) != nullptr){
-                            const char* n = de->d_name;
-                            if(!n || n[0]=='.') continue;
-                            if(!is_hist_filename(n)) continue;
-                            std::string full = BEWEPaths::hist_live_dir() + "/" + n;
-                            LongWaterfall::FileHeader hh{}; uint64_t fsz=0;
-                            if(!read_header_only(full, hh, fsz)) continue;
-                            HistFileEntry e; e.path=full; e.base=n;
-                            e.start_utc=hh.start_utc_unix; e.size=fsz;
-                            g_live_files.push_back(std::move(e));
-                        }
-                        closedir(d);
-                    }
-                    std::sort(g_live_files.begin(), g_live_files.end(),
-                        [](const HistFileEntry& a, const HistFileEntry& b){ return a.start_utc > b.start_utc; });
-                }
-                // active 파일 정보(녹색 + [LIVE] 라벨 + live row count)
-                std::string active_path; uint32_t active_rows = 0;
-                LongWaterfall::FileHeader active_hdr{};
-                bool active_valid = false;
-                {
-                    std::lock_guard<std::mutex> lk(g_live_mtx);
-                    if(g_live.fp && !g_live.filename.empty()){
-                        active_path  = BEWEPaths::hist_live_dir() + "/" + g_live.filename;
-                        active_rows  = g_live.rows;
-                        active_hdr   = g_live.hdr;
-                        active_valid = true;
-                    }
-                }
-                if(g_live_files.empty()){
-                    ImGui::Indent(8.f);
-                    ImGui::TextDisabled("%s", g_stream_on.load()
-                        ? "Waiting for host LIVE_START..."
-                        : "STREAM is OFF.");
-                    ImGui::Unindent(8.f);
-                }
-                for(auto& e : g_live_files){
-                    bool is_active = (e.path == active_path);
-                    bool sel = (g_selected.count(e.path) > 0) || (g_sel_path == e.path);
-                    LongWaterfall::FileHeader hh{}; uint64_t fsz=0;
-                    uint32_t rows_ct;
-                    float    row_rate;
-                    uint64_t disp_size;
-                    if(is_active){
-                        hh = active_hdr;
-                        rows_ct  = active_rows;
-                        row_rate = active_hdr.row_rate_hz;
-                        disp_size = sizeof(LongWaterfall::FileHeader) +
-                                    (uint64_t)active_rows * active_hdr.fft_size;
-                    } else {
-                        read_header_only(e.path, hh, fsz);
-                        rows_ct  = hh.fft_size > 0 ? (uint32_t)((fsz - sizeof(hh)) / hh.fft_size) : 0;
-                        row_rate = hh.row_rate_hz;
-                        disp_size = e.size;
-                    }
-                    (void)active_valid;
-                    float pw   = ImGui::GetContentRegionAvail().x;
-                    float fn_w = pw * 0.66f;
-                    std::string info = fmt_arch_info(rows_ct, row_rate, disp_size);
-                    std::string nm = strip_hist_ext(e.base);
-                    if(is_active) nm = "[LIVE] " + nm;
-                    ImGui::PushID(e.path.c_str());
-                    if(is_active) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(80,220,80,255));
-                    if(ImGui::Selectable(nm.c_str(), sel,
-                           ImGuiSelectableFlags_SpanAllColumns, ImVec2(pw, 0))){
-                        bool ctrl = ImGui::GetIO().KeyCtrl;
-                        hist_click_select(e.path, 0, ctrl, /*plain_opens=*/true,
-                            [&]{ if(g_open.path != e.path) open_file(e.path); });
-                    }
-                    if(is_active) ImGui::PopStyleColor();
-                    bool item_hov_l = ImGui::IsItemHovered();
-                    if(item_hov_l){
-                        float rr = row_rate>0.5f ? row_rate : 5.0f;
-                        uint64_t end_utc = hh.start_utc_unix + (uint64_t)((double)rows_ct/rr);
-                        hist_row_tooltip(hh.station_name, hh.station_lat, hh.station_lon,
-                                         hh.center_freq_hz, hh.start_utc_unix, end_utc, is_active);
-                    }
-                    {
-                        float tw = ImGui::CalcTextSize(info.c_str()).x;
-                        ImGui::SameLine(pw - tw - 4.f);
-                        ImGui::TextDisabled("%s", info.c_str());
-                    }
-                    if(item_hov_l && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-                        g_ctx_path = e.path; g_sel_path = e.path;
-                        ImGui::OpenPopup("##lwf_live_ctx");
-                    }
-                    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 8));
-                    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,  ImVec2(8, 6));
-                    if(g_ctx_path == e.path && ImGui::BeginPopup("##lwf_live_ctx")){
-                        // active은 삭제 비활성, closed만 삭제 가능
-                        if(!is_active){
-                            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));
-                            if(ImGui::MenuItem("Delete")){
-                                hist_delete_one(e.path, 0, nullptr);
-                                g_selected.erase(e.path);
-                            }
-                            ImGui::PopStyleColor();
-                        } else {
-                            ImGui::BeginDisabled();
-                            ImGui::MenuItem("Delete");
-                            ImGui::EndDisabled();
-                        }
-                        ImGui::EndPopup();
-                    }
-                    ImGui::PopStyleVar(2);
-                    ImGui::PopID();
-                }
-            }
-        }
+        // LIVE section (v4.6.0 제거): JOIN은 실시간 hist 스트림을 받지 않음.
+        // 미션창의 archive 다운로드로 대체.
 
         // ── HOST section ───────────────────────────────────────────────
         ImGui::SetNextItemOpen(true, ImGuiCond_Once);
@@ -1311,23 +1010,11 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                 float    station_lon = 0.f;
             };
             std::vector<Row> host_rows;
-            // JOIN-side knowledge of the host's current LIVE filename (set by
-            // PktLwfLiveStart). If we're streaming, exclude that filename from
-            // the HOST tab — it shows in the LIVE tab instead.
-            std::string remote_live_basename;
-            {
-                std::lock_guard<std::mutex> lk(g_live_mtx);
-                if(g_live.fp && !g_live.host_filename.empty())
-                    remote_live_basename = g_live.host_filename;
-            }
             if(is_join_mode){
                 std::lock_guard<std::mutex> lk(g_remote_list_mtx);
                 if(g_remote_list_valid){
                     for(uint16_t i=0;i<g_remote_list.count;i++){
                         const auto& e = g_remote_list.entries[i];
-                        // Skip the host's currently active LIVE file — shown in LIVE tab.
-                        if(!remote_live_basename.empty()
-                           && remote_live_basename == e.filename) continue;
                         Row r; r.id = e.filename; r.base = e.filename;
                         r.size = e.size_bytes; r.rows = e.num_rows;
                         r.row_rate = LongWaterfall::DEFAULT_ROW_RATE_HZ;
@@ -1571,19 +1258,12 @@ void draw_modal(FFTViewer& v, NetClient* cli){
                 ImGui::PopID();
             }
 
-            // Multi-select Del 키 — section 별로 분기, 활성 LIVE 는 제외.
+            // Multi-select Del 키 — section 별로 분기.
             if(ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) &&
                ImGui::IsKeyPressed(ImGuiKey_Delete, false) &&
                !g_selected.empty()){
-                std::string live_active_path;
-                {
-                    std::lock_guard<std::mutex> lk(g_live_mtx);
-                    if(g_live.fp && !g_live.filename.empty())
-                        live_active_path = BEWEPaths::hist_live_dir() + "/" + g_live.filename;
-                }
                 std::vector<std::pair<std::string,int>> targets;
                 for(const auto& [id, sec] : g_selected){
-                    if(sec == 0 && id == live_active_path) continue; // skip active LIVE
                     targets.push_back({id, sec});
                 }
                 for(const auto& [id, sec] : targets){
@@ -1607,15 +1287,6 @@ void draw_modal(FFTViewer& v, NetClient* cli){
 void close_modal(){
     close_open();
     if(g_tex){ glDeleteTextures(1, &g_tex); g_tex = 0; }
-    // 모달 종료 시 STREAM OFF + LIVE 임시 파일 정리.
-    g_stream_on.store(false);
-    {
-        std::lock_guard<std::mutex> lk(g_live_mtx);
-        if(g_live.fp){ fclose(g_live.fp); g_live.fp = nullptr; }
-        g_live.filename.clear();
-        g_live.rows = 0;
-    }
-    purge_hist_live_dir();
 }
 
 } // namespace LongWaterfallView

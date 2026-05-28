@@ -409,11 +409,7 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
         if(cb.on_lwf_dl_req) cb.on_lwf_dl_req(c->op_index, c->name, req->filename);
         break;
     }
-    case PacketType::LWF_LIVE_REQ: {
-        if(!c->authed) break;
-        if(cb.on_lwf_live_req) cb.on_lwf_live_req(c->op_index, c->name);
-        break;
-    }
+    // LWF_LIVE_REQ (v4.6.0 제거): JOIN STREAM opt-in 기능 폐기. 구버전 JOIN이 보내도 silently drop.
     case PacketType::LWF_DELETE_REQ: {
         if(!c->authed || len < sizeof(PktLwfDlReq)) break;
         auto* req = reinterpret_cast<const PktLwfDlReq*>(payload);
@@ -1000,22 +996,13 @@ void NetServer::send_lwf_list_to_op(int op_index, const PktLwfList& list){
     send_all(target->fd, pkt.data(), pkt.size());
 }
 
-// ── LIVE 스트리밍 broadcast helpers ──────────────────────────────────────
-// 모두 send_all + fd_write_mtx 직접 사용 (큐 우회) — file_data와 동일 패턴.
-// LAN 직결 + relay 양쪽 모두 지원.
+// ── LIVE 스트리밍 broadcast (v4.6.0): Central archive 전용 ───────────────
+// 직접 fan-out 대상 (LAN 직결 JOIN) 은 제거됨 — Central 만 on_relay_broadcast 로 수신.
+// Central 측은 archive_hist_on_live_* 로 mirror 파일만 만들고 JOIN 으로 relay 안 함.
 void NetServer::broadcast_lwf_live_start(const PktLwfLiveStart& s){
     auto pkt = make_packet(PacketType::LWF_LIVE_START, &s, sizeof(s));
-    // Central archive가 stream tap으로 mirror 파일을 만들도록 항상 broadcast.
-    // has_relay() 게이트하면 JOIN이 한순간 끊겨있을 때 Central이 mirror를 못 만들고,
-    // 30초 후 stale-LIVE purge에 걸려 JOIN list 에서 사라짐.
     if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
-    std::lock_guard<std::mutex> lk(clients_mtx_);
-    for(auto& c : clients_){
-        if(c->is_relay || !c->authed || !c->alive.load()) continue;
-        std::lock_guard<std::mutex> wlk(c->fd_write_mtx);
-        send_all(c->fd, pkt.data(), pkt.size());
-    }
 }
 
 void NetServer::broadcast_lwf_live_row(const PktLwfLiveRowHdr& hdr,
@@ -1024,43 +1011,14 @@ void NetServer::broadcast_lwf_live_row(const PktLwfLiveRowHdr& hdr,
     memcpy(body.data(), &hdr, sizeof(hdr));
     if(row_bytes && row) memcpy(body.data() + sizeof(hdr), row, row_bytes);
     auto pkt = make_packet(PacketType::LWF_LIVE_ROW, body.data(), (uint32_t)body.size());
-    // Central archive mirror가 row 받아 mtime 갱신해야 stale purge에 안 걸림.
     if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
-    std::lock_guard<std::mutex> lk(clients_mtx_);
-    for(auto& c : clients_){
-        if(c->is_relay || !c->authed || !c->alive.load()) continue;
-        std::lock_guard<std::mutex> wlk(c->fd_write_mtx);
-        send_all(c->fd, pkt.data(), pkt.size());
-    }
 }
 
 void NetServer::broadcast_lwf_live_stop(const PktLwfLiveStop& s){
     auto pkt = make_packet(PacketType::LWF_LIVE_STOP, &s, sizeof(s));
-    // Central이 mirror finalize 할 수 있도록 항상 broadcast.
     if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
-    std::lock_guard<std::mutex> lk(clients_mtx_);
-    for(auto& c : clients_){
-        if(c->is_relay || !c->authed || !c->alive.load()) continue;
-        std::lock_guard<std::mutex> wlk(c->fd_write_mtx);
-        send_all(c->fd, pkt.data(), pkt.size());
-    }
-}
-
-void NetServer::send_lwf_live_start_to_op(int op_index, const PktLwfLiveStart& s){
-    auto pkt = make_packet(PacketType::LWF_LIVE_START, &s, sizeof(s));
-    std::shared_ptr<ClientConn> target;
-    {
-        std::lock_guard<std::mutex> lk(clients_mtx_);
-        for(auto& cli : clients_)
-            if(cli->authed && cli->alive.load() && cli->op_index==(uint8_t)op_index){
-                target = cli; break;
-            }
-    }
-    if(!target) return;
-    std::lock_guard<std::mutex> wlk(target->fd_write_mtx);
-    send_all(target->fd, pkt.data(), pkt.size());
 }
 
 // (stream_lwf_file_to_op removed — host now uses send_file_to which streams via

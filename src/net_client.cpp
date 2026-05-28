@@ -253,8 +253,6 @@ void NetClient::recv_loop(){
             case PacketType::DB_DOWNLOAD_DATA:
             case PacketType::DB_DOWNLOAD_INFO:
                 stat_rx_db_bytes.fetch_add(total_bytes, std::memory_order_relaxed); break;
-            case PacketType::LWF_LIVE_ROW:
-                stat_rx_hist_bytes.fetch_add(total_bytes, std::memory_order_relaxed); break;
             case PacketType::MISSION_FILE_DL_DATA:
                 stat_rx_file_bytes.fetch_add(total_bytes, std::memory_order_relaxed); break;
             default: break;
@@ -274,21 +272,6 @@ void NetClient::recv_loop(){
             }
         }
         file_recv_list.clear();
-    }
-    // JOIN의 hist/live/ 임시 폴더 비움 (룸 disconnect 시 동기 정리; TM IQ 롤링 패턴).
-    {
-        std::string ldir = BEWEPaths::hist_live_dir();
-        DIR* d = opendir(ldir.c_str());
-        if(d){
-            struct dirent* de;
-            while((de = readdir(d)) != nullptr){
-                const char* n = de->d_name;
-                if(!n || n[0]=='.') continue;
-                std::string full = ldir + "/" + n;
-                unlink(full.c_str());
-            }
-            closedir(d);
-        }
     }
     bewe_log_push(2,"[NetClient] disconnected: reason=%s total_pkts=%llu fd=%d\n",
            disc_reason, (unsigned long long)pkt_count, fd_);
@@ -446,26 +429,9 @@ void NetClient::handle_packet(PacketType type,
         break;
     }
 
-    case PacketType::LWF_LIVE_START: {
-        if(len < sizeof(PktLwfLiveStart)) break;
-        if(on_lwf_live_start)
-            on_lwf_live_start(*reinterpret_cast<const PktLwfLiveStart*>(payload));
-        break;
-    }
-    case PacketType::LWF_LIVE_ROW: {
-        if(len < sizeof(PktLwfLiveRowHdr)) break;
-        const auto* h = reinterpret_cast<const PktLwfLiveRowHdr*>(payload);
-        uint32_t row_bytes = (uint32_t)len - (uint32_t)sizeof(PktLwfLiveRowHdr);
-        if(on_lwf_live_row)
-            on_lwf_live_row(*h, payload + sizeof(PktLwfLiveRowHdr), row_bytes);
-        break;
-    }
-    case PacketType::LWF_LIVE_STOP: {
-        if(len < sizeof(PktLwfLiveStop)) break;
-        if(on_lwf_live_stop)
-            on_lwf_live_stop(*reinterpret_cast<const PktLwfLiveStop*>(payload));
-        break;
-    }
+    // LWF_LIVE_START/ROW/STOP (v4.6.0): JOIN은 실시간 hist 스트림 안 받음 — Central
+    // archive 가 source-of-truth, 미션창에서 수동 다운로드만. Central 이 fan-out
+    // 차단하지만 구버전 경로로 도달해도 silently drop.
 
     case PacketType::WF_EVENT: {
         if(len < sizeof(PktWfEvent)) break;
@@ -892,9 +858,6 @@ bool NetClient::cmd_lwf_dl_req(const char* filename){
     PktLwfDlReq r{};
     if(filename) strncpy(r.filename, filename, sizeof(r.filename)-1);
     return raw_send(PacketType::LWF_DL_REQ, &r, sizeof(r));
-}
-bool NetClient::cmd_lwf_live_req(){
-    return raw_send(PacketType::LWF_LIVE_REQ, nullptr, 0);
 }
 bool NetClient::cmd_lwf_delete_req(const char* filename){
     PktLwfDlReq r{};

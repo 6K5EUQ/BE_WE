@@ -1180,18 +1180,7 @@ void run_cli_host(){
                         if(v.net_srv) v.net_srv->send_file_to(op_index, full.c_str(), tid);
                     }).detach();
                 };
-                // STREAM opt-in: JOIN이 LWF_LIVE_REQ 보낼 때만 그 op에 한해 LIVE_START unicast.
-                srv->cb.on_lwf_live_req = [&v](int op_index, const char* who){
-                    PktLwfLiveStart ls{};
-                    if(!LongWaterfall::snapshot_live_start(ls)){
-                        bewe_log_push(1, "[LWF] LIVE_REQ op=%d '%s' but no LIVE file open\n",
-                                      op_index, who?who:"?");
-                        return;
-                    }
-                    if(v.net_srv) v.net_srv->send_lwf_live_start_to_op(op_index, ls);
-                    bewe_log_push(0, "[LWF] LIVE_REQ from op=%d '%s' → LIVE_START unicast\n",
-                                  op_index, who?who:"?");
-                };
+                // STREAM opt-in (v4.6.0 제거): LWF_LIVE_REQ 폐기. JOIN은 미션창 archive 다운로드만.
                 // Remote delete: JOIN이 host의 HIST 파일 삭제 요청. 현재 LIVE 파일은 보호.
                 srv->cb.on_lwf_delete_req = [&v](int op_index, const char* who, const char* fn){
                     if(!fn || !fn[0] || strchr(fn, '/')) return;

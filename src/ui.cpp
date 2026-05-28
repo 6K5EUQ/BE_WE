@@ -4223,12 +4223,7 @@ void run_streaming_viewer(){
                                         if(v.net_srv) v.net_srv->send_file_to(op_index, full.c_str(), tid);
                                     }).detach();
                                 };
-                                // STREAM opt-in: JOIN의 LWF_LIVE_REQ에만 그 op로 LIVE_START unicast.
-                                v.net_srv->cb.on_lwf_live_req = [&v](int op_index, const char* /*who*/){
-                                    PktLwfLiveStart ls{};
-                                    if(!LongWaterfall::snapshot_live_start(ls)) return;
-                                    if(v.net_srv) v.net_srv->send_lwf_live_start_to_op(op_index, ls);
-                                };
+                                // STREAM opt-in (v4.6.0 제거): LWF_LIVE_REQ 폐기. JOIN은 미션창 archive 다운로드만.
                                 // Remote delete: JOIN이 host의 HIST 파일 삭제 요청 (active LIVE 보호).
                                 v.net_srv->cb.on_lwf_delete_req = [&v](int op_index, const char* /*who*/, const char* fn){
                                     if(!fn || !fn[0] || strchr(fn, '/')) return;

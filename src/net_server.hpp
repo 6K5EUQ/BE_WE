@@ -206,7 +206,6 @@ struct ServerCallbacks {
     // host can override to filter or log.
     std::function<void(int /*op_index*/, const char* /*who*/)>          on_lwf_list_req;
     std::function<void(int /*op_index*/, const char* /*who*/, const char* /*filename*/)> on_lwf_dl_req;
-    std::function<void(int /*op_index*/, const char* /*who*/)>          on_lwf_live_req;
     std::function<void(int /*op_index*/, const char* /*who*/, const char* /*filename*/)> on_lwf_delete_req;
 
     // ── SIGINT Mission System ────────────────────────────────────────────
@@ -287,8 +286,6 @@ public:
     void broadcast_lwf_live_row(const PktLwfLiveRowHdr& hdr,
                                  const uint8_t* row, uint32_t row_bytes);
     void broadcast_lwf_live_stop(const PktLwfLiveStop& s);
-    // 새 JOIN이 들어왔을 때 현재 LIVE 상태를 그 op만 보내기 위한 helper
-    void send_lwf_live_start_to_op(int op_index, const PktLwfLiveStart& s);
 
     // Digital decode log → clients with audio_mask bit set
 
