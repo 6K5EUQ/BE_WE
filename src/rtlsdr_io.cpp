@@ -3,9 +3,60 @@
 #include "long_waterfall.hpp"
 #include <volk/volk.h>
 #include <cstring>
+#include <cstdio>
 #include <algorithm>
 #include <chrono>
 #include <rtl-sdr.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <linux/usbdevice_fs.h>
+
+#ifndef USBDEVFS_RESET
+#define USBDEVFS_RESET _IO('U', 20)
+#endif
+
+// RTL-SDR (0bda:2838) USB 포트 re-enumeration. sysfs 로 busnum/devnum 찾아
+// /dev/bus/usb 노드에 USBDEVFS_RESET ioctl. udev(plugdev) 권한이면 sudo 불필요.
+// rtlsdr_read_sync 가 wedge 돼 hang 할 때 유일하게 복구되는 경로.
+bool rtl_usb_reset(){
+    const char* base = "/sys/bus/usb/devices";
+    DIR* d = opendir(base);
+    if(!d){ fprintf(stderr,"[RTL] usb_reset: opendir %s failed\n", base); return false; }
+    bool ok = false;
+    struct dirent* e;
+    while((e = readdir(d)) != nullptr){
+        if(e->d_name[0]=='.') continue;
+        char p[600]; char vid[16]={}, pid[16]={};
+        snprintf(p,sizeof(p),"%s/%s/idVendor",base,e->d_name);
+        FILE* f=fopen(p,"r"); if(!f) continue;
+        bool gv = fgets(vid,sizeof(vid),f)!=nullptr; fclose(f); if(!gv) continue;
+        snprintf(p,sizeof(p),"%s/%s/idProduct",base,e->d_name);
+        f=fopen(p,"r"); if(!f) continue;
+        bool gp = fgets(pid,sizeof(pid),f)!=nullptr; fclose(f); if(!gp) continue;
+        if(strncmp(vid,"0bda",4)!=0 || strncmp(pid,"2838",4)!=0) continue;
+        int bus=0, dev=0;
+        snprintf(p,sizeof(p),"%s/%s/busnum",base,e->d_name);
+        f=fopen(p,"r"); if(f){ if(fscanf(f,"%d",&bus)!=1) bus=0; fclose(f); }
+        snprintf(p,sizeof(p),"%s/%s/devnum",base,e->d_name);
+        f=fopen(p,"r"); if(f){ if(fscanf(f,"%d",&dev)!=1) dev=0; fclose(f); }
+        if(bus<=0 || dev<=0) continue;
+        char node[64]; snprintf(node,sizeof(node),"/dev/bus/usb/%03d/%03d",bus,dev);
+        int fd=open(node,O_WRONLY);
+        if(fd>=0){
+            int r=ioctl(fd,USBDEVFS_RESET,0);
+            fprintf(stderr,"[RTL] USB reset %s rc=%d\n",node,r);
+            close(fd);
+            ok=(r==0);
+        } else {
+            fprintf(stderr,"[RTL] usb_reset: open %s failed\n", node);
+        }
+        break;
+    }
+    closedir(d);
+    return ok;
+}
 
 // RTL-SDR V4 고정 파라미터
 static constexpr uint32_t RTL_SAMPLE_RATE = 3200000;  // 3.2 MSPS

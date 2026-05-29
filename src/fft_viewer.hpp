@@ -943,3 +943,8 @@ void run_streaming_viewer();
 // ── BladeRF USB 소프트 리셋 (sudo 불필요, udev rule 권한 사용) ─────────────
 // USBDEVFS_RESET ioctl: 물리적으로 뽑았다 꽂는 것과 동일한 효과
 bool bladerf_usb_reset();
+
+// ── RTL-SDR USB 소프트 리셋 (VID:PID 0bda:2838) ───────────────────────────
+// rtlsdr_read_sync 가 wedge된 커널 sync-URB 큐에서 영구 hang 할 때, 단순 reopen
+// 으로는 안 풀리고 포트 re-enumeration 만 복구됨. USBDEVFS_RESET ioctl 사용.
+bool rtl_usb_reset();

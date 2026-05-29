@@ -1748,6 +1748,33 @@ void run_cli_host(){
             bewe_log_push(0, "[autoscale] post-reconnect trigger (2s settling done)\n");
         }
 
+        // ── FFT-stall watchdog ───────────────────────────────────────────
+        // rtlsdr_read_sync 는 BULK_TIMEOUT=0 (무한) 이라 USB wedge 시 에러 없이
+        // 영구 hang → sdr_stream_error 안 set → 아래 reconnect 영원히 안 탐 (silent
+        // death, ~22h). total_ffts 정체를 직접 감지해 강제 복구. RTL 은 reopen 만으론
+        // 안 풀려 USB reset 으로 hung read_sync 를 깨운 뒤 reconnect 에 위임. (v4.6.1)
+        {
+            static int  wd_last_ffts = -1;
+            static auto wd_last_change = clk::now();
+            bool steady = !v.remote_mode && !v.rx_stopped.load() && v.is_running
+                          && !v.sdr_stream_error.load() && !v.spectrum_pause.load();
+            if(steady){
+                int cur = v.total_ffts;
+                if(cur != wd_last_ffts){
+                    wd_last_ffts = cur;
+                    wd_last_change = clk::now();
+                } else if(std::chrono::duration<float>(clk::now()-wd_last_change).count() >= 10.0f){
+                    bewe_log_push(0,"[CLI] SDR STALL: total_ffts frozen >=10s (read_sync hang) "
+                                    "- forcing recovery\n");
+                    if(v.hw.type == HWType::RTLSDR) rtl_usb_reset();  // 깨워야 read_sync 가 에러 반환
+                    v.sdr_stream_error.store(true);  // 아래 reconnect 트리거
+                    wd_last_change = clk::now();      // 복구 중 재발화 방지
+                }
+            } else {
+                wd_last_change = clk::now();  // 정상 capture 아니면 타이머 리셋
+            }
+        }
+
         // ── SDR reconnect logic ──────────────────────────────────────────
         if(!v.remote_mode && v.sdr_stream_error.load() && !v.rx_stopped.load()){
             if(!bg_join_started && v.hw.type == HWType::BLADERF)
