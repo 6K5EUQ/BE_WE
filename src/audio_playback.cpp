@@ -1,62 +1,10 @@
 #include "audio_playback.hpp"
 #include "fft_viewer.hpp"  // bewe_log_push
+#include "sigmf.hpp"       // SigMF::open_source (SigMF .sigmf-data + legacy .wav)
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
-
-namespace {
-
-struct WavInfo {
-    uint32_t sample_rate  = 0;
-    uint16_t channels     = 0;
-    uint16_t bits         = 0;
-    long     data_offset  = 0;
-    long     data_size    = 0;
-};
-
-// sa_compute.cpp의 RIFF 파서를 단순화 + bewe sub-chunk skip
-bool parse_wav_header(FILE* f, WavInfo& info){
-    char riff[4]={}, wave[4]={};
-    if(fread(riff,1,4,f)!=4) return false;
-    fseek(f, 4, SEEK_CUR); // file size
-    if(fread(wave,1,4,f)!=4) return false;
-    if(strncmp(riff,"RIFF",4)!=0 || strncmp(wave,"WAVE",4)!=0) return false;
-
-    while(true){
-        char id[4]={};
-        uint32_t csz=0;
-        if(fread(id,1,4,f)!=4) break;
-        if(fread(&csz,4,1,f)!=1) break;
-        long chunk_pos = ftell(f);
-        if(strncmp(id,"fmt ",4)==0 && csz >= 16){
-            uint16_t fmt_tag=0;
-            fread(&fmt_tag, 2, 1, f);
-            fread(&info.channels, 2, 1, f);
-            fread(&info.sample_rate, 4, 1, f);
-            fseek(f, 6, SEEK_CUR); // byte rate + block align
-            fread(&info.bits, 2, 1, f);
-        } else if(strncmp(id,"data",4)==0){
-            info.data_offset = chunk_pos;
-            info.data_size   = (long)csz;
-            // data 청크 안에 bewe sub-chunk가 끼어있을 수 있음 → skip
-            char peek[4]={};
-            if(fread(peek,1,4,f)==4 && strncmp(peek,"bewe",4)==0){
-                uint32_t bsz=0; fread(&bsz,4,1,f);
-                long new_off = ftell(f) + (long)bsz + ((long)bsz & 1);
-                long skipped = new_off - info.data_offset;
-                info.data_size   -= skipped;
-                info.data_offset  = new_off;
-            }
-            break;
-        }
-        long next = chunk_pos + (long)csz + ((long)csz & 1);
-        if(fseek(f, next, SEEK_SET) != 0) break;
-    }
-    return (info.sample_rate > 0 && info.channels > 0 && info.data_size > 0);
-}
-
-} // namespace
 
 AudioPlayback::AudioPlayback() {}
 AudioPlayback::~AudioPlayback(){ stop(); }
@@ -64,30 +12,22 @@ AudioPlayback::~AudioPlayback(){ stop(); }
 bool AudioPlayback::start(const std::string& path, uint32_t out_sr, double offset_sec){
     stop(); // 기존 재생 정리
 
-    FILE* f = fopen(path.c_str(), "rb");
-    if(!f){ bewe_log_push(2,"[AudioPlay] open failed: %s\n", path.c_str()); return false; }
-
-    WavInfo info;
-    if(!parse_wav_header(f, info)){
-        fclose(f);
-        bewe_log_push(2,"[AudioPlay] WAV parse failed: %s\n", path.c_str());
+    SigMF::Source src;
+    if(!SigMF::open_source(path, src)){
+        bewe_log_push(2,"[AudioPlay] open/parse failed: %s\n", path.c_str());
         return false;
     }
-    if(info.bits != 16){
-        fclose(f);
-        bewe_log_push(2,"[AudioPlay] only 16-bit PCM supported (got %u)\n", (unsigned)info.bits);
-        return false;
-    }
+    FILE* f = src.f;
 
-    size_t bytes_per_frame = (size_t)info.channels * 2; // int16
-    int64_t total_frames   = info.data_size / (int64_t)bytes_per_frame;
-    float   total_s        = (info.sample_rate > 0)
-                             ? (float)total_frames / (float)info.sample_rate : 0.f;
+    size_t bytes_per_frame = (size_t)src.nch * 2; // int16
+    int64_t total_frames   = src.data_size / (int64_t)bytes_per_frame;
+    float   total_s        = (src.sample_rate > 0)
+                             ? (float)total_frames / (float)src.sample_rate : 0.f;
 
     // offset 클램프
     if(offset_sec < 0.0) offset_sec = 0.0;
     if(offset_sec > total_s) offset_sec = total_s;
-    int64_t start_frame = (int64_t)(offset_sec * (double)info.sample_rate);
+    int64_t start_frame = (int64_t)(offset_sec * (double)src.sample_rate);
     if(start_frame >= total_frames){
         fclose(f);
         bewe_log_push(0,"[AudioPlay] offset past EOF\n");
@@ -111,25 +51,26 @@ bool AudioPlayback::start(const std::string& path, uint32_t out_sr, double offse
     paused_.store(false, std::memory_order_relaxed);
     active_.store(true,  std::memory_order_release);
 
-    worker_ = std::thread([this, f, info, out_sr, start_frame](){
+    worker_ = std::thread([this, src, out_sr, start_frame](){
+        FILE* f = src.f;
         // start offset으로 seek
-        long seek_pos = info.data_offset + start_frame * (long)info.channels * 2;
+        long seek_pos = src.data_offset + start_frame * (long)src.nch * 2;
         fseek(f, seek_pos, SEEK_SET);
 
         double phase = 0.0;
-        double ratio = (double)info.sample_rate / (double)out_sr;
+        double ratio = (double)src.sample_rate / (double)out_sr;
         int16_t prev_L = 0, prev_R = 0;
         int16_t cur_L  = 0, cur_R  = 0;
 
         int64_t frames_emitted = 0;
-        double  base_sec       = (double)start_frame / (double)info.sample_rate;
+        double  base_sec       = (double)start_frame / (double)src.sample_rate;
 
         auto read_next_input_frame = [&](int16_t& L, int16_t& R) -> bool {
             int16_t frame[8];
-            size_t got = fread(frame, sizeof(int16_t), info.channels, f);
-            if(got != info.channels) return false;
-            if(info.channels == 1){ L = R = frame[0]; }
-            else                    { L = frame[0]; R = frame[1]; }
+            size_t got = fread(frame, sizeof(int16_t), src.nch, f);
+            if(got != (size_t)src.nch) return false;
+            if(src.nch == 1){ L = R = frame[0]; }
+            else            { L = frame[0]; R = frame[1]; }
             return true;
         };
 
@@ -192,7 +133,7 @@ bool AudioPlayback::start(const std::string& path, uint32_t out_sr, double offse
     });
 
     bewe_log_push(0,"[AudioPlay] %s @%.2fs (%u Hz, %u ch)\n",
-                  filename_.c_str(), offset_sec, info.sample_rate, (unsigned)info.channels);
+                  filename_.c_str(), offset_sec, src.sample_rate, (unsigned)src.nch);
     return true;
 }
 

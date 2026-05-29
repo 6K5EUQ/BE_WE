@@ -1,4 +1,5 @@
 #include "fft_viewer.hpp"
+#include "sigmf.hpp"
 #include <cstdio>
 #include <cmath>
 #include <cstring>
@@ -14,65 +15,17 @@ void FFTViewer::eid_start(const std::string& wav_path){
     sa_temp_path = wav_path;  // FFT 콤보에서 재계산할 때 사용
 
     eid_thread = std::thread([this, wav_path](){
-        // ── WAV 파싱 (sa_start 패턴 동일) ───────────────────────────────────
-        FILE* f = fopen(wav_path.c_str(), "rb");
-        if(!f){ eid_computing.store(false); return; }
+        // ── IQ/audio 소스 열기 (SigMF .sigmf-data 또는 legacy .wav + bewe) ──
+        SigMF::Source src;
+        if(!SigMF::open_source(wav_path, src)){ eid_computing.store(false); return; }
+        FILE* f = src.f;   // open_source가 데이터 시작 위치로 seek 완료
+        uint32_t meta_sr    = src.sample_rate;
+        uint32_t wav_sr     = src.sample_rate;   // alias (derived 계산 fallback)
+        uint64_t meta_cf_hz = src.center_freq_hz;
+        int64_t  meta_time  = src.start_unix;
+        long     data_size  = src.data_size;
 
-        uint64_t meta_cf_hz = 0;
-        int64_t  meta_time  = 0;
-        uint32_t meta_sr    = 0;
-        long     data_offset = 44;
-        long     data_size   = 0;
-
-        // fmt chunk: num_channels (offset 22), sample_rate (offset 24)
-        fseek(f, 22, SEEK_SET);
-        uint16_t wav_ch = 0; fread(&wav_ch, 2, 1, f);
-        uint32_t wav_sr = 0; fread(&wav_sr, 4, 1, f);
-        if(wav_ch == 0) wav_ch = 2; // 헤더 이상 → 기존 IQ 가정
-
-        // 청크 순회
-        fseek(f, 12, SEEK_SET);
-        while(true){
-            char id[5] = {};
-            uint32_t csz = 0;
-            if(fread(id, 1, 4, f) != 4) break;
-            if(fread(&csz, 4, 1, f) != 1) break;
-            long chunk_data_pos = ftell(f);
-            if(strncmp(id, "data", 4) == 0){
-                data_offset = chunk_data_pos;
-                data_size   = (long)csz;
-            } else if(strncmp(id, "bewe", 4) == 0 && csz >= 20){
-                fread(&meta_cf_hz, 8, 1, f);
-                fread(&meta_time,  8, 1, f);
-                fread(&meta_sr,    4, 1, f);
-            }
-            long next = chunk_data_pos + (long)csz + ((long)csz & 1);
-            if(fseek(f, next, SEEK_SET) != 0) break;
-        }
-        if(data_size <= 0){
-            fseek(f, 0, SEEK_END);
-            long file_sz = ftell(f);
-            data_offset = 44;
-            data_size   = file_sz - 44;
-        }
-        if(meta_sr == 0) meta_sr = wav_sr;
-
-        fseek(f, data_offset, SEEK_SET);
-        // 기존 WAV: data 청크 안에 bewe 청크가 끼어있을 수 있음 → 스킵
-        {
-            char peek[4]={};
-            if(fread(peek,1,4,f)==4 && strncmp(peek,"bewe",4)==0){
-                uint32_t bsz=0; fread(&bsz,4,1,f);
-                fseek(f, ftell(f)+(long)bsz+((long)bsz&1), SEEK_SET);
-                long skipped = ftell(f) - data_offset;
-                data_size -= skipped;
-                data_offset = ftell(f);
-            } else {
-                fseek(f, data_offset, SEEK_SET);
-            }
-        }
-        if(data_size <= 0){ fclose(f); eid_computing.store(false); return; }
-        const int nch = (wav_ch >= 2) ? 2 : 1;  // 1=mono(audio), 2=stereo(IQ)
+        const int nch = src.nch;  // 1=mono(audio), 2=stereo(IQ)
         int64_t n_samples = data_size / (int64_t)(nch * (int)sizeof(int16_t));
         if(n_samples < 1){ fclose(f); eid_computing.store(false); return; }
 

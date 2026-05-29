@@ -1,6 +1,7 @@
 #include "fft_viewer.hpp"
 #include "audio.hpp"
 #include "bewe_paths.hpp"
+#include "sigmf.hpp"
 #include <fftw3.h>
 #include <cstdio>
 #include <cmath>
@@ -85,70 +86,17 @@ void FFTViewer::sa_start(const std::string& wav_path){
     int win_type = sa_window_type;
 
     sa_thread = std::thread([this, wav_path, fft_n, win_type](){
-        // ── WAV 읽기 + bewe 청크 파싱 ────────────────────────────────────
-        FILE* f = fopen(wav_path.c_str(),"rb");
-        if(!f){ sa_computing.store(false); return; }
-
-        // RIFF 헤더 파싱: 청크를 순회하여 data 오프셋과 bewe 메타데이터 추출
-        uint64_t meta_cf_hz  = 0;
-        int64_t  meta_time   = 0;
-        uint32_t meta_sr     = 0;
-        long     data_offset = 44; // 기본값 (표준 44바이트)
-        long     data_size   = 0;
-
-        // fmt chunk의 sample_rate 읽기 (offset 24, uint32)
-        fseek(f, 24, SEEK_SET);
-        uint32_t wav_sr = 0; fread(&wav_sr, 4, 1, f);
-
-        // 청크 순회: "RIFF"(4) + size(4) + "WAVE"(4) = 12바이트 이후부터
-        fseek(f, 12, SEEK_SET);
-        while(true){
-            char id[5]={};
-            uint32_t csz = 0;
-            if(fread(id, 1, 4, f) != 4) break;
-            if(fread(&csz, 4, 1, f) != 1) break;
-            long chunk_data_pos = ftell(f);
-            if(strncmp(id, "data", 4) == 0){
-                data_offset = chunk_data_pos;
-                data_size   = (long)csz;
-            } else if(strncmp(id, "bewe", 4) == 0 && csz >= 20){
-                fread(&meta_cf_hz, 8, 1, f);
-                fread(&meta_time,  8, 1, f);
-                fread(&meta_sr,    4, 1, f);
-            }
-            // 다음 청크로 이동 (짝수 정렬)
-            long next = chunk_data_pos + (long)csz + ((long)csz & 1);
-            if(fseek(f, next, SEEK_SET) != 0) break;
-        }
-        if(data_size <= 0){
-            // 파싱 실패 시 파일 크기로 추정
-            fseek(f, 0, SEEK_END);
-            long file_sz = ftell(f);
-            data_offset = 44;
-            data_size   = file_sz - 44;
-        }
-        if(meta_sr == 0) meta_sr = wav_sr;
+        // ── IQ 소스 열기 (SigMF .sigmf-data 또는 legacy .wav + bewe 청크) ──
+        SigMF::Source src;
+        if(!SigMF::open_source(wav_path, src)){ sa_computing.store(false); return; }
+        FILE* f = src.f;   // open_source가 데이터 시작 위치로 seek 완료
 
         // SA 메타데이터 저장
-        sa_center_freq_hz = meta_cf_hz;
-        sa_start_time     = meta_time;
-        sa_sample_rate    = meta_sr > 0 ? meta_sr : wav_sr;
+        sa_center_freq_hz = src.center_freq_hz;
+        sa_start_time     = src.start_unix;
+        sa_sample_rate    = src.sample_rate;
 
-        fseek(f, data_offset, SEEK_SET);
-        // 기존 WAV: data 청크 안에 bewe 청크가 끼어있을 수 있음 → 스킵
-        {
-            char peek[4]={};
-            if(fread(peek,1,4,f)==4 && strncmp(peek,"bewe",4)==0){
-                uint32_t bsz=0; fread(&bsz,4,1,f);
-                fseek(f, ftell(f)+(long)bsz+((long)bsz&1), SEEK_SET);
-                long skipped = ftell(f) - data_offset;
-                data_size -= skipped;
-                data_offset = ftell(f);
-            } else {
-                fseek(f, data_offset, SEEK_SET);
-            }
-        }
-        long data_bytes_actual = data_size;
+        long data_bytes_actual = src.data_size;
         if(data_bytes_actual <= 0){ fclose(f); sa_computing.store(false); return; }
         int64_t n_samples = data_bytes_actual / (int64_t)(2*sizeof(int16_t));
 
@@ -447,21 +395,11 @@ void FFTViewer::sa_play_demod(){
         sa_playing.store(false); return;
     }
 
-    // WAV 파일 열기 + data 오프셋 파싱
-    FILE* f = fopen(wav_path.c_str(), "rb");
-    if(!f){ sa_playing.store(false); return; }
-
-    long data_offset = 44;
-    fseek(f, 12, SEEK_SET);
-    while(true){
-        char id[5]={};
-        uint32_t csz=0;
-        if(fread(id,1,4,f)!=4) break;
-        if(fread(&csz,4,1,f)!=1) break;
-        long cdp = ftell(f);
-        if(strncmp(id,"data",4)==0){ data_offset=cdp; break; }
-        fseek(f, cdp+(long)csz+((long)csz&1), SEEK_SET);
-    }
+    // IQ 소스 열기 (SigMF .sigmf-data 또는 legacy .wav)
+    SigMF::Source src;
+    if(!SigMF::open_source(wav_path, src)){ sa_playing.store(false); return; }
+    FILE* f = src.f;
+    long data_offset = src.data_offset;
 
     // 선택된 시간 범위 → 샘플 범위
     // total_rows 행 × fft_n = 전체 샘플 (50% 오버랩 없이, 근사치)
