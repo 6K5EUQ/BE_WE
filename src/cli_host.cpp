@@ -3,6 +3,7 @@
 // GLFW/OpenGL/ImGui 의존성 없음
 
 #include "fft_viewer.hpp"
+#include "sigmf.hpp"
 #include "iq_filename.hpp"
 #include "login.hpp"
 #include "bewe_paths.hpp"
@@ -517,9 +518,10 @@ void run_cli_host(){
                 fseek(fp, 0, SEEK_END); uint64_t fsz = (uint64_t)ftell(fp); fseek(fp, 0, SEEK_SET);
                 const char* fn = strrchr(path.c_str(), '/');
                 fn = fn ? fn+1 : path.c_str();
+                uint32_t sr=0; { SigMF::Meta m; if(SigMF::read_meta(path,m)) sr=m.sample_rate; }
                 // START
                 { PktIqChunkHdr ch{}; ch.req_id=req_id; ch.seq=0;
-                  strncpy(ch.filename, fn, 127); ch.filesize=fsz; ch.data_len=0;
+                  strncpy(ch.filename, fn, 127); ch.filesize=fsz; ch.data_len=0; ch.sample_rate=sr;
                   auto bewe=make_packet(PacketType::IQ_CHUNK, &ch, sizeof(ch));
                   if(srv->cb.on_relay_broadcast) srv->cb.on_relay_broadcast(bewe.data(), bewe.size(), true); }
                 // DATA
@@ -544,8 +546,9 @@ void run_cli_host(){
                   strncpy(ch.filename,fn,127); ch.filesize=fsz; ch.data_len=0;
                   auto bewe=make_packet(PacketType::IQ_CHUNK,&ch,sizeof(ch));
                   if(srv->cb.on_relay_broadcast) srv->cb.on_relay_broadcast(bewe.data(),bewe.size(),true); }
-                // 전송 완료 후 HOST에서 삭제
+                // 전송 완료 후 HOST에서 삭제 (data + .sigmf-meta sidecar)
                 remove(path.c_str());
+                remove(SigMF::sidecar_path(path).c_str());
                 bewe_log_push(0,"[CLI] IQ REC transferred and deleted: %s\n", path.c_str());
             }).detach();
         }
@@ -628,11 +631,12 @@ void run_cli_host(){
                 fn_only2 = fn_only2 ? fn_only2+1 : path.c_str();
                 bewe_log_push(0,"[CLI] IQ_CHUNK transfer start: req_id=%u file='%s' size=%.1fMB\n",
                        req_id, fn_only2, fsz/1048576.0);
+                uint32_t rsr=0; { SigMF::Meta m; if(SigMF::read_meta(path,m)) rsr=m.sample_rate; }
                 {
                     PktIqChunkHdr ch{};
                     ch.req_id = req_id; ch.seq = 0;
                     strncpy(ch.filename, fn_only2, 127);
-                    ch.filesize = fsz; ch.data_len = 0;
+                    ch.filesize = fsz; ch.data_len = 0; ch.sample_rate = rsr;
                     auto bewe = make_packet(PacketType::IQ_CHUNK, &ch, sizeof(ch));
                     srv->cb.on_relay_broadcast(bewe.data(), bewe.size(), true);
                 }
@@ -870,7 +874,7 @@ void run_cli_host(){
                 size_t n;
                 while((n = fread(tmp.data(), 1, BUF, fp)) > 0) fwrite(tmp.data(), 1, n, out);
                 fclose(out);
-                std::string info_path = db_path + ".info";
+                std::string info_path = SigMF::sidecar_path(db_path);
                 FILE* fi = fopen(info_path.c_str(), "w");
                 if(fi){ fputs(info.c_str(), fi); fclose(fi); }
                 bewe_log_push(0,"[SCHED-DB] saved locally: %s\n", db_path.c_str());
@@ -899,9 +903,9 @@ void run_cli_host(){
             db_recv.tid = meta->transfer_id;
             // .info 저장
             if(meta->info_data[0]){
-                std::string info_dst = dst + ".info";
+                std::string info_dst = SigMF::sidecar_path(dst);
                 FILE* fi = fopen(info_dst.c_str(), "w");
-                if(fi){ fwrite(meta->info_data, 1, strnlen(meta->info_data, 511), fi); fclose(fi); }
+                if(fi){ fwrite(meta->info_data, 1, strnlen(meta->info_data, sizeof(meta->info_data)-1), fi); fclose(fi); }
             }
         } else if(data && len >= sizeof(PktDbSaveData)){
             // DATA: 파일에 쓰기
@@ -931,7 +935,7 @@ void run_cli_host(){
             // Central 없음 → 로컬 삭제 (flat — operator_name 무시)
             std::string fpath = BEWEPaths::database_dir() + "/" + filename;
             int r = remove(fpath.c_str());
-            remove((fpath + ".info").c_str());
+            remove(SigMF::sidecar_path(fpath).c_str());
             bewe_log_push(0,"[CMD:%s] DB_DELETE '%s': %s\n", who, filename,
                           r==0 ? "OK" : strerror(errno));
         }
@@ -1019,13 +1023,13 @@ void run_cli_host(){
                     bool is_iq = (is_iq_filename(fn));
                     std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
                     mkdir(dir.c_str(), 0755);
-                    std::string ipath = dir + "/" + fn + ".info";
+                    std::string ipath = SigMF::sidecar_path(dir + "/" + fn);
                     FILE* fi = fopen(ipath.c_str(), "w");
                     if(fi){
                         size_t n = strnlen(di->info_data, sizeof(di->info_data));
                         if(n > 0) fwrite(di->info_data, 1, n, fi);
                         fclose(fi);
-                        bewe_log_push(0,"[DB] Download .info saved: %s\n", ipath.c_str());
+                        bewe_log_push(0,"[DB] Download meta saved: %s\n", ipath.c_str());
                     }
                 });
 
@@ -2116,9 +2120,9 @@ void run_cli_host(){
                 std::string src = src_dir+"/"+n;
                 std::string dst = dst_dir+"/"+n;
                 rename(src.c_str(), dst.c_str());
-                // .info 동반 이동 (있을 때만)
-                std::string isrc = src + ".info";
-                std::string idst = dst + ".info";
+                // sidecar 동반 이동 (.sigmf-meta/.info, 있을 때만)
+                std::string isrc = SigMF::sidecar_path(src);
+                std::string idst = SigMF::sidecar_path(dst);
                 if(access(isrc.c_str(), F_OK)==0)
                     rename(isrc.c_str(), idst.c_str());
             }

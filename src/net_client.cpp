@@ -1,6 +1,7 @@
 #include "net_client.hpp"
 #include "bewe_paths.hpp"
 #include "login.hpp"
+#include "sigmf.hpp"
 #include <cstdio>
 
 extern void bewe_log_push(int col, const char* fmt, ...);
@@ -588,7 +589,7 @@ void NetClient::handle_packet(PacketType type,
         const uint8_t* data = payload + sizeof(PktIqChunkHdr);
         uint32_t data_len = (len > sizeof(PktIqChunkHdr)) ? (len - (uint32_t)sizeof(PktIqChunkHdr)) : 0;
         stat_rx_db_bytes.fetch_add(data_len, std::memory_order_relaxed);
-        if(on_iq_chunk) on_iq_chunk(h->req_id, h->seq, h->filename, h->filesize, data, data_len);
+        if(on_iq_chunk) on_iq_chunk(h->req_id, h->seq, h->filename, h->filesize, h->sample_rate, data, data_len);
         break;
     }
 
@@ -904,7 +905,7 @@ bool NetClient::cmd_report_add(const char* filename, const char* info_data){
     PktReportAdd ra{};
     strncpy(ra.filename, filename, 127);
     strncpy(ra.reporter, my_name, 31);
-    strncpy(ra.info_data, info_data ? info_data : "", 511);
+    strncpy(ra.info_data, info_data ? info_data : "", sizeof(ra.info_data)-1);
     return raw_send(PacketType::REPORT_ADD, &ra, sizeof(ra));
 }
 
@@ -1039,11 +1040,11 @@ bool NetClient::cmd_db_save(const char* filepath, const char* operator_name){
     const char* fn = strrchr(filepath, '/');
     fn = fn ? fn+1 : filepath;
     std::string fname_str = fn;
-    // read .info if exists
-    std::string info_path = std::string(filepath) + ".info";
-    char info_data[512] = {};
+    // read sidecar (IQ: .sigmf-meta / 그 외: .info)
+    std::string info_path = SigMF::sidecar_path(filepath);
+    char info_data[1024] = {};
     FILE* fi = fopen(info_path.c_str(), "r");
-    if(fi){ fread(info_data, 1, 511, fi); fclose(fi); }
+    if(fi){ fread(info_data, 1, sizeof(info_data)-1, fi); fclose(fi); }
     // send meta
     PktDbSaveMeta meta{};
     strncpy(meta.filename, fn, 127);

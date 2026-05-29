@@ -3,6 +3,7 @@
 #include "long_waterfall.hpp"
 #include "mission_push.hpp"
 #include "kst_time.hpp"
+#include "sigmf.hpp"
 #include <ctime>
 #include <algorithm>
 #include <chrono>
@@ -44,28 +45,34 @@ static std::string build_iq_demod_filename(FFTViewer& v, const char* prefix,
     std::string st = sanitize_station_fn(mstation[0] ? mstation : nullptr);
     char hms[16]; strftime(hms, sizeof(hms), "%H%M%S", &kst_tm);
     int year = 1900 + kst_tm.tm_year;
+    // IQ 원본은 SigMF (.sigmf-data), 복조 음성(DE)은 표준 .wav
+    const char* ext = (prefix && strcmp(prefix, "IQ") == 0) ? ".sigmf-data" : ".wav";
     char buf[256];
-    snprintf(buf, sizeof(buf), "%s_%s_%s_%04d_%.3fMHz_%s.wav",
-             st.c_str(), prefix, mcode, year, cf_mhz, hms);
+    snprintf(buf, sizeof(buf), "%s_%s_%s_%04d_%.3fMHz_%s%s",
+             st.c_str(), prefix, mcode, year, cf_mhz, hms, ext);
     return buf;
 }
 
-// stop 시점에 path 의 .wav 직전에 -<end_HHMMSS> 삽입한 새 path 반환.
+// stop 시점에 path 의 확장자 직전에 -<end_HHMMSS> 삽입한 새 path 반환.
+// (.wav / .sigmf-data 모두 처리)
 static std::string add_end_hms_to_path(const std::string& path, const struct tm& kst_end){
     char hms[16]; strftime(hms, sizeof(hms), "%H%M%S", &kst_end);
-    auto dot = path.rfind(".wav");
+    auto dot = path.find_last_of('.');
     if(dot == std::string::npos) return path;
     return path.substr(0, dot) + "-" + hms + path.substr(dot);
 }
 
-// stop 시 src → dst rename + .info sidecar 도 함께 이동.
+// stop 시 src → dst rename + sidecar(.info 또는 .sigmf-meta) 도 함께 이동.
 static std::string rename_with_end_hms(const std::string& old_path){
     time_t te = time(nullptr);
     struct tm te_tm; KST::to_tm(te, te_tm);
     std::string new_path = add_end_hms_to_path(old_path, te_tm);
     if(new_path != old_path){
         if(rename(old_path.c_str(), new_path.c_str()) == 0){
-            rename((old_path + ".info").c_str(), (new_path + ".info").c_str());
+            if(SigMF::is_sigmf_data(old_path))
+                rename(SigMF::meta_path(old_path).c_str(), SigMF::meta_path(new_path).c_str());
+            else
+                rename((old_path + ".info").c_str(), (new_path + ".info").c_str());
             return new_path;
         }
     }
@@ -84,14 +91,31 @@ void write_default_info_file(const std::string& wav_path,
                              const char* operator_name,
                              const char* station_name,
                              time_t start_wall_time,
-                             int utc_offset_hours)
+                             int utc_offset_hours,
+                             uint32_t sample_rate)
 {
+    if(start_wall_time <= 0) start_wall_time = time(nullptr);
+
+    // IQ 원본(.sigmf-data): bewe 청크 + .info 대신 SigMF 메타(.sigmf-meta) 작성
+    if(SigMF::is_sigmf_data(wav_path)){
+        SigMF::Meta m;
+        m.sample_rate    = sample_rate;
+        m.center_freq_hz = (freq_mhz     > 0) ? (uint64_t)(freq_mhz * 1e6 + 0.5) : 0;
+        m.start_unix     = (int64_t)start_wall_time;
+        m.bandwidth_hz   = (bw_khz       > 0) ? bw_khz * 1000.0 : 0;
+        m.duration_s     = (duration_sec > 0) ? duration_sec    : 0;
+        m.modulation     = modulation    ? modulation    : "";
+        m.op             = operator_name ? operator_name : "";
+        m.station        = station_name  ? station_name  : "";
+        m.recorder       = source_type   ? source_type   : "";
+        SigMF::write_meta(wav_path, m);
+        return;
+    }
+
     std::string info_path = wav_path + ".info";
     if(access(info_path.c_str(), F_OK) == 0) return; // 이미 있으면 보존
     FILE* f = fopen(info_path.c_str(), "w");
     if(!f) return;
-
-    if(start_wall_time <= 0) start_wall_time = time(nullptr);
     struct tm tm2; KST::to_tm(start_wall_time, tm2);
     (void)utc_offset_hours;  // 호환 위해 남기지만 KST 강제
     char day_buf[64], up_buf[64];
@@ -139,6 +163,7 @@ void write_default_info_file(const std::string& wav_path,
 // .info 파일의 Duration 및 Down Time 갱신 (다른 필드 보존)
 // 녹음 종료 시 호출 > Up Time은 이미 생성 시점에 기록됨
 static void update_info_file_duration(const std::string& wav_path, double duration_sec){
+    if(SigMF::is_sigmf_data(wav_path)){ SigMF::update_duration(wav_path, duration_sec); return; }
     std::string info_path = wav_path + ".info";
     FILE* f = fopen(info_path.c_str(), "r");
     if(!f) return;
@@ -317,7 +342,7 @@ void FFTViewer::start_rec(){
     write_default_info_file(rec_filename, recorder_name(),
                             (double)rec_cf_mhz, (se-ss)*1000.0, 0.0,
                             "", login_get_id(), station_name.c_str(),
-                            time(nullptr), utc_offset_hours());
+                            time(nullptr), utc_offset_hours(), rec_sr);
 }
 
 void FFTViewer::stop_rec(){
@@ -573,7 +598,7 @@ void FFTViewer::start_iq_rec(int ch_idx){
         struct tm su; KST::to_tm(pending_sched_meta.start_utc, su);
         struct tm eu; KST::to_tm(pending_sched_meta.end_utc,   eu);
         snprintf(fn,sizeof(fn),
-                 "%s/SCHED_IQ_%s_%c%02d_%s%d.%04d_%02d%02d%02d-%02d%02d%02d_%.1fMHz.wav",
+                 "%s/SCHED_IQ_%s_%c%02d_%s%d.%04d_%02d%02d%02d-%02d%02d%02d_%.1fMHz.sigmf-data",
                  rec_dir.c_str(), st.c_str(),
                  LongWaterfall::mission_letter(su.tm_mon), su.tm_mday,
                  LongWaterfall::month_abbr3(su.tm_mon),    su.tm_mday, 1900+su.tm_year,
@@ -591,7 +616,7 @@ void FFTViewer::start_iq_rec(int ch_idx){
     ch.iq_rec_frames=0;
     ch.iq_rec_cf_hz=(uint64_t)(cf_mhz*1e6);
     ch.iq_rec_start_time=(int64_t)t;
-    ch.iq_rec_write_wav_hdr(fp,actual_inter,0);
+    // raw IQ(.sigmf-data): 헤더 없이 데이터부터 기록. 메타는 아래 .sigmf-meta.
 
     ch.iq_rec_fp=fp;
     ch.iq_rec_path=fn;
@@ -627,7 +652,7 @@ void FFTViewer::start_iq_rec(int ch_idx){
                             (double)cf_mhz, (double)bw_khz_iq, 0.0,
                             dem_mode_name(ch.mode), login_get_id(),
                             station_name.c_str(), time(nullptr),
-                            utc_offset_hours());
+                            utc_offset_hours(), actual_inter);
 }
 
 void FFTViewer::stop_iq_rec(int ch_idx){
@@ -645,15 +670,11 @@ void FFTViewer::stop_iq_rec(int ch_idx){
 
     FILE* fp=ch.iq_rec_fp;
     ch.iq_rec_fp=nullptr;
-    if(fp){
-        fseek(fp,0,SEEK_SET);
-        ch.iq_rec_write_wav_hdr(fp,ch.iq_rec_sr,ch.iq_rec_frames);
-        fclose(fp);
-    }
+    if(fp) fclose(fp);   // raw .sigmf-data — 헤더 재작성 불필요
 
     if(ch.iq_rec_frames==0){
         remove(ch.iq_rec_path.c_str());
-        remove((ch.iq_rec_path + ".info").c_str());
+        remove(SigMF::meta_path(ch.iq_rec_path).c_str());
         bewe_log("IQ REC empty, deleted: %s\n",ch.iq_rec_path.c_str());
         std::lock_guard<std::mutex> lk(rec_entries_mtx);
         rec_entries.erase(std::remove_if(rec_entries.begin(),rec_entries.end(),

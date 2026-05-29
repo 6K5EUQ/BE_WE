@@ -3,6 +3,7 @@
 #include "bewe_paths.hpp"
 #include "login.hpp"
 #include "kst_time.hpp"
+#include "sigmf.hpp"
 #include <ctime>
 #include <chrono>
 #include <thread>
@@ -249,7 +250,7 @@ void FFTViewer::sched_stop_entry(int idx){
             // stop_iq_rec()가 이미 표준 Key:Value 형식 .info를 생성/갱신했음.
             // 그 내용을 그대로 read해서 업로드 (free-form 텍스트 대신 표준 포맷 보장)
             std::string info_str;
-            std::string ipath = iq_path + ".info";
+            std::string ipath = SigMF::sidecar_path(iq_path);
             FILE* fi = fopen(ipath.c_str(), "r");
             if(fi){
                 char buf[2048];

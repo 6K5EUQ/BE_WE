@@ -5,6 +5,7 @@
 #include "central_client.hpp"
 #include "net_protocol.hpp"
 #include "bewe_paths.hpp"
+#include "sigmf.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -142,13 +143,13 @@ bool push_one(const QueueItem& it){
 
     uint8_t tid = alloc_transfer_id();
 
-    // .info sidecar 읽기
+    // sidecar 읽기 (IQ: .sigmf-meta / audio: .info)
     std::string info_text;
     {
-        std::string info_path = it.path + ".info";
+        std::string info_path = SigMF::sidecar_path(it.path);
         FILE* fi = fopen(info_path.c_str(), "r");
         if(fi){
-            char buf[512];
+            char buf[1024];
             size_t r = fread(buf, 1, sizeof(buf)-1, fi);
             buf[r] = 0;
             info_text = buf;
@@ -253,7 +254,7 @@ bool push_one(const QueueItem& it){
     fprintf(stderr, "[MissionPush] tid=%u DONE (%lu bytes on Central) — unlink %s\n",
             tid, (unsigned long)ack.total_bytes, it.path.c_str());
     unlink(it.path.c_str());
-    unlink((it.path + ".info").c_str());
+    unlink(SigMF::sidecar_path(it.path).c_str());
     return true;
 }
 
@@ -316,7 +317,7 @@ void start(FFTViewer* v, CentralClient* cli){
                     fprintf(stderr, "[MissionPush] late ACK tid=%u — drop dup queued %s + unlink\n",
                             a->transfer_id, it->path.c_str());
                     unlink(it->path.c_str());
-                    unlink((it->path + ".info").c_str());
+                    unlink(SigMF::sidecar_path(it->path).c_str());
                     it = q.erase(it);
                 } else {
                     ++it;
@@ -383,7 +384,9 @@ void scan_mission_dir_enqueue(int year, const char* code){
             const char* n = ent->d_name;
             if(!n || n[0] == '.') continue;
             size_t nlen = strlen(n);
-            if(nlen >= 5 && strcmp(n + nlen - 5, ".info") == 0) continue;
+            if(nlen >= 5  && strcmp(n + nlen - 5,  ".info")       == 0) continue;
+            if(nlen >= 11 && strcmp(n + nlen - 11, ".sigmf-meta") == 0) continue; // IQ sidecar
+            // (.sigmf-data 데이터 파일은 enqueue 대상)
             // -LIVE.bewehist 는 아직 stream 진행 중일 수 있어 제외
             if(sub == MFS_HIST && strstr(n, "-LIVE.")) continue;
             std::string full = dir + "/" + n;

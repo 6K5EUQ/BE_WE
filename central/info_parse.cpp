@@ -1,4 +1,5 @@
 #include "info_parse.hpp"
+#include "../src/sigmf.hpp"   // SigMF meta_find_* (sigmf-meta JSON 파싱)
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -23,6 +24,37 @@ std::string lower(const std::string& s){
 
 std::map<std::string, std::string> parse(const std::string& text){
     std::map<std::string, std::string> m;
+
+    // SigMF .sigmf-meta(JSON) 이면 .info 키로 매핑 (ingest 로직 재사용)
+    size_t fnw = text.find_first_not_of(" \t\r\n");
+    if(fnw != std::string::npos && text[fnw] == '{'){
+        double d; std::string s; char buf[64];
+        if(SigMF::meta_find_num(text, "core:frequency", d)){
+            snprintf(buf, sizeof(buf), "%.6f MHz", d / 1e6); m["Frequency"] = buf;
+        }
+        if(SigMF::meta_find_num(text, "bewe:bandwidth_hz", d)){
+            snprintf(buf, sizeof(buf), "%.3f kHz", d / 1000.0); m["Bandwidth"] = buf;
+        }
+        if(SigMF::meta_find_num(text, "bewe:duration_s", d)){
+            snprintf(buf, sizeof(buf), "%.1f s", d); m["Duration"] = buf;
+        }
+        if(SigMF::meta_find_str(text, "bewe:modulation", s)) m["Modulation"] = s;
+        if(SigMF::meta_find_str(text, "bewe:operator",   s)) m["Operator"]   = s;
+        if(SigMF::meta_find_str(text, "bewe:target",     s)) m["Target"]     = s;
+        if(SigMF::meta_find_str(text, "bewe:protocol",   s)) m["Protocol"]   = s;
+        if(SigMF::meta_find_str(text, "core:datetime",   s) && !s.empty()){
+            struct tm g; memset(&g, 0, sizeof(g));
+            if(strptime(s.c_str(), "%Y-%m-%dT%H:%M:%SZ", &g)){
+                char day[32], up[40];
+                strftime(day, sizeof(day), "%b %d, %Y", &g);
+                strftime(up,  sizeof(up),  "%H:%M:%S",  &g);
+                m["Day"] = day;
+                m["Up Time"] = std::string(up) + " UTC+0";  // datetime은 UTC 기준
+            }
+        }
+        return m;
+    }
+
     std::istringstream iss(text);
     std::string line;
     while(std::getline(iss, line)){

@@ -32,7 +32,8 @@ struct IIR1 {
     inline float p(float x){ s=a*s+b*x; return s; }
 };
 
-// ── WAV file writer (stereo int16, for IQ recording) ──────────────────────
+// ── Raw IQ writer (interleaved int16 I,Q — SigMF .sigmf-data) ──────────────
+// 헤더 없음. 중심주파수/시각/SR 등 메타는 별도 .sigmf-meta 파일이 담는다.
 struct WAVWriter {
     FILE*    fp=nullptr;
     uint32_t sample_rate=0;
@@ -42,7 +43,7 @@ struct WAVWriter {
 
     bool open(const std::string& fn, uint32_t sr){
         fp=fopen(fn.c_str(),"wb"); if(!fp) return false;
-        sample_rate=sr; num_samples=0; buf.reserve(BUF_FRAMES*2); write_hdr(); return true;
+        sample_rate=sr; num_samples=0; buf.reserve(BUF_FRAMES*2); return true;
     }
     void push(int16_t i,int16_t q){
         buf.push_back(i); buf.push_back(q); ++num_samples;
@@ -52,23 +53,9 @@ struct WAVWriter {
         if(!fp||buf.empty()) return;
         fwrite(buf.data(),2,buf.size(),fp);
         buf.clear();
-        // 헤더 갱신 (녹음 중에도 파일을 읽을 수 있도록)
-        long pos=ftell(fp);
-        fseek(fp,0,SEEK_SET); write_hdr();
-        fseek(fp,pos,SEEK_SET);
         fflush(fp);
     }
-    void close(){ flush(); if(!fp) return; fseek(fp,0,SEEK_SET); write_hdr(); fclose(fp); fp=nullptr; }
-private:
-    void write_hdr(){
-        auto w32=[&](uint32_t v){ fwrite(&v,4,1,fp); };
-        auto w16=[&](uint16_t v){ fwrite(&v,2,1,fp); };
-        uint32_t db=(uint32_t)(num_samples*4);
-        fwrite("RIFF",1,4,fp); w32(36+db); fwrite("WAVE",1,4,fp);
-        fwrite("fmt ",1,4,fp); w32(16); w16(1); w16(2);
-        w32(sample_rate); w32(sample_rate*4); w16(4); w16(16);
-        fwrite("data",1,4,fp); w32(db);
-    }
+    void close(){ flush(); if(!fp) return; fclose(fp); fp=nullptr; }
 };
 
 // ── Per-channel state ─────────────────────────────────────────────────────
@@ -200,24 +187,8 @@ struct Channel {
     uint32_t synced_audio_rec_secs = 0;
     int64_t  iq_rec_start_time = 0;
 
-    // WAV 헤더 + bewe 메타데이터 청크 (총 72바이트)
-    void iq_rec_write_wav_hdr(FILE* fp, uint32_t sr, uint64_t frames){
-        auto w32=[&](uint32_t v){ fwrite(&v,4,1,fp); };
-        auto w16=[&](uint16_t v){ fwrite(&v,2,1,fp); };
-        uint32_t db=(uint32_t)(frames*4);
-        uint32_t bewe_chunk=28; // "bewe"(4)+size(4)+payload(20)
-        fwrite("RIFF",1,4,fp); w32(36+db+bewe_chunk); fwrite("WAVE",1,4,fp);
-        fwrite("fmt ",1,4,fp); w32(16); w16(1); w16(2);
-        w32(sr); w32(sr*4); w16(4); w16(16);
-        // bewe 청크 (data 앞에 배치)
-        fwrite("bewe",1,4,fp); w32(20);
-        fwrite(&iq_rec_cf_hz,8,1,fp);
-        fwrite(&iq_rec_start_time,8,1,fp);
-        fwrite(&sr,4,1,fp);
-        // data 청크
-        fwrite("data",1,4,fp); w32(db);
-    }
-
+    // 라이브 IQ 녹음은 raw int16 stereo(.sigmf-data)로 append. 헤더 없음.
+    // 메타(cf/시각/SR)는 .sigmf-meta 파일이 담는다 (start_iq_rec에서 생성).
     inline void maybe_rec_iq(float fi, float fq, bool gate_open){
         if(!iq_rec_on.load(std::memory_order_relaxed)) return;
         if(!iq_rec_fp) return;
@@ -260,14 +231,8 @@ struct Channel {
         fwrite(&si,2,1,iq_rec_fp);
         fwrite(&sq,2,1,iq_rec_fp);
         iq_rec_frames++;
-        // 매 65536 샘플마다 헤더 갱신 (녹음 중 실시간 분석 가능)
-        if((iq_rec_frames & 0xFFFF) == 0){
-            long pos=ftell(iq_rec_fp);
-            fseek(iq_rec_fp,0,SEEK_SET);
-            iq_rec_write_wav_hdr(iq_rec_fp,iq_rec_sr,iq_rec_frames);
-            fseek(iq_rec_fp,pos,SEEK_SET);
-            fflush(iq_rec_fp);
-        }
+        // 매 65536 샘플마다 flush (녹음 중 실시간 분석 가능 — raw라 헤더 갱신 불필요)
+        if((iq_rec_frames & 0xFFFF) == 0) fflush(iq_rec_fp);
     }
 
     // Squelch (UI 스레드에서 FFT 기반으로 중앙 관리)

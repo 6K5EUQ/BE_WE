@@ -57,7 +57,8 @@ void write_default_info_file(const std::string& wav_path,
                              const char* operator_name,
                              const char* station_name,
                              time_t start_wall_time,
-                             int utc_offset_hours = INT_MIN);
+                             int utc_offset_hours = INT_MIN,
+                             uint32_t sample_rate = 0);  // SigMF meta용 (IQ .sigmf-data); .wav는 무시
 
 // ── FFTViewer ─────────────────────────────────────────────────────────────
 class FFTViewer {
@@ -828,6 +829,7 @@ public:
         int32_t     req_fft_top = 0, req_fft_bot = 0;
         float       req_freq_lo = 0, req_freq_hi = 0;
         int32_t     req_time_start = 0, req_time_end = 0; // Unix timestamps from JOIN
+        uint32_t    req_sr = 0;       // JOIN: region IQ SR (IQ_CHUNK START 동봉, .sigmf-meta용)
         std::string local_path_to_delete; // HOST: 전송 후 삭제할 파일 경로
         std::chrono::steady_clock::time_point t_start; // 시작 시각
         std::chrono::steady_clock::time_point t_last_tick; // 이전 프레임 시각 (Holding 중 정지용)

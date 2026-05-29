@@ -8,6 +8,7 @@
 #include "fft_viewer.hpp"
 #include "net_client.hpp"
 #include "bewe_paths.hpp"
+#include "sigmf.hpp"
 #include "login.hpp"
 #include "kst_time.hpp"
 
@@ -668,7 +669,7 @@ static void process_delete_key(NetClient* cli){
     if(g_active_tab_kind == SelKind::LOCAL){
         for(const std::string& full : g_sel_local_paths){
             unlink(full.c_str());
-            unlink((full + ".info").c_str());
+            unlink(SigMF::sidecar_path(full).c_str());
             n_local++;
         }
         g_sel_local_paths.clear();
@@ -999,9 +1000,9 @@ static void start_upload(NetClient* cli, FFTViewer& v,
 
     std::string info_data_str;
     {
-        FILE* fi = fopen((full_path + ".info").c_str(), "r");
+        FILE* fi = fopen(SigMF::sidecar_path(full_path).c_str(), "r");
         if(fi){
-            char buf[512] = {};
+            char buf[1024] = {};
             size_t r = fread(buf, 1, sizeof(buf) - 1, fi);
             (void)r;
             fclose(fi);
@@ -1097,7 +1098,7 @@ static void local_context_menu(FFTViewer& v, NetClient* cli,
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.35f, 0.35f, 1.f));
         if(ImGui::MenuItem("Delete")){
             unlink(full_path.c_str());
-            unlink((full_path + ".info").c_str());
+            unlink(SigMF::sidecar_path(full_path).c_str());
             MissionView::show_toast("Local file deleted");
         }
         ImGui::PopStyleColor();
@@ -2148,7 +2149,7 @@ void on_mission_file_dl_data_recv(const PktMissionFileDlData& d,
         // .info sidecar (info_data가 non-empty 일 때만)
         bool has_info = (d.info_data[0] != 0);
         if(has_info){
-            FILE* fi = fopen((g_dl_local_path + ".info").c_str(), "w");
+            FILE* fi = fopen(SigMF::sidecar_path(g_dl_local_path).c_str(), "w");
             if(fi){
                 size_t n = strnlen(d.info_data, sizeof(d.info_data));
                 fwrite(d.info_data, 1, n, fi);
@@ -2170,7 +2171,7 @@ void on_mission_file_dl_data_recv(const PktMissionFileDlData& d,
         // chunk_bytes=0 + is_first + is_last 면 "not found" 응답 → 빈 파일 unlink
         if(d.total_bytes == 0 && g_dl_written == 0){
             unlink(g_dl_local_path.c_str());
-            unlink((g_dl_local_path + ".info").c_str());
+            unlink(SigMF::sidecar_path(g_dl_local_path).c_str());
             MissionView::show_toast("Download failed: file not found on Central");
         } else {
             char msg[256];

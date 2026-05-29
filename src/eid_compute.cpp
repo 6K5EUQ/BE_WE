@@ -377,11 +377,15 @@ std::string FFTViewer::eid_save_filtered_to(const std::string& out_path){
         bewe_log_push(0, "[EID] Save File: fopen failed: %s\n", out_path.c_str());
         return "";
     }
+    bool sig = SigMF::is_sigmf_data(out_path);
+    uint32_t n_frames = 0;
     {
         std::lock_guard<std::mutex> lk(eid_data_mtx);
-        uint32_t n_frames = (uint32_t)std::min(eid_ch_i.size(), eid_ch_q.size());
-        eid_write_wav_header(f, eid_sample_rate, n_frames,
-                             eid_center_freq_hz, eid_start_time_meta);
+        n_frames = (uint32_t)std::min(eid_ch_i.size(), eid_ch_q.size());
+        // .sigmf-data: raw(헤더 없음) / .wav: 기존 RIFF(stereo) 헤더
+        if(!sig)
+            eid_write_wav_header(f, eid_sample_rate, n_frames,
+                                 eid_center_freq_hz, eid_start_time_meta);
         constexpr size_t CHUNK = 4096;
         std::vector<int16_t> buf(CHUNK * 2);
         for(size_t i = 0; i < n_frames; i += CHUNK){
@@ -396,6 +400,16 @@ std::string FFTViewer::eid_save_filtered_to(const std::string& out_path){
         }
     }
     fclose(f);
+    // SigMF: 원본 메타(.sigmf-meta) 필드 승계 + sr/cf/시각/duration 갱신
+    if(sig){
+        SigMF::Meta m;
+        SigMF::read_meta(sa_temp_path, m);
+        m.sample_rate    = eid_sample_rate;
+        m.center_freq_hz = eid_center_freq_hz;
+        m.start_unix     = eid_start_time_meta;
+        m.duration_s     = (eid_sample_rate > 0) ? (double)n_frames / (double)eid_sample_rate : 0;
+        SigMF::write_meta(out_path, m);
+    }
     bewe_log_push(0, "[EID] Save File: %s\n", out_path.c_str());
     return out_path;
 }
@@ -409,19 +423,21 @@ std::string FFTViewer::eid_save_filtered(){
     }
     if(eid_save_filtered_to(out_path).empty()) return "";
 
-    // 원본 .info 있으면 새 이름으로 복사
-    std::string src_info = sa_temp_path + ".info";
-    if(eid_path_exists(src_info)){
-        std::string dst_info = out_path + ".info";
-        FILE* fi = fopen(src_info.c_str(), "rb");
-        FILE* fo = fopen(dst_info.c_str(), "wb");
-        if(fi && fo){
-            char cbuf[4096]; size_t r;
-            while((r = fread(cbuf, 1, sizeof(cbuf), fi)) > 0)
-                fwrite(cbuf, 1, r, fo);
+    // 원본 .info 복사 (legacy .wav 만 — SigMF 는 eid_save_filtered_to 가 메타 작성)
+    if(!SigMF::is_sigmf_data(out_path)){
+        std::string src_info = sa_temp_path + ".info";
+        if(eid_path_exists(src_info)){
+            std::string dst_info = out_path + ".info";
+            FILE* fi = fopen(src_info.c_str(), "rb");
+            FILE* fo = fopen(dst_info.c_str(), "wb");
+            if(fi && fo){
+                char cbuf[4096]; size_t r;
+                while((r = fread(cbuf, 1, sizeof(cbuf), fi)) > 0)
+                    fwrite(cbuf, 1, r, fo);
+            }
+            if(fi) fclose(fi);
+            if(fo) fclose(fo);
         }
-        if(fi) fclose(fi);
-        if(fo) fclose(fo);
     }
     return out_path;
 }

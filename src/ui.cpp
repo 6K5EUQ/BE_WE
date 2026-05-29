@@ -1,5 +1,6 @@
 #include "fft_viewer.hpp"
 #include "iq_filename.hpp"
+#include "sigmf.hpp"
 #include "login.hpp"
 #include "net_server.hpp"
 #include "net_client.hpp"
@@ -3167,6 +3168,7 @@ void run_streaming_viewer(){
             bool is_region_iq = false;
             double  rgn_cf_mhz = 0, rgn_bw_khz = 0, rgn_dur_sec = 0;
             time_t  rgn_start_wt = 0;
+            uint32_t rgn_sr = 0;
             {
                 std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                 for(auto& e : v.rec_entries)
@@ -3179,6 +3181,7 @@ void run_streaming_viewer(){
                         rgn_dur_sec  = (double)(e.req_time_end - e.req_time_start);
                         if(rgn_dur_sec < 0) rgn_dur_sec = 0;
                         rgn_start_wt = (time_t)e.req_time_start;
+                        rgn_sr       = e.req_sr;
                         is_region_iq = true; break;
                     }
             }
@@ -3188,7 +3191,7 @@ void run_streaming_viewer(){
                 write_default_info_file(path, "Region IQ",
                     rgn_cf_mhz, rgn_bw_khz, rgn_dur_sec, "",
                     login_get_id(), v.station_name.c_str(),
-                    rgn_start_wt, v.utc_offset_hours());
+                    rgn_start_wt, v.utc_offset_hours(), rgn_sr);
                 bool f2=false; for(auto& s:rec_iq_files) if(s==name){f2=true;break;}
                 if(!f2) rec_iq_files.push_back(name);
             }
@@ -3244,6 +3247,7 @@ void run_streaming_viewer(){
             std::string     save_path;
             std::string     fn;
             uint64_t        filesize = 0;
+            uint32_t        sr = 0;          // .sigmf-meta 작성용 (START 패킷 동봉)
             std::deque<std::vector<uint8_t>> write_queue;
             std::mutex      mtx;
             std::condition_variable cv;
@@ -3253,7 +3257,7 @@ void run_streaming_viewer(){
         };
         static std::unordered_map<uint32_t, std::shared_ptr<IqWriteCtx>> s_iq_ctx;
         cli->on_iq_chunk = [&](uint32_t req_id, uint32_t seq,
-                               const char* filename, uint64_t filesize,
+                               const char* filename, uint64_t filesize, uint32_t sample_rate,
                                const uint8_t* data, uint32_t data_len){
             std::string fn(filename && filename[0] ? filename : "");
             // Selection IQ stream → mission archive 레이아웃과 동일하게 저장
@@ -3293,6 +3297,7 @@ void run_streaming_viewer(){
                 ctx->save_path = save_path;
                 ctx->fn = fn;
                 ctx->filesize = filesize;
+                ctx->sr = sample_rate;
                 s_iq_ctx[req_id] = ctx;
                 // write 스레드 시작
                 ctx->thr = std::thread([ctx, req_id, fn, save_path, filesize, &v, &rec_iq_files](){
@@ -3340,7 +3345,7 @@ void run_streaming_viewer(){
                     // 빈 파일이면 디스크에서 삭제하고 [Done] 표시 안 함
                     if(written == 0){
                         remove(save_path.c_str());
-                        remove((save_path + ".info").c_str());
+                        remove(SigMF::sidecar_path(save_path).c_str());
                         bewe_log_push(0,"[JOIN] IQ write: EMPTY file removed '%s'\n", save_path.c_str());
                         std::lock_guard<std::mutex> lk(v.rec_entries_mtx);
                         v.rec_entries.erase(
@@ -3374,12 +3379,12 @@ void run_streaming_viewer(){
                             }
                         }
                     }
-                    // .info 자동 생성 (HOST region_save와 동일 정책)
+                    // 메타 자동 생성 (HOST region_save와 동일 정책; sr은 START 패킷에서)
                     if(have_meta){
                         write_default_info_file(save_path, "Region IQ",
                             rgn_cf_mhz, rgn_bw_khz, rgn_dur_sec, "",
                             login_get_id(), v.station_name.c_str(),
-                            rgn_start_wt, v.utc_offset_hours());
+                            rgn_start_wt, v.utc_offset_hours(), ctx->sr);
                     }
                     // Archive 강제 재스캔 → 다음 프레임에 디스크 기준으로 rec_iq_files 재구성
                     // (수동 push_back 대신 scan_dir에 일임하여 경쟁 조건 회피)
@@ -3397,6 +3402,7 @@ void run_streaming_viewer(){
                         e.req_state = FFTViewer::RecEntry::REQ_TRANSFERRING;
                         e.xfer_total = filesize; e.xfer_done = 0;
                         e.path = save_path;
+                        e.req_sr = sample_rate;
                         found = true; break;
                     }
                 }
@@ -3407,6 +3413,7 @@ void run_streaming_viewer(){
                     e.xfer_total = filesize; e.xfer_done = 0;
                     e.t_start = std::chrono::steady_clock::now();
                     e.path = save_path;
+                    e.req_sr = sample_rate;
                     v.rec_entries.push_back(e);
                 }
             } else if(seq == 0xFFFFFFFFu){
@@ -3461,13 +3468,13 @@ void run_streaming_viewer(){
             const char* sub = db_classify(fn);
             std::string dir = BEWEPaths::db_downloads_sub(sub);
             mkdir(dir.c_str(), 0755);
-            std::string ipath = dir + "/" + fn + ".info";
+            std::string ipath = SigMF::sidecar_path(dir + "/" + fn);
             FILE* fi = fopen(ipath.c_str(), "w");
             if(fi){
                 size_t n = strnlen(di->info_data, sizeof(di->info_data));
                 if(n > 0) fwrite(di->info_data, 1, n, fi);
                 fclose(fi);
-                bewe_log_push(2,"[DB] Download .info saved: %s\n", ipath.c_str());
+                bewe_log_push(2,"[DB] Download meta saved: %s\n", ipath.c_str());
             }
         };
 
@@ -4328,13 +4335,13 @@ void run_streaming_viewer(){
                                 bool is_iq = (is_iq_filename(fn));
                                 std::string dir = is_iq ? BEWEPaths::record_iq_dir() : BEWEPaths::record_audio_dir();
                                 mkdir(dir.c_str(), 0755);
-                                std::string ipath = dir + "/" + fn + ".info";
+                                std::string ipath = SigMF::sidecar_path(dir + "/" + fn);
                                 FILE* fi = fopen(ipath.c_str(), "w");
                                 if(fi){
                                     size_t n = strnlen(di->info_data, sizeof(di->info_data));
                                     if(n > 0) fwrite(di->info_data, 1, n, fi);
                                     fclose(fi);
-                                    bewe_log_push(0,"[DB] Download .info saved: %s\n", ipath.c_str());
+                                    bewe_log_push(0,"[DB] Download meta saved: %s\n", ipath.c_str());
                                 }
                             });
                             // Central DB 다운로드 데이터 수신
@@ -5487,7 +5494,7 @@ void run_streaming_viewer(){
                         for(auto it=v.rec_entries.begin();it!=v.rec_entries.end();++it){
                             if(it->is_audio && it->ch_idx==sci){
                                 remove(it->path.c_str());
-                                remove((it->path + ".info").c_str());
+                                remove(SigMF::sidecar_path(it->path).c_str());
                                 v.rec_entries.erase(it);
                                 break;
                             }
@@ -5520,7 +5527,7 @@ void run_streaming_viewer(){
                 } else if(file_ctx.selected && !file_ctx.filepath.empty()){
                     // 선택된 로컬 파일 DEL 키로 삭제
                     remove(file_ctx.filepath.c_str());
-                    remove((file_ctx.filepath + ".info").c_str()); // 동반 info 삭제
+                    remove(SigMF::sidecar_path(file_ctx.filepath).c_str()); // 동반 sidecar 삭제
                     auto rm_from = [&](std::vector<std::string>& v2){
                         v2.erase(std::remove(v2.begin(),v2.end(),file_ctx.filename),v2.end());
                     };
@@ -7465,7 +7472,7 @@ void run_streaming_viewer(){
                         } else {
                             std::string fpath = BEWEPaths::database_dir() + "/" + db_ctx.filename;
                             remove(fpath.c_str());
-                            remove((fpath + ".info").c_str());
+                            remove(SigMF::sidecar_path(fpath).c_str());
                         }
                     }
                 }
@@ -8001,8 +8008,8 @@ void run_streaming_viewer(){
             if(ImGui::Selectable("  Report")){
                 // 파일 복사 없음 — 제목 + .info 전체를 Central에 전송 (운영자 매칭 입력).
                 {
-                    char info_buf[512] = {};
-                    std::string ip2 = file_ctx.filepath + ".info";
+                    char info_buf[1024] = {};
+                    std::string ip2 = SigMF::sidecar_path(file_ctx.filepath);
                     FILE* fis = fopen(ip2.c_str(), "r");
                     if(fis){
                         size_t nr = fread(info_buf, 1, sizeof(info_buf)-1, fis);
@@ -8016,7 +8023,7 @@ void run_streaming_viewer(){
                         PktReportAdd ra{};
                         strncpy(ra.filename, file_ctx.filename.c_str(), 127);
                         strncpy(ra.reporter, login_get_id(), 31);
-                        strncpy(ra.info_data, info_buf, 511);
+                        strncpy(ra.info_data, info_buf, sizeof(ra.info_data)-1);
                         auto pkt = make_packet(PacketType::REPORT_ADD, &ra, sizeof(ra));
                         v.net_srv->cb.on_relay_broadcast(pkt.data(), pkt.size(), true);
                     }
@@ -8075,14 +8082,14 @@ void run_streaming_viewer(){
                         FILE* fp=fopen(fp_cap.c_str(),"rb");
                         if(!fp) return;
                         fseek(fp,0,SEEK_END); uint64_t fsz=(uint64_t)ftell(fp); fseek(fp,0,SEEK_SET);
-                        char info_data[512]={};
-                        { std::string ip=fp_cap+".info"; FILE* fi=fopen(ip.c_str(),"r");
-                          if(fi){fread(info_data,1,511,fi);fclose(fi);} }
+                        char info_data[1024]={};
+                        { std::string ip=SigMF::sidecar_path(fp_cap); FILE* fi=fopen(ip.c_str(),"r");
+                          if(fi){fread(info_data,1,sizeof(info_data)-1,fi);fclose(fi);} }
                         PktDbSaveMeta meta{};
                         strncpy(meta.filename,fn_cap.c_str(),127);
                         meta.total_bytes=fsz; meta.transfer_id=1;
                         strncpy(meta.operator_name,op_cap.c_str(),31);
-                        strncpy(meta.info_data,info_data,511);
+                        strncpy(meta.info_data,info_data,sizeof(meta.info_data)-1);
                         { auto pkt=make_packet(PacketType::DB_SAVE_META,&meta,sizeof(meta));
                           srv_cap->cb.on_relay_broadcast(pkt.data(),pkt.size(),true); }
                         const size_t CHUNK=64*1024;
@@ -8123,9 +8130,9 @@ void run_streaming_viewer(){
                     if(fin&&fout){ char buf[65536]; size_t n;
                         while((n=fread(buf,1,sizeof(buf),fin))>0) fwrite(buf,1,n,fout); }
                     if(fin) fclose(fin); if(fout) fclose(fout);
-                    std::string info_src = fp_cap + ".info";
+                    std::string info_src = SigMF::sidecar_path(fp_cap);
                     if(access(info_src.c_str(), F_OK)==0){
-                        std::string info_dst = dst + ".info";
+                        std::string info_dst = SigMF::sidecar_path(dst);
                         FILE* fi2=fopen(info_src.c_str(),"rb");
                         FILE* fo2=fopen(info_dst.c_str(),"wb");
                         if(fi2&&fo2){ char b[4096]; size_t n; while((n=fread(b,1,sizeof(b),fi2))>0) fwrite(b,1,n,fo2); }
@@ -8142,7 +8149,7 @@ void run_streaming_viewer(){
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f,0.35f,0.35f,1.f));
                 if(ImGui::Selectable("  Delete")){
                     remove(file_ctx.filepath.c_str());
-                    remove((file_ctx.filepath + ".info").c_str()); // 동반 info 삭제
+                    remove(SigMF::sidecar_path(file_ctx.filepath).c_str()); // 동반 sidecar 삭제
                     auto rm_from = [&](std::vector<std::string>& v2){
                         v2.erase(std::remove(v2.begin(),v2.end(),file_ctx.filename),v2.end());
                     };

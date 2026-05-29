@@ -7,6 +7,7 @@
 // HIST: PUSH 없이 LWF_LIVE_START/ROW/STOP 스트림 tap.
 #include "central_server.hpp"
 #include "../src/net_protocol.hpp"
+#include "../src/sigmf.hpp"
 #include "../src/long_waterfall.hpp"   // build_hist_filename_finalize
 #include <cstdio>
 #include <cstring>
@@ -167,7 +168,7 @@ void CentralServer::handle_mission_file_push_meta(std::shared_ptr<HostRoom> room
 
     // info sidecar 즉시 작성 (있으면)
     if(!room->mission_xfers[m->transfer_id].info_data.empty()){
-        FILE* fi = fopen((fullpath + ".info").c_str(), "w");
+        FILE* fi = fopen(SigMF::sidecar_path(fullpath).c_str(), "w");
         if(fi){
             const auto& s = room->mission_xfers[m->transfer_id].info_data;
             fwrite(s.data(), 1, s.size(), fi);
@@ -293,7 +294,7 @@ void CentralServer::handle_mission_file_list_req(std::shared_ptr<HostRoom> room,
                     printf("[Central][Archive] purge stale LIVE %s (mtime=%ld now=%ld)\n",
                            full.c_str(), (long)st.st_mtime, (long)now);
                     unlink(full.c_str());
-                    unlink((full + ".info").c_str());
+                    unlink(SigMF::sidecar_path(full).c_str());
                     continue;
                 }
             }
@@ -306,7 +307,7 @@ void CentralServer::handle_mission_file_list_req(std::shared_ptr<HostRoom> room,
             e.size_bytes = (uint64_t)st.st_size;
             e.mtime_unix = (int64_t)st.st_mtime;
             // .info sidecar 의 "Operator:" 추출 — DB 탭과 동일 표시용.
-            FILE* fi = fopen((full + ".info").c_str(), "r");
+            FILE* fi = fopen(SigMF::sidecar_path(full).c_str(), "r");
             if(fi){
                 char buf[512]; size_t br = fread(buf, 1, sizeof(buf)-1, fi); buf[br]=0;
                 fclose(fi);
@@ -447,7 +448,7 @@ void CentralServer::handle_mission_file_dl_req(std::shared_ptr<HostRoom> room,
     // .info sidecar — start==0(처음부터 받기) 일 때만 동봉. resume 시엔 이미 받았다고 간주.
     char info[512] = {};
     if(start == 0){
-        FILE* fi = fopen((full + ".info").c_str(), "r");
+        FILE* fi = fopen(SigMF::sidecar_path(full).c_str(), "r");
         if(fi){ fread(info, 1, sizeof(info)-1, fi); fclose(fi); }
     }
 
@@ -531,7 +532,7 @@ void CentralServer::handle_mission_file_delete(std::shared_ptr<HostRoom> room,
     if(dir.empty()) return;
     std::string full = dir + "/" + fname;
     int rc1 = unlink(full.c_str());
-    int rc2 = unlink((full + ".info").c_str());
+    int rc2 = unlink(SigMF::sidecar_path(full).c_str());
     printf("[Central][Archive] DELETE %s (file=%d info=%d)\n", full.c_str(), rc1, rc2);
 }
 
@@ -557,7 +558,7 @@ void CentralServer::handle_mission_file_rename(std::shared_ptr<HostRoom> room,
     std::string src = dir + "/" + fname;
     std::string dst = dir + "/" + newfn;
     int rc1 = rename(src.c_str(), dst.c_str());
-    int rc2 = rename((src+".info").c_str(), (dst+".info").c_str());
+    int rc2 = rename(SigMF::sidecar_path(src).c_str(), SigMF::sidecar_path(dst).c_str());
     printf("[Central][Archive] RENAME %s → %s (file=%d info=%d)\n",
            src.c_str(), newfn, rc1, rc2);
 }

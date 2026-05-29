@@ -474,6 +474,7 @@ struct __attribute__((packed)) PktIqChunkHdr {
     char     filename[128];
     uint64_t filesize;   // START 패킷에서만 유효
     uint32_t data_len;   // 뒤따르는 데이터 바이트 수 (END 패킷은 0)
+    uint32_t sample_rate;// .sigmf-data(raw)는 헤더가 없어 JOIN이 메타 작성용 SR을 모름 → START에 동봉
     // uint8_t data[data_len] follows
 };
 
@@ -494,7 +495,7 @@ struct __attribute__((packed)) PktIqProgress {
 struct __attribute__((packed)) PktReportAdd {
     char     filename[128];
     char     reporter[32];
-    char     info_data[512];    // full .info contents (parsed into Sighting fields)
+    char     info_data[1024];    // full .info contents (parsed into Sighting fields)
 };
 
 // ── DB_SAVE ──────────────────────────────────────────────────────────────
@@ -503,7 +504,7 @@ struct __attribute__((packed)) PktDbSaveMeta {
     uint64_t total_bytes;
     uint8_t  transfer_id;
     char     operator_name[32];
-    char     info_data[512];    // full .info contents
+    char     info_data[1024];    // full .info contents
 };
 struct __attribute__((packed)) PktDbSaveData {
     uint8_t  transfer_id;
@@ -517,7 +518,7 @@ struct __attribute__((packed)) DbFileEntry {
     char     filename[128];
     uint64_t size_bytes;
     char     operator_name[32];
-    char     info_data[512];
+    char     info_data[1024];
 };
 struct __attribute__((packed)) PktDbList {
     uint16_t count;
@@ -540,7 +541,7 @@ struct __attribute__((packed)) PktDbDownloadData {
 // .info contents delivered alongside DB download (sent before any DATA chunks)
 struct __attribute__((packed)) PktDbDownloadInfo {
     char     filename[128];
-    char     info_data[512];
+    char     info_data[1024];
 };
 
 // ── DB_DELETE ─────────────────────────────────────────────────────────────
@@ -749,7 +750,7 @@ struct __attribute__((packed)) PktMissionFilePushMeta {
     uint8_t        transfer_id;     // HOST가 부여 (room 내 unique)
     uint8_t        mode;            // 0=replace (truncate), 1=append (offset 따름)
     uint8_t        _pad[2];
-    char           info_data[512];  // .info 사이드카 (없으면 빈)
+    char           info_data[1024];  // .info 사이드카 (없으면 빈)
 };
 
 // HOST → Central: 청크 (offset append 지원)
@@ -810,7 +811,7 @@ struct __attribute__((packed)) PktMissionFileDlData {
     uint8_t        is_first;        // 1: info_data 유효
     uint8_t        is_last;
     uint8_t        _pad[2];
-    char           info_data[512];  // is_first 일 때만
+    char           info_data[1024];  // is_first 일 때만
     // 뒤에 raw bytes [chunk_bytes]
 };
 

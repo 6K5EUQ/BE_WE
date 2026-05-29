@@ -51,38 +51,8 @@ static std::vector<float> make_kaiser_lpf(int ntaps, double cutoff_norm, double 
     return h;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// WAV 헤더 작성 (stereo int16: L=I, R=Q)
-// bewe 커스텀 청크: center_freq_hz(uint64) + start_time(int64) + sample_rate(uint32) = 20바이트
-// ─────────────────────────────────────────────────────────────────────────────
-static void write_wav_header(FILE* f, uint32_t sample_rate, uint32_t n_frames,
-                              uint64_t center_freq_hz=0, int64_t start_time=0){
-    uint32_t data_bytes  = n_frames * 2 * 2; // frames * channels * bytes
-    // bewe 청크: "bewe"(4) + size(4) + payload(20) = 28
-    const uint32_t BEWE_SIZE = 20;
-    uint32_t chunk_size  = 36 + data_bytes + 4 + 4 + BEWE_SIZE;
-    uint16_t audio_fmt   = 1;   // PCM
-    uint16_t channels    = 2;
-    uint32_t byte_rate   = sample_rate * 4;
-    uint16_t block_align = 4;
-    uint16_t bits        = 16;
-    uint32_t subchunk2   = data_bytes;
-
-    fwrite("RIFF",1,4,f); fwrite(&chunk_size,4,1,f);
-    fwrite("WAVE",1,4,f);
-    fwrite("fmt ",1,4,f);
-    uint32_t sc1=16; fwrite(&sc1,4,1,f);
-    fwrite(&audio_fmt,2,1,f); fwrite(&channels,2,1,f);
-    fwrite(&sample_rate,4,1,f); fwrite(&byte_rate,4,1,f);
-    fwrite(&block_align,2,1,f); fwrite(&bits,2,1,f);
-    // bewe 청크 (data 앞에 배치 > 파서 안정성 향상)
-    fwrite("bewe",1,4,f);
-    uint32_t bewe_sz = BEWE_SIZE; fwrite(&bewe_sz,4,1,f);
-    fwrite(&center_freq_hz,8,1,f);
-    fwrite(&start_time,    8,1,f);
-    fwrite(&sample_rate,   4,1,f);
-    fwrite("data",1,4,f); fwrite(&subchunk2,4,1,f);
-}
+// 영역 추출 IQ 는 raw int16 stereo(.sigmf-data)로 저장. 헤더 없음.
+// 메타(cf/시각/SR)는 호출부의 write_default_info_file 가 .sigmf-meta 로 작성.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 파일명 생성
@@ -114,13 +84,13 @@ static void make_filename(char* out, size_t sz,
                    || c=='-' || c=='_' || c=='.';
             if(!ok) c = '_';
         }
-        snprintf(out, sz, "%s/%s_IQ_%s_%04d_%.3fMHz_%s-%s.wav",
+        snprintf(out, sz, "%s/%s_IQ_%s_%04d_%.3fMHz_%s-%s.sigmf-data",
                  BEWEPaths::mission_iq_dir(st, mission_year, mission_code).c_str(),
                  st_fn.c_str(), mission_code, mission_year,
                  (double)cf_mhz, hms_s, hms_e);
     } else {
         char dts[32]; strftime(dts, sizeof(dts), "%b%d_%Y_%H%M%S", &ts);
-        snprintf(out, sz, "%s/IQ_%.3fMHz_%s-%s.wav",
+        snprintf(out, sz, "%s/IQ_%.3fMHz_%s-%s.sigmf-data",
                  BEWEPaths::record_iq_dir().c_str(),
                  (double)cf_mhz, dts, hms_e);
     }
@@ -294,10 +264,7 @@ std::string FFTViewer::do_region_save_work(){
         bewe_log_push(0,"[region_save] FAIL: fopen failed: %s\n", outpath);
         return "";
     }
-    // WAV 헤더 작성 (bewe 청크 포함: 중심주파수, 시작시각)
-    uint64_t cf_hz_meta = (uint64_t)(cf_abs_mhz * 1e6 + 0.5);
-    int64_t  t_start_meta = region.time_start_ms / 1000LL;  // 메타데이터는 초 단위 유지
-    write_wav_header(wf, out_sr, (uint32_t)n_out, cf_hz_meta, t_start_meta);
+    // raw IQ(.sigmf-data): 헤더 없이 데이터부터 기록. 메타는 아래 write_default_info_file.
 
     // ── 청크 단위 읽기 + mix-down + decimate + 저장 ───────────────────────
     const int CHUNK = 65536; // 샘플 단위
@@ -387,9 +354,6 @@ std::string FFTViewer::do_region_save_work(){
         pos += to_read;
     }
 
-    // WAV 헤더 실제 샘플 수로 갱신 (bewe 메타데이터 유지)
-    rewind(wf);
-    write_wav_header(wf, out_sr, (uint32_t)actual_out, cf_hz_meta, t_start_meta);
     fclose(wf);
 
     bewe_log_push(0,"Region IQ saved: %s  (%.1f sec  %.0f kHz SR)\n",
@@ -438,7 +402,7 @@ std::string FFTViewer::do_region_save_work(){
                                 cf_abs_mhz, (double)bw_khz, duration_sec,
                                 "", login_get_id(), station_name.c_str(),
                                 region.time_start_ms / 1000LL,
-                                utc_offset_hours());
+                                utc_offset_hours(), out_sr);
     }
 
     // SA 모드: 저장 완료 후 SA 워터폴 계산 시작

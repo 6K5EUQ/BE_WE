@@ -56,6 +56,10 @@ inline bool is_sigmf_data(const std::string& p){
     size_t dot = p.find_last_of('.');
     return dot != std::string::npos && p.compare(dot, std::string::npos, ".sigmf-data") == 0;
 }
+// sidecar 경로: IQ(.sigmf-data)는 .sigmf-meta, 그 외(.wav 등)는 <file>.info
+inline std::string sidecar_path(const std::string& file){
+    return is_sigmf_data(file) ? meta_path(file) : (file + ".info");
+}
 
 // ── JSON write ───────────────────────────────────────────────────────────────
 inline void json_esc(std::string& o, const std::string& s){

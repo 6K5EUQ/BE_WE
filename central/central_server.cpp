@@ -1,6 +1,7 @@
 #include "central_server.hpp"
 #include "../src/net_protocol.hpp"
 #include "../src/json_scan.hpp"
+#include "../src/sigmf.hpp"
 #include "info_parse.hpp"
 #include <cstdio>
 #include <cstring>
@@ -121,7 +122,7 @@ static void db_migrate_flat_to_subdirs(){
         std::string dst_path;
         std::string final_name = db_unique_name(base, sub, fn.c_str(), dst_path);
         if(rename(src.c_str(), dst_path.c_str()) == 0){
-            rename((src + ".info").c_str(), (dst_path + ".info").c_str());
+            rename(SigMF::sidecar_path(src).c_str(), SigMF::sidecar_path(dst_path).c_str());
             moved++;
             if(final_name != fn){
                 printf("[Central] DB migrate: %s → %s/%s\n", fn.c_str(), sub, final_name.c_str());
@@ -879,8 +880,8 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
             std::string final_name = db_unique_name(db_base, sub, filename, dst);
             printf("[Central] DB_SAVE_META(HOST): '%s' by '%s' → %s/%s\n",
                    filename, op_name, sub, final_name.c_str());
-            if(info[0]){ FILE* fi=fopen((dst+".info").c_str(),"w");
-                if(fi){fwrite(info,1,strnlen(info,511),fi);fclose(fi);} }
+            if(info[0]){ FILE* fi=fopen(SigMF::sidecar_path(dst).c_str(),"w");
+                if(fi){fwrite(info,1,strnlen(info,1023),fi);fclose(fi);} }
             if(room->db_fp) fclose(room->db_fp);
             room->db_fp=fopen(dst.c_str(),"wb"); room->db_path=dst;
         } else if(bewe_type == BEWE_TYPE_DB_SAVE_DATA && plen>=6 && room->db_fp){
@@ -925,7 +926,7 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                 {
                     PktDbDownloadInfo dinfo{};
                     strncpy(dinfo.filename, fn, 127);
-                    FILE* fi = fopen((fpath + ".info").c_str(), "r");
+                    FILE* fi = fopen(SigMF::sidecar_path(fpath).c_str(), "r");
                     if(fi){ fread(dinfo.info_data, 1, sizeof(dinfo.info_data)-1, fi); fclose(fi); }
                     std::vector<uint8_t> ibewe(9 + sizeof(PktDbDownloadInfo));
                     memcpy(ibewe.data(), "BEWE", 4);
@@ -990,7 +991,7 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                 }
                 if(!found) fpath = db_base + "/" + fn;
             }
-            std::string ipath = fpath + ".info";
+            std::string ipath = SigMF::sidecar_path(fpath);
             int r1 = remove(fpath.c_str());
             int r2 = remove(ipath.c_str());
             if(r1 != 0)
@@ -1180,10 +1181,10 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
             printf("[Central] DB_SAVE_META: '%s' by '%s' (%.1fMB) → %s/%s\n",
                    filename, operator_name, total_bytes/1048576.0, sub, final_name.c_str());
 
-            // .info 저장
+            // sidecar 저장 (IQ: .sigmf-meta / 그 외: .info)
             if(info_data[0]){
-                FILE* fi = fopen((dst+".info").c_str(), "w");
-                if(fi){ fwrite(info_data, 1, strnlen(info_data, 511), fi); fclose(fi); }
+                FILE* fi = fopen(SigMF::sidecar_path(dst).c_str(), "w");
+                if(fi){ fwrite(info_data, 1, strnlen(info_data, 1023), fi); fclose(fi); }
             }
             // 파일 열기 (je에 저장)
             if(je->db_fp) fclose(je->db_fp);
@@ -1244,7 +1245,7 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
                 {
                     PktDbDownloadInfo dinfo{};
                     strncpy(dinfo.filename, fn, 127);
-                    FILE* fi = fopen((fpath + ".info").c_str(), "r");
+                    FILE* fi = fopen(SigMF::sidecar_path(fpath).c_str(), "r");
                     if(fi){ fread(dinfo.info_data, 1, sizeof(dinfo.info_data)-1, fi); fclose(fi); }
                     std::vector<uint8_t> ibewe(9 + sizeof(PktDbDownloadInfo));
                     memcpy(ibewe.data(), "BEWE", 4);
@@ -1311,7 +1312,7 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
                 }
                 if(!found) fpath = db_base + "/" + fn;
             }
-            std::string ipath = fpath + ".info";
+            std::string ipath = SigMF::sidecar_path(fpath);
             int r1 = remove(fpath.c_str());
             int r2 = remove(ipath.c_str());
             if(r1 != 0)
@@ -1572,7 +1573,7 @@ void CentralServer::broadcast_db_list(std::shared_ptr<HostRoom> room){
             DbFileEntry e{};
             strncpy(e.filename, fn.c_str(), 127);
             e.size_bytes = (uint64_t)st.st_size;
-            FILE* fi = fopen((fp+".info").c_str(), "r");
+            FILE* fi = fopen(SigMF::sidecar_path(fp).c_str(), "r");
             if(fi){
                 size_t n = fread(e.info_data, 1, sizeof(e.info_data)-1, fi);
                 e.info_data[n] = '\0';

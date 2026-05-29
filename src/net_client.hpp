@@ -203,7 +203,7 @@ public:
     std::function<void(const PktIqProgress&)> on_iq_progress;
     // IQ_CHUNK: HOST→central MUX→JOIN 청크 스트리밍 수신
     std::function<void(uint32_t req_id, uint32_t seq,
-                       const char* filename, uint64_t filesize,
+                       const char* filename, uint64_t filesize, uint32_t sample_rate,
                        const uint8_t* data, uint32_t data_len)> on_iq_chunk;
 
     // ── Operator list ─────────────────────────────────────────────────────
