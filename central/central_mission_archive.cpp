@@ -309,7 +309,7 @@ void CentralServer::handle_mission_file_list_req(std::shared_ptr<HostRoom> room,
             // .info sidecar 의 "Operator:" 추출 — DB 탭과 동일 표시용.
             FILE* fi = fopen(SigMF::sidecar_path(full).c_str(), "r");
             if(fi){
-                char buf[512]; size_t br = fread(buf, 1, sizeof(buf)-1, fi); buf[br]=0;
+                char buf[1024]; size_t br = fread(buf, 1, sizeof(buf)-1, fi); buf[br]=0;
                 fclose(fi);
                 const char* p = buf;
                 while(p && *p){
@@ -445,8 +445,8 @@ void CentralServer::handle_mission_file_dl_req(std::shared_ptr<HostRoom> room,
     if(start > total) start = total;
     fseeko(fp, (off_t)start, SEEK_SET);
 
-    // .info sidecar — start==0(처음부터 받기) 일 때만 동봉. resume 시엔 이미 받았다고 간주.
-    char info[512] = {};
+    // sidecar(.sigmf-meta/.info) — start==0(처음부터 받기) 일 때만 동봉. resume 시엔 이미 받았다고 간주.
+    char info[1024] = {};
     if(start == 0){
         FILE* fi = fopen(SigMF::sidecar_path(full).c_str(), "r");
         if(fi){ fread(info, 1, sizeof(info)-1, fi); fclose(fi); }
