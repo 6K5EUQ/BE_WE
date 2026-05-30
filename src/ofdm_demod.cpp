@@ -25,7 +25,7 @@ using cf = std::complex<float>;
 
 namespace {
 constexpr int   OFDM_FRAME_SAMPS = 2048;   // emit 프레임당 최대 점
-constexpr int   OFDM_EMIT_PTS    = 1024;   // 이만큼 점이 모이면 한 프레임 emit
+constexpr int   OFDM_FPS         = 20;     // emit cadence (frames/sec) — 심볼레이트 무관 throttle
 constexpr float OFDM_TARGET_MULT = 1.25f;  // front-end 디시메이션 목표 SR = bw*1.25 (full BW)
 constexpr float OFDM_MIN_SR      = 8000.f;
 constexpr int   ANALYZE_LEN      = 16384;  // 블라인드 추정용 디시메이트 샘플 윈도우
@@ -93,7 +93,8 @@ void FFTViewer::ofdm_worker(int ch_idx){
 
     // ── emit (con_worker 와 동일 패턴) ──
     const int FN = OFDM_FRAME_SAMPS;
-    std::vector<float> rb_i(FN), rb_q(FN); size_t rb_w=0, rb_n=0; uint32_t since_emit=0;
+    std::vector<float> rb_i(FN), rb_q(FN); size_t rb_w=0, rb_n=0;
+    int emit_every_syms=1, sym_emit_cnt=0;   // ~OFDM_FPS 로 throttle (publish_lock 에서 설정)
     std::vector<float> oi, oq; oi.reserve(FN); oq.reserve(FN);
     std::vector<int8_t> q8; q8.reserve((size_t)FN*2);
     auto do_emit=[&](){
@@ -117,8 +118,7 @@ void FFTViewer::ofdm_worker(int ch_idx){
     };
     auto push_pt=[&](float i, float q){
         rb_i[rb_w%FN]=i; rb_q[rb_w%FN]=q; rb_w++;
-        if(rb_n<(size_t)FN) rb_n++;
-        if(++since_emit >= OFDM_EMIT_PTS){ do_emit(); rb_n=0; since_emit=0; }
+        if(rb_n<(size_t)FN) rb_n++;   // emit 는 심볼 단위로 throttle (locked 루프에서 호출)
     };
 
     // ── 파라미터 변경 감지 캐시 ──
@@ -134,6 +134,10 @@ void FFTViewer::ofdm_worker(int ch_idx){
     auto publish_lock=[&](float score){
         Mord = (cfg_mod==2)?2:4;
         ensure_plan(N);
+        // 심볼레이트에 맞춰 emit 주기를 ~OFDM_FPS 로 (고심볼레이트 신호의 네트워크 폭주 방지)
+        int srate = (int)(actual_sr / (uint32_t)std::max(1, N+L));
+        emit_every_syms = std::max(1, srate / OFDM_FPS);
+        sym_emit_cnt = 0;
         locked=true; lost=0;
         ch.ofdm_locked.store(true);
         ch.ofdm_est_fft.store((uint16_t)N);
@@ -370,6 +374,7 @@ void FFTViewer::ofdm_worker(int ch_idx){
                 process_symbol((int)off);
                 sym_start += (int64_t)(N + L);
                 if(!locked) break;   // process_symbol 에서 재탐색 전환됨
+                if(++sym_emit_cnt >= emit_every_syms){ do_emit(); rb_n=0; sym_emit_cnt=0; }
             }
         }
         // 소비분 trim

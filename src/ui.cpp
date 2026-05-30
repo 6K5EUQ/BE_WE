@@ -2883,12 +2883,6 @@ void run_streaming_viewer(){
                 // 드래그 중인 채널은 s/e를 덮어쓰지 않음 (덜덜 떨림 방지)
                 bool dragging = v.channels[i].move_drag || v.channels[i].resize_drag;
                 if(!dragging){
-                    // DEBUG: 비정상 BW 수신 감지
-                    float in_bw = fabsf(sync.ch[i].e - sync.ch[i].s);
-                    if(in_bw > 1.0f && sync.ch[i].active){
-                        bewe_log_push(0, "[JOIN-DBG] rx ch%d HUGE bw=%.4f s=%.4f e=%.4f\n",
-                                      i, in_bw, sync.ch[i].s, sync.ch[i].e);
-                    }
                     v.channels[i].s   = sync.ch[i].s;
                     v.channels[i].e   = sync.ch[i].e;
                 }
