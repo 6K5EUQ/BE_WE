@@ -9658,6 +9658,29 @@ void run_streaming_viewer(){
                     fg2->AddRect(ImVec2(ea_x0,ea_y0), ImVec2(ea_x1,ea_y1),
                                  IM_COL32(60,60,80,255));
 
+                    // ── 상단 컨트롤: IQ 파일이면 AM/FM 복조 선택 (재생은 Space) ──
+                    // 우측 정렬 + 좌상단 시간표시(ca_y0+4)와 같은 Y 로 위아래 정렬.
+                    if(v.eid_is_iq){
+                        ImGuiStyle& _st=ImGui::GetStyle(); float _fp=_st.FramePadding.x;
+                        auto _bw=[&](const char* t){ return ImGui::CalcTextSize(t).x + _fp*2.f; };
+                        float _btot=_bw("AM")+4.f+_bw("FM");
+                        float _bx=ea_x1-_btot; if(_bx<ea_x0) _bx=ea_x0;
+                        ImGui::SetCursorScreenPos(ImVec2(_bx, ca_y0+4.f));
+                        auto modebtn=[&](const char* lbl, int m){
+                            bool on=(v.eid_audio_demod==m);
+                            if(on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f,0.50f,0.80f,1.f));
+                            if(ImGui::SmallButton(lbl) && v.eid_audio_demod!=m){
+                                v.eid_audio_demod=m;
+                                if(v.audio_play_active()){   // 재생 중 전환 → 현 위치에서 새 복조로 재시작
+                                    double pos=(double)v.audio_play_pos_sec();
+                                    v.audio_play_stop(); v.eid_audio_play(pos);
+                                }
+                            }
+                            if(on) ImGui::PopStyleColor();
+                        };
+                        modebtn("AM",0); ImGui::SameLine(0,4); modebtn("FM",1);
+                    }
+
                     double vt0=v.eid_view_t0, vt1=v.eid_view_t1;
                     double vis_samp=vt1-vt0; if(vis_samp<1.0) vis_samp=1.0;
                     int pixels=(int)ea_w; if(pixels<1) pixels=1;
@@ -9763,6 +9786,12 @@ void run_streaming_viewer(){
                         }
                     }
 
+                    // 재생 중 BPF 등 IQ 수정 발생 → 현 위치에서 새 복조로 자동 재시작
+                    if(v.eid_is_iq && v.audio_play_active() && v.eid_iq_tmp_gen != v.eid_edit_gen){
+                        double pos = (double)v.audio_play_pos_sec();
+                        v.audio_play_stop();
+                        v.eid_audio_play(pos);
+                    }
                     // 재생 중이면 cursor = 현재 재생 위치로 실시간 동기화
                     if(v.audio_play_active()){
                         double pos_sec = (double)v.audio_play_pos_sec();
@@ -9840,8 +9869,7 @@ void run_streaming_viewer(){
                     if(!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Space, false)){
                         if(!v.audio_play_active()){
                             double off_sec = (double)v.eid_audio_cursor_sample / sr;
-                            if(!v.sa_temp_path.empty())
-                                v.audio_play_start(v.sa_temp_path, off_sec);
+                            v.eid_audio_play(off_sec);   // IQ면 AM/FM 복조, 아니면 원본
                         } else if(v.audio_play_paused()){
                             v.audio_play_resume();
                         } else {

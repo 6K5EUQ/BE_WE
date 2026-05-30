@@ -119,6 +119,7 @@ void FFTViewer::eid_start(const std::string& wav_path){
             eid_inst_freq     = std::move(inst_freq);
             eid_total_samples = done;
             eid_sample_rate   = meta_sr > 0 ? meta_sr : wav_sr;
+            eid_is_iq         = (nch == 2);   // stereo = IQ → Audio 탭에서 AM/FM 복조 가능
         }
         eid_view_t0        = 0.0;
         eid_view_t1        = (double)done;
@@ -179,6 +180,7 @@ void FFTViewer::eid_auto_analyze_tag(EidTag& tag){
 
 // ── ch_i/ch_q 로부터 envelope/phase/inst_freq 재계산 ─────────────────────────
 void FFTViewer::eid_recompute_derived(){
+    eid_edit_gen++;   // IQ 수정됨 → Audio 탭 복조 캐시 무효화
     std::lock_guard<std::mutex> lk(eid_data_mtx);
     int64_t n = eid_total_samples;
     if(n <= 0 || (int64_t)eid_ch_i.size() < n) return;
@@ -240,6 +242,7 @@ void FFTViewer::eid_apply_bpf(float uv_lo, float uv_hi){
     fftwf_plan fwd = fftwf_plan_dft_1d(fft_n, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
     fftwf_plan inv = fftwf_plan_dft_1d(fft_n, out, in, FFTW_BACKWARD, FFTW_ESTIMATE);
 
+    eid_bpf_center_uv = (uv_lo + uv_hi) * 0.5f;  // 복조 시 이 중심으로 재중심(mix-down)
     double sr = (double)eid_sample_rate;
     // UV → baseband Hz: UV 0 = -sr/2, UV 0.5 = DC, UV 1 = +sr/2
     double bpf_lo = ((double)uv_lo - 0.5) * sr;
@@ -297,6 +300,7 @@ void FFTViewer::eid_undo_bpf(){
         eid_ch_q = eid_orig_ch_q;
     }
     eid_bpf_active = false;
+    eid_bpf_center_uv = 0.5f;   // BPF 해제 → 재중심 없음(DC)
     eid_recompute_derived();
     sa_recompute_from_iq();
 }
@@ -446,6 +450,7 @@ void FFTViewer::eid_remove_samples(double s0, double s1){
     int64_t i0 = std::max((int64_t)0, (int64_t)s0);
     int64_t i1 = std::min(eid_total_samples, (int64_t)ceil(s1));
     if(i1 <= i0) return;
+    eid_edit_gen++;   // IQ 수정 → 복조 캐시 무효화
     int64_t count = i1 - i0;
 
     {
@@ -597,6 +602,7 @@ FFTViewer::EidUndoEntry FFTViewer::eid_snapshot() const {
 }
 
 void FFTViewer::eid_restore(const EidUndoEntry& e){
+    eid_edit_gen++;   // IQ 복원(undo/redo) → 복조 캐시 무효화
     bool data_changed = (e.total_samples != eid_total_samples ||
                          e.ch_i.size() != eid_ch_i.size() ||
                          e.bpf_active != eid_bpf_active);
@@ -658,4 +664,89 @@ void FFTViewer::eid_do_redo(){
     EidUndoEntry e = std::move(eid_redo_stack.back());
     eid_redo_stack.pop_back();
     eid_restore(e);
+}
+
+// ── IQ(eid_ch_i/q) → AM/FM 복조 → 임시 mono WAV(≈AUDIO_SR) ──────────────────
+// dem_worker 와 동일한 복조 수학. 녹음 IQ 는 이미 채널 baseband 이므로 mixing 없음.
+std::string FFTViewer::eid_iq_demod_tempwav(int am_fm){
+    size_t N = std::min(eid_ch_i.size(), eid_ch_q.size());
+    uint32_t sr_in = eid_sample_rate;
+    if(N < 2 || sr_in == 0) return "";
+    uint32_t decim = std::max(1u, (uint32_t)llround((double)sr_in / (double)AUDIO_SR));
+    uint32_t asr   = std::max(1u, sr_in / decim);   // 출력 SR (≈48k)
+
+    float am_dc=0.f, am_dc_alpha = 1.0f - expf(-2.0f*(float)M_PI*30.0f/(float)sr_in);
+    float alf_cut = std::min(12000.0f, (float)sr_in*0.45f);
+    IIR1 alf;    alf.set(alf_cut/(float)sr_in);
+    IIR1 deemph; deemph.set(std::min(3183.0f,(float)sr_in*0.45f)/(float)sr_in);
+    float agc_rms=0.01f; const float AGC_TARGET=1.0f, AGC_ATTACK=0.001f, AGC_RELEASE=0.0001f;
+    double aac=0; int acnt=0;
+
+    // BPF 활성 시: 선택 대역 중심을 DC 로 mix-down(재중심). FM 판별기는 신호가 DC 에
+    // 있어야 동작 — 오프셋이 크면 위상증분이 wrap 되어 소리가 안 난다. (AM 은 무해)
+    float f_off = eid_bpf_active ? (eid_bpf_center_uv - 0.5f) * (float)sr_in : 0.f;
+    Oscillator osc; osc.set_freq((double)f_off, (double)sr_in);
+    float prev_i=0.f, prev_q=0.f;
+
+    std::vector<int16_t> out; out.reserve(N/decim + 16);
+    for(size_t n=0; n<N; n++){
+        float fi, fq; osc.mix(eid_ch_i[n], eid_ch_q[n], fi, fq);
+        float samp;
+        if(am_fm==0){   // AM: envelope + DC제거 + AGC
+            float env = sqrtf(fi*fi+fq*fq);
+            am_dc += am_dc_alpha*(env-am_dc);
+            float audio = alf.p(env-am_dc);
+            float rms_in = audio*audio;
+            if(rms_in>agc_rms) agc_rms += (rms_in-agc_rms)*AGC_ATTACK;
+            else               agc_rms += (rms_in-agc_rms)*AGC_RELEASE;
+            float gain = (agc_rms>1e-9f)?(AGC_TARGET/sqrtf(agc_rms)):100.0f;
+            gain = std::min(gain,1000.0f);
+            samp = std::max(-1.0f,std::min(1.0f,audio*gain));
+        } else {        // FM: phase discriminator + 적응형 LPF + 50us de-emphasis
+            float cross=fi*prev_q - fq*prev_i, dot=fi*prev_i + fq*prev_q;
+            float d=atan2f(cross, dot+1e-12f); prev_i=fi; prev_q=fq;
+            samp = deemph.p(alf.p(d)) * 4.0f;
+        }
+        aac += samp; acnt++;
+        if(acnt >= (int)decim){
+            float o = std::max(-1.0f,std::min(1.0f,(float)(aac/acnt)));
+            out.push_back((int16_t)lrintf(o*32767.0f));
+            aac=0; acnt=0;
+        }
+    }
+    if(out.empty()) return "";
+
+    std::string tmp = "/tmp/bewe_iqdemod.wav";
+    FILE* f = fopen(tmp.c_str(),"wb");
+    if(!f) return "";
+    uint32_t nf=(uint32_t)out.size();
+    uint32_t data_bytes=nf*2, byte_rate=asr*2, chunk=36+data_bytes; uint32_t sc1=16;
+    uint16_t fmt=1, ch=1, balign=2, bits=16;
+    fwrite("RIFF",1,4,f); fwrite(&chunk,4,1,f); fwrite("WAVE",1,4,f);
+    fwrite("fmt ",1,4,f); fwrite(&sc1,4,1,f);
+    fwrite(&fmt,2,1,f); fwrite(&ch,2,1,f); fwrite(&asr,4,1,f);
+    fwrite(&byte_rate,4,1,f); fwrite(&balign,2,1,f); fwrite(&bits,2,1,f);
+    fwrite("data",1,4,f); fwrite(&data_bytes,4,1,f);
+    fwrite(out.data(),2,nf,f);
+    fclose(f);
+    bewe_log_push(0,"[EID] IQ %s demod -> %u Hz mono, %u frames\n", am_fm?"FM":"AM", asr, nf);
+    return tmp;
+}
+
+// IQ면 AM/FM 복조 wav 재생, 아니면 원본(이미 audio) 재생. off_sec 위치부터.
+void FFTViewer::eid_audio_play(double off_sec){
+    if(sa_temp_path.empty()) return;
+    if(eid_is_iq){
+        // 캐시: 같은 소스+모드+편집세대(BPF 등 반영)면 재복조 생략
+        if(eid_iq_tmp_src != sa_temp_path || eid_iq_tmp_mode != eid_audio_demod
+           || eid_iq_tmp_gen != eid_edit_gen || eid_iq_tmp_path.empty()){
+            std::string tmp = eid_iq_demod_tempwav(eid_audio_demod);
+            if(tmp.empty()) return;
+            eid_iq_tmp_path = tmp; eid_iq_tmp_src = sa_temp_path;
+            eid_iq_tmp_mode = eid_audio_demod; eid_iq_tmp_gen = eid_edit_gen;
+        }
+        audio_play_start(eid_iq_tmp_path, off_sec);
+    } else {
+        audio_play_start(sa_temp_path, off_sec);
+    }
 }
