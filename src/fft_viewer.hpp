@@ -895,11 +895,13 @@ public:
     // IQ(stereo) 녹음을 Audio 탭에서 AM/FM 복조해 임시 mono WAV 로 듣기.
     bool        eid_is_iq = false;       // 현재 로드된 EID 파일이 IQ(stereo)인가
     int         eid_audio_demod = 1;     // 0=AM 1=FM (Audio 탭 상단 버튼)
+    bool        eid_audio_deemph = true; // FM 50us de-emphasis on/off (Audio 탭 토글)
     float       eid_bpf_center_uv = 0.5f;// 활성 BPF 대역 중심 UV (0.5=DC) — 복조 전 재중심용
     uint64_t    eid_edit_gen = 0;        // eid_ch_i/q 수정(BPF/remove/undo) 세대 — 복조 캐시 무효화용
     std::string eid_iq_tmp_path;         // 복조 결과 임시 wav
     std::string eid_iq_tmp_src;          // 그 임시 wav 가 어느 소스/모드로 만들어졌는지
     int         eid_iq_tmp_mode = -1;
+    bool        eid_iq_tmp_deemph = true;       // 그 임시 wav 의 de-emphasis 상태
     uint64_t    eid_iq_tmp_gen = (uint64_t)-1;  // 그 임시 wav 가 만들어진 시점의 edit_gen
     std::string eid_iq_demod_tempwav(int am_fm);  // eid_ch_i/q → AM/FM mono wav, path 반환
     void        eid_audio_play(double off_sec);    // IQ면 복조 wav, 아니면 원본 재생
