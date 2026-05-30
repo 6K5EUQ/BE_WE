@@ -643,9 +643,12 @@ static const char* subdir_label(uint8_t s){
 }
 
 // .info sidecar 인지.
+// sidecar(.info / .sigmf-meta) 여부 — LOCAL 목록에서 숨김 (.sigmf-data 의 메타라 단독 표시 불필요).
 static bool is_info_file(const std::string& name){
     size_t n = name.size();
-    return n >= 5 && name.compare(n - 5, 5, ".info") == 0;
+    if(n >= 5  && name.compare(n - 5,  5,  ".info")       == 0) return true;
+    if(n >= 11 && name.compare(n - 11, 11, ".sigmf-meta") == 0) return true;
+    return false;
 }
 
 // 선택 초기화 (모든 kind).
@@ -936,8 +939,9 @@ static void open_local_in_viewer(FFTViewer& v, const std::string& path){
         }
         return;
     }
-    if(ends_with(".wav")){
+    if(ends_with(".wav") || ends_with(".sigmf-data")){
         // 메인 페이지의 우클릭 Signal Analysis 항목과 동일하게 EID + SA 데이터 로드.
+        // (.sigmf-data / .wav 모두 SigMF::open_source 가 처리 — STATUS 창 뷰어와 동일 동작)
         v.sa_temp_path = path;
         v.eid_panel_open = true;
         v.eid_view_mode = 1;       // Amp 기본

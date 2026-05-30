@@ -279,9 +279,10 @@ void CentralServer::handle_mission_file_list_req(std::shared_ptr<HostRoom> room,
         while((ent = readdir(d)) != nullptr){
             const char* n = ent->d_name;
             if(!n || n[0] == '.') continue;
-            // .info sidecar 는 list에서 제외
+            // sidecar(.info / .sigmf-meta) 는 list에서 제외
             size_t nlen = strlen(n);
-            if(nlen >= 5 && strcmp(n + nlen - 5, ".info") == 0) continue;
+            if(nlen >= 5  && strcmp(n + nlen - 5,  ".info")       == 0) continue;
+            if(nlen >= 11 && strcmp(n + nlen - 11, ".sigmf-meta") == 0) continue;
             std::string full = dir + "/" + n;
             struct stat st;
             if(stat(full.c_str(), &st) != 0) continue;
