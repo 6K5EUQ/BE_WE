@@ -27,6 +27,7 @@ if(CLI)
         src/bladerf_io.cpp
         src/demod.cpp
         src/iq_record.cpp
+        src/constellation.cpp
         src/sched_record.cpp
         src/mission.cpp
         src/mission_push.cpp
@@ -104,6 +105,7 @@ else()
         src/bladerf_io.cpp
         src/demod.cpp
         src/iq_record.cpp
+        src/constellation.cpp
         src/sched_record.cpp
         src/mission.cpp
         src/mission_push.cpp

@@ -150,8 +150,13 @@ void FFTViewer::start_dem(int ch_idx, Channel::DemodMode mode){
     ch.dem_rp.store(ring_wp.load());
     ch.dem_stop_req.store(false);
     ch.dem_run.store(true);
-    ch.dem_thr=std::thread(&FFTViewer::dem_worker,this,ch_idx);
-    const char* n[]={"NONE","AM","FM"};
+    // DM_CONST = 성상도 worker (오디오 복조 대신 baseband IQ → 성상도 데이터 스트림).
+    // dem 슬롯(dem_thr/dem_rp/dem_stop_req)을 그대로 재사용하므로 stop_dem/update_dem_by_freq 무변경.
+    if(mode==Channel::DM_CONST)
+        ch.dem_thr=std::thread(&FFTViewer::con_worker,this,ch_idx);
+    else
+        ch.dem_thr=std::thread(&FFTViewer::dem_worker,this,ch_idx);
+    const char* n[]={"NONE","AM","FM","CONST"};
     bewe_log("DEM[%d] start: %s  %.4f-%.4f MHz\n",ch_idx,n[(int)mode],ch.s,ch.e);
 }
 

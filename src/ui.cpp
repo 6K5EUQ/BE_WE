@@ -2862,6 +2862,10 @@ void run_streaming_viewer(){
         { std::lock_guard<std::mutex> wlk(v.wf_events_mtx); v.wf_events.clear(); }
         v.last_tagged_sec = -1;
 
+        // 성상도 CONST_FRAME 수신 → LIVE eid 버퍼로 push
+        cli->on_const_frame = [&](int ch, uint32_t sr, const float* i, const float* q, int n){
+            v.eid_live_push(ch, sr, i, q, n);
+        };
         // 채널 sync 콜백 등록
         cli->on_channel_sync = [&](const PktChannelSync& sync){
             for(int i=0;i<MAX_CHANNELS;i++){
@@ -5381,25 +5385,30 @@ void run_streaming_viewer(){
                 }
             }
 
-            // I key: per-channel IQ recording toggle
+            // I key: 성상도(DM_CONST) 실시간 보기 — 선택 채널필터를 성상도 모드로 전환 +
+            // SA 패널을 LIVE 로 오픈. HOST 가 full-BW IQ → 성상도 데이터 생성, JOIN 이 표시.
+            // (AM/FM 과 상호배타 — DM_CONST 진입 시 오디오 복조 중단). SA 패널을 닫으면 자동 해제.
             if(ImGui::IsKeyPressed(ImGuiKey_I,false) && !io.WantTextInput){
                 int ci = v.selected_ch;
                 if(ci >= 0 && ci < MAX_CHANNELS && v.channels[ci].filter_active){
-                    if(v.remote_mode && v.net_cli){
-                        // JOIN: HOST에 IQ 녹음 시작/중지 요청 (100kHz 이하만)
-                        float bw_khz = fabsf(v.channels[ci].e - v.channels[ci].s) * 1000.f;
-                        if(bw_khz <= 100.f){
-                            if(v.channels[ci].iq_rec_on.load())
-                                v.net_cli->cmd_stop_iq_rec(ci);
-                            else
-                                v.net_cli->cmd_start_iq_rec(ci);
+                    bool already = (v.eid_source==FFTViewer::EID_LIVE && v.eid_live_ch==ci);
+                    if(!already){
+                        if(v.remote_mode && v.net_cli){
+                            // JOIN: HOST 채널 모드 → DM_CONST + 성상도 수신 구독
+                            v.net_cli->cmd_set_ch_mode(ci, Channel::DM_CONST);
+                            v.net_cli->cmd_toggle_const_recv(ci, true);
+                        } else {
+                            // LOCAL/HOST(dev): con_worker 직접 시작 + host-local viewer 비트
+                            v.stop_dem(ci);
+                            v.start_dem(ci, Channel::DM_CONST);
+                            uint32_t om=v.channels[ci].const_mask.load();
+                            v.channels[ci].const_mask.store(om|0x1u);
+                            if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
                         }
-                    } else {
-                        // LOCAL/HOST: demod 활성화와 무관하게 IQ 녹음 (start_iq_rec 안에서 IQ-only path 자동 선택)
-                        if(v.channels[ci].iq_rec_on.load())
-                            v.stop_iq_rec(ci);
-                        else
-                            v.start_iq_rec(ci);
+                        // SA 패널 LIVE 오픈 (main_kbd_active 이므로 다른 오버레이는 닫혀있음)
+                        v.eid_cleanup();
+                        v.eid_open_live(ci);
+                        v.eid_panel_open = true;
                     }
                 }
             }
@@ -5975,6 +5984,37 @@ void run_streaming_viewer(){
         // ── MISSION 토글 (M키) — 미션 모달 ────
         if(!viewer_open_blocking && ImGui::IsKeyPressed(ImGuiKey_M, false) && !io.WantTextInput){
             try_toggle(5, v.mission_modal_open);
+        }
+        // ── LIVE 성상도: SA 패널이 (어떤 경로로든) 닫히면 DM_CONST 모드/구독 자동 해제 ──
+        {
+            static bool s_prev_eid_open=false;
+            if(s_prev_eid_open && !v.eid_panel_open && v.eid_source==FFTViewer::EID_LIVE){
+                int lc = v.eid_live_ch;
+                if(lc>=0 && lc<MAX_CHANNELS){
+                    if(v.remote_mode && v.net_cli){
+                        v.net_cli->cmd_set_ch_mode(lc, Channel::DM_NONE);
+                        v.net_cli->cmd_toggle_const_recv(lc, false);
+                    } else {
+                        uint32_t om=v.channels[lc].const_mask.load();
+                        v.channels[lc].const_mask.store(om & ~0x1u);
+                        v.stop_dem(lc);
+                        if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
+                    }
+                }
+                v.eid_close_live();
+            }
+            s_prev_eid_open = v.eid_panel_open;
+        }
+        // ── Central 재연결 시 LIVE 성상도 모드/구독 재전송 (recv_const[] 복구) ──
+        {
+            static bool s_prev_conn=false;
+            bool conn = v.remote_mode && v.net_cli && v.net_cli->is_connected();
+            if(conn && !s_prev_conn && v.eid_source==FFTViewer::EID_LIVE
+               && v.eid_live_ch>=0 && v.eid_live_ch<MAX_CHANNELS){
+                v.net_cli->cmd_set_ch_mode(v.eid_live_ch, Channel::DM_CONST);
+                v.net_cli->cmd_toggle_const_recv(v.eid_live_ch, true);
+            }
+            s_prev_conn = conn;
         }
         // ── BAND 토글 (B키) — SA overlay 열려있으면 baud-mode(노란 비트 구분선) 토글
         // viewer 떠 있는 동안엔 BAND 토글 무시 (사용자가 viewer 안에서 다른 글로벌 동작 방지)
@@ -8876,6 +8916,8 @@ void run_streaming_viewer(){
             float ca_h  = ca_y1 - ca_y0;
 
             int eid_mode = v.eid_view_mode;
+            // LIVE 성상도: pending(con_worker/net) → eid_ch_i/q rolling 으로 매 프레임 drain
+            if(v.eid_source==FFTViewer::EID_LIVE) v.eid_live_drain();
 
             // 태그 컨텍스트 메뉴 상태 (spectrogram/time-domain 공유)
             static struct {
@@ -9333,8 +9375,12 @@ void run_streaming_viewer(){
                     // 서브윈도우: 뷰 범위 내에서 eid_const_win 크기
                     v.eid_const_win=std::max(64,std::min(v.eid_const_win,(int)view_n));
 
-                    // 자동 재생
-                    if(v.eid_const_playing){
+                    // 자동 재생 / LIVE follow
+                    if(v.eid_source==FFTViewer::EID_LIVE){
+                        // LIVE: playing=follow tail, paused=고정(스크럽). drain 은 eid_live_drain 에서 게이트.
+                        if(v.eid_const_playing)
+                            v.eid_const_pos=(double)vw1-(double)v.eid_const_win;
+                    } else if(v.eid_const_playing){
                         float speed=(float)sr*0.05f;
                         v.eid_const_pos+=speed*io.DeltaTime*10.0;
                         if(v.eid_const_pos+v.eid_const_win>=(double)vw1)

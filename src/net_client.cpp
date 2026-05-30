@@ -247,6 +247,8 @@ void NetClient::recv_loop(){
                 stat_rx_fft_bytes.fetch_add(total_bytes, std::memory_order_relaxed); break;
             case PacketType::AUDIO_FRAME:
                 stat_rx_audio_bytes.fetch_add(total_bytes, std::memory_order_relaxed); break;
+            case PacketType::CONST_FRAME:
+                stat_rx_const_bytes.fetch_add(total_bytes, std::memory_order_relaxed); break;
             case PacketType::HEARTBEAT:
                 stat_rx_hb_bytes.fetch_add(total_bytes, std::memory_order_relaxed); break;
             case PacketType::DB_SAVE_META:
@@ -357,6 +359,20 @@ void NetClient::handle_packet(PacketType type,
         int8_t pan = (int8_t)ah->pan;
         auto& ring = audio[ah->ch_idx];
         for(uint32_t i=0; i<n; i++) ring.push(pcm[i], pan);
+        break;
+    }
+
+    case PacketType::CONST_FRAME: {
+        if(len < sizeof(PktConstFrame)) break;
+        auto* cf = reinterpret_cast<const PktConstFrame*>(payload);
+        if(cf->ch_idx >= MAX_CHANNELS) break;
+        uint32_t n = cf->n_samples;
+        if(len < sizeof(PktConstFrame) + (size_t)n*2u) break;
+        const int8_t* q8 = reinterpret_cast<const int8_t*>(payload + sizeof(PktConstFrame));
+        float scale = cf->scale / 127.0f;
+        std::vector<float> fi(n), fq(n);
+        for(uint32_t i=0;i<n;i++){ fi[i]=(float)q8[i*2]*scale; fq[i]=(float)q8[i*2+1]*scale; }
+        if(on_const_frame) on_const_frame((int)cf->ch_idx, cf->con_sr, fi.data(), fq.data(), (int)n);
         break;
     }
 
@@ -1080,6 +1096,12 @@ bool NetClient::cmd_toggle_recv(int ch_idx, bool enable){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::TOGGLE_RECV;
     c.toggle_recv.idx=(uint8_t)ch_idx;
     c.toggle_recv.enable=enable?1:0;
+    return send_cmd(c);
+}
+bool NetClient::cmd_toggle_const_recv(int ch_idx, bool enable){
+    PktCmd c{}; c.cmd=(uint8_t)CmdType::TOGGLE_CONST_RECV;
+    c.toggle_const_recv.idx=(uint8_t)ch_idx;
+    c.toggle_const_recv.enable=enable?1:0;
     return send_cmd(c);
 }
 bool NetClient::cmd_toggle_fft_recv(bool enable){

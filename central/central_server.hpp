@@ -54,6 +54,8 @@ struct JoinEntry {
     // 뮤트 테이블: true = 이 JOIN이 해당 채널 오디오를 수신함
     // 초기값 true: JOIN이 명시적으로 뮤트(false)할 때만 끔
     bool     recv_audio[MAX_CHANNELS_RELAY] = {true,true,true,true,true,true,true,true,true,true};
+    // 성상도 수신 테이블: 기본 false — JOIN이 TOGGLE_CONST_RECV(enable=1)로 명시 구독해야 받음
+    bool     recv_const[MAX_CHANNELS_RELAY] = {false,false,false,false,false,false,false,false,false,false};
     // 인증 정보 (릴레이가 관리)
     char     name[32]  = {};
     uint8_t  tier      = 0;

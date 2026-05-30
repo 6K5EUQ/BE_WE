@@ -441,8 +441,8 @@ void run_cli_host(){
     };
     srv->cb.on_set_ch_mode= [&](const char* who, int idx, int mode){
         if(idx<0||idx>=MAX_CHANNELS) return;
-        static const char* mn[]={"NONE","AM","FM"};
-        bewe_log_push(0, "[CMD:%s] CH%d mode > %s\n", who, idx, mn[mode<3?mode:0]);
+        static const char* mn[]={"NONE","AM","FM","CONST"};
+        bewe_log_push(0, "[CMD:%s] CH%d mode > %s\n", who, idx, mn[mode<4?mode:0]);
         v.stop_dem(idx);
         auto dm=(Channel::DemodMode)mode;
         v.channels[idx].mode=dm;
@@ -706,6 +706,15 @@ void run_cli_host(){
         do {
             new_mask = enable ? (old_mask | bit) : (old_mask & ~bit);
         } while(!v.channels[ch_idx].audio_mask.compare_exchange_weak(old_mask, new_mask));
+    };
+    srv->cb.on_toggle_const_recv = [&](int ch_idx, uint8_t op_idx, bool enable){
+        if(ch_idx<0||ch_idx>=MAX_CHANNELS) return;
+        uint32_t bit = 1u << op_idx;
+        uint32_t old_mask = v.channels[ch_idx].const_mask.load();
+        uint32_t new_mask;
+        do {
+            new_mask = enable ? (old_mask | bit) : (old_mask & ~bit);
+        } while(!v.channels[ch_idx].const_mask.compare_exchange_weak(old_mask, new_mask));
     };
     srv->cb.on_update_ch_range = [&](int idx, float s, float e){
         if(idx<0||idx>=MAX_CHANNELS) return;

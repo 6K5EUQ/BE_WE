@@ -248,6 +248,11 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
                     cb.on_toggle_recv(cmd->toggle_recv.idx, c->op_index,
                                       cmd->toggle_recv.enable != 0);
                 break;
+            case CmdType::TOGGLE_CONST_RECV:
+                if(cb.on_toggle_const_recv)
+                    cb.on_toggle_const_recv(cmd->toggle_const_recv.idx, c->op_index,
+                                            cmd->toggle_const_recv.enable != 0);
+                break;
             case CmdType::UPDATE_CH_RANGE:
                 if(cb.on_update_ch_range)
                     cb.on_update_ch_range(cmd->update_ch_range.idx,
@@ -551,6 +556,35 @@ void NetServer::send_audio(uint32_t op_mask, uint8_t ch_idx, int8_t pan,
         if(c->is_relay || !c->authed || !c->alive.load()) continue;
         if(!(op_mask & (1u << c->op_index))) continue;
         c->enqueue(pkt, false, true);
+    }
+}
+
+// ── Send constellation data to operators in const_mask (relay = per-JOIN) ──
+void NetServer::send_const(uint32_t op_mask, uint8_t ch_idx, float scale, uint32_t con_sr,
+                           const int8_t* iq8, uint32_t n_samples){
+    if(!op_mask || !n_samples) return;
+    if(bcast_pause_.load(std::memory_order_relaxed)) return;
+
+    uint32_t payload_size = (uint32_t)(sizeof(PktConstFrame) + n_samples*2u);
+    std::vector<uint8_t> payload(payload_size);
+    auto* ch = reinterpret_cast<PktConstFrame*>(payload.data());
+    ch->ch_idx    = ch_idx;
+    ch->flags     = CONST_FLAG_INT8;
+    ch->n_samples = (uint16_t)n_samples;
+    ch->scale     = scale;
+    ch->con_sr    = con_sr;
+    memcpy(payload.data() + sizeof(PktConstFrame), iq8, n_samples*2u);
+
+    auto pkt = make_packet(PacketType::CONST_FRAME, payload.data(), payload_size);
+    // relay JOIN이 있을 때만 중앙서버로 전송 (없으면 큐 낭비 방지) — drop 허용 (lossy scope)
+    if(cb.on_relay_broadcast && has_relay())
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
+
+    std::lock_guard<std::mutex> lk(clients_mtx_);
+    for(auto& c : clients_){
+        if(c->is_relay || !c->authed || !c->alive.load()) continue;
+        if(!(op_mask & (1u << c->op_index))) continue;
+        c->enqueue(pkt, false, true);   // audio 큐(drop 허용) 재사용
     }
 }
 

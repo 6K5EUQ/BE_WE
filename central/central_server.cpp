@@ -855,6 +855,22 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         return;
     }
 
+    // ── CONST_FRAME: 성상도 데이터 — recv_const[] 기반 per-JOIN 필터 (audio 큐 재사용, drop 허용) ──
+    if(bewe_type == BEWE_TYPE_CONST){
+        if(bewe_len < BEWE_HDR_SIZE + 1) return;
+        uint8_t ch_idx = bewe_pkt[BEWE_HDR_SIZE];
+        if(ch_idx >= MAX_CHANNELS_RELAY) return;
+
+        std::lock_guard<std::mutex> jlk(room->joins_mtx);
+        for(auto& je : room->joins){
+            if(!je->alive.load() || je->fd < 0 || !je->authed) continue;
+            if(conn_id != 0xFFFF && conn_id != je->conn_id) continue;
+            if(!je->recv_const[ch_idx]) continue;
+            je->enqueue_audio(bewe_pkt, bewe_len);
+        }
+        return;
+    }
+
     // ── CHAT: 전역 브로드캐스트 (모든 방의 JOIN + 다른 방 HOST) ─────────
     if(bewe_type == BEWE_TYPE_CHAT){
         broadcast_global_chat(bewe_pkt, bewe_len, room.get());
@@ -1135,6 +1151,17 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
             }
             return true;  // HOST에 포워드 안 함
         }
+        // TOGGLE_CONST_RECV: recv_const[] 설정 + HOST에도 포워드 (HOST const_mask 비트 set/clear)
+        if(cmd_type == BEWE_CMD_TOGGLE_CONST_RECV && cmd_len >= 6){
+            uint8_t ch_idx = cmd_payload[4];
+            uint8_t enable = cmd_payload[5];
+            if(ch_idx < MAX_CHANNELS_RELAY){
+                je->recv_const[ch_idx] = (enable != 0);
+                printf("[Central] TOGGLE_CONST_RECV conn_id=%u ch=%u enable=%u\n",
+                       je->conn_id, ch_idx, enable);
+            }
+            return false;  // HOST에 포워드 (con_worker emit 게이트용 const_mask)
+        }
         // TOGGLE_FFT_RECV: 릴레이에서만 처리 — HOST는 모르고 계속 송신,
         // central이 이 JOIN으로만 FFT_FRAME drop. audio/HB/CMD는 영향 없음.
         if(cmd_type == BEWE_CMD_TOGGLE_FFT_RECV && cmd_len >= 5){
@@ -1152,9 +1179,9 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
             if(ch_idx < MAX_CHANNELS_RELAY){
                 std::lock_guard<std::mutex> jlk(room->joins_mtx);
                 for(auto& other : room->joins){
-                    if(other) other->recv_audio[ch_idx] = true;
+                    if(other){ other->recv_audio[ch_idx] = true; other->recv_const[ch_idx] = false; }
                 }
-                printf("[Central] CREATE_CH ch=%u: reset recv_audio[] for all JOINs\n", ch_idx);
+                printf("[Central] CREATE_CH ch=%u: reset recv_audio[]/recv_const[] for all JOINs\n", ch_idx);
             }
             return false;  // HOST에 포워드
         }

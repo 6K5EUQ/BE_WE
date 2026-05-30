@@ -66,12 +66,16 @@ struct Channel {
     bool  selected=false;
     char  owner[32]={};   // creator ID (empty = unknown)
 
-    // Demodulation mode (analog only)
-    enum DemodMode{ DM_NONE=0, DM_AM, DM_FM } mode=DM_NONE;
+    // Demodulation mode. DM_CONST = 성상도(constellation) 스트림 모드 (AM/FM과 상호배타).
+    enum DemodMode{ DM_NONE=0, DM_AM, DM_FM, DM_CONST } mode=DM_NONE;
 
     int   pan=0;   // -1=L  0=both  1=R
     // audio_mask: bit0=host local, bit_i=operator_i gets audio
     std::atomic<uint32_t> audio_mask{0x1};  // default: host only
+    // const_mask: 성상도(DM_CONST) 수신 구독 비트맵. bit0=host local, bit_i=operator_i.
+    // 기본 0 — 아무도 안 볼 때 con_worker가 프레임을 안 만들게 (audio_mask와 달리 host 자동 X).
+    std::atomic<uint32_t> const_mask{0};
+    uint32_t              con_sr=0;   // 성상도 baseband 출력 SR (con_worker가 설정, 패킷/표시에 사용)
 
     // Demod thread (음성)
     std::atomic<bool>   dem_run{false};
@@ -267,6 +271,8 @@ struct Channel {
         mode=DM_NONE;
         pan=0;
         audio_mask.store(0x1);
+        const_mask.store(0);
+        con_sr=0;
         // demod 스레드는 호출 전에 stop_dem로 정리할 것
         dem_rp.store(0);
         dem_paused.store(false);
