@@ -9357,7 +9357,7 @@ void run_streaming_viewer(){
 
             // ── Constellation 모드 (mode 5) ─────────────────────────────
             } else if(eid_mode == 5 && v.eid_data_ready.load()){
-                const float LM=60.f, RM=10.f, TM=24.f, BM=50.f; // BM 늘려서 슬라이더 공간
+                const float LM=60.f, RM=10.f, TM=54.f, BM=16.f; // 컨트롤 상단 이동: TM 확보, BM 축소
                 float ea_x0=ov_x0+LM, ea_y0=ca_y0+TM;
                 float ea_x1=ov_x1-RM, ea_y1=ca_y1-BM;
                 float ea_w=ea_x1-ea_x0, ea_h=ea_y1-ea_y0;
@@ -9372,38 +9372,32 @@ void run_streaming_viewer(){
                     if(vw1<=vw0){ vw0=0; vw1=v.eid_total_samples; }
                     int64_t view_n=vw1-vw0;
 
-                    // 서브윈도우: 뷰 범위 내에서 eid_const_win 크기
-                    v.eid_const_win=std::max(64,std::min(v.eid_const_win,(int)view_n));
+                    // 서브윈도우: 설정값(eid_const_win)은 보존하고 실제 렌더 윈도우만
+                    // 가용 데이터(view_n)로 클램프. eid_const_win 자체를 깎으면 여는 순간
+                    // view_n=0 → 64 로 ratchet 되어 데이터가 쌓여도 영영 안 올라온다.
+                    int win_eff=std::max(64,std::min(v.eid_const_win,(int)view_n));
 
                     // 자동 재생 / LIVE follow
                     if(v.eid_source==FFTViewer::EID_LIVE){
                         // LIVE: playing=follow tail, paused=고정(스크럽). drain 은 eid_live_drain 에서 게이트.
                         if(v.eid_const_playing)
-                            v.eid_const_pos=(double)vw1-(double)v.eid_const_win;
+                            v.eid_const_pos=(double)vw1-(double)win_eff;
                     } else if(v.eid_const_playing){
                         float speed=(float)sr*0.05f;
                         v.eid_const_pos+=speed*io.DeltaTime*10.0;
-                        if(v.eid_const_pos+v.eid_const_win>=(double)vw1)
+                        if(v.eid_const_pos+win_eff>=(double)vw1)
                             v.eid_const_pos=(double)vw0;
                     }
                     // 클램프 (뷰 범위 내)
                     v.eid_const_pos=std::max((double)vw0,std::min(v.eid_const_pos,
-                        (double)(vw1-v.eid_const_win)));
+                        (double)(vw1-win_eff)));
 
-                    // 헤더
-                    {
-                        double t0_ms=v.eid_const_pos/(double)sr*1e3;
-                        double t1_ms=(v.eid_const_pos+v.eid_const_win)/(double)sr*1e3;
-                        char hdr[256];
-                        snprintf(hdr,sizeof(hdr),"%.1f-%.1fms (%d samp) | CF: %.3f MHz",
-                            t0_ms,t1_ms,v.eid_const_win,v.eid_center_freq_hz/1e6);
-                        fg->AddText(ImVec2(ea_x0,ca_y0+4),IM_COL32(160,160,180,220),hdr);
-                        if(!v.sa_temp_path.empty()){
-                            const char* fn=v.sa_temp_path.c_str();
-                            const char* sep=strrchr(fn,'/'); if(sep) fn=sep+1;
-                            ImVec2 fsz=ImGui::CalcTextSize(fn);
-                            fg->AddText(ImVec2(ea_x1-fsz.x,ca_y0+4),IM_COL32(160,160,180,220),fn);
-                        }
+                    // 시간/샘플/CF 정보 표시는 제거됨. 파일명만 우하단에 표시.
+                    if(!v.sa_temp_path.empty()){
+                        const char* fn=v.sa_temp_path.c_str();
+                        const char* sep=strrchr(fn,'/'); if(sep) fn=sep+1;
+                        ImVec2 fsz=ImGui::CalcTextSize(fn);
+                        fg->AddText(ImVec2(ea_x1-fsz.x,ca_y1-15),IM_COL32(160,160,180,220),fn);
                     }
                     // 정사각형 플롯 영역
                     float side=std::min(ea_w,ea_h);
@@ -9413,7 +9407,7 @@ void run_streaming_viewer(){
 
                     // 윈도우 범위 & 데시메이션
                     int64_t w0=(int64_t)v.eid_const_pos;
-                    int64_t w1=std::min((int64_t)(w0+v.eid_const_win),v.eid_total_samples);
+                    int64_t w1=std::min((int64_t)(w0+win_eff),v.eid_total_samples);
                     int64_t win_n=w1-w0;
                     int64_t step=std::max((int64_t)1,win_n/30000);
 
@@ -9472,8 +9466,8 @@ void run_streaming_viewer(){
                     // 테두리
                     fg->AddRect(ImVec2(px0,py0),ImVec2(px1,py1),IM_COL32(60,60,80,255));
 
-                    // ── 하단 컨트롤: Play/Pause + 슬라이더 + Window 크기 ──
-                    float ctrl_y=ea_y1+6.f;
+                    // ── 상단(좌) 컨트롤: Play/Pause + 슬라이더 + Window + Sync ──
+                    float ctrl_y=ca_y0+4.f;
                     ImGui::SetCursorScreenPos(ImVec2(ea_x0,ctrl_y));
                     if(ImGui::SmallButton(v.eid_const_playing?"||":" > ")){
                         v.eid_const_playing=!v.eid_const_playing;
@@ -9485,7 +9479,7 @@ void run_streaming_viewer(){
                     ImGui::SetNextItemWidth(slider_w);
                     float pos_f=(float)v.eid_const_pos;
                     float pos_min_f=(float)vw0;
-                    float pos_max_f=(float)std::max((int64_t)1,vw1-(int64_t)v.eid_const_win);
+                    float pos_max_f=(float)std::max((int64_t)1,vw1-(int64_t)win_eff);
                     if(ImGui::SliderFloat("##const_pos",&pos_f,pos_min_f,pos_max_f,"")){
                         v.eid_const_pos=(double)pos_f;
                     }
@@ -9501,7 +9495,7 @@ void run_streaming_viewer(){
                         ImGui::SetNextItemWidth(80.f);
                         if(ImGui::BeginCombo("##const_win",wl,ImGuiComboFlags_NoArrowButton)){
                             for(int i=0;i<11;i++){
-                                if(wsizes[i]>(int)view_n) break;
+                                // view_n 보다 큰 사이즈도 선택 허용 (렌더는 win_eff로 클램프)
                                 char ll[16]; snprintf(ll,sizeof(ll),"%d",wsizes[i]);
                                 bool is_sel=(wsizes[i]==v.eid_const_win);
                                 if(ImGui::Selectable(ll,is_sel))

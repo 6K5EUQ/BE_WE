@@ -503,7 +503,7 @@ public:
     // 성상도 재생 상태
     double eid_const_pos = 0;       // 현재 재생 위치 (샘플 인덱스)
     bool   eid_const_playing = false; // 자동 재생 중
-    int    eid_const_win = 1024;    // 윈도우 크기 (샘플)
+    int    eid_const_win = 4096;    // 윈도우 크기 (샘플)
     float  eid_const_zoom = 0.0f;   // 0 = 자동 스케일, >0 = 수동 줌 배율
 
     // ── LIVE constellation source (DM_CONST) ──────────────────────────────
