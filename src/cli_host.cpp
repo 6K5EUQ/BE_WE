@@ -716,6 +716,13 @@ void run_cli_host(){
             new_mask = enable ? (old_mask | bit) : (old_mask & ~bit);
         } while(!v.channels[ch_idx].const_mask.compare_exchange_weak(old_mask, new_mask));
     };
+    srv->cb.on_set_const_sync = [&](int ch_idx, bool on, float baud, uint8_t mod, float rolloff){
+        if(ch_idx<0||ch_idx>=MAX_CHANNELS) return;
+        v.channels[ch_idx].con_sym_rate.store(baud);
+        v.channels[ch_idx].con_mod_order.store(mod==4||mod==8?mod:2);
+        v.channels[ch_idx].con_rolloff.store(rolloff>0.01f&&rolloff<1.0f?rolloff:0.35f);
+        v.channels[ch_idx].con_sync_on.store(on);
+    };
     srv->cb.on_update_ch_range = [&](int idx, float s, float e){
         if(idx<0||idx>=MAX_CHANNELS) return;
         v.channels[idx].s = s;

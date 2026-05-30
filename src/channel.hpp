@@ -76,6 +76,11 @@ struct Channel {
     // 기본 0 — 아무도 안 볼 때 con_worker가 프레임을 안 만들게 (audio_mask와 달리 host 자동 X).
     std::atomic<uint32_t> const_mask{0};
     uint32_t              con_sr=0;   // 성상도 baseband 출력 SR (con_worker가 설정, 패킷/표시에 사용)
+    // 성상도 심볼 동기(clean constellation) 파라미터 — JOIN/로컬이 설정, con_worker가 읽음.
+    std::atomic<bool>     con_sync_on{false};   // true=PSK 수신기 체인(MF+timing+carrier) 켬
+    std::atomic<float>    con_sym_rate{0.f};    // 심볼레이트(baud); <=0 이면 raw scatter
+    std::atomic<uint8_t>  con_mod_order{2};     // 2=BPSK 4=QPSK 8=8PSK (carrier loop M)
+    std::atomic<float>    con_rolloff{0.35f};   // RRC rolloff beta
 
     // Demod thread (음성)
     std::atomic<bool>   dem_run{false};
@@ -273,6 +278,10 @@ struct Channel {
         audio_mask.store(0x1);
         const_mask.store(0);
         con_sr=0;
+        con_sync_on.store(false);
+        con_sym_rate.store(0.f);
+        con_mod_order.store(2);
+        con_rolloff.store(0.35f);
         // demod 스레드는 호출 전에 stop_dem로 정리할 것
         dem_rp.store(0);
         dem_paused.store(false);

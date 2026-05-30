@@ -253,6 +253,12 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
                     cb.on_toggle_const_recv(cmd->toggle_const_recv.idx, c->op_index,
                                             cmd->toggle_const_recv.enable != 0);
                 break;
+            case CmdType::SET_CONST_SYNC:
+                if(cb.on_set_const_sync)
+                    cb.on_set_const_sync(cmd->set_const_sync.idx, cmd->set_const_sync.on != 0,
+                                         cmd->set_const_sync.baud, cmd->set_const_sync.mod,
+                                         cmd->set_const_sync.rolloff);
+                break;
             case CmdType::UPDATE_CH_RANGE:
                 if(cb.on_update_ch_range)
                     cb.on_update_ch_range(cmd->update_ch_range.idx,

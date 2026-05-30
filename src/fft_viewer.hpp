@@ -519,6 +519,11 @@ public:
     int                live_const_ch = -1;
     uint32_t           live_const_sr = 0;
     static constexpr size_t LIVE_CONST_CAP = 65536;   // eid rolling 버퍼 상한
+    // LIVE 성상도 심볼동기(clean) UI 상태 (eid_live_ch 채널에 적용)
+    bool  eid_sync_on = false;
+    float eid_sync_baud = 0.f;
+    int   eid_sync_mod = 2;        // 2=BPSK 4=QPSK 8=8PSK
+    float eid_sync_rolloff = 0.35f;
 
     // M-th power spectrum 분석 상태
     int    eid_power_order = 1;     // M 값 (1, 2, 4, 8)

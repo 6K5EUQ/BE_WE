@@ -183,6 +183,7 @@ enum class CmdType : uint8_t {
     START_IQ_REC    = 0x19,  // JOIN → server: start per-ch IQ recording
     STOP_IQ_REC     = 0x1A,  // JOIN → server: stop per-ch IQ recording + transfer
     TOGGLE_CONST_RECV = 0x1B,  // JOIN → central(+host): enable/disable 성상도 수신 + host const_mask
+    SET_CONST_SYNC    = 0x1C,  // JOIN → host: 성상도 심볼동기 파라미터 (on/baud/mod/rolloff)
     SET_ANTENNA     = 0x1D,  // bidirectional: set HOST antenna free text (char[32])
     ADD_SCHED       = 0x1E,  // JOIN → server: add scheduled IQ recording
     REMOVE_SCHED    = 0x1F,  // JOIN → server: remove own scheduled entry
@@ -206,6 +207,8 @@ struct __attribute__((packed)) PktCmd {
         struct { uint8_t dummy; }                          set_autoscale;
         struct { uint8_t idx; uint8_t enable; }            toggle_recv;
         struct { uint8_t idx; uint8_t enable; }            toggle_const_recv;
+        struct { uint8_t idx; uint8_t on; uint8_t mod; uint8_t _pad;
+                 float baud; float rolloff; }              set_const_sync;
         struct { uint8_t idx; float s; float e; }          update_ch_range;
         struct { uint8_t dummy; }                          toggle_tm_iq;
         struct { uint8_t pause; }                          set_capture_pause;

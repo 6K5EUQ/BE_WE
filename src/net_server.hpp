@@ -154,6 +154,8 @@ struct ServerCallbacks {
     std::function<void(int ch_idx, uint8_t op_idx, bool enable)> on_toggle_recv;
     // 성상도(DM_CONST) 수신 구독: HOST const_mask 비트 set/clear → con_worker emit 게이트
     std::function<void(int ch_idx, uint8_t op_idx, bool enable)> on_toggle_const_recv;
+    // 성상도 심볼동기 파라미터 (on/baud/mod/rolloff) → con_worker 체인 설정
+    std::function<void(int ch_idx, bool on, float baud, uint8_t mod, float rolloff)> on_set_const_sync;
     std::function<void(int idx, float s, float e)>   on_update_ch_range;
     std::function<void()>                            on_toggle_tm_iq;
     std::function<void(bool pause)>                  on_set_capture_pause;

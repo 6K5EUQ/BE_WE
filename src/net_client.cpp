@@ -1104,6 +1104,15 @@ bool NetClient::cmd_toggle_const_recv(int ch_idx, bool enable){
     c.toggle_const_recv.enable=enable?1:0;
     return send_cmd(c);
 }
+bool NetClient::cmd_set_const_sync(int ch_idx, bool on, float baud, uint8_t mod, float rolloff){
+    PktCmd c{}; c.cmd=(uint8_t)CmdType::SET_CONST_SYNC;
+    c.set_const_sync.idx=(uint8_t)ch_idx;
+    c.set_const_sync.on=on?1:0;
+    c.set_const_sync.mod=mod;
+    c.set_const_sync.baud=baud;
+    c.set_const_sync.rolloff=rolloff;
+    return send_cmd(c);
+}
 bool NetClient::cmd_toggle_fft_recv(bool enable){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::TOGGLE_FFT_RECV;
     c.toggle_fft_recv.enable=enable?1:0;

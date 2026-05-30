@@ -9511,6 +9511,50 @@ void run_streaming_viewer(){
                             ImGui::EndCombo();
                         }
                     }
+                    // ── 심볼동기(clean constellation) 컨트롤 — LIVE 모드 전용 ──
+                    if(v.eid_source==FFTViewer::EID_LIVE && v.eid_live_ch>=0){
+                        int ci=v.eid_live_ch;
+                        auto apply_sync=[&](){
+                            if(v.remote_mode && v.net_cli)
+                                v.net_cli->cmd_set_const_sync(ci, v.eid_sync_on, v.eid_sync_baud,
+                                                              (uint8_t)v.eid_sync_mod, v.eid_sync_rolloff);
+                            else {
+                                v.channels[ci].con_sym_rate.store(v.eid_sync_baud);
+                                v.channels[ci].con_mod_order.store((uint8_t)v.eid_sync_mod);
+                                v.channels[ci].con_rolloff.store(v.eid_sync_rolloff);
+                                v.channels[ci].con_sync_on.store(v.eid_sync_on);
+                            }
+                        };
+                        ImGui::SetCursorScreenPos(ImVec2(ea_x0,ctrl_y+24.f));
+                        bool ch=false;
+                        if(ImGui::Checkbox("Sync",&v.eid_sync_on)) ch=true;
+                        ImGui::SameLine(0,8); ImGui::Text("Baud:"); ImGui::SameLine(0,3);
+                        ImGui::SetNextItemWidth(80.f);
+                        if(ImGui::InputFloat("##sync_baud",&v.eid_sync_baud,0,0,"%.0f")) ch=true;
+                        ImGui::SameLine(0,4);
+                        if(ImGui::SmallButton("Auto")){
+                            float bwh=fabsf(v.channels[ci].e - v.channels[ci].s)*1e6f;
+                            v.eid_sync_baud = bwh/(1.0f+v.eid_sync_rolloff);  // 점유대역 추정
+                            ch=true;
+                        }
+                        ImGui::SameLine(0,8);
+                        const char* mods[]={"BPSK","QPSK","8PSK"}; const int modv[]={2,4,8};
+                        int mi2=(v.eid_sync_mod==4)?1:(v.eid_sync_mod==8)?2:0;
+                        ImGui::SetNextItemWidth(70.f);
+                        if(ImGui::BeginCombo("##sync_mod",mods[mi2],ImGuiComboFlags_NoArrowButton)){
+                            for(int i=0;i<3;i++){ bool s=(mi2==i);
+                                if(ImGui::Selectable(mods[i],s)){ v.eid_sync_mod=modv[i]; ch=true; }
+                                if(s) ImGui::SetItemDefaultFocus(); }
+                            ImGui::EndCombo();
+                        }
+                        ImGui::SameLine(0,8); ImGui::Text("Roll:"); ImGui::SameLine(0,3);
+                        ImGui::SetNextItemWidth(50.f);
+                        if(ImGui::InputFloat("##sync_roll",&v.eid_sync_rolloff,0,0,"%.2f")) ch=true;
+                        if(v.eid_sync_baud<0.f) v.eid_sync_baud=0.f;
+                        if(v.eid_sync_rolloff<0.01f) v.eid_sync_rolloff=0.01f;
+                        if(v.eid_sync_rolloff>1.0f)  v.eid_sync_rolloff=1.0f;
+                        if(ch) apply_sync();
+                    }
                     // 마우스 휠로 줌 조절 (플롯 위에서)
                     ImVec2 mp2=io.MousePos;
                     if(mp2.x>=px0&&mp2.x<=px1&&mp2.y>=py0&&mp2.y<=py1){
