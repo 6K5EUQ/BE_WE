@@ -66,8 +66,9 @@ struct Channel {
     bool  selected=false;
     char  owner[32]={};   // creator ID (empty = unknown)
 
-    // Demodulation mode. DM_CONST = 성상도(constellation) 스트림 모드 (AM/FM과 상호배타).
-    enum DemodMode{ DM_NONE=0, DM_AM, DM_FM, DM_CONST } mode=DM_NONE;
+    // Demodulation mode. DM_CONST = 성상도 스트림(단일반송파 PSK), DM_OFDM = OFDM 부반송파
+    // 성상도 스트림 (둘 다 AM/FM과 상호배타, 출력은 CONST_FRAME 경로 공유).
+    enum DemodMode{ DM_NONE=0, DM_AM, DM_FM, DM_CONST, DM_OFDM } mode=DM_NONE;
 
     int   pan=0;   // -1=L  0=both  1=R
     // audio_mask: bit0=host local, bit_i=operator_i gets audio
@@ -81,6 +82,17 @@ struct Channel {
     std::atomic<float>    con_sym_rate{0.f};    // 심볼레이트(baud); <=0 이면 raw scatter
     std::atomic<uint8_t>  con_mod_order{2};     // 2=BPSK 4=QPSK 8=8PSK (carrier loop M)
     std::atomic<float>    con_rolloff{0.35f};   // RRC rolloff beta
+    // OFDM 블라인드 복조(DM_OFDM) 파라미터 — JOIN/로컬 설정, ofdm_worker가 읽음.
+    // 출력(부반송파 성상도)은 const_mask/con_sr/CONST_FRAME 경로를 그대로 재사용.
+    std::atomic<bool>     ofdm_auto{true};        // true=CP 자기상관 블라인드 자동추정
+    std::atomic<uint16_t> ofdm_fft_size{0};       // 수동 N (0=auto)
+    std::atomic<uint16_t> ofdm_cp_len{0};         // 수동 CP 길이 (0=auto)
+    std::atomic<float>    ofdm_subcarrier_hz{0.f};// 수동 부반송파 간격 힌트 (0=N 사용)
+    std::atomic<uint8_t>  ofdm_mod_order{4};      // 등화용 변조차수 힌트 (2=BPSK 4=QPSK/QAM)
+    std::atomic<uint16_t> ofdm_est_fft{0};        // 추정 결과 N    (ofdm_worker set, UI 표시)
+    std::atomic<uint16_t> ofdm_est_cp{0};         // 추정 결과 CP
+    std::atomic<float>    ofdm_est_cfo_hz{0.f};   // 추정 결과 fractional CFO
+    std::atomic<bool>     ofdm_locked{false};     // 추정기 lock 상태
 
     // Demod thread (음성)
     std::atomic<bool>   dem_run{false};
@@ -282,6 +294,15 @@ struct Channel {
         con_sym_rate.store(0.f);
         con_mod_order.store(2);
         con_rolloff.store(0.35f);
+        ofdm_auto.store(true);
+        ofdm_fft_size.store(0);
+        ofdm_cp_len.store(0);
+        ofdm_subcarrier_hz.store(0.f);
+        ofdm_mod_order.store(4);
+        ofdm_est_fft.store(0);
+        ofdm_est_cp.store(0);
+        ofdm_est_cfo_hz.store(0.f);
+        ofdm_locked.store(false);
         // demod 스레드는 호출 전에 stop_dem로 정리할 것
         dem_rp.store(0);
         dem_paused.store(false);

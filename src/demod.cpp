@@ -154,9 +154,11 @@ void FFTViewer::start_dem(int ch_idx, Channel::DemodMode mode){
     // dem 슬롯(dem_thr/dem_rp/dem_stop_req)을 그대로 재사용하므로 stop_dem/update_dem_by_freq 무변경.
     if(mode==Channel::DM_CONST)
         ch.dem_thr=std::thread(&FFTViewer::con_worker,this,ch_idx);
+    else if(mode==Channel::DM_OFDM)
+        ch.dem_thr=std::thread(&FFTViewer::ofdm_worker,this,ch_idx);
     else
         ch.dem_thr=std::thread(&FFTViewer::dem_worker,this,ch_idx);
-    const char* n[]={"NONE","AM","FM","CONST"};
+    const char* n[]={"NONE","AM","FM","CONST","OFDM"};
     bewe_log("DEM[%d] start: %s  %.4f-%.4f MHz\n",ch_idx,n[(int)mode],ch.s,ch.e);
 }
 

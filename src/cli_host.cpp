@@ -441,8 +441,8 @@ void run_cli_host(){
     };
     srv->cb.on_set_ch_mode= [&](const char* who, int idx, int mode){
         if(idx<0||idx>=MAX_CHANNELS) return;
-        static const char* mn[]={"NONE","AM","FM","CONST"};
-        bewe_log_push(0, "[CMD:%s] CH%d mode > %s\n", who, idx, mn[mode<4?mode:0]);
+        static const char* mn[]={"NONE","AM","FM","CONST","OFDM"};
+        bewe_log_push(0, "[CMD:%s] CH%d mode > %s\n", who, idx, mn[(mode>=0&&mode<5)?mode:0]);
         v.stop_dem(idx);
         auto dm=(Channel::DemodMode)mode;
         v.channels[idx].mode=dm;
@@ -722,6 +722,13 @@ void run_cli_host(){
         v.channels[ch_idx].con_mod_order.store(mod==4||mod==8?mod:2);
         v.channels[ch_idx].con_rolloff.store(rolloff>0.01f&&rolloff<1.0f?rolloff:0.35f);
         v.channels[ch_idx].con_sync_on.store(on);
+    };
+    srv->cb.on_set_ofdm_sync = [&](int ch_idx, bool autoest, uint16_t fft, uint16_t cp, uint8_t mod){
+        if(ch_idx<0||ch_idx>=MAX_CHANNELS) return;
+        v.channels[ch_idx].ofdm_auto.store(autoest);
+        v.channels[ch_idx].ofdm_fft_size.store(fft);
+        v.channels[ch_idx].ofdm_cp_len.store(cp);
+        v.channels[ch_idx].ofdm_mod_order.store(mod==2?2:4);
     };
     srv->cb.on_update_ch_range = [&](int idx, float s, float e){
         if(idx<0||idx>=MAX_CHANNELS) return;

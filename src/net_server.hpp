@@ -156,6 +156,8 @@ struct ServerCallbacks {
     std::function<void(int ch_idx, uint8_t op_idx, bool enable)> on_toggle_const_recv;
     // 성상도 심볼동기 파라미터 (on/baud/mod/rolloff) → con_worker 체인 설정
     std::function<void(int ch_idx, bool on, float baud, uint8_t mod, float rolloff)> on_set_const_sync;
+    // OFDM 블라인드 복조 파라미터 (auto/fft/cp/mod) → ofdm_worker 설정
+    std::function<void(int ch_idx, bool autoest, uint16_t fft, uint16_t cp, uint8_t mod)> on_set_ofdm_sync;
     std::function<void(int idx, float s, float e)>   on_update_ch_range;
     std::function<void()>                            on_toggle_tm_iq;
     std::function<void(bool pause)>                  on_set_capture_pause;

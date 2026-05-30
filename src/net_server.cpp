@@ -259,6 +259,12 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
                                          cmd->set_const_sync.baud, cmd->set_const_sync.mod,
                                          cmd->set_const_sync.rolloff);
                 break;
+            case CmdType::SET_OFDM_SYNC:
+                if(cb.on_set_ofdm_sync)
+                    cb.on_set_ofdm_sync(cmd->set_ofdm_sync.idx, cmd->set_ofdm_sync.autoest != 0,
+                                        cmd->set_ofdm_sync.fft_size, cmd->set_ofdm_sync.cp_len,
+                                        cmd->set_ofdm_sync.mod);
+                break;
             case CmdType::UPDATE_CH_RANGE:
                 if(cb.on_update_ch_range)
                     cb.on_update_ch_range(cmd->update_ch_range.idx,

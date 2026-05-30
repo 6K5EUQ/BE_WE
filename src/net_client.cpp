@@ -1113,6 +1113,15 @@ bool NetClient::cmd_set_const_sync(int ch_idx, bool on, float baud, uint8_t mod,
     c.set_const_sync.rolloff=rolloff;
     return send_cmd(c);
 }
+bool NetClient::cmd_set_ofdm_sync(int ch_idx, bool autoest, uint16_t fft, uint16_t cp, uint8_t mod){
+    PktCmd c{}; c.cmd=(uint8_t)CmdType::SET_OFDM_SYNC;
+    c.set_ofdm_sync.idx=(uint8_t)ch_idx;
+    c.set_ofdm_sync.autoest=autoest?1:0;
+    c.set_ofdm_sync.mod=mod;
+    c.set_ofdm_sync.fft_size=fft;
+    c.set_ofdm_sync.cp_len=cp;
+    return send_cmd(c);
+}
 bool NetClient::cmd_toggle_fft_recv(bool enable){
     PktCmd c{}; c.cmd=(uint8_t)CmdType::TOGGLE_FFT_RECV;
     c.toggle_fft_recv.enable=enable?1:0;

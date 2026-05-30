@@ -28,6 +28,7 @@ if(CLI)
         src/demod.cpp
         src/iq_record.cpp
         src/constellation.cpp
+        src/ofdm_demod.cpp
         src/sched_record.cpp
         src/mission.cpp
         src/mission_push.cpp
@@ -106,6 +107,7 @@ else()
         src/demod.cpp
         src/iq_record.cpp
         src/constellation.cpp
+        src/ofdm_demod.cpp
         src/sched_record.cpp
         src/mission.cpp
         src/mission_push.cpp

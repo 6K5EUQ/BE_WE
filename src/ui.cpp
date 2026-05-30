@@ -3762,8 +3762,8 @@ void run_streaming_viewer(){
             };
             srv->cb.on_set_ch_mode= [&](const char* who, int idx, int mode){
                 if(idx<0||idx>=MAX_CHANNELS) return;
-                static const char* mn[]={"NONE","AM","FM","MAGIC"};
-                bewe_log_push(0, "[CMD:%s] CH%d mode > %s\n", who, idx, mn[mode<4?mode:0]);
+                static const char* mn[]={"NONE","AM","FM","CONST","OFDM"};
+                bewe_log_push(0, "[CMD:%s] CH%d mode > %s\n", who, idx, mn[(mode>=0&&mode<5)?mode:0]);
                 v.stop_dem(idx);
                 auto dm=(Channel::DemodMode)mode;
                 v.channels[idx].mode=dm;
@@ -5412,6 +5412,30 @@ void run_streaming_viewer(){
                     }
                 }
             }
+            // D key: OFDM 블라인드 복조 실시간 보기 — 채널을 DM_OFDM 으로 전환 + SA 패널 LIVE 오픈.
+            // HOST 가 CP-OFDM 을 블라인드 복조해 부반송파 성상도 생성, 'i' 와 동일 경로로 표시.
+            if(ImGui::IsKeyPressed(ImGuiKey_D,false) && !io.WantTextInput){
+                int ci = v.selected_ch;
+                if(ci >= 0 && ci < MAX_CHANNELS && v.channels[ci].filter_active){
+                    bool already = (v.eid_source==FFTViewer::EID_LIVE && v.eid_live_ch==ci
+                                    && v.channels[ci].mode==Channel::DM_OFDM);
+                    if(!already){
+                        if(v.remote_mode && v.net_cli){
+                            v.net_cli->cmd_set_ch_mode(ci, Channel::DM_OFDM);
+                            v.net_cli->cmd_toggle_const_recv(ci, true);
+                        } else {
+                            v.stop_dem(ci);
+                            v.start_dem(ci, Channel::DM_OFDM);
+                            uint32_t om=v.channels[ci].const_mask.load();
+                            v.channels[ci].const_mask.store(om|0x1u);
+                            if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
+                        }
+                        v.eid_cleanup();
+                        v.eid_open_live(ci);
+                        v.eid_panel_open = true;
+                    }
+                }
+            }
 
             if(ImGui::IsKeyPressed(ImGuiKey_P,false)){
                 bool np = !v.spectrum_pause.load();
@@ -6011,7 +6035,11 @@ void run_streaming_viewer(){
             bool conn = v.remote_mode && v.net_cli && v.net_cli->is_connected();
             if(conn && !s_prev_conn && v.eid_source==FFTViewer::EID_LIVE
                && v.eid_live_ch>=0 && v.eid_live_ch<MAX_CHANNELS){
-                v.net_cli->cmd_set_ch_mode(v.eid_live_ch, Channel::DM_CONST);
+                // LIVE 채널의 실제 모드(DM_CONST/DM_OFDM)를 재전송 — OFDM 채널을 CONST로
+                // 덮어쓰지 않도록.
+                Channel::DemodMode lm = v.channels[v.eid_live_ch].mode;
+                if(lm != Channel::DM_CONST && lm != Channel::DM_OFDM) lm = Channel::DM_CONST;
+                v.net_cli->cmd_set_ch_mode(v.eid_live_ch, lm);
                 v.net_cli->cmd_toggle_const_recv(v.eid_live_ch, true);
             }
             s_prev_conn = conn;
@@ -9508,6 +9536,61 @@ void run_streaming_viewer(){
                     // ── 심볼동기(clean constellation) 컨트롤 — LIVE 모드 전용 ──
                     if(v.eid_source==FFTViewer::EID_LIVE && v.eid_live_ch>=0){
                         int ci=v.eid_live_ch;
+                        if(v.channels[ci].mode==Channel::DM_OFDM){
+                            // ── OFDM 블라인드 복조 컨트롤 (Auto / FFT / CP / Mod + 추정 표시) ──
+                            auto apply_ofdm=[&](){
+                                if(v.remote_mode && v.net_cli)
+                                    v.net_cli->cmd_set_ofdm_sync(ci, v.eid_ofdm_auto,
+                                        (uint16_t)v.eid_ofdm_fft, (uint16_t)v.eid_ofdm_cp, (uint8_t)v.eid_ofdm_mod);
+                                else {
+                                    v.channels[ci].ofdm_auto.store(v.eid_ofdm_auto);
+                                    v.channels[ci].ofdm_fft_size.store((uint16_t)v.eid_ofdm_fft);
+                                    v.channels[ci].ofdm_cp_len.store((uint16_t)v.eid_ofdm_cp);
+                                    v.channels[ci].ofdm_mod_order.store((uint8_t)v.eid_ofdm_mod);
+                                }
+                            };
+                            ImGui::SetCursorScreenPos(ImVec2(ea_x0,ctrl_y+24.f));
+                            bool oc=false;
+                            if(ImGui::Checkbox("Auto",&v.eid_ofdm_auto)) oc=true;
+                            ImGui::SameLine(0,8); ImGui::Text("FFT:"); ImGui::SameLine(0,3);
+                            {
+                                const int fszs[]={0,64,128,256,512,1024,2048};
+                                char fl[16]; if(v.eid_ofdm_fft<=0) snprintf(fl,sizeof(fl),"Auto"); else snprintf(fl,sizeof(fl),"%d",v.eid_ofdm_fft);
+                                ImGui::SetNextItemWidth(70.f);
+                                if(ImGui::BeginCombo("##ofdm_fft",fl,ImGuiComboFlags_NoArrowButton)){
+                                    for(int i=0;i<7;i++){ bool s=(fszs[i]==v.eid_ofdm_fft);
+                                        char lb[16]; if(fszs[i]==0) snprintf(lb,sizeof(lb),"Auto"); else snprintf(lb,sizeof(lb),"%d",fszs[i]);
+                                        if(ImGui::Selectable(lb,s)){ v.eid_ofdm_fft=fszs[i]; oc=true; }
+                                        if(s) ImGui::SetItemDefaultFocus(); }
+                                    ImGui::EndCombo();
+                                }
+                            }
+                            ImGui::SameLine(0,8); ImGui::Text("CP:"); ImGui::SameLine(0,3);
+                            ImGui::SetNextItemWidth(60.f);
+                            if(ImGui::InputInt("##ofdm_cp",&v.eid_ofdm_cp,0,0)) oc=true;
+                            ImGui::SameLine(0,8);
+                            const char* omods[]={"BPSK","QPSK/QAM"}; const int omodv[]={2,4};
+                            int omi=(v.eid_ofdm_mod==2)?0:1;
+                            ImGui::SetNextItemWidth(90.f);
+                            if(ImGui::BeginCombo("##ofdm_mod",omods[omi],ImGuiComboFlags_NoArrowButton)){
+                                for(int i=0;i<2;i++){ bool s=(omi==i);
+                                    if(ImGui::Selectable(omods[i],s)){ v.eid_ofdm_mod=omodv[i]; oc=true; }
+                                    if(s) ImGui::SetItemDefaultFocus(); }
+                                ImGui::EndCombo();
+                            }
+                            if(v.eid_ofdm_cp<0)  v.eid_ofdm_cp=0;
+                            if(v.eid_ofdm_fft<0) v.eid_ofdm_fft=0;
+                            if(oc) apply_ofdm();
+                            // 추정 결과 (read-only): 로컬/HOST 는 라이브 atomics, 원격 JOIN 은 "-"
+                            ImGui::SameLine(0,12);
+                            int   eN=v.channels[ci].ofdm_est_fft.load();
+                            int   eC=v.channels[ci].ofdm_est_cp.load();
+                            float eF=v.channels[ci].ofdm_est_cfo_hz.load();
+                            if(v.channels[ci].ofdm_locked.load())
+                                ImGui::TextColored(ImVec4(0.40f,0.90f,0.50f,1.f),"LOCK N=%d CP=%d CFO=%.0fHz",eN,eC,eF);
+                            else
+                                ImGui::TextColored(ImVec4(0.75f,0.70f,0.40f,1.f),"searching...");
+                        } else {
                         auto apply_sync=[&](){
                             if(v.remote_mode && v.net_cli)
                                 v.net_cli->cmd_set_const_sync(ci, v.eid_sync_on, v.eid_sync_baud,
@@ -9548,6 +9631,7 @@ void run_streaming_viewer(){
                         if(v.eid_sync_rolloff<0.01f) v.eid_sync_rolloff=0.01f;
                         if(v.eid_sync_rolloff>1.0f)  v.eid_sync_rolloff=1.0f;
                         if(ch) apply_sync();
+                        }
                     }
                     // 마우스 휠로 줌 조절 (플롯 위에서)
                     ImVec2 mp2=io.MousePos;

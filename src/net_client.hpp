@@ -282,6 +282,7 @@ public:
     bool cmd_toggle_recv(int ch_idx, bool enable);
     bool cmd_toggle_const_recv(int ch_idx, bool enable);  // 성상도 수신 구독 토글
     bool cmd_set_const_sync(int ch_idx, bool on, float baud, uint8_t mod, float rolloff); // 심볼동기 파라미터
+    bool cmd_set_ofdm_sync(int ch_idx, bool autoest, uint16_t fft, uint16_t cp, uint8_t mod); // OFDM 블라인드 파라미터
     bool cmd_toggle_fft_recv(bool enable);  // central에서 이 JOIN으로 FFT 송신 토글 (audio/HB 무관)
     bool cmd_update_ch_range(int idx, float s, float e);
     bool cmd_toggle_tm_iq();

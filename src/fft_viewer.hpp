@@ -524,6 +524,11 @@ public:
     float eid_sync_baud = 0.f;
     int   eid_sync_mod = 2;        // 2=BPSK 4=QPSK 8=8PSK
     float eid_sync_rolloff = 0.35f;
+    // LIVE OFDM 블라인드 복조(DM_OFDM) UI 상태 (eid_live_ch 채널에 적용)
+    bool  eid_ofdm_auto = true;
+    int   eid_ofdm_fft  = 0;       // 0=auto
+    int   eid_ofdm_cp   = 0;       // 0=auto
+    int   eid_ofdm_mod  = 4;       // 2=BPSK 4=QPSK/QAM (M-th power 등화 차수)
 
     // M-th power spectrum 분석 상태
     int    eid_power_order = 1;     // M 값 (1, 2, 4, 8)
@@ -913,6 +918,8 @@ public:
 
     // ── constellation.cpp (DM_CONST: 성상도 실시간 처리/스트림) ────────────
     void con_worker(int ch_idx);   // DM_CONST worker — dem 슬롯(dem_thr/dem_rp/dem_stop_req) 재사용
+    // ── ofdm_demod.cpp (DM_OFDM: 블라인드 CP-OFDM → 부반송파 성상도 스트림) ──
+    void ofdm_worker(int ch_idx);  // dem 슬롯 재사용, 출력은 con_worker와 동일한 CONST_FRAME 경로
     // thread-safe: con_worker(host-local) 또는 net CONST_FRAME 수신 스레드가 호출
     void eid_live_push(int ch_idx, uint32_t sr, const float* i, const float* q, int n);
     void eid_live_drain();          // UI thread: pending → eid_ch_i/q rolling

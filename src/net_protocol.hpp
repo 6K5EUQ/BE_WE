@@ -189,6 +189,7 @@ enum class CmdType : uint8_t {
     REMOVE_SCHED    = 0x1F,  // JOIN → server: remove own scheduled entry
     SET_HW          = 0x21,  // JOIN → server: switch HOST SDR runtime ("bladerf"/"pluto"/"rtlsdr")
     TOGGLE_FFT_RECV = 0x22,  // JOIN → central: enable/disable FFT stream (audio/HB unaffected)
+    SET_OFDM_SYNC   = 0x23,  // JOIN → host: OFDM 블라인드 복조 파라미터 (auto/fft/cp/mod)
 };
 
 struct __attribute__((packed)) PktCmd {
@@ -209,6 +210,8 @@ struct __attribute__((packed)) PktCmd {
         struct { uint8_t idx; uint8_t enable; }            toggle_const_recv;
         struct { uint8_t idx; uint8_t on; uint8_t mod; uint8_t _pad;
                  float baud; float rolloff; }              set_const_sync;
+        struct { uint8_t idx; uint8_t autoest; uint8_t mod; uint8_t _pad;
+                 uint16_t fft_size; uint16_t cp_len; }     set_ofdm_sync;
         struct { uint8_t idx; float s; float e; }          update_ch_range;
         struct { uint8_t dummy; }                          toggle_tm_iq;
         struct { uint8_t pause; }                          set_capture_pause;
