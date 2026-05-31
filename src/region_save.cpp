@@ -63,7 +63,8 @@ static void make_filename(char* out, size_t sz,
                           float cf_mhz, float bw_khz,
                           time_t t_start, time_t t_end,
                           int mission_year, const char* mission_code,
-                          const char* mission_station)
+                          const char* mission_station,
+                          const char* host_station)
 {
     if(t_start <= 0) t_start = time(nullptr);
     if(t_end   <= 0) t_end   = time(nullptr);
@@ -89,10 +90,20 @@ static void make_filename(char* out, size_t sz,
                  st_fn.c_str(), mission_code, mission_year,
                  (double)cf_mhz, hms_s, hms_e);
     } else {
-        char dts[32]; strftime(dts, sizeof(dts), "%b%d_%Y_%H%M%S", &ts);
-        snprintf(out, sz, "%s/IQ_%.3fMHz_%s-%s.sigmf-data",
+        // 노미션: 미션 활성 포맷과 동일하되 <code>_<year> 자리에 날짜.
+        //   <station>_IQ_<MonDD_YYYY>_<freq>MHz_<HHMMSS>-<HHMMSS>.sigmf-data
+        std::string st = (host_station && host_station[0]) ? host_station : "host";
+        std::string st_fn = st;
+        for(auto& c : st_fn){
+            unsigned char u = (unsigned char)c;
+            bool ok = (u>='0'&&u<='9') || (u>='A'&&u<='Z') || (u>='a'&&u<='z')
+                   || c=='-' || c=='_' || c=='.';
+            if(!ok) c = '_';
+        }
+        char dts[20]; strftime(dts, sizeof(dts), "%b%d_%Y", &ts);
+        snprintf(out, sz, "%s/%s_IQ_%s_%.3fMHz_%s-%s.sigmf-data",
                  BEWEPaths::record_iq_dir().c_str(),
-                 (double)cf_mhz, dts, hms_e);
+                 st_fn.c_str(), dts, (double)cf_mhz, hms_s, hms_e);
     }
 }
 
@@ -258,7 +269,8 @@ std::string FFTViewer::do_region_save_work(){
     make_filename(outpath, sizeof(outpath),
                   cf_abs_mhz, bw_khz,
                   region.time_start_ms / 1000, region.time_end_ms / 1000,
-                  mission_year, mission_code, mission_station_name);
+                  mission_year, mission_code, mission_station_name,
+                  station_name.c_str());
     FILE* wf = fopen(outpath, "wb");
     if(!wf){
         bewe_log_push(0,"[region_save] FAIL: fopen failed: %s\n", outpath);

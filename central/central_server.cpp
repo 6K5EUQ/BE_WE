@@ -1620,7 +1620,7 @@ void CentralServer::broadcast_db_list(std::shared_ptr<HostRoom> room){
         }
         closedir(top);
     };
-    scan_dir(db_base + "/iq",    ".wav",      nullptr);
+    scan_dir(db_base + "/iq",    ".wav",      ".sigmf-data");
     scan_dir(db_base + "/audio", ".wav",      nullptr);
     scan_dir(db_base + "/hist",  ".bewehist", ".wav");
     // mtime 내림차순 정렬 (최신이 위)

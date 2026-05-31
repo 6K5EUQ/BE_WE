@@ -52,11 +52,13 @@ static std::string build_iq_demod_filename(FFTViewer& v, const char* prefix,
         snprintf(buf, sizeof(buf), "%s_%s_%s_%04d_%.3fMHz_%s%s",
                  st.c_str(), prefix, mcode, year, cf_mhz, hms, ext);
     } else {
-        // 노미션: region IQ 와 동일한 간결 포맷 (station/코드 없음).
-        //   <prefix>_<freq>MHz_<MonDD_YYYY_HHMMSS><ext>  (stop 시 -<endHMS> 추가됨)
-        char dts[32]; strftime(dts, sizeof(dts), "%b%d_%Y_%H%M%S", &kst_tm);
-        snprintf(buf, sizeof(buf), "%s_%.3fMHz_%s%s",
-                 prefix, cf_mhz, dts, ext);
+        // 노미션: 미션 활성 포맷과 동일하되 <code>_<year> 자리에 날짜.
+        //   <station>_<prefix>_<MonDD_YYYY>_<freq>MHz_<HHMMSS><ext>  (stop 시 -<endHMS> 추가)
+        std::string st = sanitize_station_fn(v.station_name.empty() ? nullptr : v.station_name.c_str());
+        char dts[20]; strftime(dts, sizeof(dts), "%b%d_%Y", &kst_tm);
+        char hms[16]; strftime(hms, sizeof(hms), "%H%M%S", &kst_tm);
+        snprintf(buf, sizeof(buf), "%s_%s_%s_%.3fMHz_%s%s",
+                 st.c_str(), prefix, dts, cf_mhz, hms, ext);
     }
     return buf;
 }
