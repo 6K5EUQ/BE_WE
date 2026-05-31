@@ -3283,7 +3283,10 @@ void run_streaming_viewer(){
                 p += "/"; p += mc;          mkdir(p.c_str(), 0755);
                 p += "/iq";                 mkdir(p.c_str(), 0755);
             } else {
-                save_dir = BEWEPaths::downloads_dir();
+                // 노미션: 비-미션 로컬 폴더(record/iq)에 저장 → 미션창 LOCAL 탭 IQ 에 표시.
+                save_dir = BEWEPaths::record_iq_dir();
+                mkdir(BEWEPaths::record_dir().c_str(), 0755);
+                mkdir(save_dir.c_str(), 0755);
             }
             std::string save_path = save_dir + "/" + fn;
 

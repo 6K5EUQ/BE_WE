@@ -2131,29 +2131,7 @@ void run_cli_host(){
     v.sa_cleanup();
     v.eid_cleanup();
 
-    // record/ > private/ 이동: .wav + 동명의 .info 동반 이동
-    auto move_dir = [](const std::string& src_dir, const std::string& dst_dir){
-        DIR* d = opendir(src_dir.c_str());
-        if(!d) return;
-        struct dirent* ent;
-        while((ent=readdir(d))!=nullptr){
-            const char* n = ent->d_name;
-            size_t nl = strlen(n);
-            if(nl>4 && strcmp(n+nl-4,".wav")==0){
-                std::string src = src_dir+"/"+n;
-                std::string dst = dst_dir+"/"+n;
-                rename(src.c_str(), dst.c_str());
-                // sidecar 동반 이동 (.sigmf-meta/.info, 있을 때만)
-                std::string isrc = SigMF::sidecar_path(src);
-                std::string idst = SigMF::sidecar_path(dst);
-                if(access(isrc.c_str(), F_OK)==0)
-                    rename(isrc.c_str(), idst.c_str());
-            }
-        }
-        closedir(d);
-    };
-    move_dir(BEWEPaths::record_iq_dir(),    BEWEPaths::private_iq_dir());
-    move_dir(BEWEPaths::record_audio_dir(), BEWEPaths::private_audio_dir());
+    // 종료 시 record/ 녹음을 보존 (이전엔 private/ 로 이동했으나 제거).
 
     bewe_log_push(0,"[BEWE CLI] Stopped.\n");
 }

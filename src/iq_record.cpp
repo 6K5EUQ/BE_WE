@@ -41,15 +41,23 @@ static std::string build_iq_demod_filename(FFTViewer& v, const char* prefix,
             strncpy(mstation, v.mission_station_name, sizeof(mstation) - 1);
         }
     }
-    if(!mcode[0]) strcpy(mcode, "NOMSN");
-    std::string st = sanitize_station_fn(mstation[0] ? mstation : nullptr);
-    char hms[16]; strftime(hms, sizeof(hms), "%H%M%S", &kst_tm);
-    int year = 1900 + kst_tm.tm_year;
     // IQ 원본은 SigMF (.sigmf-data), 복조 음성(DE)은 표준 .wav
     const char* ext = (prefix && strcmp(prefix, "IQ") == 0) ? ".sigmf-data" : ".wav";
     char buf[256];
-    snprintf(buf, sizeof(buf), "%s_%s_%s_%04d_%.3fMHz_%s%s",
-             st.c_str(), prefix, mcode, year, cf_mhz, hms, ext);
+    if(mcode[0]){
+        // 미션 활성: <station>_<prefix>_<code>_<YYYY>_<freq>MHz_<HHMMSS>
+        std::string st = sanitize_station_fn(mstation[0] ? mstation : nullptr);
+        char hms[16]; strftime(hms, sizeof(hms), "%H%M%S", &kst_tm);
+        int year = 1900 + kst_tm.tm_year;
+        snprintf(buf, sizeof(buf), "%s_%s_%s_%04d_%.3fMHz_%s%s",
+                 st.c_str(), prefix, mcode, year, cf_mhz, hms, ext);
+    } else {
+        // 노미션: region IQ 와 동일한 간결 포맷 (station/코드 없음).
+        //   <prefix>_<freq>MHz_<MonDD_YYYY_HHMMSS><ext>  (stop 시 -<endHMS> 추가됨)
+        char dts[32]; strftime(dts, sizeof(dts), "%b%d_%Y_%H%M%S", &kst_tm);
+        snprintf(buf, sizeof(buf), "%s_%.3fMHz_%s%s",
+                 prefix, cf_mhz, dts, ext);
+    }
     return buf;
 }
 

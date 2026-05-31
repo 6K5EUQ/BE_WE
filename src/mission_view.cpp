@@ -1346,13 +1346,11 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
                 [](const LocalFileEntry& a, const LocalFileEntry& b){ return a.mtime > b.mtime; });
         }
     } else {
-        // 비-미션(IDLE) 로컬 녹음: 이번 세션(record/) + 이전 세션(private/).
-        //   IQ    = recordings/record/iq    + recordings/private/iq
-        //   DEMOD = recordings/record/audio + recordings/private/audio
+        // 비-미션(IDLE) 로컬 녹음: recordings/record/ (종료해도 보존됨).
+        //   IQ    = recordings/record/iq
+        //   DEMOD = recordings/record/audio
         scan_into(BEWEPaths::record_iq_dir(),     by[0]);
-        scan_into(BEWEPaths::private_iq_dir(),    by[0]);
         scan_into(BEWEPaths::record_audio_dir(),  by[1]);
-        scan_into(BEWEPaths::private_audio_dir(), by[1]);
         for(int s = 0; s < 2; s++)
             std::sort(by[s].begin(), by[s].end(),
                 [](const LocalFileEntry& a, const LocalFileEntry& b){ return a.mtime > b.mtime; });
