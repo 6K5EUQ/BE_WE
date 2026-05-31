@@ -390,6 +390,12 @@ void run_cli_host(){
     CentralClient central_cli;
     char central_host[128] = {};
     strncpy(central_host, login_get_server(), 127);
+    const char* env_central = getenv("BEWE_CENTRAL");
+    if(env_central && env_central[0]){
+        strncpy(central_host, env_central, 127);
+        central_host[127] = '\0';
+        bewe_log_push(0,"[BEWE CLI] Central overridden: BEWE_CENTRAL=%s\n", central_host);
+    }
     constexpr int central_port = CENTRAL_PORT;
 
     // ── Server callbacks (from ui.cpp 2243-2822) ─────────────────────────
