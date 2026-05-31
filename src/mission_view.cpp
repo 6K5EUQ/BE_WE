@@ -1303,11 +1303,9 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
     //   (a) ~/BE_WE/downloads/<station>/<year>/<code>/{iq,audio,hist}/   ← 다운로드 캐시
     //   (b) ~/BE_WE/recordings/missions/<year>/<code>/{iq,audio,hist}/   ← 머신 로컬 녹음
     //       (JOIN 의 선택영역/Demod 녹음, HOST 의 push 전 임시 파일)
-    if(g_sel_year == 0 || g_sel_code.empty() || g_cf_req_station[0] == 0){
-        ImGui::TextDisabled("Select a mission to see its local downloads.");
-        return;
-    }
-    std::string station = g_cf_req_station;
+    // 미션 선택 여부: 선택됐으면 그 미션 파일, 미선택(IDLE)이면 비-미션 로컬 녹음.
+    bool mission_mode = (g_sel_year != 0 && !g_sel_code.empty() && g_cf_req_station[0] != 0);
+    std::string station = mission_mode ? std::string(g_cf_req_station) : std::string();
     int    year = g_sel_year;
     std::string code = g_sel_code;
     const char* subs_name[3] = {"iq", "audio", "hist"};
@@ -1331,29 +1329,46 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
     };
 
     std::vector<LocalFileEntry> by[3];
-    for(int s = 0; s < 3; s++){
-        scan_into(BEWEPaths::downloads_mission_dir(station, year, code, subs_name[s]), by[s]);
-        // 머신 로컬 mission 폴더 (HOST 본인 녹음, JOIN region/demod 녹음).
-        // station-keyed: recordings/missions/<station>/<year>/<code>/<sub>/
-        std::string mi_dir = (s == 0) ? BEWEPaths::mission_iq_dir(station, year, code)
-                            : (s == 1) ? BEWEPaths::mission_audio_dir(station, year, code)
-                            :            BEWEPaths::mission_hist_dir(station, year, code);
-        scan_into(mi_dir, by[s]);
-        // mtime 내림차순 정렬
-        std::sort(by[s].begin(), by[s].end(),
-            [](const LocalFileEntry& a, const LocalFileEntry& b){ return a.mtime > b.mtime; });
+    int n_sec = mission_mode ? 3 : 2;   // IDLE: IQ/DEMOD 만 (HIST 없음)
+    if(mission_mode){
+        for(int s = 0; s < 3; s++){
+            scan_into(BEWEPaths::downloads_mission_dir(station, year, code, subs_name[s]), by[s]);
+            // 머신 로컬 mission 폴더 (HOST 본인 녹음, JOIN region/demod 녹음).
+            // station-keyed: recordings/missions/<station>/<year>/<code>/<sub>/
+            std::string mi_dir = (s == 0) ? BEWEPaths::mission_iq_dir(station, year, code)
+                                : (s == 1) ? BEWEPaths::mission_audio_dir(station, year, code)
+                                :            BEWEPaths::mission_hist_dir(station, year, code);
+            scan_into(mi_dir, by[s]);
+            // mtime 내림차순 정렬
+            std::sort(by[s].begin(), by[s].end(),
+                [](const LocalFileEntry& a, const LocalFileEntry& b){ return a.mtime > b.mtime; });
+        }
+    } else {
+        // 비-미션(IDLE) 로컬 녹음: 이번 세션(record/) + 이전 세션(private/).
+        //   IQ    = recordings/record/iq    + recordings/private/iq
+        //   DEMOD = recordings/record/audio + recordings/private/audio
+        scan_into(BEWEPaths::record_iq_dir(),     by[0]);
+        scan_into(BEWEPaths::private_iq_dir(),    by[0]);
+        scan_into(BEWEPaths::record_audio_dir(),  by[1]);
+        scan_into(BEWEPaths::private_audio_dir(), by[1]);
+        for(int s = 0; s < 2; s++)
+            std::sort(by[s].begin(), by[s].end(),
+                [](const LocalFileEntry& a, const LocalFileEntry& b){ return a.mtime > b.mtime; });
     }
 
     char hdr[256];
-    snprintf(hdr, sizeof(hdr), "Local: %s/%04d/%s",
-             station.c_str(), year, code.c_str());
+    if(mission_mode)
+        snprintf(hdr, sizeof(hdr), "Local: %s/%04d/%s",
+                 station.c_str(), year, code.c_str());
+    else
+        snprintf(hdr, sizeof(hdr), "Local recordings (no mission)");
     ImGui::TextDisabled("%s", hdr);
     ImGui::Separator();
 
     poll_ul_speed();
     ImGui::BeginChild("##loc_scroll", ImVec2(0, 0), false);
     int loc_i = 0;
-    for(int s = 0; s < 3; s++){
+    for(int s = 0; s < n_sec; s++){
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.85f, 1.0f, 1.f));
         ImGui::TextUnformatted(labels[s]);
         ImGui::PopStyleColor();
@@ -1729,12 +1744,12 @@ static void draw_file_tabs(FFTViewer& v, NetClient* cli){
         // mission 선택 없음 — DB + LOCAL 만 표시 (DB 는 mission-agnostic)
         ImGui::Spacing();
         if(ImGui::BeginTabBar("##mission_file_tabs_idle")){
-            if(ImGui::BeginTabItem("DB", nullptr, tab_flags(3))){
-                draw_db_list(v, cli);
-                ImGui::EndTabItem();
-            }
             if(ImGui::BeginTabItem("LOCAL", nullptr, tab_flags(4))){
                 draw_local_list(v, cli);
+                ImGui::EndTabItem();
+            }
+            if(ImGui::BeginTabItem("DB", nullptr, tab_flags(3))){
+                draw_db_list(v, cli);
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
@@ -1861,7 +1876,8 @@ static void draw_left_tree(FFTViewer& v){
                 : ImVec4(0.75f, 0.80f, 0.90f, 1.f);
             ImGui::PushStyleColor(ImGuiCol_Text, col);
             if(ImGui::Selectable(label, sel)){
-                g_sel_year = y; g_sel_code = code;
+                if(sel){ g_sel_year = 0; g_sel_code.clear(); }  // 같은 미션 재클릭 → 토글 해제(미선택)
+                else   { g_sel_year = y; g_sel_code = code; }
             }
             // 우클릭 context menu: Delete Mission
             if(ImGui::BeginPopupContextItem("##mission_ctx")){
@@ -1985,6 +2001,10 @@ static void draw_delete_confirm_submodal(FFTViewer& v, NetClient* cli){
 }
 
 void draw_modal(FFTViewer& v, NetClient* cli){
+    // 미션창 열림 edge 감지 — 닫혀 있을 때도 갱신해야 하므로 early-return 앞에 둠.
+    static bool s_prev_modal_open = false;
+    bool just_opened = (v.mission_modal_open && !s_prev_modal_open);
+    s_prev_modal_open = v.mission_modal_open;
     if(!v.mission_modal_open) return;
     ImGuiIO& io = ImGui::GetIO();
     float W = io.DisplaySize.x * 0.78f;
@@ -2049,25 +2069,12 @@ void draw_modal(FFTViewer& v, NetClient* cli){
         ImGui::SameLine();
 
         ImGui::BeginChild("##mission_right", ImVec2(0, 0), true);
-        if(g_sel_year == 0){
-            if(hdr_active){
-                g_sel_year = hdr_year;
-                g_sel_code = hdr_code;
-            } else {
-                // IDLE 부팅 후: disk+history union 의 가장 최신 미션 자동 선택 →
-                // 우측 패널이 즉시 LIST_REQ 트리거하여 파일 표시.
-                std::string cur_station_auto = v.station_name;
-                if(cur_station_auto.empty()){
-                    std::lock_guard<std::mutex> lk(v.mission_mtx);
-                    if(v.mission_station_name[0])
-                        cur_station_auto = v.mission_station_name;
-                }
-                auto missions = collect_visible_missions(v, cur_station_auto);
-                if(!missions.empty()){
-                    g_sel_year = missions[0].year;
-                    g_sel_code = missions[0].code;
-                }
-            }
+        // 미션창을 새로 열 때 1회만 기본 선택 결정:
+        //   ACTIVE 미션 있으면 자동선택, IDLE 이면 미선택(=LOCAL 로컬 녹음 먼저).
+        // 매 프레임 가드(X) — 토글 해제(g_sel_year=0) 후 just_opened=false 라 재선택 안 됨.
+        if(just_opened){
+            if(hdr_active){ g_sel_year = hdr_year; g_sel_code = hdr_code; }
+            else          { g_sel_year = 0; g_sel_code.clear(); }
         }
         draw_meta_block(v);
         // (Current Session 영역 제거 — 사용자 요청)
