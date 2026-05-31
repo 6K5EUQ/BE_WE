@@ -6412,11 +6412,8 @@ void run_streaming_viewer(){
                     scan_dir(BEWEPaths::record_iq_dir(),    rec_iq_files,    fsz_cache);
                     scan_dir(BEWEPaths::record_audio_dir(), rec_audio_files, fsz_cache);
 
-                    scan_dir(BEWEPaths::private_iq_dir(),    priv_iq_files,    fsz_cache);
-                    scan_dir(BEWEPaths::private_audio_dir(), priv_audio_files, fsz_cache);
-                    priv_files.clear();
-                    priv_files.insert(priv_files.end(), priv_iq_files.begin(),    priv_iq_files.end());
-                    priv_files.insert(priv_files.end(), priv_audio_files.begin(), priv_audio_files.end());
+                    // private/ 폐지 — record/ 가 영구 보존됨. priv_* 는 빈 채로 유지(legacy 참조 안전).
+                    priv_iq_files.clear(); priv_audio_files.clear(); priv_files.clear();
 
                     // Database 로컬 스캔 (네트워크 소스 없을 때)
                     bool has_net_db = (v.net_cli != nullptr) ||
@@ -11584,31 +11581,8 @@ void run_streaming_viewer(){
     v.sa_cleanup();
     v.eid_cleanup();      // eid_thread join 보장
 
-    // ── record/ > private/ 이동 (세션 종료 시) ─────────────────────────
-    {
-        auto move_dir = [](const std::string& src_dir, const std::string& dst_dir){
-            DIR* d = opendir(src_dir.c_str());
-            if(!d) return;
-            struct dirent* ent;
-            while((ent=readdir(d))!=nullptr){
-                const char* n = ent->d_name;
-                size_t nl = strlen(n);
-                if(nl>4 && strcmp(n+nl-4,".wav")==0){
-                    std::string src = src_dir+"/"+n;
-                    std::string dst = dst_dir+"/"+n;
-                    rename(src.c_str(), dst.c_str());
-                    // .info 동반 이동 (있을 때만)
-                    std::string isrc = src + ".info";
-                    std::string idst = dst + ".info";
-                    if(access(isrc.c_str(), F_OK)==0)
-                        rename(isrc.c_str(), idst.c_str());
-                }
-            }
-            closedir(d);
-        };
-        move_dir(BEWEPaths::record_iq_dir(),    BEWEPaths::private_iq_dir());
-        move_dir(BEWEPaths::record_audio_dir(), BEWEPaths::private_audio_dir());
-    }
+    // 종료 시 record/ 녹음을 보존 (이전엔 private/ 로 이동했으나 제거).
+    // 노미션 로컬 녹음은 다음 세션 LOCAL 탭에 그대로 표시됨.
 
     g_log_viewer = nullptr; // detached thread에서의 use-after-free 방지
     } while(do_main_menu && !glfwWindowShouldClose(win)); // ── 모드선택 outer 루프 끝

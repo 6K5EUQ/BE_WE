@@ -1605,15 +1605,30 @@ void CentralServer::broadcast_db_list(std::shared_ptr<HostRoom> room){
                 size_t n = fread(e.info_data, 1, sizeof(e.info_data)-1, fi);
                 e.info_data[n] = '\0';
                 fclose(fi);
-                const char* p = e.info_data;
-                while(p && *p){
-                    char k[64]={},val[128]={};
-                    if(sscanf(p,"%63[^:]: %127[^\n]",k,val)>=2){
-                        if(strcmp(k,"Operator")==0){ strncpy(e.operator_name,val,31); break; }
+                // .sigmf-meta (JSON): "bewe:operator": "<val>"  — IQ
+                const char* jp = strstr(e.info_data, "\"bewe:operator\"");
+                if(jp){
+                    const char* c = strchr(jp + 15, ':');           // 키 뒤 콜론
+                    const char* q1 = c ? strchr(c, '"') : nullptr;  // 값 여는 따옴표
+                    const char* q2 = q1 ? strchr(q1 + 1, '"') : nullptr;
+                    if(q2 && q2 > q1 + 1){
+                        size_t len = (size_t)(q2 - q1 - 1);
+                        if(len > 31) len = 31;
+                        strncpy(e.operator_name, q1 + 1, len);
                     }
-                    const char* nl = strchr(p,'\n');
-                    if(!nl) break;
-                    p = nl + 1;
+                }
+                // .info (plain): "Operator: <val>"  — DEMOD/legacy
+                if(!e.operator_name[0]){
+                    const char* p = e.info_data;
+                    while(p && *p){
+                        char k[64]={},val[128]={};
+                        if(sscanf(p,"%63[^:]: %127[^\n]",k,val)>=2){
+                            if(strcmp(k,"Operator")==0){ strncpy(e.operator_name,val,31); break; }
+                        }
+                        const char* nl = strchr(p,'\n');
+                        if(!nl) break;
+                        p = nl + 1;
+                    }
                 }
             }
             with_mtime.emplace_back(st.st_mtime, e);

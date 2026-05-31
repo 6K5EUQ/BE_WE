@@ -175,7 +175,7 @@ static inline void ensure_dirs(){
     mk(data_dir());
     mk(recordings_dir());
     mk(record_dir());    mk(record_iq_dir());    mk(record_audio_dir());
-    mk(private_dir());   mk(private_iq_dir());   mk(private_audio_dir());
+    // private/ 폐지 — record/ 가 영구 보존. (private_* helper 는 legacy 호환 위해 정의만 유지)
     mk(database_dir());
     mk(time_temp_dir());
     mk(hist_dir()); mk(hist_host_dir()); mk(hist_join_dir()); mk(hist_live_dir());

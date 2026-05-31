@@ -1582,9 +1582,15 @@ static void draw_db_list(FFTViewer& v, NetClient* cli){
             const DbFileEntry& e = entries[ei];
             ImGui::PushID(row_id++);
 
-            // 이미 로컬에 다운로드돼 있나?
+            // 이미 로컬에 보유 중인가? downloads/db/<sub>/ 또는 내가 업로드한 원본(record/<sub>/).
             std::string local_path = BEWEPaths::db_downloads_sub(sub_names[si]) + "/" + e.filename;
             bool already_dl = (access(local_path.c_str(), F_OK) == 0);
+            if(!already_dl){
+                std::string rec = (si == 0) ? BEWEPaths::record_iq_dir()    + "/" + e.filename
+                                : (si == 1) ? BEWEPaths::record_audio_dir() + "/" + e.filename
+                                :             std::string();
+                if(!rec.empty() && access(rec.c_str(), F_OK) == 0){ already_dl = true; local_path = rec; }
+            }
 
             // file_xfers 매칭 (업로드/다운로드 진행률)
             bool xfer_active = false;
@@ -1743,11 +1749,12 @@ static void draw_file_tabs(FFTViewer& v, NetClient* cli){
         // mission 선택 없음 — DB + LOCAL 만 표시 (DB 는 mission-agnostic)
         ImGui::Spacing();
         if(ImGui::BeginTabBar("##mission_file_tabs_idle")){
-            if(ImGui::BeginTabItem("LOCAL", nullptr, tab_flags(4))){
+            // 노미션: 1=LOCAL, 2=DB 로 키 매핑 (idle 바엔 두 탭뿐).
+            if(ImGui::BeginTabItem("LOCAL", nullptr, tab_flags(0))){
                 draw_local_list(v, cli);
                 ImGui::EndTabItem();
             }
-            if(ImGui::BeginTabItem("DB", nullptr, tab_flags(3))){
+            if(ImGui::BeginTabItem("DB", nullptr, tab_flags(1))){
                 draw_db_list(v, cli);
                 ImGui::EndTabItem();
             }
