@@ -553,7 +553,7 @@ static void draw_meta_block(FFTViewer& v){
         }
     }
     if(year == 0){
-        ImGui::TextDisabled("(no mission selected)");
+        // 미션 미선택(LOCAL 로컬 녹음 뷰) — 메타 블록 표시 안 함.
         return;
     }
     ImGui::PushStyleColor(ImGuiCol_Text, is_active
@@ -1082,7 +1082,9 @@ static void local_context_menu(FFTViewer& v, NetClient* cli,
                                const std::string& name,
                                uint8_t bucket){
     if(ImGui::BeginPopupContextItem("##loc_ctx")){
-        if(ImGui::MenuItem("Upload")){
+        // 미션 선택 시에만 Upload (선택 미션 archive 로 push). 노미션 로컬 파일은 Save DB + Delete 만.
+        bool mission_sel = (g_sel_year != 0 && !g_sel_code.empty());
+        if(mission_sel && ImGui::MenuItem("Upload")){
             start_upload(cli, v, full_path, name, bucket);
         }
         if(ImGui::MenuItem("Save DB")){
@@ -1356,14 +1358,13 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
                 [](const LocalFileEntry& a, const LocalFileEntry& b){ return a.mtime > b.mtime; });
     }
 
-    char hdr[256];
-    if(mission_mode)
+    if(mission_mode){
+        char hdr[256];
         snprintf(hdr, sizeof(hdr), "Local: %s/%04d/%s",
                  station.c_str(), year, code.c_str());
-    else
-        snprintf(hdr, sizeof(hdr), "Local recordings (no mission)");
-    ImGui::TextDisabled("%s", hdr);
-    ImGui::Separator();
+        ImGui::TextDisabled("%s", hdr);
+        ImGui::Separator();
+    }
 
     poll_ul_speed();
     ImGui::BeginChild("##loc_scroll", ImVec2(0, 0), false);

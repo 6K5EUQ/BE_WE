@@ -372,9 +372,10 @@ void FFTViewer::start_audio_rec(int ch_idx){
     char fn[512];
     std::string rec_dir=active_audio_dir();
     if(rec_dir.empty()){
-        bewe_log_push(1, "[Audio REC] blocked - no active mission (Start a mission first)\n");
-        MissionView::show_toast("No active mission - Start a mission first (M key)");
-        return;
+        // 노미션: 비-미션 로컬 폴더(record/audio)에 저장 → 미션창 LOCAL 탭 DEMOD 에 표시.
+        rec_dir = BEWEPaths::record_audio_dir();
+        mkdir(BEWEPaths::record_dir().c_str(), 0755);
+        mkdir(rec_dir.c_str(), 0755);
     }
     float cf_mhz=(ch.s+ch.e)/2.0f;
     {
@@ -720,9 +721,10 @@ void FFTViewer::start_join_audio_rec(int ch_idx){
     char fn[512];
     std::string rec_dir=active_audio_dir();
     if(rec_dir.empty()){
-        bewe_log_push(1, "[JOIN Audio REC ch%d] blocked - no active mission (Start a mission first)\n", ch_idx);
-        MissionView::show_toast("No active mission - Start a mission first (M key)");
-        return;
+        // 노미션: 비-미션 로컬 폴더(record/audio)에 저장 → 미션창 LOCAL 탭 DEMOD 에 표시.
+        rec_dir = BEWEPaths::record_audio_dir();
+        mkdir(BEWEPaths::record_dir().c_str(), 0755);
+        mkdir(rec_dir.c_str(), 0755);
     }
     float cf_mhz=(ch.s+ch.e)/2.0f;
     {
