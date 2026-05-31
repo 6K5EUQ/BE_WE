@@ -133,6 +133,7 @@ bool FFTViewer::initialize_rtlsdr(float cf_mhz){
     if(mag_sq_buf) volk_free(mag_sq_buf);
     mag_sq_buf=(float*)volk_malloc(fft_size*sizeof(float), volk_get_alignment());
     ring.resize(IQ_RING_CAPACITY*2,0);
+    autoscale_req.store(true, std::memory_order_relaxed); // SDR (재)시작 시 자동 autoscale
     return true;
 }
 
@@ -151,14 +152,14 @@ void FFTViewer::set_frequency(float cf_mhz){
         // Pluto는 capture_and_process_pluto 루프가 freq_req를 처리 (LO + header + log)
         pending_cf = cf_mhz;
         freq_req = true;
-        autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
+        autoscale_req.store(true, std::memory_order_relaxed); // 캡처 스레드가 재트리거 (레이스 방지)
         return;
     }
     {std::lock_guard<std::mutex> lk(data_mtx);
      header.center_frequency=(uint64_t)(cf_mhz*1e6);}
     live_cf_hz.store((uint64_t)(cf_mhz*1e6), std::memory_order_release);
     bewe_log_push(0,"Freq > %.2f MHz\n", cf_mhz);
-    autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
+    autoscale_req.store(true, std::memory_order_relaxed); // 캡처 스레드가 재트리거 (레이스 방지)
     // 범위 밖 채널 Holding 전환 + JOIN에 CH_SYNC 브로드캐스트
     update_dem_by_freq(cf_mhz);
     LongWaterfall::request_rotate();   // CF changed (direct path) -> new file
@@ -384,6 +385,10 @@ void FFTViewer::capture_and_process_rtl(){
                  // current_spectrum은 UI 스레드 전용 > 캡처 쓰기 금지 (race 유발)
                  for(int i=0;i<fft_size;i++){
                      rowp[i]=10.0f*log10f(pacc[i]/fcnt);
+                 }
+                 // 비-캡처 스레드 요청 처리 (set_frequency/init) — 여기서만 autoscale 상태 변경 (레이스 X)
+                 if(autoscale_req.exchange(false)){
+                     autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
                  }
                  if(autoscale_active){
                      if(!autoscale_init){

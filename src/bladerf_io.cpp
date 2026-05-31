@@ -119,6 +119,7 @@ bool FFTViewer::initialize_bladerf(float cf_mhz, float sr_msps){
     if(mag_sq_buf) volk_free(mag_sq_buf);
     mag_sq_buf=(float*)volk_malloc(fft_size*sizeof(float), volk_get_alignment());
     ring.resize(IQ_RING_CAPACITY*2,0);
+    autoscale_req.store(true, std::memory_order_relaxed); // SDR (재)시작 시 자동 autoscale
     return true;
 }
 
@@ -376,6 +377,10 @@ void FFTViewer::capture_and_process(){
                  // (과거 bin별 avg를 여기에 덮어써 UI 파워스펙트럼에 1프레임 깨짐 유발했음)
                  for(int i=0;i<fft_size;i++){
                      rowp[i]=10.0f*log10f(pacc[i]/fcnt);
+                 }
+                 // 비-캡처 스레드 요청 처리 (set_frequency/init) — 여기서만 autoscale 상태 변경 (레이스 X)
+                 if(autoscale_req.exchange(false)){
+                     autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
                  }
                  if(autoscale_active){
                      if(!autoscale_init){

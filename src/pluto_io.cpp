@@ -134,6 +134,7 @@ bool FFTViewer::initialize_pluto(float cf_mhz, float sr_msps){
     if(mag_sq_buf) volk_free(mag_sq_buf);
     mag_sq_buf=(float*)volk_malloc(fft_size*sizeof(float), volk_get_alignment());
     ring.resize(IQ_RING_CAPACITY*2,0);
+    autoscale_req.store(true, std::memory_order_relaxed); // SDR (재)시작 시 자동 autoscale
     return true;
 }
 
@@ -401,6 +402,10 @@ void FFTViewer::capture_and_process_pluto(){
                  // current_spectrum은 UI 스레드 전용 > 캡처 쓰기 금지 (race 유발)
                  for(int i=0;i<fft_size;i++){
                      rowp[i]=10.0f*log10f(pacc[i]/fcnt);
+                 }
+                 // 비-캡처 스레드 요청 처리 (set_frequency/init) — 여기서만 autoscale 상태 변경 (레이스 X)
+                 if(autoscale_req.exchange(false)){
+                     autoscale_accum.clear(); autoscale_init=false; autoscale_active=true;
                  }
                  if(autoscale_active){
                      if(!autoscale_init){

@@ -9658,31 +9658,27 @@ void run_streaming_viewer(){
                     fg2->AddRect(ImVec2(ea_x0,ea_y0), ImVec2(ea_x1,ea_y1),
                                  IM_COL32(60,60,80,255));
 
-                    // ── 상단 컨트롤: IQ 파일이면 AM/FM 복조 선택 + FM De-emph 토글 (재생은 Space) ──
+                    // ── 상단 컨트롤: IQ 파일이면 AM/FM 복조 선택 (재생은 Space) ──
                     // 우측 정렬 + 좌상단 시간표시(ca_y0+4)와 같은 Y 로 위아래 정렬.
                     if(v.eid_is_iq){
-                        bool _fm=(v.eid_audio_demod==1);
                         ImGuiStyle& _st=ImGui::GetStyle(); float _fp=_st.FramePadding.x;
                         auto _bw=[&](const char* t){ return ImGui::CalcTextSize(t).x + _fp*2.f; };
                         float _btot=_bw("AM")+4.f+_bw("FM");
-                        if(_fm) _btot += 10.f + _bw("De-emph");
                         float _bx=ea_x1-_btot; if(_bx<ea_x0) _bx=ea_x0;
                         ImGui::SetCursorScreenPos(ImVec2(_bx, ca_y0+4.f));
-                        auto restart=[&](){ if(v.audio_play_active()){
-                            double p=(double)v.audio_play_pos_sec(); v.audio_play_stop(); v.eid_audio_play(p); } };
-                        auto togglebtn=[&](const char* lbl, bool on){
+                        auto modebtn=[&](const char* lbl, int m){
+                            bool on=(v.eid_audio_demod==m);
                             if(on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f,0.50f,0.80f,1.f));
-                            bool clicked=ImGui::SmallButton(lbl);
+                            if(ImGui::SmallButton(lbl) && v.eid_audio_demod!=m){
+                                v.eid_audio_demod=m;
+                                if(v.audio_play_active()){   // 재생 중 전환 → 현 위치에서 새 복조로 재시작
+                                    double pos=(double)v.audio_play_pos_sec();
+                                    v.audio_play_stop(); v.eid_audio_play(pos);
+                                }
+                            }
                             if(on) ImGui::PopStyleColor();
-                            return clicked;
                         };
-                        if(togglebtn("AM", v.eid_audio_demod==0) && v.eid_audio_demod!=0){ v.eid_audio_demod=0; restart(); }
-                        ImGui::SameLine(0,4);
-                        if(togglebtn("FM", v.eid_audio_demod==1) && v.eid_audio_demod!=1){ v.eid_audio_demod=1; restart(); }
-                        if(_fm){
-                            ImGui::SameLine(0,10);
-                            if(togglebtn("De-emph", v.eid_audio_deemph)){ v.eid_audio_deemph=!v.eid_audio_deemph; restart(); }
-                        }
+                        modebtn("AM",0); ImGui::SameLine(0,4); modebtn("FM",1);
                     }
 
                     double vt0=v.eid_view_t0, vt1=v.eid_view_t1;

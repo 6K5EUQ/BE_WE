@@ -702,11 +702,10 @@ std::string FFTViewer::eid_iq_demod_tempwav(int am_fm){
             float gain = (agc_rms>1e-9f)?(AGC_TARGET/sqrtf(agc_rms)):100.0f;
             gain = std::min(gain,1000.0f);
             samp = std::max(-1.0f,std::min(1.0f,audio*gain));
-        } else {        // FM: phase discriminator + 적응형 LPF (+ 옵션 50us de-emphasis)
+        } else {        // FM: phase discriminator + 적응형 LPF + 50us de-emphasis
             float cross=fi*prev_q - fq*prev_i, dot=fi*prev_i + fq*prev_q;
             float d=atan2f(cross, dot+1e-12f); prev_i=fi; prev_q=fq;
-            float a=alf.p(d);
-            samp = (eid_audio_deemph ? deemph.p(a) : a) * 4.0f;
+            samp = deemph.p(alf.p(d)) * 4.0f;
         }
         aac += samp; acnt++;
         if(acnt >= (int)decim){
@@ -740,13 +739,11 @@ void FFTViewer::eid_audio_play(double off_sec){
     if(eid_is_iq){
         // 캐시: 같은 소스+모드+편집세대(BPF 등 반영)면 재복조 생략
         if(eid_iq_tmp_src != sa_temp_path || eid_iq_tmp_mode != eid_audio_demod
-           || eid_iq_tmp_deemph != eid_audio_deemph
            || eid_iq_tmp_gen != eid_edit_gen || eid_iq_tmp_path.empty()){
             std::string tmp = eid_iq_demod_tempwav(eid_audio_demod);
             if(tmp.empty()) return;
             eid_iq_tmp_path = tmp; eid_iq_tmp_src = sa_temp_path;
-            eid_iq_tmp_mode = eid_audio_demod; eid_iq_tmp_deemph = eid_audio_deemph;
-            eid_iq_tmp_gen = eid_edit_gen;
+            eid_iq_tmp_mode = eid_audio_demod; eid_iq_tmp_gen = eid_edit_gen;
         }
         audio_play_start(eid_iq_tmp_path, off_sec);
     } else {
