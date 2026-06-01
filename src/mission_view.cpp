@@ -255,9 +255,11 @@ struct CentralFileRow {
     uint64_t size_bytes;
     int64_t  mtime_unix;
     char     operator_name[32];   // wire 의 MissionFileEntry::operator_name 사본
+    uint32_t seen_gen;            // 마지막으로 이 row 를 확인한 LIST_REQ 세대 (stale 정리용)
 };
 static std::mutex                     g_cf_mtx;
 static std::vector<CentralFileRow>    g_cf_rows;            // 모든 mission 합쳐서 누적
+static uint32_t                       g_cf_req_gen = 0;     // LIST_REQ 세대 카운터
 static bool                           g_cf_last_page = true;
 static int                            g_cf_req_year  = 0;
 static std::string                    g_cf_req_code;
@@ -625,6 +627,7 @@ static void maybe_request_central_list(FFTViewer& v, NetClient* cli){
         g_cf_req_year = g_sel_year;
         g_cf_req_code = g_sel_code;
         strncpy(g_cf_req_station, station, sizeof(g_cf_req_station) - 1);
+        g_cf_req_gen++;        // 새 응답 세대 — 이 세대로 갱신 안 된 in-scope row 는 stale 로 정리
         g_cf_last_req_time = now;
         g_cf_req_pending = true;
         g_cf_req_sent_at = now;
@@ -2131,6 +2134,7 @@ void on_mission_file_list_recv(const PktMissionFileList& page,
         r.size_bytes = src.size_bytes;
         r.mtime_unix = src.mtime_unix;
         memcpy(r.operator_name, src.operator_name, sizeof(r.operator_name));
+        r.seen_gen = g_cf_req_gen;
         g_cf_rows.push_back(r);
     }
     // Central archive 의 unique (year, code, station) 누적 — 좌측 트리 source.
@@ -2151,6 +2155,21 @@ void on_mission_file_list_recv(const PktMissionFileList& page,
         }
     }
     if(page.is_last_page){
+        // 이 응답이 커버한 scope(요청 필터) 안에서, 이번 세대에 다시 확인되지 않은 row 제거.
+        // Central 에서 finalize/rename/삭제로 사라진 파일(예: 'HHMM-LIVE' → 'HHMM-HHMM')이
+        // page-level dedup 만으로는 남아 stale 중복으로 보이던 문제를 정리. multi-page 안전
+        // (모든 page 가 같은 세대 태그를 달고, 마지막 page 도착 후 한 번만 정리).
+        auto req_stale = [&](const CentralFileRow& r) -> bool {
+            if(r.seen_gen == g_cf_req_gen) return false;       // 이번 응답에 포함됨 → 유지
+            if(g_cf_req_station[0] &&
+               strncmp(r.station, g_cf_req_station, sizeof(r.station)) != 0) return false;
+            if(g_cf_req_year != 0 && r.year != (uint16_t)g_cf_req_year) return false;
+            if(!g_cf_req_code.empty() &&
+               strncmp(r.code, g_cf_req_code.c_str(), sizeof(r.code)) != 0) return false;
+            return true;   // 요청 scope 안인데 이번 세대에 안 보임 → stale
+        };
+        g_cf_rows.erase(std::remove_if(g_cf_rows.begin(), g_cf_rows.end(), req_stale),
+                        g_cf_rows.end());
         g_cf_last_page = true;
         g_cf_req_pending = false;   // 다음 refresh 허용
     }
