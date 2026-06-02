@@ -2026,6 +2026,24 @@ void run_cli_host(){
                     }
                 }
                 fflush(stdout);
+            } else if(line.rfind("/sr", 0) == 0){
+                // /sr <MSPS> — 샘플레이트 변경 (capture 루프가 sr_change_req 소비)
+                const char* arg = line.c_str() + 3;
+                while(*arg == ' ') arg++;
+                if(*arg == 0){
+                    bewe_log_push(0,"  Current SR=%.2f MSPS. Usage: /sr <MSPS>\n",
+                                  v.header.sample_rate/1e6);
+                } else {
+                    float msps = (float)atof(arg);
+                    if(msps < 0.1f || msps > 61.44f){
+                        bewe_log_push(0,"  Invalid SR (0.1~61.44 MSPS): %s\n", arg);
+                    } else {
+                        bewe_log_push(0,"[CMD:CLI] /sr -> %.2f MSPS\n", msps);
+                        v.pending_sr_msps = msps;
+                        v.sr_change_req   = true;
+                    }
+                }
+                fflush(stdout);
             } else if(line.rfind("/mission", 0) == 0){
                 // /mission start [comment]  /  /mission end  /  /mission status
                 std::string sub = line.substr(8);
@@ -2069,6 +2087,7 @@ void run_cli_host(){
                 bewe_log_push(0,"  /status          - Show system status\n");
                 bewe_log_push(0,"  /clients         - List connected operators\n");
                 bewe_log_push(0,"  /freq <MHz>      - Change center frequency\n");
+                bewe_log_push(0,"  /sr <MSPS>       - Change sample rate\n");
                 bewe_log_push(0,"  /mission start   - Begin a new mission\n");
                 bewe_log_push(0,"  /mission end     - End active mission\n");
                 bewe_log_push(0,"  /mission status  - Show current mission state\n");
