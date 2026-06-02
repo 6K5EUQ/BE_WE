@@ -629,6 +629,24 @@ void run_cli_host(){
                 if(srv) srv->send_region_response((int)oidx, false);
                 return;
             }
+            // 같은 PC 에서 HOST+JOIN 동시 운용 시, JOIN 의 저장 경로(no-mission: record/iq)와
+            // HOST 전송용 사본이 동일 파일이 되어 HOST 의 전송후-삭제가 JOIN 파일을 지움.
+            // 전송용 사본을 전용 temp(.region_tx)로 옮긴 뒤 거기서 송신·삭제 → JOIN 사본 보존.
+            {
+                std::string txdir = BEWEPaths::recordings_dir() + "/.region_tx";
+                mkdir(txdir.c_str(), 0755);
+                const char* bn = strrchr(path.c_str(), '/');
+                std::string newpath = txdir + "/" + std::string(bn ? bn+1 : path.c_str());
+                if(rename(path.c_str(), newpath.c_str()) == 0){
+                    auto swap_ext = [](std::string p){
+                        size_t pos = p.rfind(".sigmf-data");
+                        if(pos != std::string::npos) p.replace(pos, 11, ".sigmf-meta");
+                        return p;
+                    };
+                    rename(swap_ext(path).c_str(), swap_ext(newpath).c_str()); // meta sidecar best-effort
+                    path = newpath;
+                }
+            }
             uint64_t fsz=0;
             {FILE* f=fopen(path.c_str(),"rb");if(f){fseek(f,0,SEEK_END);fsz=(uint64_t)ftell(f);fclose(f);}}
             // IQ chunk transfer via central relay
@@ -686,9 +704,13 @@ void run_cli_host(){
                         prog.done = sent; prog.total = fsz; prog.phase = 2;
                         srv->broadcast_iq_progress(prog);
                     }
-                    // 전송 완료 후 HOST 파일 삭제
+                    // 전송 완료 후 HOST temp 사본 삭제 (data + meta)
                     if(remove(path.c_str()) == 0)
                         bewe_log_push(0,"[CLI] region IQ transferred and deleted: %s\n", path.c_str());
+                    {
+                        std::string mp = path; size_t pp = mp.rfind(".sigmf-data");
+                        if(pp != std::string::npos){ mp.replace(pp, 11, ".sigmf-meta"); remove(mp.c_str()); }
+                    }
                 }).detach();
             } else {
                 // Direct TCP send
