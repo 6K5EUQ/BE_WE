@@ -5,6 +5,7 @@
 #include "net_server.hpp"
 #include "net_client.hpp"
 #include "bewe_paths.hpp"
+#include <stb/stb_image.h>   // 창 아이콘 로드 (STB_IMAGE_IMPLEMENTATION 은 globe.cpp)
 #include "globe.hpp"
 #include "sat_view.hpp"
 #include "central_client.hpp"
@@ -2026,8 +2027,17 @@ void run_streaming_viewer(){
     glfwWindowHint(GLFW_GREEN_BITS,vmode->greenBits);
     glfwWindowHint(GLFW_BLUE_BITS, vmode->blueBits);
     glfwWindowHint(GLFW_REFRESH_RATE,vmode->refreshRate);
+    glfwWindowHintString(GLFW_X11_CLASS_NAME,    "BEWE");  // 독/작업표시줄 .desktop 매칭용
+    glfwWindowHintString(GLFW_X11_INSTANCE_NAME, "BEWE");
     GLFWwindow* win=glfwCreateWindow(1400,900,"BEWE (" BEWE_VERSION ")",nullptr,nullptr);
     glfwMakeContextCurrent(win); glfwSwapInterval(0);
+    // 창 아이콘 (원형 지구본) — assets/icon_round.png(모서리 투명)을 RGBA로 로드
+    {
+        std::string icp = BEWEPaths::assets_dir() + "/icon_round.png";
+        int iw=0, ih=0, ich=0;
+        unsigned char* ipx = stbi_load(icp.c_str(), &iw, &ih, &ich, 4);
+        if(ipx){ GLFWimage gimg{iw, ih, ipx}; glfwSetWindowIcon(win, 1, &gimg); stbi_image_free(ipx); }
+    }
     glewExperimental=GL_TRUE; glewInit();
     glEnable(GL_MULTISAMPLE);
     ImGui::CreateContext(); ImGui::StyleColorsDark();
