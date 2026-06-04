@@ -2047,10 +2047,16 @@ void run_streaming_viewer(){
     static bool is_fullscreen = false;
     static int saved_win_x=0, saved_win_y=0, saved_win_w=1400, saved_win_h=900;
     auto toggle_fullscreen = [&](){
+        // F10: 제목줄(window decoration) 토글 — 창 크기/위치 유지 (풀스크린과 무관)
+        static bool deco_on = true;
+        if(ImGui::IsKeyPressed(ImGuiKey_F10,false)){
+            deco_on = !deco_on;
+            glfwSetWindowAttrib(win,GLFW_DECORATED, deco_on?GLFW_TRUE:GLFW_FALSE);
+        }
         if(!ImGui::IsKeyPressed(ImGuiKey_F11,false)) return;
         if(is_fullscreen){
             glfwSetWindowMonitor(win,nullptr,saved_win_x,saved_win_y,saved_win_w,saved_win_h,0);
-            glfwSetWindowAttrib(win,GLFW_DECORATED,GLFW_TRUE);
+            glfwSetWindowAttrib(win,GLFW_DECORATED, deco_on?GLFW_TRUE:GLFW_FALSE);
             is_fullscreen=false;
         } else {
             glfwGetWindowPos(win,&saved_win_x,&saved_win_y);
