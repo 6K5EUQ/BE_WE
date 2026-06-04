@@ -4,6 +4,7 @@
 #include <volk/volk.h>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 #include <chrono>
 #include <rtl-sdr.h>
@@ -68,8 +69,19 @@ bool FFTViewer::initialize_rtlsdr(float cf_mhz){
     uint32_t dev_count = rtlsdr_get_device_count();
     if(dev_count == 0){ fprintf(stderr,"RTL-SDR: no device found\n"); return false; }
 
-    int r = rtlsdr_open(&dev_rtl, 0);
-    if(r < 0){ fprintf(stderr,"RTL-SDR: open failed (%d)\n",r); return false; }
+    // 디바이스 선택: BEWE_RTL_SERIAL(시리얼) > BEWE_RTL_INDEX(인덱스) > 0(기본).
+    // 멀티 동글 환경(예: DGS-4)에서 특정 동글을 시리얼로 고정. 단일 동글은 기본 0.
+    int dev_idx = 0;
+    if(const char* s = getenv("BEWE_RTL_SERIAL")){
+        int gi = rtlsdr_get_index_by_serial(s);
+        if(gi >= 0){ dev_idx = gi; bewe_log_push(0,"RTL-SDR: serial '%s' -> idx %d\n", s, gi); }
+        else        bewe_log_push(0,"RTL-SDR: serial '%s' not found, fallback idx 0\n", s);
+    } else if(const char* xi = getenv("BEWE_RTL_INDEX")){
+        dev_idx = atoi(xi);
+        bewe_log_push(0,"RTL-SDR: idx %d (env)\n", dev_idx);
+    }
+    int r = rtlsdr_open(&dev_rtl, dev_idx);
+    if(r < 0){ fprintf(stderr,"RTL-SDR: open failed idx %d (%d)\n", dev_idx, r); return false; }
 
     // 샘플레이트 설정
     r = rtlsdr_set_sample_rate(dev_rtl, RTL_SAMPLE_RATE);
