@@ -6060,8 +6060,15 @@ void run_streaming_viewer(){
         // ── BAND 토글 (B키) — SA overlay 열려있으면 baud-mode(노란 비트 구분선) 토글
         // viewer 떠 있는 동안엔 BAND 토글 무시 (사용자가 viewer 안에서 다른 글로벌 동작 방지)
         if(ImGui::IsKeyPressed(ImGuiKey_B, false) && !io.WantTextInput){
-            if(v.eid_panel_open)
+            if(v.eid_panel_open){
                 v.eid_baud_mode = !v.eid_baud_mode;
+                if(!v.eid_baud_mode){
+                    // 끄면 이전 가이드라인(노란 비트 구분선) 초기화
+                    v.eid_baud_s0 = -1; v.eid_baud_s1 = -1;
+                    v.eid_baud_click = 0; v.eid_baud_drag = -1;
+                    v.eid_baud_drag_band = false;
+                }
+            }
             else if(!viewer_open_blocking)
                 v.band_show = !v.band_show;
         }
