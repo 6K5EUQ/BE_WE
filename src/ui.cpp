@@ -2385,14 +2385,12 @@ void run_streaming_viewer(){
 
     glfwSwapInterval(1); // VSync ON - globe loop는 무거운 연산 없음
 
-    // ── DF demo (SPACE: on/off + 가상기지 / 1: 시나리오1 / 2: 시나리오2) ──
-    // 시나리오1: 실제 활성 기지 → 송신원(35.5303N 127.78E).
-    // 시나리오2: 가상 4기지 + 실제 활성 기지 → 평양(39.0392N 125.7625E).
-    // emitter 에 오차 일립스. 500km LOB, 1° RMS, 반투명 글로우.
-    bool        df_on  = false;   // SPACE 토글 — 가상기지 마커 표시
-    int         df_scn = 0;       // 0=마커만, 1=시나리오1, 2=시나리오2
-    const float SCN1_LAT = 35.5303f,  SCN1_LON = -127.78f;      // 기존 emitter
-    const float PYO_LAT  = 39.0392f,  PYO_LON  = -125.7625f;    // 평양 125.7625E
+    // ── DF demo (SPACE: on/off, 좌클릭: emitter 지정) ───────────────────
+    // SPACE 로 켜고 지구본을 좌클릭하면 그 지점이 신호 방사체(emitter).
+    // 모든 기지(실제+가상) 중 emitter 500km 이내 → LOB(1° RMS)+오차 일립스.
+    bool        df_on       = false;   // SPACE 토글
+    bool        df_emit_set = false;   // 좌클릭으로 emitter 지정됨?
+    float       df_emit_lat = 0.f, df_emit_lon = 0.f;  // emitter (globe pick 컨벤션)
     struct VBase { const char* name; float lat, lon; };         // 가상 기지 (UI 전용)
     const VBase VBASES[] = {
         { "Baengnyeong",   37.96f,   -124.71f   },
@@ -2550,6 +2548,10 @@ void run_streaming_viewer(){
                && !sat_view_handle_click(globe, io.MousePos.x, io.MousePos.y)){
                 float plat, plon;
                 if(globe.pick(io.MousePos.x, io.MousePos.y, plat, plon)){
+                    if(df_on){
+                        // DF 데모: 클릭 지점 = 신호 방사체(emitter)
+                        df_emit_lat = plat; df_emit_lon = plon; df_emit_set = true;
+                    } else {
                     // Check if a station marker was clicked (20px radius)
                     bool hit_station = false;
                     {
@@ -2587,57 +2589,56 @@ void run_streaming_viewer(){
                             coord_timer = 3.f;
                         }
                     }
+                    } // end df_on else
                 }
             }
         }
 
         // ── DF demo input: SPACE 토글(+가상기지), 1/2 시나리오 선택 ────────
         if(globe_ok && !io.WantTextInput){
-            if(ImGui::IsKeyPressed(ImGuiKey_Space, false)){ df_on = !df_on; df_scn = 0; }
-            if(df_on && ImGui::IsKeyPressed(ImGuiKey_1, false)) df_scn = 1;
-            if(df_on && ImGui::IsKeyPressed(ImGuiKey_2, false)) df_scn = 2;
+            if(ImGui::IsKeyPressed(ImGuiKey_Space, false)){ df_on = !df_on; if(!df_on) df_emit_set = false; }
         }
-        // 현재 시나리오 emitter (1=기존, 2=평양)
-        float emit_lat = (df_scn==2) ? PYO_LAT : SCN1_LAT;
-        float emit_lon = (df_scn==2) ? PYO_LON : SCN1_LON;
 
-        // ── Station markers overlay (+ DF LOB) ────────────────────────────
+        // ── Station markers (Tier별 색) + DF LOB ───────────────────────────
         if(globe_ok){
             ImDrawList* fdl = ImGui::GetForegroundDrawList();
+            bool lob_on = df_on && df_emit_set;
             std::lock_guard<std::mutex> lk(v.discovered_stations_mtx);
             for(auto& st : v.discovered_stations){
                 float sx, sy;
                 if(!globe.project(st.lat, st.lon, sx, sy)) continue;
-                // 시나리오1·2 모두 실제 활성 기지는 emitter 로 LOB
-                if(df_scn==1 || df_scn==2)
-                    draw_lob(globe, fdl, st.lat, st.lon, emit_lat, emit_lon);
-                fdl->AddCircle(ImVec2(sx,sy), 14.f, IM_COL32(80,200,255,60), 32, 3.f);
-                fdl->AddCircleFilled(ImVec2(sx,sy), 8.f, IM_COL32(60,160,255,220));
-                fdl->AddCircleFilled(ImVec2(sx,sy), 4.f, IM_COL32(200,240,255,255));
+                if(lob_on)
+                    draw_lob(globe, fdl, st.lat, st.lon, df_emit_lat, df_emit_lon);
+                // Tier1=빨강 / Tier2(이하)=노랑, 가상기지와 동일 점 스타일
+                ImU32 cg, cc;
+                if(st.host_tier==1){ cg=IM_COL32(255,70,45,55);  cc=IM_COL32(255,80,55,235); }
+                else               { cg=IM_COL32(255,225,40,45); cc=IM_COL32(255,230,50,235); }
+                fdl->AddCircleFilled(ImVec2(sx,sy), 8.f, cg);
+                fdl->AddCircleFilled(ImVec2(sx,sy), 4.f, cc);
                 float dx = sx - io.MousePos.x, dy = sy - io.MousePos.y;
                 if(dx*dx + dy*dy < 196.f){
                     fdl->AddText(ImVec2(sx+12,sy-8),
-                                 IM_COL32(220,240,255,255), st.name.c_str());
+                                 IM_COL32(230,235,245,255), st.name.c_str());
                     char ubuf[32];
                     snprintf(ubuf, sizeof(ubuf), "Tier %d", (int)st.host_tier);
                     fdl->AddText(ImVec2(sx+12,sy+4),
-                                 IM_COL32(160,200,220,200), ubuf);
+                                 IM_COL32(180,200,220,200), ubuf);
                 }
             }
-            // ── 가상 기지 (SPACE on 시 마커, 시나리오2 시 LOB→평양) ──────────
+            // 가상 기지 (SPACE on 시 노란 점, emitter 지정 시 LOB)
             if(df_on){
                 for(int i=0;i<N_VBASE;i++){
                     float sx, sy;
                     if(!globe.project(VBASES[i].lat, VBASES[i].lon, sx, sy)) continue;
-                    if(df_scn==2)
-                        draw_lob(globe, fdl, VBASES[i].lat, VBASES[i].lon, PYO_LAT, PYO_LON);
-                    fdl->AddCircleFilled(ImVec2(sx,sy), 8.f, IM_COL32(255,225,40,45));  // 글로우
-                    fdl->AddCircleFilled(ImVec2(sx,sy), 4.f, IM_COL32(255,230,50,235)); // 노란 점
+                    if(lob_on)
+                        draw_lob(globe, fdl, VBASES[i].lat, VBASES[i].lon, df_emit_lat, df_emit_lon);
+                    fdl->AddCircleFilled(ImVec2(sx,sy), 8.f, IM_COL32(255,225,40,45));
+                    fdl->AddCircleFilled(ImVec2(sx,sy), 4.f, IM_COL32(255,230,50,235));
                 }
             }
-            // ── 오차 일립스 (현재 시나리오 emitter) ───────────────────────
-            if(df_scn==1 || df_scn==2)
-                draw_err_ellipse(globe, fdl, emit_lat, emit_lon, 42.f, 24.f, 35.f);
+            // 오차 일립스 (사용자 지정 emitter)
+            if(lob_on)
+                draw_err_ellipse(globe, fdl, df_emit_lat, df_emit_lon, 42.f, 24.f, 35.f);
         }
 
         // ── Satellite markers + selected orbit ────────────────────────────
