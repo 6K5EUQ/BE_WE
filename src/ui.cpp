@@ -2395,10 +2395,22 @@ void run_streaming_viewer(){
     const float PYO_LAT  = 39.0392f,  PYO_LON  = -125.7625f;    // 평양 125.7625E
     struct VBase { const char* name; float lat, lon; };         // 가상 기지 (UI 전용)
     const VBase VBASES[] = {
-        { "Baengnyeong", 37.96f,   -124.71f   },
-        { "Incheon",     37.4563f, -126.7052f },
-        { "Uijeongbu",   37.7380f, -127.0337f },
-        { "Sokcho",      38.2070f, -128.5918f },
+        { "Baengnyeong",   37.96f,   -124.71f   },
+        { "Incheon",       37.4563f, -126.7052f },
+        { "Uijeongbu",     37.7380f, -127.0337f },
+        { "Sokcho",        38.2070f, -128.5918f },
+        { "Daegwallyeong", 37.6878f, -128.7586f },
+        // 서해 3
+        { "Deokjeokdo",    37.2300f, -126.1400f },
+        { "Anmyeon",       36.5200f, -126.3300f },
+        { "Eocheongdo",    36.1200f, -125.9800f },
+        // 동해 3
+        { "Gangneung",     37.7500f, -128.9000f },
+        { "Uljin",         36.9900f, -129.4000f },
+        { "Ulleungdo",     37.4845f, -130.9057f },
+        // 남해 / 제주
+        { "Namhae",        34.4000f, -127.8000f },
+        { "Jeju",          33.3800f, -126.5300f },
     };
     const int N_VBASE = (int)(sizeof(VBASES)/sizeof(VBASES[0]));
     const float EARTH_KM    = 6371.0f;
@@ -2417,6 +2429,7 @@ void run_streaming_viewer(){
         float a[3], b[3]; ll_to_xyz(lat1,lon1,a); ll_to_xyz(lat2,lon2,b);
         float dot=a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
         if(dot> 1.f) dot=1.f; if(dot<-1.f) dot=-1.f;
+        if(acosf(dot)*EARTH_KM > 500.0f) return;   // base→emitter >500km: LOB 제외
         float td[3]={b[0]-dot*a[0], b[1]-dot*a[1], b[2]-dot*a[2]};  // target 방향 접선
         float tl=sqrtf(td[0]*td[0]+td[1]*td[1]+td[2]*td[2]);
         if(tl<1e-6f) return;
@@ -2618,10 +2631,8 @@ void run_streaming_viewer(){
                     if(!globe.project(VBASES[i].lat, VBASES[i].lon, sx, sy)) continue;
                     if(df_scn==2)
                         draw_lob(globe, fdl, VBASES[i].lat, VBASES[i].lon, PYO_LAT, PYO_LON);
-                    fdl->AddCircle(ImVec2(sx,sy), 13.f, IM_COL32(255,180,60,70), 28, 3.f);
-                    fdl->AddCircleFilled(ImVec2(sx,sy), 7.f, IM_COL32(255,170,40,225));
-                    fdl->AddCircleFilled(ImVec2(sx,sy), 3.5f, IM_COL32(255,235,190,255));
-                    fdl->AddText(ImVec2(sx+12,sy-8), IM_COL32(255,225,160,255), VBASES[i].name);
+                    fdl->AddCircleFilled(ImVec2(sx,sy), 8.f, IM_COL32(255,225,40,45));  // 글로우
+                    fdl->AddCircleFilled(ImVec2(sx,sy), 4.f, IM_COL32(255,230,50,235)); // 노란 점
                 }
             }
             // ── 오차 일립스 (현재 시나리오 emitter) ───────────────────────
