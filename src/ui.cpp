@@ -2385,38 +2385,83 @@ void run_streaming_viewer(){
 
     glfwSwapInterval(1); // VSync ON - globe loop는 무거운 연산 없음
 
-    // ── DF demo: Line-of-Bearing overlay (SPACE 토글) ────────────────────
-    // 각 활성 기지에서 가상 송신원(35.5303N 127.78E)을 지나는 노란 LOB 선.
-    bool        s_show_lob = false;
+    // ── DF demo: Line-of-Bearing + 오차 일립스 (SPACE 토글) ──────────────
+    // 각 활성 기지 → 가상 송신원(35.5303N 127.78E) 방향 500km LOB.
+    // emitter 위치에 오차 일립스. 지구본에 자연스럽게(반투명 + 글로우).
+    bool        s_show_lob  = false;
     const float LOB_TGT_LAT = 35.5303f;
     const float LOB_TGT_LON = -127.78f;          // 127.78E (globe 컨벤션: East 음수)
-    const ImU32 LOB_COL     = IM_COL32(255, 225, 30, 235);
-    auto draw_lob = [](const GlobeRenderer& g, ImDrawList* dl,
-                       float lat1, float lon1, float lat2, float lon2, ImU32 col){
-        const float D2R = 3.14159265f/180.f, R2D = 180.f/3.14159265f;
-        auto to_xyz = [&](float lat, float lon, float* vv){
-            float la=lat*D2R, lo=lon*D2R;
-            vv[0]=cosf(la)*cosf(lo); vv[1]=cosf(la)*sinf(lo); vv[2]=sinf(la);
-        };
-        float a[3], b[3]; to_xyz(lat1,lon1,a); to_xyz(lat2,lon2,b);
+    const float EARTH_KM    = 6371.0f;
+    const float D2R_ = 3.14159265f/180.f, R2D_ = 180.f/3.14159265f;
+    auto ll_to_xyz = [&](float lat, float lon, float* vv){
+        float la=lat*D2R_, lo=lon*D2R_;
+        vv[0]=cosf(la)*cosf(lo); vv[1]=cosf(la)*sinf(lo); vv[2]=sinf(la);
+    };
+    auto xyz_to_ll = [&](const float* p, float& lat, float& lon){
+        float l=sqrtf(p[0]*p[0]+p[1]*p[1]+p[2]*p[2]); if(l<1e-9f) l=1e-9f;
+        lat=asinf(p[2]/l)*R2D_; lon=atan2f(p[1],p[0])*R2D_;
+    };
+    // 500km LOB: base 에서 target 방향(great circle) 고정 호길이 + 페이드 글로우.
+    auto draw_lob = [&](const GlobeRenderer& g, ImDrawList* dl,
+                        float lat1, float lon1, float lat2, float lon2){
+        float a[3], b[3]; ll_to_xyz(lat1,lon1,a); ll_to_xyz(lat2,lon2,b);
         float dot=a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
-        if(dot> 1.f) dot= 1.f; if(dot<-1.f) dot=-1.f;
-        float ang=acosf(dot);
-        if(ang<1e-4f) return;
-        const int   N=96;
-        const float F_END=1.30f;                 // 타겟 30% 너머까지 연장
+        if(dot> 1.f) dot=1.f; if(dot<-1.f) dot=-1.f;
+        float td[3]={b[0]-dot*a[0], b[1]-dot*a[1], b[2]-dot*a[2]};  // target 방향 접선
+        float tl=sqrtf(td[0]*td[0]+td[1]*td[1]+td[2]*td[2]);
+        if(tl<1e-6f) return;
+        td[0]/=tl; td[1]/=tl; td[2]/=tl;
+        const float TH_MAX = 500.0f/EARTH_KM;    // 500km 호각
+        const int   N=64;
         float px=0,py=0; bool have=false;
         for(int i=0;i<=N;i++){
-            float f=F_END*(float)i/(float)N;
-            float s1=sinf((1.f-f)*ang)/sinf(ang), s2=sinf(f*ang)/sinf(ang);
-            float p[3]={s1*a[0]+s2*b[0], s1*a[1]+s2*b[1], s1*a[2]+s2*b[2]};
-            float pl=sqrtf(p[0]*p[0]+p[1]*p[1]+p[2]*p[2]);
-            if(pl<1e-6f){ have=false; continue; }
-            float lat=asinf(p[2]/pl)*R2D, lon=atan2f(p[1],p[0])*R2D;
+            float t=(float)i/(float)N, th=TH_MAX*t;
+            float p[3]={a[0]*cosf(th)+td[0]*sinf(th),
+                        a[1]*cosf(th)+td[1]*sinf(th),
+                        a[2]*cosf(th)+td[2]*sinf(th)};
+            float lat,lon; xyz_to_ll(p,lat,lon);
             float sx,sy;
             if(!g.project(lat,lon,sx,sy)){ have=false; continue; }
-            if(have) dl->AddLine(ImVec2(px,py), ImVec2(sx,sy), col, 2.0f);
+            if(have){
+                float fade=1.0f-0.65f*t;          // base 밝고 끝 흐림
+                dl->AddLine(ImVec2(px,py),ImVec2(sx,sy),
+                            IM_COL32(255,210,60,(int)(55*fade)), 5.0f);  // 외곽 글로우
+                dl->AddLine(ImVec2(px,py),ImVec2(sx,sy),
+                            IM_COL32(255,236,150,(int)(205*fade)), 1.6f);// 코어
+            }
             px=sx; py=sy; have=true;
+        }
+    };
+    // emitter 오차 일립스 (반투명 fill + edge + 중심점).
+    auto draw_err_ellipse = [&](const GlobeRenderer& g, ImDrawList* dl,
+                                float lat0, float lon0,
+                                float maj_km, float min_km, float orient_deg){
+        float c[3]; ll_to_xyz(lat0,lon0,c);
+        float la=lat0*D2R_, lo=lon0*D2R_;
+        float east[3]={-sinf(lo), cosf(lo), 0.f};
+        float north[3]={-sinf(la)*cosf(lo), -sinf(la)*sinf(lo), cosf(la)};
+        float o=orient_deg*D2R_, co=cosf(o), so=sinf(o);
+        float mj[3]={co*east[0]+so*north[0], co*east[1]+so*north[1], co*east[2]+so*north[2]};
+        float mn[3]={-so*east[0]+co*north[0], -so*east[1]+co*north[1], -so*east[2]+co*north[2]};
+        const int N=48;
+        ImVec2 pts[N]; int nok=0;
+        for(int i=0;i<N;i++){
+            float t=2.0f*3.14159265f*(float)i/(float)N;
+            float dm=maj_km*cosf(t)/EARTH_KM, dn=min_km*sinf(t)/EARTH_KM;
+            float p[3]={c[0]+mj[0]*dm+mn[0]*dn, c[1]+mj[1]*dm+mn[1]*dn, c[2]+mj[2]*dm+mn[2]*dn};
+            float lat,lon; xyz_to_ll(p,lat,lon);
+            float sx,sy;
+            if(!g.project(lat,lon,sx,sy)) return;   // 일부라도 horizon 뒤면 생략
+            pts[i]=ImVec2(sx,sy); nok++;
+        }
+        if(nok<N) return;
+        dl->AddConvexPolyFilled(pts, N, IM_COL32(255,205,70,30));   // 반투명 fill
+        for(int i=0;i<N;i++)                                        // edge
+            dl->AddLine(pts[i], pts[(i+1)%N], IM_COL32(255,232,130,150), 1.6f);
+        float cx,cy;
+        if(g.project(lat0,lon0,cx,cy)){
+            dl->AddCircleFilled(ImVec2(cx,cy),6.0f,IM_COL32(255,210,80,45));
+            dl->AddCircleFilled(ImVec2(cx,cy),2.4f,IM_COL32(255,244,180,225));
         }
     };
 
@@ -2526,7 +2571,7 @@ void run_streaming_viewer(){
                 float sx, sy;
                 if(!globe.project(st.lat, st.lon, sx, sy)) continue;
                 if(s_show_lob)
-                    draw_lob(globe, fdl, st.lat, st.lon, LOB_TGT_LAT, LOB_TGT_LON, LOB_COL);
+                    draw_lob(globe, fdl, st.lat, st.lon, LOB_TGT_LAT, LOB_TGT_LON);
                 // Outer glow
                 fdl->AddCircle(ImVec2(sx,sy), 14.f, IM_COL32(80,200,255,60), 32, 3.f);
                 // Inner fill
@@ -2544,6 +2589,8 @@ void run_streaming_viewer(){
                                  IM_COL32(160,200,220,200), ubuf);
                 }
             }
+            if(s_show_lob)
+                draw_err_ellipse(globe, fdl, LOB_TGT_LAT, LOB_TGT_LON, 42.f, 24.f, 35.f);
         }
 
         // ── Satellite markers + selected orbit ────────────────────────────
