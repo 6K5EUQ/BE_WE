@@ -2385,12 +2385,22 @@ void run_streaming_viewer(){
 
     glfwSwapInterval(1); // VSync ON - globe loop는 무거운 연산 없음
 
-    // ── DF demo: Line-of-Bearing + 오차 일립스 (SPACE 토글) ──────────────
-    // 각 활성 기지 → 가상 송신원(35.5303N 127.78E) 방향 500km LOB.
-    // emitter 위치에 오차 일립스. 지구본에 자연스럽게(반투명 + 글로우).
-    bool        s_show_lob  = false;
-    const float LOB_TGT_LAT = 35.5303f;
-    const float LOB_TGT_LON = -127.78f;          // 127.78E (globe 컨벤션: East 음수)
+    // ── DF demo (SPACE: on/off + 가상기지 / 1: 시나리오1 / 2: 시나리오2) ──
+    // 시나리오1: 실제 활성 기지 → 송신원(35.5303N 127.78E).
+    // 시나리오2: 가상 4기지 + 실제 활성 기지 → 평양(39.0392N 125.7625E).
+    // emitter 에 오차 일립스. 500km LOB, 1° RMS, 반투명 글로우.
+    bool        df_on  = false;   // SPACE 토글 — 가상기지 마커 표시
+    int         df_scn = 0;       // 0=마커만, 1=시나리오1, 2=시나리오2
+    const float SCN1_LAT = 35.5303f,  SCN1_LON = -127.78f;      // 기존 emitter
+    const float PYO_LAT  = 39.0392f,  PYO_LON  = -125.7625f;    // 평양 125.7625E
+    struct VBase { const char* name; float lat, lon; };         // 가상 기지 (UI 전용)
+    const VBase VBASES[] = {
+        { "Baengnyeong", 37.96f,   -124.71f   },
+        { "Incheon",     37.4563f, -126.7052f },
+        { "Uijeongbu",   37.7380f, -127.0337f },
+        { "Sokcho",      38.2070f, -128.5918f },
+    };
+    const int N_VBASE = (int)(sizeof(VBASES)/sizeof(VBASES[0]));
     const float EARTH_KM    = 6371.0f;
     const float D2R_ = 3.14159265f/180.f, R2D_ = 180.f/3.14159265f;
     auto ll_to_xyz = [&](float lat, float lon, float* vv){
@@ -2568,26 +2578,29 @@ void run_streaming_viewer(){
             }
         }
 
-        // ── DF demo: SPACE toggles Line-of-Bearing from each active base ──
-        if(globe_ok && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Space, false))
-            s_show_lob = !s_show_lob;
+        // ── DF demo input: SPACE 토글(+가상기지), 1/2 시나리오 선택 ────────
+        if(globe_ok && !io.WantTextInput){
+            if(ImGui::IsKeyPressed(ImGuiKey_Space, false)){ df_on = !df_on; df_scn = 0; }
+            if(df_on && ImGui::IsKeyPressed(ImGuiKey_1, false)) df_scn = 1;
+            if(df_on && ImGui::IsKeyPressed(ImGuiKey_2, false)) df_scn = 2;
+        }
+        // 현재 시나리오 emitter (1=기존, 2=평양)
+        float emit_lat = (df_scn==2) ? PYO_LAT : SCN1_LAT;
+        float emit_lon = (df_scn==2) ? PYO_LON : SCN1_LON;
 
-        // ── Station markers overlay ───────────────────────────────────────
+        // ── Station markers overlay (+ DF LOB) ────────────────────────────
         if(globe_ok){
             ImDrawList* fdl = ImGui::GetForegroundDrawList();
             std::lock_guard<std::mutex> lk(v.discovered_stations_mtx);
             for(auto& st : v.discovered_stations){
                 float sx, sy;
                 if(!globe.project(st.lat, st.lon, sx, sy)) continue;
-                if(s_show_lob)
-                    draw_lob(globe, fdl, st.lat, st.lon, LOB_TGT_LAT, LOB_TGT_LON);
-                // Outer glow
+                // 시나리오1·2 모두 실제 활성 기지는 emitter 로 LOB
+                if(df_scn==1 || df_scn==2)
+                    draw_lob(globe, fdl, st.lat, st.lon, emit_lat, emit_lon);
                 fdl->AddCircle(ImVec2(sx,sy), 14.f, IM_COL32(80,200,255,60), 32, 3.f);
-                // Inner fill
                 fdl->AddCircleFilled(ImVec2(sx,sy), 8.f, IM_COL32(60,160,255,220));
-                // Core
                 fdl->AddCircleFilled(ImVec2(sx,sy), 4.f, IM_COL32(200,240,255,255));
-                // Hover tooltip
                 float dx = sx - io.MousePos.x, dy = sy - io.MousePos.y;
                 if(dx*dx + dy*dy < 196.f){
                     fdl->AddText(ImVec2(sx+12,sy-8),
@@ -2598,8 +2611,22 @@ void run_streaming_viewer(){
                                  IM_COL32(160,200,220,200), ubuf);
                 }
             }
-            if(s_show_lob)
-                draw_err_ellipse(globe, fdl, LOB_TGT_LAT, LOB_TGT_LON, 42.f, 24.f, 35.f);
+            // ── 가상 기지 (SPACE on 시 마커, 시나리오2 시 LOB→평양) ──────────
+            if(df_on){
+                for(int i=0;i<N_VBASE;i++){
+                    float sx, sy;
+                    if(!globe.project(VBASES[i].lat, VBASES[i].lon, sx, sy)) continue;
+                    if(df_scn==2)
+                        draw_lob(globe, fdl, VBASES[i].lat, VBASES[i].lon, PYO_LAT, PYO_LON);
+                    fdl->AddCircle(ImVec2(sx,sy), 13.f, IM_COL32(255,180,60,70), 28, 3.f);
+                    fdl->AddCircleFilled(ImVec2(sx,sy), 7.f, IM_COL32(255,170,40,225));
+                    fdl->AddCircleFilled(ImVec2(sx,sy), 3.5f, IM_COL32(255,235,190,255));
+                    fdl->AddText(ImVec2(sx+12,sy-8), IM_COL32(255,225,160,255), VBASES[i].name);
+                }
+            }
+            // ── 오차 일립스 (현재 시나리오 emitter) ───────────────────────
+            if(df_scn==1 || df_scn==2)
+                draw_err_ellipse(globe, fdl, emit_lat, emit_lon, 42.f, 24.f, 35.f);
         }
 
         // ── Satellite markers + selected orbit ────────────────────────────
