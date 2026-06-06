@@ -2494,6 +2494,29 @@ void run_streaming_viewer(){
             dl->AddCircleFilled(ImVec2(cx,cy),2.4f,IM_COL32(255,244,180,225));
         }
     };
+    // LOB 공분산 정보행렬 누적: cross-range std(R·σθ) 의 수직방향 가중치 pp^T.
+    // A=[Axx,Axy,Ayy] (emitter EN 평면). 나중에 C=A^-1 고유분해 → 실제 오차일립스.
+    auto accum_info = [&](float blat, float blon, float elat, float elon,
+                          double* A, int& cnt){
+        float b3[3], c3[3]; ll_to_xyz(blat,blon,b3); ll_to_xyz(elat,elon,c3);
+        float dot=b3[0]*c3[0]+b3[1]*c3[1]+b3[2]*c3[2];
+        if(dot>1.f)dot=1.f; if(dot<-1.f)dot=-1.f;
+        float Rkm=acosf(dot)*EARTH_KM;
+        if(Rkm>500.0f || Rkm<1.0f) return;     // 500km 초과/너무 가까움 제외
+        float t[3]={b3[0]-dot*c3[0], b3[1]-dot*c3[1], b3[2]-dot*c3[2]};
+        float tl=sqrtf(t[0]*t[0]+t[1]*t[1]+t[2]*t[2]); if(tl<1e-6f) return;
+        t[0]/=tl;t[1]/=tl;t[2]/=tl;
+        float la=elat*D2R_, lo=elon*D2R_;
+        float E[3]={-sinf(lo),cosf(lo),0.f};
+        float Nn[3]={-sinf(la)*cosf(lo),-sinf(la)*sinf(lo),cosf(la)};
+        float dE=t[0]*E[0]+t[1]*E[1]+t[2]*E[2];
+        float dN=t[0]*Nn[0]+t[1]*Nn[1]+t[2]*Nn[2];
+        float pE=dN, pN=-dE;                   // LOB 수직(측range) 방향
+        double s=(double)Rkm*(1.0*D2R_);       // cross-range std (km), σθ=1°
+        double w=1.0/(s*s);
+        A[0]+=w*pE*pE; A[1]+=w*pE*pN; A[2]+=w*pN*pN;
+        cnt++;
+    };
 
     while(!mode_done && !glfwWindowShouldClose(win)){
         glfwPollEvents();
@@ -2603,12 +2626,15 @@ void run_streaming_viewer(){
         if(globe_ok){
             ImDrawList* fdl = ImGui::GetForegroundDrawList();
             bool lob_on = df_on && df_emit_set;
+            double A_info[3]={0,0,0}; int lob_cnt=0;   // LOB 공분산 누적
             std::lock_guard<std::mutex> lk(v.discovered_stations_mtx);
             for(auto& st : v.discovered_stations){
                 float sx, sy;
                 if(!globe.project(st.lat, st.lon, sx, sy)) continue;
-                if(lob_on)
+                if(lob_on){
                     draw_lob(globe, fdl, st.lat, st.lon, df_emit_lat, df_emit_lon);
+                    accum_info(st.lat, st.lon, df_emit_lat, df_emit_lon, A_info, lob_cnt);
+                }
                 // Tier1=빨강 / Tier2(이하)=노랑, 가상기지와 동일 점 스타일
                 ImU32 cg, cc;
                 if(st.host_tier==1){ cg=IM_COL32(255,70,45,55);  cc=IM_COL32(255,80,55,235); }
@@ -2630,15 +2656,29 @@ void run_streaming_viewer(){
                 for(int i=0;i<N_VBASE;i++){
                     float sx, sy;
                     if(!globe.project(VBASES[i].lat, VBASES[i].lon, sx, sy)) continue;
-                    if(lob_on)
+                    if(lob_on){
                         draw_lob(globe, fdl, VBASES[i].lat, VBASES[i].lon, df_emit_lat, df_emit_lon);
+                        accum_info(VBASES[i].lat, VBASES[i].lon, df_emit_lat, df_emit_lon, A_info, lob_cnt);
+                    }
                     fdl->AddCircleFilled(ImVec2(sx,sy), 8.f, IM_COL32(255,225,40,45));
                     fdl->AddCircleFilled(ImVec2(sx,sy), 4.f, IM_COL32(255,230,50,235));
                 }
             }
-            // 오차 일립스 (사용자 지정 emitter)
-            if(lob_on)
-                draw_err_ellipse(globe, fdl, df_emit_lat, df_emit_lon, 42.f, 24.f, 35.f);
+            // 실제 LOB 기하로 오차 일립스 계산 (C=A^-1 고유분해)
+            if(lob_on && lob_cnt>=2){
+                double det=A_info[0]*A_info[2]-A_info[1]*A_info[1];
+                if(det>1e-9){
+                    double Cxx=A_info[2]/det, Cxy=-A_info[1]/det, Cyy=A_info[0]/det; // km²
+                    double Tr=Cxx+Cyy;
+                    double Rr=sqrt(((Cxx-Cyy)*0.5)*((Cxx-Cyy)*0.5)+Cxy*Cxy);
+                    double l1=Tr*0.5+Rr, l2=Tr*0.5-Rr;       // 장/단 고유값
+                    float smaj=(float)sqrt(l1>0?l1:0.0), smin=(float)sqrt(l2>0?l2:0.0);
+                    float orient=(float)(atan2(Cxy, l1-Cyy)*R2D_); // 장축 방위(East 기준)
+                    const float VIS=14.0f;   // 1σ km → 화면 가시화 스케일
+                    draw_err_ellipse(globe, fdl, df_emit_lat, df_emit_lon,
+                                     smaj*VIS, smin*VIS, orient);
+                }
+            }
         }
 
         // ── Satellite markers + selected orbit ────────────────────────────
