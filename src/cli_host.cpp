@@ -1412,6 +1412,7 @@ void run_cli_host(){
                         memcpy(d.owner, c.owner, sizeof(d.owner));
                     }
                     st.channel_count = (uint8_t)cnt;
+                    st.bat_pct = v.sysmon_bat.load();
                 });
                 bewe_log_push(0,"[BEWE CLI] Central relay connected\n");
             } else {
