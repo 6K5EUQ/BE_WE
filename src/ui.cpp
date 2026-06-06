@@ -2384,6 +2384,42 @@ void run_streaming_viewer(){
     float coord_timer    = 0.f; // 표시 유지 시간
 
     glfwSwapInterval(1); // VSync ON - globe loop는 무거운 연산 없음
+
+    // ── DF demo: Line-of-Bearing overlay (SPACE 토글) ────────────────────
+    // 각 활성 기지에서 가상 송신원(35.5303N 127.78E)을 지나는 노란 LOB 선.
+    bool        s_show_lob = false;
+    const float LOB_TGT_LAT = 35.5303f;
+    const float LOB_TGT_LON = -127.78f;          // 127.78E (globe 컨벤션: East 음수)
+    const ImU32 LOB_COL     = IM_COL32(255, 225, 30, 235);
+    auto draw_lob = [](const GlobeRenderer& g, ImDrawList* dl,
+                       float lat1, float lon1, float lat2, float lon2, ImU32 col){
+        const float D2R = 3.14159265f/180.f, R2D = 180.f/3.14159265f;
+        auto to_xyz = [&](float lat, float lon, float* vv){
+            float la=lat*D2R, lo=lon*D2R;
+            vv[0]=cosf(la)*cosf(lo); vv[1]=cosf(la)*sinf(lo); vv[2]=sinf(la);
+        };
+        float a[3], b[3]; to_xyz(lat1,lon1,a); to_xyz(lat2,lon2,b);
+        float dot=a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+        if(dot> 1.f) dot= 1.f; if(dot<-1.f) dot=-1.f;
+        float ang=acosf(dot);
+        if(ang<1e-4f) return;
+        const int   N=96;
+        const float F_END=1.30f;                 // 타겟 30% 너머까지 연장
+        float px=0,py=0; bool have=false;
+        for(int i=0;i<=N;i++){
+            float f=F_END*(float)i/(float)N;
+            float s1=sinf((1.f-f)*ang)/sinf(ang), s2=sinf(f*ang)/sinf(ang);
+            float p[3]={s1*a[0]+s2*b[0], s1*a[1]+s2*b[1], s1*a[2]+s2*b[2]};
+            float pl=sqrtf(p[0]*p[0]+p[1]*p[1]+p[2]*p[2]);
+            if(pl<1e-6f){ have=false; continue; }
+            float lat=asinf(p[2]/pl)*R2D, lon=atan2f(p[1],p[0])*R2D;
+            float sx,sy;
+            if(!g.project(lat,lon,sx,sy)){ have=false; continue; }
+            if(have) dl->AddLine(ImVec2(px,py), ImVec2(sx,sy), col, 2.0f);
+            px=sx; py=sy; have=true;
+        }
+    };
+
     while(!mode_done && !glfwWindowShouldClose(win)){
         glfwPollEvents();
         // Reap any child sessions that have exited (non-blocking).
@@ -2478,6 +2514,10 @@ void run_streaming_viewer(){
             }
         }
 
+        // ── DF demo: SPACE toggles Line-of-Bearing from each active base ──
+        if(globe_ok && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Space, false))
+            s_show_lob = !s_show_lob;
+
         // ── Station markers overlay ───────────────────────────────────────
         if(globe_ok){
             ImDrawList* fdl = ImGui::GetForegroundDrawList();
@@ -2485,6 +2525,8 @@ void run_streaming_viewer(){
             for(auto& st : v.discovered_stations){
                 float sx, sy;
                 if(!globe.project(st.lat, st.lon, sx, sy)) continue;
+                if(s_show_lob)
+                    draw_lob(globe, fdl, st.lat, st.lon, LOB_TGT_LAT, LOB_TGT_LON, LOB_COL);
                 // Outer glow
                 fdl->AddCircle(ImVec2(sx,sy), 14.f, IM_COL32(80,200,255,60), 32, 3.f);
                 // Inner fill
