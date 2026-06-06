@@ -2411,6 +2411,15 @@ void run_streaming_viewer(){
         float tl=sqrtf(td[0]*td[0]+td[1]*td[1]+td[2]*td[2]);
         if(tl<1e-6f) return;
         td[0]/=tl; td[1]/=tl; td[2]/=tl;
+        // 방위 오차 ~ N(0, 1° RMS): 좌표 시드로 결정적 생성(프레임간 안정).
+        auto h32=[](float f,uint32_t s)->uint32_t{ uint32_t u; memcpy(&u,&f,4);
+            u^=s; u^=u>>16; u*=0x7feb352dU; u^=u>>15; u*=0x846ca68bU; u^=u>>16; return u; };
+        float u1=(h32(lat1,0x9e3779b9u)+1u)/4294967297.0f;
+        float u2=(float)h32(lon1,0x85ebca6bu)/4294967296.0f;
+        float erot=sqrtf(-2.0f*logf(u1))*cosf(6.2831853f*u2)*(1.0f*D2R_); // 1° RMS
+        float axt[3]={a[1]*td[2]-a[2]*td[1], a[2]*td[0]-a[0]*td[2], a[0]*td[1]-a[1]*td[0]};
+        float ce=cosf(erot), se=sinf(erot);                              // td 를 a축 둘레로 회전
+        td[0]=td[0]*ce+axt[0]*se; td[1]=td[1]*ce+axt[1]*se; td[2]=td[2]*ce+axt[2]*se;
         const float TH_MAX = 500.0f/EARTH_KM;    // 500km 호각
         const int   N=64;
         float px=0,py=0; bool have=false;
