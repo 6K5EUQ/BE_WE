@@ -173,18 +173,6 @@ From the moment North Korea activates a GPS jammer to JCS notification — BEWE 
 
 ---
 
-## Forward-Deployed Hardware — COTS Collection Nodes
-
-RPi5 + commercial SDR — an unattended SIGINT collection node built from low single-digit hardware cost, deployable to any forward site in hours.
-
-| SDR | Frequency Coverage | Gain | Primary Application |
-|---|---|---|---|
-| **Nuand BladeRF 2.0 (xA4/xA9)** | 47 MHz – 6 GHz | 0 – 60 dB | Wideband collection · UAS · satellite downlinks |
-| **ADALM-Pluto (AD9361)** | 70 MHz – 6 GHz | 0 – 71 dB | VHF/UHF tactical comms · C-UAS |
-| **RTL-SDR v4** | 500 kHz – 1.766 GHz | 0 – 49.6 dB | HF intercept · GPS band monitoring |
-
----
-
 ## Data Retention
 
 | Tier | Retention | Notes |
