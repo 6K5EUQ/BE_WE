@@ -2391,6 +2391,8 @@ void run_streaming_viewer(){
     bool        df_on       = false;   // SPACE 토글
     bool        df_emit_set = false;   // 좌클릭으로 emitter 지정됨?
     float       df_emit_lat = 0.f, df_emit_lon = 0.f;  // emitter (globe pick 컨벤션)
+    double      df_t0 = 0.0;                            // emitter 설정 시각 (애니메이션 기준)
+    std::vector<ImVec2> df_seq;                         // 500km 이내 기지 {lat,lon} 랜덤순서
     struct VBase { const char* name; float lat, lon; };         // 가상 기지 (UI 전용)
     const VBase VBASES[] = {
         { "Baengnyeong",   37.96f,   -124.71f   },
@@ -2494,27 +2496,35 @@ void run_streaming_viewer(){
             dl->AddCircleFilled(ImVec2(cx,cy),2.4f,IM_COL32(255,244,180,225));
         }
     };
-    // LOB 공분산 정보행렬 누적: cross-range std(R·σθ) 의 수직방향 가중치 pp^T.
-    // A=[Axx,Axy,Ayy] (emitter EN 평면). 나중에 C=A^-1 고유분해 → 실제 오차일립스.
-    auto accum_info = [&](float blat, float blon, float elat, float elon,
-                          double* A, int& cnt){
+    // LOB LS 정보 누적 (emitter EN 평면): A=Σw·ppᵀ(공분산), b=Σw·p(p·base) (위치 fix).
+    // 방위에 draw_lob 와 동일한 1° 오차 포함 → fix 가 클릭점에서 벗어나 LOB 수렴점으로.
+    auto accum_fix = [&](float blat, float blon, float elat, float elon,
+                         double* A, double* bvec, int& cnt){
         float b3[3], c3[3]; ll_to_xyz(blat,blon,b3); ll_to_xyz(elat,elon,c3);
         float dot=b3[0]*c3[0]+b3[1]*c3[1]+b3[2]*c3[2];
         if(dot>1.f)dot=1.f; if(dot<-1.f)dot=-1.f;
         float Rkm=acosf(dot)*EARTH_KM;
-        if(Rkm>500.0f || Rkm<1.0f) return;     // 500km 초과/너무 가까움 제외
-        float t[3]={b3[0]-dot*c3[0], b3[1]-dot*c3[1], b3[2]-dot*c3[2]};
-        float tl=sqrtf(t[0]*t[0]+t[1]*t[1]+t[2]*t[2]); if(tl<1e-6f) return;
-        t[0]/=tl;t[1]/=tl;t[2]/=tl;
+        if(Rkm>500.0f || Rkm<1.0f) return;
         float la=elat*D2R_, lo=elon*D2R_;
         float E[3]={-sinf(lo),cosf(lo),0.f};
         float Nn[3]={-sinf(la)*cosf(lo),-sinf(la)*sinf(lo),cosf(la)};
-        float dE=t[0]*E[0]+t[1]*E[1]+t[2]*E[2];
-        float dN=t[0]*Nn[0]+t[1]*Nn[1]+t[2]*Nn[2];
-        float pE=dN, pN=-dE;                   // LOB 수직(측range) 방향
-        double s=(double)Rkm*(1.0*D2R_);       // cross-range std (km), σθ=1°
-        double w=1.0/(s*s);
+        float vx=b3[0]-c3[0], vy=b3[1]-c3[1], vz=b3[2]-c3[2];   // base 의 emitter-EN 위치(km)
+        float bE=(vx*E[0]+vy*E[1]+vz*E[2])*EARTH_KM;
+        float bN=(vx*Nn[0]+vy*Nn[1]+vz*Nn[2])*EARTH_KM;
+        float dlen=sqrtf(bE*bE+bN*bN); if(dlen<1e-3f) return;
+        float dE=-bE/dlen, dN=-bN/dlen;                        // base→emitter 방위(EN)
+        auto h32=[](float f,uint32_t s)->uint32_t{ uint32_t u; memcpy(&u,&f,4);
+            u^=s; u^=u>>16; u*=0x7feb352dU; u^=u>>15; u*=0x846ca68bU; u^=u>>16; return u; };
+        float u1=(h32(blat,0x9e3779b9u)+1u)/4294967297.0f;
+        float u2=(float)h32(blon,0x85ebca6bu)/4294967296.0f;
+        float er=sqrtf(-2.0f*logf(u1))*cosf(6.2831853f*u2)*(1.0f*D2R_);  // 1° RMS
+        float ce=cosf(er), se=sinf(er);
+        float dEx=dE*ce-dN*se, dNx=dE*se+dN*ce;                // 오차 적용 방위
+        float pE=dNx, pN=-dEx;                                 // 수직(측range)
+        double s=(double)Rkm*(1.0*D2R_), w=1.0/(s*s);
+        double ci=(double)pE*bE+(double)pN*bN;                 // p·base_EN
         A[0]+=w*pE*pE; A[1]+=w*pE*pN; A[2]+=w*pN*pN;
+        bvec[0]+=w*pE*ci; bvec[1]+=w*pN*ci;
         cnt++;
     };
 
@@ -2572,8 +2582,30 @@ void run_streaming_viewer(){
                 float plat, plon;
                 if(globe.pick(io.MousePos.x, io.MousePos.y, plat, plon)){
                     if(df_on){
-                        // DF 데모: 클릭 지점 = 신호 방사체(emitter)
+                        // DF 데모: 클릭 = 신호 방사체(emitter). 500km 이내 기지를
+                        // 랜덤 순서로 모아 df_t0 부터 0.3초 간격 애니메이션.
                         df_emit_lat = plat; df_emit_lon = plon; df_emit_set = true;
+                        df_t0 = glfwGetTime();
+                        df_seq.clear();
+                        auto within500 = [&](float la2, float lo2)->bool{
+                            float a3[3],c3[3]; ll_to_xyz(la2,lo2,a3); ll_to_xyz(plat,plon,c3);
+                            float d=a3[0]*c3[0]+a3[1]*c3[1]+a3[2]*c3[2];
+                            if(d>1.f)d=1.f; if(d<-1.f)d=-1.f;
+                            return acosf(d)*EARTH_KM <= 500.0f;
+                        };
+                        { std::lock_guard<std::mutex> lk(v.discovered_stations_mtx);
+                          for(auto& st : v.discovered_stations)
+                              if(within500(st.lat, st.lon)) df_seq.push_back(ImVec2(st.lat, st.lon)); }
+                        for(int i=0;i<N_VBASE;i++)
+                            if(within500(VBASES[i].lat, VBASES[i].lon))
+                                df_seq.push_back(ImVec2(VBASES[i].lat, VBASES[i].lon));
+                        static unsigned s_rng = 2463534242u;
+                        s_rng ^= (unsigned)(glfwGetTime()*1000.0);
+                        for(int i=(int)df_seq.size()-1;i>0;i--){    // Fisher-Yates
+                            s_rng = s_rng*1664525u + 1013904223u;
+                            int j = (int)(s_rng % (unsigned)(i+1));
+                            ImVec2 tmp=df_seq[i]; df_seq[i]=df_seq[j]; df_seq[j]=tmp;
+                        }
                     } else {
                     // Check if a station marker was clicked (20px radius)
                     bool hit_station = false;
@@ -2626,57 +2658,67 @@ void run_streaming_viewer(){
         if(globe_ok){
             ImDrawList* fdl = ImGui::GetForegroundDrawList();
             bool lob_on = df_on && df_emit_set;
-            double A_info[3]={0,0,0}; int lob_cnt=0;   // LOB 공분산 누적
-            std::lock_guard<std::mutex> lk(v.discovered_stations_mtx);
-            for(auto& st : v.discovered_stations){
-                float sx, sy;
-                if(!globe.project(st.lat, st.lon, sx, sy)) continue;
-                if(lob_on){
-                    draw_lob(globe, fdl, st.lat, st.lon, df_emit_lat, df_emit_lon);
-                    accum_info(st.lat, st.lon, df_emit_lat, df_emit_lon, A_info, lob_cnt);
-                }
-                // Tier1=빨강 / Tier2(이하)=노랑, 가상기지와 동일 점 스타일
-                ImU32 cg, cc;
-                if(st.host_tier==1){ cg=IM_COL32(255,70,45,55);  cc=IM_COL32(255,80,55,235); }
-                else               { cg=IM_COL32(255,225,40,45); cc=IM_COL32(255,230,50,235); }
-                fdl->AddCircleFilled(ImVec2(sx,sy), 8.f, cg);
-                fdl->AddCircleFilled(ImVec2(sx,sy), 4.f, cc);
-                float dx = sx - io.MousePos.x, dy = sy - io.MousePos.y;
-                if(dx*dx + dy*dy < 196.f){
-                    fdl->AddText(ImVec2(sx+12,sy-8),
-                                 IM_COL32(230,235,245,255), st.name.c_str());
-                    char ubuf[32];
-                    snprintf(ubuf, sizeof(ubuf), "Tier %d", (int)st.host_tier);
-                    fdl->AddText(ImVec2(sx+12,sy+4),
-                                 IM_COL32(180,200,220,200), ubuf);
+            // ── 기지 마커 (LOB 는 아래 애니메이션에서 별도) ──
+            {
+                std::lock_guard<std::mutex> lk(v.discovered_stations_mtx);
+                for(auto& st : v.discovered_stations){
+                    float sx, sy;
+                    if(!globe.project(st.lat, st.lon, sx, sy)) continue;
+                    ImU32 cg, cc;   // Tier1=빨강 / Tier2(이하)=노랑
+                    if(st.host_tier==1){ cg=IM_COL32(255,70,45,55);  cc=IM_COL32(255,80,55,235); }
+                    else               { cg=IM_COL32(255,225,40,45); cc=IM_COL32(255,230,50,235); }
+                    fdl->AddCircleFilled(ImVec2(sx,sy), 8.f, cg);
+                    fdl->AddCircleFilled(ImVec2(sx,sy), 4.f, cc);
+                    float dx = sx - io.MousePos.x, dy = sy - io.MousePos.y;
+                    if(dx*dx + dy*dy < 196.f){
+                        fdl->AddText(ImVec2(sx+12,sy-8),
+                                     IM_COL32(230,235,245,255), st.name.c_str());
+                        char ubuf[32];
+                        snprintf(ubuf, sizeof(ubuf), "Tier %d", (int)st.host_tier);
+                        fdl->AddText(ImVec2(sx+12,sy+4),
+                                     IM_COL32(180,200,220,200), ubuf);
+                    }
                 }
             }
-            // 가상 기지 (SPACE on 시 노란 점, emitter 지정 시 LOB)
-            if(df_on){
+            if(df_on){   // 가상 기지 노란 점
                 for(int i=0;i<N_VBASE;i++){
                     float sx, sy;
                     if(!globe.project(VBASES[i].lat, VBASES[i].lon, sx, sy)) continue;
-                    if(lob_on){
-                        draw_lob(globe, fdl, VBASES[i].lat, VBASES[i].lon, df_emit_lat, df_emit_lon);
-                        accum_info(VBASES[i].lat, VBASES[i].lon, df_emit_lat, df_emit_lon, A_info, lob_cnt);
-                    }
                     fdl->AddCircleFilled(ImVec2(sx,sy), 8.f, IM_COL32(255,225,40,45));
                     fdl->AddCircleFilled(ImVec2(sx,sy), 4.f, IM_COL32(255,230,50,235));
                 }
             }
-            // 실제 LOB 기하로 오차 일립스 계산 (C=A^-1 고유분해)
-            if(lob_on && lob_cnt>=2){
-                double det=A_info[0]*A_info[2]-A_info[1]*A_info[1];
-                if(det>1e-9){
-                    double Cxx=A_info[2]/det, Cxy=-A_info[1]/det, Cyy=A_info[0]/det; // km²
-                    double Tr=Cxx+Cyy;
-                    double Rr=sqrt(((Cxx-Cyy)*0.5)*((Cxx-Cyy)*0.5)+Cxy*Cxy);
-                    double l1=Tr*0.5+Rr, l2=Tr*0.5-Rr;       // 장/단 고유값
-                    float smaj=(float)sqrt(l1>0?l1:0.0), smin=(float)sqrt(l2>0?l2:0.0);
-                    float orient=(float)(atan2(Cxy, l1-Cyy)*R2D_); // 장축 방위(East 기준)
-                    const float VIS=14.0f;   // 1σ km → 화면 가시화 스케일
-                    draw_err_ellipse(globe, fdl, df_emit_lat, df_emit_lon,
-                                     smaj*VIS, smin*VIS, orient);
+            // ── 실시간 DF: 0.3초마다 기지 하나씩 LOB, 매번 fix·일립스 갱신 ──
+            if(lob_on && !df_seq.empty()){
+                int reveal = (int)((glfwGetTime()-df_t0)/0.3) + 1;
+                if(reveal > (int)df_seq.size()) reveal = (int)df_seq.size();
+                double A[3]={0,0,0}, bvec[2]={0,0}; int cnt=0;
+                for(int k=0;k<reveal;k++){
+                    float blat=df_seq[k].x, blon=df_seq[k].y;
+                    draw_lob(globe, fdl, blat, blon, df_emit_lat, df_emit_lon);
+                    accum_fix(blat, blon, df_emit_lat, df_emit_lon, A, bvec, cnt);
+                }
+                if(cnt>=2){
+                    double det=A[0]*A[2]-A[1]*A[1];
+                    if(det>1e-9){
+                        double xhE=( A[2]*bvec[0] - A[1]*bvec[1])/det;   // LS fix 오프셋(EN km)
+                        double xhN=(-A[1]*bvec[0] + A[0]*bvec[1])/det;
+                        float fla=df_emit_lat*D2R_, flo=df_emit_lon*D2R_;
+                        float Ev[3]={-sinf(flo),cosf(flo),0.f};
+                        float Nv[3]={-sinf(fla)*cosf(flo),-sinf(fla)*sinf(flo),cosf(fla)};
+                        float ce3[3]; ll_to_xyz(df_emit_lat, df_emit_lon, ce3);
+                        float fx[3]={ ce3[0]+(float)(xhE/EARTH_KM)*Ev[0]+(float)(xhN/EARTH_KM)*Nv[0],
+                                      ce3[1]+(float)(xhE/EARTH_KM)*Ev[1]+(float)(xhN/EARTH_KM)*Nv[1],
+                                      ce3[2]+(float)(xhE/EARTH_KM)*Ev[2]+(float)(xhN/EARTH_KM)*Nv[2] };
+                        float fix_lat, fix_lon; xyz_to_ll(fx, fix_lat, fix_lon);
+                        double Cxx=A[2]/det, Cxy=-A[1]/det, Cyy=A[0]/det;
+                        double Tr=Cxx+Cyy, Rr=sqrt(((Cxx-Cyy)*0.5)*((Cxx-Cyy)*0.5)+Cxy*Cxy);
+                        double l1=Tr*0.5+Rr, l2=Tr*0.5-Rr;
+                        float smaj=(float)sqrt(l1>0?l1:0.0), smin=(float)sqrt(l2>0?l2:0.0);
+                        float orient=(float)(atan2(Cxy, l1-Cyy)*R2D_);
+                        const float VIS=14.0f;
+                        draw_err_ellipse(globe, fdl, fix_lat, fix_lon, smaj*VIS, smin*VIS, orient);
+                    }
                 }
             }
         }
