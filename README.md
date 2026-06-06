@@ -88,14 +88,6 @@ Forward collection nodes (HOST) · analyst command and control (JOIN) · SIGINT 
 
 ## Core Capabilities
 
-### UAS RF Detection and Geolocation
-
-- **Automatic 2.4 / 5.8 GHz control-link classification** — commercial UAS protocols (DJI Ocusync, FPV, FHSS) fingerprinted by PRI and modulation analysis
-- **Multi-site TDOA geolocation** — emitter coordinates triangulated from time-of-arrival differences across three or more nodes
-- **Automatic burst IQ capture** — sub-second control bursts caught in the rolling IQ buffer
-
-![Max Hold spectrum](assets/max_decay.png)
-
 ### Signal Emitter Direction Finding
 
 When the same signal is received simultaneously across active collection sites, real-time direction finding identifies the location of the signal emitter on the 3D globe.
@@ -192,29 +184,6 @@ The 2-month HOST retention exists to bound storage at forward and low-cost sites
 | **Authentication and access control** | Three analyst tiers — Tier 1 (collection) / Tier 2 (analysis) / Tier 3 (command) · per-station ID/PW authentication |
 | **Data classification and isolation** | IQ · audio · HIST partitioned by mission code · local disk primary · Central download restricted to authorized analysts |
 | **Audit and supply chain** | Analyst sessions and recording start times automatically logged · COTS firmware verifiable · open-source codebase available for audit |
-
----
-
-## BEWE vs Legacy SIGINT Platforms
-
-| Criterion | **BEWE (COTS)** | L3Harris / BAE | Dedicated Ground Systems |
-|---|---|---|---|
-| Per-node cost | **Low single-digit hardware cost** (RPi5 + BladeRF) | Hundreds of thousands to millions USD | Multi-million USD |
-| Forward deployment time | **Hours** | Weeks to months | Months to years |
-| Multi-analyst real-time collaboration | **Built-in** (unlimited JOINs) | Separate C2 system required | Not supported |
-| Persistent IQ archive | **Mission-scoped, automatic** | Option (additional cost) | Limited |
-| Receiver extensibility | **Fully open** (any compatible SDR) | Vendor-locked hardware | Proprietary platform |
-| Minimum operating staff | **Single operator capable** | Dedicated team required | Dedicated team required |
-
----
-
-## Deployment Profile
-
-- **Operator workstation**: Ubuntu 24.04 LTS, x86_64, OpenGL 3+ GPU
-- **Headless collection node**: Raspberry Pi 5 with RTL-SDR or BladeRF; Raspberry Pi OS 64-bit
-- **Central Server**: Ubuntu 24.04 LTS, x86_64; storage provisioned per retention policy
-
-Full deployment procedure including receiver permissions and Raspberry Pi tuning is documented in [`INSTALL.md`](INSTALL.md).
 
 ---
 
