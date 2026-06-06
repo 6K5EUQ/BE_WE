@@ -1,6 +1,6 @@
 # BEWE
 
-**Korean Distributed SIGINT Platform**
+**SIGINT Platform**
 *Behind Everyone We Hear Everything*
 
 Wideband · Distributed · Persistent Signal Intelligence Platform
@@ -40,22 +40,6 @@ The world's intelligence services operate a three-pillar collection model for pr
 
 ---
 
-## Existing Korean SIGINT Assets and Structural Gaps
-
-| Asset | Capability | Structural Limitation |
-|---|---|---|
-| **Baekdu / Geumgang** (RC-800 family) | Manned COMINT/ELINT collection | Coverage only during sortie flight — no persistent coverage |
-| **425 reconnaissance satellite** | SAR / EO imagery | RF SIGINT collection limited; revisit interval constraint |
-| **777th Brigade** (DIC) | Dedicated ELINT collection | Fixed-site operation; no simultaneous coverage of the full forward line |
-| **Ground fixed listening posts** | Strategic forward sites | Limited real-time inter-site data fusion; dependent on individual analyst memory |
-
-**Coverage Gaps:**
-- Persistent DMZ / NLL monitoring during Baekdu / Geumgang ground time
-- Sub-3-second burst FH data links and UAS control links
-- Multi-site real-time fusion — no TDOA geolocation across assets
-
----
-
 ## How BEWE Complements Existing Systems
 
 BEWE does not replace existing SIGINT assets. **It densely fills the low-altitude, persistent, distributed domain that high-cost platforms cannot economically cover.**
@@ -83,7 +67,7 @@ Forward collection nodes (HOST) · analyst command and control (JOIN) · SIGINT 
               ┌──────────────────────┼──────────────────────┐
               │                      │                      │
        ┌──────┴───────┐       ┌──────┴───────┐       ┌──────┴───────┐
-       │   DGS-1      │       │   DGS-2      │       │   DGS-3      │
+       │  Station 1   │       │  Station 2   │       │  Station 3   │
        │  HOST + SDR  │       │  HOST + SDR  │       │  HOST + SDR  │
        └──────────────┘       └──────────────┘       └──────────────┘
 
@@ -105,8 +89,6 @@ Forward collection nodes (HOST) · analyst command and control (JOIN) · SIGINT 
 ## Core Capabilities
 
 ### UAS RF Detection and Geolocation
-
-Low-altitude small UAS that radar misses — the RF control link and FPV downlink are the only detection cues.
 
 - **Automatic 2.4 / 5.8 GHz control-link classification** — commercial UAS protocols (DJI Ocusync, FPV, FHSS) fingerprinted by PRI and modulation analysis
 - **Multi-site TDOA geolocation** — emitter coordinates triangulated from time-of-arrival differences across three or more nodes
@@ -201,11 +183,6 @@ RPi5 + commercial SDR — an unattended SIGINT collection node built from low si
 | **ADALM-Pluto (AD9361)** | 70 MHz – 6 GHz | 0 – 71 dB | VHF/UHF tactical comms · C-UAS |
 | **RTL-SDR v4** | 500 kHz – 1.766 GHz | 0 – 49.6 dB | HF intercept · GPS band monitoring |
 
-- Auto-detected receiver priority (BladeRF → Pluto → RTL-SDR)
-- RPi5 headless CLI — boots and starts collection on power-up
-- Hot-swap receivers at runtime (no reboot)
-- Tailscale mesh VPN — single port 7700 connects every node to Central
-
 ---
 
 ## Data Retention
@@ -224,7 +201,6 @@ The 2-month HOST retention exists to bound storage at forward and low-cost sites
 
 | Domain | Design |
 |---|---|
-| **Network isolation** | Tailscale mesh VPN dedicated transport · single port 7700 only · air-gapped deployment supported |
 | **Authentication and access control** | Three analyst tiers — Tier 1 (collection) / Tier 2 (analysis) / Tier 3 (command) · per-station ID/PW authentication |
 | **Data classification and isolation** | IQ · audio · HIST partitioned by mission code · local disk primary · Central download restricted to authorized analysts |
 | **Audit and supply chain** | Analyst sessions and recording start times automatically logged · COTS firmware verifiable · open-source codebase available for audit |
@@ -249,7 +225,6 @@ The 2-month HOST retention exists to bound storage at forward and low-cost sites
 - **Operator workstation**: Ubuntu 24.04 LTS, x86_64, OpenGL 3+ GPU
 - **Headless collection node**: Raspberry Pi 5 with RTL-SDR or BladeRF; Raspberry Pi OS 64-bit
 - **Central Server**: Ubuntu 24.04 LTS, x86_64; storage provisioned per retention policy
-- **Network**: Single TCP port between Central and each site; mesh VPN (Tailscale or WireGuard) recommended for multi-site deployments over public networks
 
 Full deployment procedure including receiver permissions and Raspberry Pi tuning is documented in [`INSTALL.md`](INSTALL.md).
 
