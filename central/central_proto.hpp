@@ -266,7 +266,8 @@ struct __attribute__((packed)) CentralHostStateFull {
     uint32_t sample_rate_hz;
     uint8_t  hist_recording;     // 0/1: any LIVE waterfall recording active
     uint8_t  channel_count;      // active channels
-    uint8_t  _pad[2];
+    uint8_t  bat_pct;            // host battery % (1-100); 0 or 255 = no battery
+    uint8_t  _pad;
     CentralHostStateChannel channels[CENTRAL_HSTATE_MAX_CHANNELS];
 };
 static_assert(sizeof(CentralHostStateFull) ==
@@ -288,7 +289,8 @@ struct __attribute__((packed)) CentralStationV2 {
     uint32_t sample_rate_hz;
     uint8_t  hist_recording;
     uint8_t  channel_count;
-    uint8_t  _pad2[2];
+    uint8_t  bat_pct;            // mirrors CentralHostStateFull.bat_pct
+    uint8_t  _pad2;
 };
 static_assert(sizeof(CentralStationV2) == sizeof(CentralStation) + 48,
               "CentralStationV2 = CentralStation + 48 byte extension");

@@ -76,6 +76,7 @@ static void register_host_state_fn(CentralClient& cli, FFTViewer& v){
             memcpy(d.owner, c.owner, sizeof(d.owner));
         }
         st.channel_count = (uint8_t)cnt;
+        st.bat_pct = v.sysmon_bat.load();
     });
     cli.set_hist_state_fn([](CentralHostHistInfo& hi) -> bool {
         PktLwfLiveStart lst{};

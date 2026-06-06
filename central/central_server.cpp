@@ -1784,6 +1784,7 @@ void CentralServer::handle_list_req_v2(int fd){
                 s2.sample_rate_hz  = r->state.sample_rate_hz;
                 s2.hist_recording  = r->state.hist_recording;
                 s2.channel_count   = r->state.channel_count;
+                s2.bat_pct         = r->state.bat_pct;
             }
             stations.push_back(s2);
         }
