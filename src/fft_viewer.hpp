@@ -147,7 +147,8 @@ public:
 
     // ── System monitor (bottom bar) ───────────────────────────────────────
     float sysmon_cpu=0, sysmon_ghz=0, sysmon_ram=0, sysmon_io=0;
-    std::atomic<int> sysmon_cpu_temp_c{0};  // CPU 온도 (정수 °C, heartbeat 전송용)
+    std::atomic<int>     sysmon_cpu_temp_c{0};   // CPU 온도 (정수 °C, heartbeat 전송용)
+    std::atomic<uint8_t> sysmon_bat{255};         // 배터리 % (255=없음/데스크탑)
     // 자기 머신의 recordings 디스크 여유 (JOIN 의 "Local" 표시용 / HOST 자기 disk_stat 송신 시 참조 가능)
     std::atomic<uint64_t> local_disk_free{0};
     std::atomic<uint64_t> local_disk_total{0};

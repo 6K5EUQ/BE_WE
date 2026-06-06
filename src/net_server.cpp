@@ -738,9 +738,10 @@ void NetServer::broadcast_chat(const char* from, const char* msg){
 // ── Broadcast heartbeat ───────────────────────────────────────────────────
 void NetServer::broadcast_heartbeat(uint8_t host_state, uint8_t sdr_temp_c, uint8_t sdr_state, uint8_t iq_on,
                                     uint8_t host_cpu_pct, uint8_t host_ram_pct, uint8_t host_cpu_temp_c,
-                                    const char* antenna, const char* sdr_kind){
+                                    const char* antenna, const char* sdr_kind, uint8_t host_bat_pct){
     PktHeartbeat hb{}; hb.host_state = host_state; hb.sdr_temp_c = sdr_temp_c; hb.sdr_state = sdr_state; hb.iq_on = iq_on;
     hb.host_cpu_pct = host_cpu_pct; hb.host_ram_pct = host_ram_pct; hb.host_cpu_temp_c = host_cpu_temp_c;
+    hb.host_bat_pct = host_bat_pct;
     if(antenna)  strncpy(hb.antenna,  antenna,  sizeof(hb.antenna)-1);
     if(sdr_kind) strncpy(hb.sdr_kind, sdr_kind, sizeof(hb.sdr_kind)-1);
     auto pkt = make_packet(PacketType::HEARTBEAT, &hb, sizeof(hb));

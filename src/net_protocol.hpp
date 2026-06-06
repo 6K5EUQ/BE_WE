@@ -483,7 +483,7 @@ struct __attribute__((packed)) PktHeartbeat {
     uint8_t host_cpu_pct;    // HOST CPU % (0-100)
     uint8_t host_ram_pct;    // HOST RAM % (0-100)
     uint8_t host_cpu_temp_c; // HOST CPU 온도 °C
-    uint8_t pad;
+    uint8_t host_bat_pct;    // HOST 배터리 % (255=배터리 없음/데스크탑)
     char    antenna[32];     // HOST 안테나 자유텍스트 (JOIN/HOST 모두에 표시)
     char    sdr_kind[16];    // HOST SDR 모델명 (BladeRF/Pluto/RTL-SDR/Unknown)
 };

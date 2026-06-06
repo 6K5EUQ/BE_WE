@@ -305,7 +305,8 @@ public:
     // sdr_state:  0=streaming OK, 1=stream error
     void broadcast_heartbeat(uint8_t host_state = 0, uint8_t sdr_temp_c = 0, uint8_t sdr_state = 0, uint8_t iq_on = 0,
                              uint8_t host_cpu_pct = 0, uint8_t host_ram_pct = 0, uint8_t host_cpu_temp_c = 0,
-                             const char* antenna = nullptr, const char* sdr_kind = nullptr);
+                             const char* antenna = nullptr, const char* sdr_kind = nullptr,
+                             uint8_t host_bat_pct = 255);
 
     // DISK_STAT → all clients (HOST 측 recordings/missions 디스크 여유공간)
     void broadcast_disk_stat(uint64_t free_bytes, uint64_t total_bytes, const char* station);

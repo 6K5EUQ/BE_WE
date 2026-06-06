@@ -199,6 +199,15 @@ static int read_cpu_temp_c(){
     if(fv){ int milli=0; if(fscanf(fv,"%d",&milli)==1 && milli>0){ fclose(fv); return milli/1000; } fclose(fv); }
     return 0;
 }
+static uint8_t read_bat_pct(){
+    for(int i=0; i<4; i++){
+        char p[80]; snprintf(p,sizeof(p),"/sys/class/power_supply/BAT%d/capacity",i);
+        FILE* f=fopen(p,"r"); if(!f) continue;
+        int cap=0; if(fscanf(f,"%d",&cap)==1){ fclose(f); return (uint8_t)std::min(100,std::max(0,cap)); }
+        fclose(f);
+    }
+    return 255; // 배터리 없음 (데스크탑 등)
+}
 static long long read_io_ms(){
     FILE* f=fopen("/proc/diskstats","r"); if(!f) return 0;
     long long sum=0; char dev[32]; unsigned int maj,min_;
@@ -1479,6 +1488,7 @@ void run_cli_host(){
                 v.sysmon_ghz=read_ghz();
                 v.sysmon_ram=read_ram();
                 v.sysmon_cpu_temp_c.store(read_cpu_temp_c());
+                v.sysmon_bat.store(read_bat_pct());
                 long long io_now=read_io_ms();
                 v.sysmon_io=std::min(100.0f,(float)(io_now-io_last_ms)/10.0f);
                 io_last_ms=io_now;
@@ -1605,7 +1615,8 @@ void run_cli_host(){
                 uint8_t cpu_temp = (uint8_t)std::min(255, std::max(0, v.sysmon_cpu_temp_c.load()));
                 const char* sk = v.dev_blade ? "BladeRF" : v.pluto_ctx ? "Pluto" : v.dev_rtl ? "RTL-SDR" : "Unknown";
                 v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st, iq_st,
-                                               cpu_pct, ram_pct, cpu_temp, v.host_antenna, sk);
+                                               cpu_pct, ram_pct, cpu_temp, v.host_antenna, sk,
+                                               v.sysmon_bat.load());
             }
         }
 

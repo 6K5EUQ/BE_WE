@@ -4481,6 +4481,15 @@ void run_streaming_viewer(){
         }
         fclose(f); return sum;
     };
+    auto read_bat_pct=[&]()->uint8_t{
+        for(int i=0; i<4; i++){
+            char p[80]; snprintf(p,sizeof(p),"/sys/class/power_supply/BAT%d/capacity",i);
+            FILE* f=fopen(p,"r"); if(!f) continue;
+            int cap=0; if(fscanf(f,"%d",&cap)==1){ fclose(f); return (uint8_t)std::min(100,std::max(0,cap)); }
+            fclose(f);
+        }
+        return 255; // 배터리 없음 (데스크탑 등)
+    };
     read_cpu(cpu_last_idle,cpu_last_total);
     io_last_ms=read_io_ms();
 
@@ -4726,6 +4735,7 @@ void run_streaming_viewer(){
                 v.sysmon_ghz=read_ghz();
                 v.sysmon_ram=read_ram();
                 v.sysmon_io =io_pct;
+                v.sysmon_bat.store(read_bat_pct());
                 // 자기 머신의 recordings 디스크 여유 측정 (1초마다 — 미션창 좌측 트리 Local 표시용)
                 {
                     struct statvfs vfs{};
@@ -4791,7 +4801,8 @@ void run_streaming_viewer(){
                 uint8_t h_ram = (uint8_t)std::min(100.f, std::max(0.f, v.sysmon_ram));
                 uint8_t h_ct  = (uint8_t)std::min(255, std::max(0, v.sysmon_cpu_temp_c.load()));
                 const char* sk = v.dev_blade ? "BladeRF" : v.pluto_ctx ? "Pluto" : v.dev_rtl ? "RTL-SDR" : "Unknown";
-                v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st, iq_st, h_cpu, h_ram, h_ct, v.host_antenna, sk);
+                v.net_srv->broadcast_heartbeat(hst, sdr_t_hb, sdr_st, iq_st, h_cpu, h_ram, h_ct, v.host_antenna, sk,
+                                               v.sysmon_bat.load());
             }
         }
 
@@ -6355,16 +6366,25 @@ void run_streaming_viewer(){
                                               : vv.header.sample_rate/1e6;
                     ImGui::Text("Freq : %.4fMHz  /  Sample Rate : %.3fMSPS", cf_mhz, sr_mhz);
                 }
-                // HOST CPU/RAM
+                // HOST CPU/RAM/Bat
                 if(vv.net_cli){
                     int h_cpu = vv.net_cli->remote_host_cpu.load();
                     int h_ram = vv.net_cli->remote_host_ram.load();
                     int h_ct  = vv.net_cli->remote_host_cpu_temp.load();
-                    ImGui::Text("HOST | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%", h_cpu, h_ct, h_ram);
+                    int h_bat = vv.net_cli->remote_host_bat.load();
+                    if(h_bat <= 100)
+                        ImGui::Text("HOST | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%  /  Bat. : %d%%", h_cpu, h_ct, h_ram, h_bat);
+                    else
+                        ImGui::Text("HOST | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%", h_cpu, h_ct, h_ram);
                 } else {
-                    int ct = vv.sysmon_cpu_temp_c.load();
-                    ImGui::Text("HOST | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%",
-                        (int)vv.sysmon_cpu, ct, (int)vv.sysmon_ram);
+                    int ct  = vv.sysmon_cpu_temp_c.load();
+                    int bat = vv.sysmon_bat.load();
+                    if(bat <= 100)
+                        ImGui::Text("HOST | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%  /  Bat. : %d%%",
+                            (int)vv.sysmon_cpu, ct, (int)vv.sysmon_ram, bat);
+                    else
+                        ImGui::Text("HOST | CPU : %d%% [%d\xC2\xB0""C]  /  RAM : %d%%",
+                            (int)vv.sysmon_cpu, ct, (int)vv.sysmon_ram);
                 }
                 if(vv.net_cli){
                     int jct = vv.sysmon_cpu_temp_c.load();
