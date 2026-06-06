@@ -114,6 +114,16 @@ Low-altitude small UAS that radar misses — the RF control link and FPV downlin
 
 ![Max Hold spectrum](assets/max_decay.png)
 
+### Signal Emitter Direction Finding
+
+When the same signal is received simultaneously across active collection sites, real-time direction finding identifies the location of the signal emitter on the 3D globe.
+
+- **Multi-site Line of Bearing (LOB)** — each active site projects a bearing toward the emitter; intersecting LOBs localize the source in real time
+- **On-globe emitter fix** — the estimated source position and its error ellipse are rendered live on the 3D globe alongside the collection nodes
+
+![Multi-site LOBs converging on an emitter](assets/df1.png)
+![Emitter fix with error ellipse](assets/df2.png)
+
 ### Tactical Communications Intercept (COMINT)
 
 HF · VHF · UHF concurrent demodulation across ten channels — the Holding List preserves tracking regardless of where the adversary moves the frequency.
