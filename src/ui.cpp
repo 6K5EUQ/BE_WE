@@ -2664,11 +2664,9 @@ void run_streaming_viewer(){
                 for(auto& st : v.discovered_stations){
                     float sx, sy;
                     if(!globe.project(st.lat, st.lon, sx, sy)) continue;
-                    ImU32 cg, cc;   // Tier1=빨강 / Tier2(이하)=노랑
-                    if(st.host_tier==1){ cg=IM_COL32(255,70,45,55);  cc=IM_COL32(255,80,55,235); }
-                    else               { cg=IM_COL32(255,225,40,45); cc=IM_COL32(255,230,50,235); }
-                    fdl->AddCircleFilled(ImVec2(sx,sy), 8.f, cg);
-                    fdl->AddCircleFilled(ImVec2(sx,sy), 4.f, cc);
+                    // 방향탐지(가상) 기지와 동일한 마커
+                    fdl->AddCircleFilled(ImVec2(sx,sy), 8.f, IM_COL32(255,225,40,45));
+                    fdl->AddCircleFilled(ImVec2(sx,sy), 4.f, IM_COL32(255,230,50,235));
                     float dx = sx - io.MousePos.x, dy = sy - io.MousePos.y;
                     if(dx*dx + dy*dy < 196.f){
                         fdl->AddText(ImVec2(sx+12,sy-8),
