@@ -2664,9 +2664,10 @@ void run_streaming_viewer(){
                 for(auto& st : v.discovered_stations){
                     float sx, sy;
                     if(!globe.project(st.lat, st.lon, sx, sy)) continue;
-                    // 방향탐지(가상) 기지와 동일한 마커
-                    fdl->AddCircleFilled(ImVec2(sx,sy), 8.f, IM_COL32(255,225,40,45));
-                    fdl->AddCircleFilled(ImVec2(sx,sy), 4.f, IM_COL32(255,230,50,235));
+                    // 원래 파란 스테이션 마커 (Outer glow / Inner fill / Core)
+                    fdl->AddCircle(ImVec2(sx,sy), 14.f, IM_COL32(80,200,255,60), 32, 3.f);
+                    fdl->AddCircleFilled(ImVec2(sx,sy), 8.f, IM_COL32(60,160,255,220));
+                    fdl->AddCircleFilled(ImVec2(sx,sy), 4.f, IM_COL32(200,240,255,255));
                     float dx = sx - io.MousePos.x, dy = sy - io.MousePos.y;
                     if(dx*dx + dy*dy < 196.f){
                         fdl->AddText(ImVec2(sx+12,sy-8),
