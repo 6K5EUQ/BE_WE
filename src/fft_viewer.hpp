@@ -651,6 +651,7 @@ public:
     size_t             autoscale_wp=0;   // 순환 버퍼 write pointer
     bool               autoscale_buf_full=false;
     std::chrono::steady_clock::time_point autoscale_last;
+    std::chrono::steady_clock::time_point autoscale_check_last{};  // 10s 천장초과 감시 타이머
     bool  autoscale_init=false, autoscale_active=true;
     // 비-캡처 스레드(set_frequency/init)가 autoscale 재트리거를 요청 → 캡처 스레드가 처리.
     // autoscale_accum/active/init 를 캡처 스레드 밖에서 직접 건드리면 레이스 → 이 플래그로 위임.

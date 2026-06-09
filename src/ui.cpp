@@ -5523,6 +5523,24 @@ void run_streaming_viewer(){
                                 _noise, _peak, v.display_power_min, v.display_power_max);
                         }
                     }
+                    else {
+                        // 10초마다: 현재 프레임 peak 가 천장(display_power_max=직전 peak+20) 초과면 autoscale 재실행
+                        if(v.autoscale_check_last.time_since_epoch().count()==0)
+                            v.autoscale_check_last = std::chrono::steady_clock::now();
+                        float _cel = std::chrono::duration<float>(
+                            std::chrono::steady_clock::now() - v.autoscale_check_last).count();
+                        if(_cel >= 10.0f){
+                            float _mx = -200.f;
+                            for(int _i=1;_i<fsz;_i++) if(dst[_i] > _mx) _mx = dst[_i];
+                            if(_mx > v.display_power_max){
+                                v.autoscale_active = true; v.autoscale_init = false;
+                                v.autoscale_accum.clear();
+                                bewe_log_push(0,"[autoscale-JOIN] peak %.1f > pmax %.1f re-autoscale\n",
+                                    _mx, v.display_power_max);
+                            }
+                            v.autoscale_check_last = std::chrono::steady_clock::now();
+                        }
+                    }
                     v.header.num_ffts = std::min(v.total_ffts, MAX_FFTS_MEMORY);
                 }
                 v.update_wf_row(v.current_fft_idx);
