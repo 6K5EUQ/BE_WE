@@ -612,6 +612,8 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
     int sp_idx=tm_active.load() ? tm_display_fft_idx : current_fft_idx;
 
     // ── Max Decay: cf/fft_size 변경 시 리셋, 5 dB/s 감쇠 ──────────────────
+    // max_hold_spectrum 변경 추적용 gen 카운터 (아래 Pass1/Pass2 캐시 무효화)
+    static thread_local uint64_t mh_gen = 0;
     if(max_hold_mode != 0){
         bool need_reset = (header.center_frequency != last_maxhold_cf ||
                            fft_size != last_maxhold_fft_size ||
@@ -621,6 +623,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
             last_maxhold_sp_idx = -1;
             last_maxhold_cf = header.center_frequency;
             last_maxhold_fft_size = fft_size;
+            mh_gen++;
         }
         // 새 FFT row가 들어왔을 때만 업데이트
         if(total_ffts > 0 && fft_size > 0 && sp_idx != last_maxhold_sp_idx){
@@ -653,6 +656,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
                 max_hold_spectrum[b] = (v > p) ? v : p;
             }
             last_maxhold_sp_idx = sp_idx;
+            mh_gen++;
         }
     }
 
@@ -686,12 +690,13 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
     // 각 노치의 좌/우 인접 bin median + spread를 EMA로 블렌딩 > 프레임 간 안정.
     // 렌더에서 직선 보간 + 노치 폭·FFT bin 비례 sine 변동으로 자연스럽게 부드럽게.
     // 노치 픽셀 판정은 MHz 구간 overlap > DC(센터) 걸치는 bin wrap 오탐 차단.
-    std::vector<NotchFilter> nlocal;
+    static thread_local std::vector<NotchFilter> nlocal;
     {
         std::lock_guard<std::mutex> lk(notches_mtx);
         nlocal = notches;
     }
-    std::vector<int> px_notch(np, -1);
+    static thread_local std::vector<int> px_notch;
+    px_notch.assign(np, -1);
     float cf_mhz_loc = (float)(header.center_frequency/1e6);
     float sr_mhz_loc = sr_mhz;
     // bin > 절대 MHz (IQ FFT: 양수 주파수=[0, hf-1], 음수=[hf, fft_size-1])
@@ -731,14 +736,42 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
             float hi = nlocal[ni].freq_hi_mhz;
             float nbr_mhz = std::max((hi - lo) * 2.0f, bin_width_mhz * 64.0f);
             std::vector<float> left_bins, right_bins, left_mh, right_mh;
-            for(int b=0; b<fft_size; b++){
-                float mhz = bin_to_mhz_sp(b);
-                if(mhz >= lo - nbr_mhz && mhz < lo){
-                    left_bins.push_back(rowp[b]);
-                    if(mh_valid) left_mh.push_back(max_hold_spectrum[b]);
-                } else if(mhz > hi && mhz <= hi + nbr_mhz){
-                    right_bins.push_back(rowp[b]);
-                    if(mh_valid) right_mh.push_back(max_hold_spectrum[b]);
+            // fd 구간 > 보수적 bin 윈도우 매핑 (±64 bin 마진) - 윈도우만 스캔,
+            // per-bin float 비교는 기존과 동일하게 유지
+            auto scan_bins = [&](int b0, int b1){
+                if(b0 > b1) return;  // 빈 세그먼트 skip
+                for(int b=b0; b<=b1; b++){
+                    float mhz = bin_to_mhz_sp(b);
+                    if(mhz >= lo - nbr_mhz && mhz < lo){
+                        left_bins.push_back(rowp[b]);
+                        if(mh_valid) left_mh.push_back(max_hold_spectrum[b]);
+                    } else if(mhz > hi && mhz <= hi + nbr_mhz){
+                        right_bins.push_back(rowp[b]);
+                        if(mh_valid) right_mh.push_back(max_hold_spectrum[b]);
+                    }
+                }
+            };
+            {
+                constexpr int BIN_MARGIN = 64;  // float 반올림 대비 보수적 마진
+                int   hf_w  = fft_size/2;
+                float nyq_w = sr_mhz_loc/2.0f;
+                float fdA = (lo - nbr_mhz) - cf_mhz_loc;
+                float fdB = (hi + nbr_mhz) - cf_mhz_loc;
+                if(nyq_w > 0 && hf_w > 0){
+                    // 양수 fd 세그먼트: bins [0, hf-1] (DC 걸침 시 음수 fd와 분할 스캔)
+                    if(fdB >= 0.0f){
+                        int b0 = (int)std::floor(std::max(fdA, 0.0f)/nyq_w*hf_w) - BIN_MARGIN;
+                        int b1 = (int)std::ceil (std::min(fdB, nyq_w)/nyq_w*hf_w) + BIN_MARGIN;
+                        scan_bins(std::max(0, b0), std::min(hf_w-1, b1));
+                    }
+                    // 음수 fd 세그먼트: bins [hf, fft_size-1]
+                    if(fdA < 0.0f){
+                        int b0 = (int)std::floor(fft_size + std::max(fdA, -nyq_w)/nyq_w*hf_w) - BIN_MARGIN;
+                        int b1 = (int)std::ceil (fft_size + std::min(fdB, 0.0f)/nyq_w*hf_w) + BIN_MARGIN;
+                        scan_bins(std::max(hf_w, b0), std::min(fft_size-1, b1));
+                    }
+                } else {
+                    scan_bins(0, fft_size-1);  // 비정상 헤더 시 전체 스캔 (기존 동작)
                 }
             }
             // 즉시값 계산 (median + spread)
@@ -802,7 +835,8 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
     // px_notch 세팅: 픽셀 주파수 구간 [fd0, fd1]이 노치 구간과 overlap하면 마크
     // (bin 변환 거치지 않음 > DC 가로지름 오탐 차단)
     // 동시에 노치별 픽셀 범위 [p_start, p_end] 추적 > 경계 anchor 탐색에 사용
-    std::vector<std::pair<int,int>> notch_px_range(nlocal.size(), {np, -1});  // {first_px, last_px}
+    static thread_local std::vector<std::pair<int,int>> notch_px_range;
+    notch_px_range.assign(nlocal.size(), {np, -1});  // {first_px, last_px}
     if(!nlocal.empty()){
         for(int px=0; px<np; px++){
             float fd0 = ds + (float)px    /np * (de-ds);
@@ -823,8 +857,9 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
     // 경계 anchor 값: 노치 바로 옆 non-notch 인접 5 픽셀의 median + EMA 블렌딩
     // (단일 픽셀은 1프레임 transient에 취약 > median으로 robust, EMA로 추가 안정)
     // 인접이 또 다른 노치이면 바깥으로 탐색, 끝까지 없으면 EMA median fallback.
-    std::vector<float> edge_val_L(nlocal.size(), -80.0f);
-    std::vector<float> edge_val_R(nlocal.size(), -80.0f);
+    static thread_local std::vector<float> edge_val_L, edge_val_R;
+    edge_val_L.assign(nlocal.size(), -80.0f);
+    edge_val_R.assign(nlocal.size(), -80.0f);
     constexpr int EDGE_WINDOW = 5;
     constexpr float EDGE_EMA_ALPHA = 0.2f;
     bool tm_on_edge = tm_active.load();
@@ -855,13 +890,13 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
             // 좌측: p_start-1부터 왼쪽으로 탐색해서 5개 non-notch 픽셀 median
             int pl = r.first - 1;
             while(pl >= 0 && px_notch[pl] >= 0) pl--;
-            raw_L = std::isnan(collect_median_outward(pl, -1)) ? nlocal[ni].lo_lvl
-                                                                : collect_median_outward(pl, -1);
+            float mL = collect_median_outward(pl, -1);
+            raw_L = std::isnan(mL) ? nlocal[ni].lo_lvl : mL;
             // 우측: p_end+1부터 오른쪽으로 탐색해서 5개 non-notch 픽셀 median
             int pr = r.second + 1;
             while(pr < np && px_notch[pr] >= 0) pr++;
-            raw_R = std::isnan(collect_median_outward(pr, +1)) ? nlocal[ni].hi_lvl
-                                                                : collect_median_outward(pr, +1);
+            float mR = collect_median_outward(pr, +1);
+            raw_R = std::isnan(mR) ? nlocal[ni].hi_lvl : mR;
         }
         // EMA 블렌딩 (첫 프레임 초기화, TM 모드에서는 업데이트 스킵)
         if(!nlocal[ni].edge_inited){
@@ -957,34 +992,53 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
             static thread_local std::vector<ImVec2> mh_pts;
             static thread_local std::vector<float>  mh_vals;  // dB 값 (2-pass용)
             mh_pts.resize(np);
-            mh_vals.resize(np);
-            float nyq2 = sr_mhz / 2.0f;
-            int hf2 = fft_size / 2;
-            auto freq_to_bin2 = [&](float fd) -> int {
-                int b = (fd >= 0) ? (int)((fd/nyq2)*hf2 + 0.5f)
-                                  : fft_size + (int)((fd/nyq2)*hf2 - 0.5f);
-                return std::max(0, std::min(fft_size-1, b));
-            };
-            // ─ Pass 1: 모든 픽셀을 기존 peak-detection으로 계산 (노치 영역 포함)
-            // > 노치 밖 값 확정 + 노치 영역의 "edge 인접 픽셀 값"도 이 결과에서 조회
-            for(int px = 0; px < np; px++){
-                float fd0 = ds + (float)px    / np * (de-ds);
-                float fd1 = ds + (float)(px+1)/ np * (de-ds);
-                int b0 = freq_to_bin2(fd0), b1 = freq_to_bin2(fd1);
-                if(b0 > b1) std::swap(b0, b1);
-                float mx = -200.0f;
-                for(int b = b0; b <= b1; b++)
-                    if(max_hold_spectrum[b] > mx) mx = max_hold_spectrum[b];
-                mh_vals[px] = mx;
-            }
-            // ─ Pass 2: 노치 영역은 base 보간 곡선(sp_dB)과 동일하게 덮어써서
-            //   Max Decay 노란 선이 사실상 안 보이게 (잔상 제거)
-            if(!nlocal.empty() && (int)sp_dB.size() == np){
+            // Pass1+Pass2 캐시: max_hold_spectrum gen + 표시 파라미터가 그대로면 스킵
+            // (노치 활성 시에는 캐시 비활성 - sp_dB가 매 프레임 바뀜)
+            static thread_local uint64_t mh_cached_gen = (uint64_t)-1;
+            static thread_local int   mh_cached_np = -1, mh_cached_fft = -1;
+            static thread_local float mh_cached_ds = 0, mh_cached_de = 0, mh_cached_sr = 0;
+            bool mh_cache_ok = nlocal.empty()
+                            && mh_cached_gen == mh_gen && mh_cached_np == np
+                            && mh_cached_ds == ds && mh_cached_de == de
+                            && mh_cached_fft == fft_size && mh_cached_sr == sr_mhz
+                            && (int)mh_vals.size() == np;
+            if(!mh_cache_ok){
+                mh_vals.resize(np);
+                float nyq2 = sr_mhz / 2.0f;
+                int hf2 = fft_size / 2;
+                auto freq_to_bin2 = [&](float fd) -> int {
+                    int b = (fd >= 0) ? (int)((fd/nyq2)*hf2 + 0.5f)
+                                      : fft_size + (int)((fd/nyq2)*hf2 - 0.5f);
+                    return std::max(0, std::min(fft_size-1, b));
+                };
+                // ─ Pass 1: 모든 픽셀을 기존 peak-detection으로 계산 (노치 영역 포함)
+                // > 노치 밖 값 확정 + 노치 영역의 "edge 인접 픽셀 값"도 이 결과에서 조회
                 for(int px = 0; px < np; px++){
-                    if(px_notch[px] >= 0) mh_vals[px] = sp_dB[px];
+                    float fd0 = ds + (float)px    / np * (de-ds);
+                    float fd1 = ds + (float)(px+1)/ np * (de-ds);
+                    int b0 = freq_to_bin2(fd0), b1 = freq_to_bin2(fd1);
+                    if(b0 > b1) std::swap(b0, b1);
+                    float mx = -200.0f;
+                    for(int b = b0; b <= b1; b++)
+                        if(max_hold_spectrum[b] > mx) mx = max_hold_spectrum[b];
+                    mh_vals[px] = mx;
+                }
+                // ─ Pass 2: 노치 영역은 base 보간 곡선(sp_dB)과 동일하게 덮어써서
+                //   Max Decay 노란 선이 사실상 안 보이게 (잔상 제거)
+                if(!nlocal.empty() && (int)sp_dB.size() == np){
+                    for(int px = 0; px < np; px++){
+                        if(px_notch[px] >= 0) mh_vals[px] = sp_dB[px];
+                    }
+                }
+                if(nlocal.empty()){
+                    mh_cached_gen = mh_gen; mh_cached_np = np;
+                    mh_cached_ds = ds; mh_cached_de = de;
+                    mh_cached_fft = fft_size; mh_cached_sr = sr_mhz;
+                } else {
+                    mh_cached_gen = (uint64_t)-1;  // 노치 활성 시 캐시 비활성 유지
                 }
             }
-            // ─ mh_vals > mh_pts (화면 좌표 변환)
+            // ─ mh_vals > mh_pts (화면 좌표 변환) - 캐시와 무관하게 항상 실행
             for(int px = 0; px < np; px++){
                 float t = (mh_vals[px] - display_power_min) * pr_inv;
                 t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
@@ -1044,12 +1098,14 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
     // ── Band Plan 14px 라벨 띠 (스펙트럼 상단) ───────────────────────────
     if(band_bar_active){
         // Snapshot category id → RGB so we don't lock per band entry.
-        std::unordered_map<uint8_t, ImU32> cat_color;
+        ImU32 cat_col[256] = {};
+        bool  cat_have[256] = {};
         {
             std::lock_guard<std::mutex> lk(HostBandCategories::g_mtx);
             for(auto& c : HostBandCategories::g_cats){
                 if(!c.valid) continue;
-                cat_color[c.id] = IM_COL32(c.r, c.g, c.b, 110);
+                cat_col[c.id]  = IM_COL32(c.r, c.g, c.b, 110);
+                cat_have[c.id] = true;
             }
         }
         ImU32 fallback_col = IM_COL32(160,160,160,110);
@@ -1057,7 +1113,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         dl->AddRectFilled(ImVec2(gx, band_bar_y),
                           ImVec2(gx+gw, band_bar_y+BAND_BAR_H),
                           IM_COL32(25,25,30,255));
-        std::vector<BandSegment> bands;
+        static thread_local std::vector<BandSegment> bands;
         {
             std::lock_guard<std::mutex> lk(band_mtx);
             bands = band_segments;
@@ -1070,8 +1126,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
             if(hi <= lo) continue;
             float x0 = gx + (lo - vis_lo) / (vis_hi - vis_lo) * gw;
             float x1 = gx + (hi - vis_lo) / (vis_hi - vis_lo) * gw;
-            auto it = cat_color.find(b.category);
-            ImU32 col = (it != cat_color.end()) ? it->second : fallback_col;
+            ImU32 col = cat_have[b.category] ? cat_col[b.category] : fallback_col;
             dl->AddRectFilled(ImVec2(x0, band_bar_y+1),
                               ImVec2(x1, band_bar_y+BAND_BAR_H-1), col);
             // 라벨이 폭 안에 들어갈 때만 그리기
@@ -1520,6 +1575,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
                             if(mhz >= n.freq_lo_mhz && mhz <= n.freq_hi_mhz)
                                 max_hold_spectrum[b] = -200.0f;
                         }
+                        mh_gen++;
                     }
                 }
                 cached_sp_idx = -1;  // TM 모드에서도 다음 프레임에 1회 재계산 유발
@@ -1574,6 +1630,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
                 last_maxhold_sp_idx = -1;
                 last_maxhold_cf = header.center_frequency;
                 last_maxhold_fft_size = fft_size;
+                mh_gen++;
             }
         }
     }
@@ -3493,39 +3550,40 @@ void run_streaming_viewer(){
                                const char* filename, uint64_t filesize, uint32_t sample_rate,
                                const uint8_t* data, uint32_t data_len){
             std::string fn(filename && filename[0] ? filename : "");
-            // Selection IQ stream → mission archive 레이아웃과 동일하게 저장
-            // (downloads/<station>/<year>/<code>/iq/) — 미션창 LOCAL IQ 탭 스캔 경로와 매칭.
-            // mission 활성 아니면 flat downloads_dir 로 폴백.
-            std::string save_dir;
-            int my = 0; char mc[16] = {}; std::string st;
-            {
-                std::lock_guard<std::mutex> lk(v.mission_mtx);
-                if(v.mission_state == Mission::State::ACTIVE && v.mission_code[0]){
-                    my = v.mission_year;
-                    strncpy(mc, v.mission_code, sizeof(mc)-1);
-                }
-            }
-            st = v.station_name;
-            mkdir(BEWEPaths::data_dir().c_str(), 0755);
-            mkdir(BEWEPaths::downloads_dir().c_str(), 0755);
-            if(my > 0 && mc[0] && !st.empty()){
-                save_dir = BEWEPaths::downloads_mission_dir(st, my, mc, "iq");
-                // mkdir -p the path chain
-                std::string p = BEWEPaths::downloads_dir() + "/" + st;
-                mkdir(p.c_str(), 0755);
-                char ybuf[16]; snprintf(ybuf, sizeof(ybuf), "/%04d", my);
-                p += ybuf;                  mkdir(p.c_str(), 0755);
-                p += "/"; p += mc;          mkdir(p.c_str(), 0755);
-                p += "/iq";                 mkdir(p.c_str(), 0755);
-            } else {
-                // 노미션: 비-미션 로컬 폴더(record/iq)에 저장 → 미션창 LOCAL 탭 IQ 에 표시.
-                save_dir = BEWEPaths::record_iq_dir();
-                mkdir(BEWEPaths::record_dir().c_str(), 0755);
-                mkdir(save_dir.c_str(), 0755);
-            }
-            std::string save_path = save_dir + "/" + fn;
 
             if(seq == 0){
+                // Selection IQ stream → mission archive 레이아웃과 동일하게 저장
+                // (downloads/<station>/<year>/<code>/iq/) — 미션창 LOCAL IQ 탭 스캔 경로와 매칭.
+                // mission 활성 아니면 flat downloads_dir 로 폴백.
+                std::string save_dir;
+                int my = 0; char mc[16] = {}; std::string st;
+                {
+                    std::lock_guard<std::mutex> lk(v.mission_mtx);
+                    if(v.mission_state == Mission::State::ACTIVE && v.mission_code[0]){
+                        my = v.mission_year;
+                        strncpy(mc, v.mission_code, sizeof(mc)-1);
+                    }
+                }
+                st = v.station_name;
+                mkdir(BEWEPaths::data_dir().c_str(), 0755);
+                mkdir(BEWEPaths::downloads_dir().c_str(), 0755);
+                if(my > 0 && mc[0] && !st.empty()){
+                    save_dir = BEWEPaths::downloads_mission_dir(st, my, mc, "iq");
+                    // mkdir -p the path chain
+                    std::string p = BEWEPaths::downloads_dir() + "/" + st;
+                    mkdir(p.c_str(), 0755);
+                    char ybuf[16]; snprintf(ybuf, sizeof(ybuf), "/%04d", my);
+                    p += ybuf;                  mkdir(p.c_str(), 0755);
+                    p += "/"; p += mc;          mkdir(p.c_str(), 0755);
+                    p += "/iq";                 mkdir(p.c_str(), 0755);
+                } else {
+                    // 노미션: 비-미션 로컬 폴더(record/iq)에 저장 → 미션창 LOCAL 탭 IQ 에 표시.
+                    save_dir = BEWEPaths::record_iq_dir();
+                    mkdir(BEWEPaths::record_dir().c_str(), 0755);
+                    mkdir(save_dir.c_str(), 0755);
+                }
+                std::string save_path = save_dir + "/" + fn;
+
                 // START: write 스레드 생성, rec_entries 업데이트
                 bewe_log_push(2,"[JOIN] IQ_CHUNK START: req_id=%u file='%s' size=%.1fMB\n",
                        req_id, fn.c_str(), filesize/1048576.0);
@@ -5496,9 +5554,7 @@ void run_streaming_viewer(){
                             v.autoscale_last = std::chrono::steady_clock::now();
                             v.autoscale_init = true;
                         }
-                        for(int _i=1;_i<fsz;_i++){
-                            v.autoscale_accum.push_back(dst[_i]);
-                        }
+                        v.autoscale_accum.insert(v.autoscale_accum.end(), dst+1, dst+fsz);
                         float _el=std::chrono::duration<float>(
                             std::chrono::steady_clock::now()-v.autoscale_last).count();
                         if(_el>=1.0f && !v.autoscale_accum.empty()){
@@ -6478,9 +6534,18 @@ void run_streaming_viewer(){
                     sdr_t = vv.net_cli->remote_sdr_temp_c.load();
                 } else {
                     if(vv.dev_blade){ sdr_name = "BladeRF 2.0 micro xA9";
-                        float _t = 0.f;
-                        if(bladerf_get_rfic_temperature(vv.dev_blade, &_t) == 0)
-                            sdr_t = (uint8_t)std::min(255.f, std::max(0.f, _t));
+                        // RFIC 온도: USB 쿼리 비용 절감 — 3초 캐시 (하단바와 동일 주기).
+                        // 주의: static 캐시라 draw_system_status 가 다른 vv 로 호출되면 캐시가 공유됨 (현재 호출처는 v 하나).
+                        static uint8_t s_rfic_temp_cache = 0;
+                        static float   s_rfic_temp_timer = 3.f;
+                        s_rfic_temp_timer += io.DeltaTime;
+                        if(s_rfic_temp_timer >= 3.0f){
+                            s_rfic_temp_timer = 0.f;
+                            float _t = 0.f;
+                            if(bladerf_get_rfic_temperature(vv.dev_blade, &_t) == 0)
+                                s_rfic_temp_cache = (uint8_t)std::min(255.f, std::max(0.f, _t));
+                        }
+                        sdr_t = s_rfic_temp_cache;
                     } else if(vv.hw.type == HWType::PLUTO) sdr_name = "ADALM-Pluto";
                     else if(vv.dev_rtl) sdr_name = "RTL-SDR v4";
                 }
@@ -7176,7 +7241,9 @@ void run_streaming_viewer(){
                                             // 일반 IQ 녹음 항목 (로컬 녹음)
                                             if(re.finished){
                                                 auto it_rz=fsz_cache.find(re.filename);
-                                                const std::string szstr=(it_rz!=fsz_cache.end())?it_rz->second:fmt_filesize("",re.path);
+                                                if(it_rz==fsz_cache.end()) // miss 시 stat() 결과 메모이즈 (매 프레임 stat 방지)
+                                                    it_rz=fsz_cache.emplace(re.filename, fmt_filesize("",re.path)).first;
+                                                const std::string szstr=it_rz->second;
                                                 float pw_r = ImGui::GetContentRegionAvail().x;
                                                 ImGui::Selectable(re.filename.c_str(), false, ImGuiSelectableFlags_SpanAllColumns|ImGuiSelectableFlags_AllowDoubleClick, ImVec2(pw_r, 0));
                                                 if(ImGui::BeginPopupContextItem("##iq_fin_ctx")){
@@ -7303,7 +7370,9 @@ void run_streaming_viewer(){
                                                     sz_s=b;
                                                 } else {
                                                     auto it_rz2=fsz_cache.find(re.filename);
-                                                    sz_s=(it_rz2!=fsz_cache.end())?it_rz2->second:fmt_filesize("",re.path);
+                                                    if(it_rz2==fsz_cache.end()) // miss 시 stat() 결과 메모이즈 (매 프레임 stat 방지)
+                                                        it_rz2=fsz_cache.emplace(re.filename, fmt_filesize("",re.path)).first;
+                                                    sz_s=it_rz2->second;
                                                 }
                                                 float pw_rg = ImGui::GetContentRegionAvail().x;
                                                 ImGui::Selectable(re.filename.c_str(), false, ImGuiSelectableFlags_SpanAllColumns|ImGuiSelectableFlags_AllowDoubleClick, ImVec2(pw_rg,0));
@@ -7429,7 +7498,9 @@ void run_streaming_viewer(){
                                         ImGui::PushID(ri+32000);
                                         {
                                             auto it_az=fsz_cache.find(re.filename);
-                                            const std::string szstr=(it_az!=fsz_cache.end())?it_az->second:fmt_filesize("",re.path);
+                                            if(it_az==fsz_cache.end()) // miss 시 stat() 결과 메모이즈 (매 프레임 stat 방지)
+                                                it_az=fsz_cache.emplace(re.filename, fmt_filesize("",re.path)).first;
+                                            const std::string szstr=it_az->second;
                                             float pw_a = ImGui::GetContentRegionAvail().x;
                                             ImGui::Selectable(re.filename.c_str(), false, ImGuiSelectableFlags_SpanAllColumns|ImGuiSelectableFlags_AllowDoubleClick, ImVec2(pw_a, 0));
                                             if(ImGui::BeginPopupContextItem("##aud_fin_ctx")){
@@ -7958,11 +8029,15 @@ void run_streaming_viewer(){
                     }
                 }
 
-                // 시계 (KST 기준)
+                // 시계 (KST 기준) — time_t 가 바뀐 프레임에만 재포맷
                 time_t tnow = time(nullptr);
-                struct tm tlocal{}; KST::to_tm(tnow, tlocal);
-                char clock_str[16];
-                strftime(clock_str, sizeof(clock_str), "%H:%M:%S", &tlocal);
+                static time_t clock_prev = 0;
+                static char clock_str[16] = "";
+                if(tnow != clock_prev){
+                    clock_prev = tnow;
+                    struct tm tlocal{}; KST::to_tm(tnow, tlocal);
+                    strftime(clock_str, sizeof(clock_str), "%H:%M:%S", &tlocal);
+                }
 
                 // 중앙 하단: 시간만 표시 (CPU/SDR 온도는 STATUS 패널과 중복이라 생략)
                 ImVec2 csz = ImGui::CalcTextSize(clock_str);
@@ -9754,15 +9829,29 @@ void run_streaming_viewer(){
 
                     // 데이터 플로팅 (캐리어 제거)
                     fg->PushClipRect(ImVec2(px0,py0),ImVec2(px1,py1),true);
-                    for(int64_t s=w0;s<w1;s+=step){
-                        float ri=v.eid_ch_i[s], rq=v.eid_ch_q[s];
-                        double theta=-phase_inc*(double)(s-w0);
-                        float ct=(float)cos(theta), st=(float)sin(theta);
-                        float iv=ri*ct-rq*st;
-                        float qv=ri*st+rq*ct;
-                        float sx=plot_cx+iv*scale;
-                        float sy=plot_cy-qv*scale;
-                        fg->AddCircleFilled(ImVec2(sx,sy),1.5f,IM_COL32(80,255,140,120));
+                    if(phase_inc==0.0){
+                        // 회전 없음 — 점당 cos/sin 생략 fast path
+                        for(int64_t s=w0;s<w1;s+=step){
+                            float ri=v.eid_ch_i[s], rq=v.eid_ch_q[s];
+                            float sx=plot_cx+ri*scale;
+                            float sy=plot_cy-rq*scale;
+                            fg->AddCircleFilled(ImVec2(sx,sy),1.5f,IM_COL32(80,255,140,120));
+                        }
+                    } else {
+                        // 점당 cos/sin 대신 Givens 회전 점화식 (첫 점 theta=0, emit 후 회전)
+                        double dth=-phase_inc*(double)step;
+                        double dct=cos(dth), dst=sin(dth);
+                        double ct=1.0, st=0.0;
+                        for(int64_t s=w0;s<w1;s+=step){
+                            float ri=v.eid_ch_i[s], rq=v.eid_ch_q[s];
+                            float iv=ri*(float)ct-rq*(float)st;
+                            float qv=ri*(float)st+rq*(float)ct;
+                            float sx=plot_cx+iv*scale;
+                            float sy=plot_cy-qv*scale;
+                            fg->AddCircleFilled(ImVec2(sx,sy),1.5f,IM_COL32(80,255,140,120));
+                            double nct=ct*dct-st*dst;
+                            st=ct*dst+st*dct; ct=nct;
+                        }
                     }
                     fg->PopClipRect();
                     // 테두리
@@ -10024,7 +10113,8 @@ void run_streaming_viewer(){
                             const ImU32 col_rms = IM_COL32(240,70,70,255); // RMS 진한 빨강
                             if(spp<=1.0){
                                 // 픽셀당 샘플 1개 이하 — 그냥 라인 한 줄
-                                std::vector<ImVec2> pts;
+                                static thread_local std::vector<ImVec2> pts;
+                                pts.clear();
                                 int64_t s0c=std::max((int64_t)0,(int64_t)vt0);
                                 int64_t s1c=std::min(total,(int64_t)ceil(vt1)+1);
                                 pts.reserve((size_t)(s1c-s0c));
@@ -10041,20 +10131,43 @@ void run_streaming_viewer(){
                                                      col_rms,ImDrawFlags_None,1.2f);
                             } else {
                                 // 픽셀당 여러 샘플 — Peak + RMS 이중 렌더링
-                                for(int px=0; px<pixels; px++){
-                                    int64_t s0=(int64_t)(vt0+px*spp);
-                                    int64_t s1=(int64_t)(vt0+(px+1)*spp);
-                                    s0=std::max((int64_t)0,std::min(s0,total-1));
-                                    s1=std::max(s0+1,std::min(s1,total));
-                                    double sum_sq=0.0; int64_t n=0;
-                                    for(int64_t s=s0; s<s1; s++){
-                                        float val=ch[s];
-                                        sum_sq += (double)val*val;
-                                        n++;
+                                // per-pixel RMS 컬럼 캐시: 뷰/데이터 그대로면 전체 재스캔 생략
+                                // (rms 값만 캐시 — y_mid/usable_h 는 매 프레임 geometry 에서)
+                                static thread_local std::vector<float> au_rms;
+                                static thread_local double au_vt0=-1.0, au_vt1=-1.0;
+                                static thread_local int au_px=-1;
+                                static thread_local uint64_t au_gen=(uint64_t)-1;
+                                static thread_local int64_t au_total=-1;
+                                static thread_local std::string au_path;
+                                bool au_ok = v.eid_source!=FFTViewer::EID_LIVE
+                                          && au_vt0==vt0 && au_vt1==vt1 && au_px==pixels
+                                          && au_gen==v.eid_edit_gen
+                                          && au_total==v.eid_total_samples
+                                          && au_path==v.sa_temp_path
+                                          && (int)au_rms.size()==pixels;
+                                if(!au_ok){
+                                    au_rms.resize(pixels);
+                                    for(int px=0; px<pixels; px++){
+                                        int64_t s0=(int64_t)(vt0+px*spp);
+                                        int64_t s1=(int64_t)(vt0+(px+1)*spp);
+                                        s0=std::max((int64_t)0,std::min(s0,total-1));
+                                        s1=std::max(s0+1,std::min(s1,total));
+                                        double sum_sq=0.0; int64_t n=0;
+                                        for(int64_t s=s0; s<s1; s++){
+                                            float val=ch[s];
+                                            sum_sq += (double)val*val;
+                                            n++;
+                                        }
+                                        float rms = (n>0) ? (float)sqrt(sum_sq/(double)n) : 0.f;
+                                        if(rms>1.f) rms=1.f;
+                                        au_rms[px]=rms;
                                     }
-                                    float rms = (n>0) ? (float)sqrt(sum_sq/(double)n) : 0.f;
-                                    if(rms>1.f) rms=1.f;
-
+                                    au_vt0=vt0; au_vt1=vt1; au_px=pixels;
+                                    au_gen=v.eid_edit_gen; au_total=v.eid_total_samples;
+                                    au_path=v.sa_temp_path;
+                                }
+                                for(int px=0; px<pixels; px++){
+                                    float rms=au_rms[px];
                                     // RMS 수직 막대 — 말하는 구간이 두툼하게 부풀어 오름
                                     float y_hi_rms = y_mid - rms*usable_h;
                                     float y_lo_rms = y_mid + rms*usable_h;
@@ -10197,51 +10310,80 @@ void run_streaming_viewer(){
                         }
                     }
 
-                    // M-th power FFT 계산
-                    std::vector<float> psd(fft_n,0.f);
-                    int n_avg=0;
-                    if(pwin>=fft_n){
-                        std::vector<float> win(fft_n);
-                        for(int i=0;i<fft_n;i++){
-                            double x=2.0*M_PI*i/(fft_n-1);
-                            win[i]=(float)(0.35875-0.48829*cos(x)+0.14128*cos(2*x)-0.01168*cos(3*x));
-                        }
-                        fftwf_complex* fin=(fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex)*fft_n);
-                        fftwf_complex* fout=(fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex)*fft_n);
-                        fftwf_plan plan=fftwf_plan_dft_1d(fft_n,fin,fout,FFTW_FORWARD,FFTW_ESTIMATE);
-                        int hop=fft_n/2; if(hop<1)hop=1;
-                        for(int64_t seg=pw0; seg+fft_n<=pw1; seg+=hop){
-                            for(int i=0;i<fft_n;i++){
-                                float ri=v.eid_ch_i[seg+i], rq=v.eid_ch_q[seg+i];
-                                float zr=ri, zi=rq;
-                                for(int p=1;p<M;p++){
-                                    float nr=zr*ri-zi*rq;
-                                    float ni=zr*rq+zi*ri;
-                                    zr=nr; zi=ni;
+                    // M-th power FFT 계산 — (pw0,pw1,fft_n,M,...) 키 캐시:
+                    // 뷰/파라미터/데이터 그대로면 풀 FFT 파이프라인 재계산 생략
+                    static thread_local std::vector<float> psd_db;
+                    static thread_local int pw_n_avg=0;
+                    static thread_local int64_t pw_c0=-1, pw_c1=-1;
+                    static thread_local int pw_cfft=-1, pw_cM=-1;
+                    static thread_local uint64_t pw_cgen=(uint64_t)-1;
+                    static thread_local int64_t pw_ctotal=-1;
+                    static thread_local std::string pw_cpath;
+                    // fftwf plan/버퍼 + Nuttall 윈도우는 fft_n 변경 시에만 재생성
+                    static thread_local fftwf_complex* pw_fin=nullptr;
+                    static thread_local fftwf_complex* pw_fout=nullptr;
+                    static thread_local fftwf_plan pw_plan=nullptr;
+                    static thread_local int pw_plan_n=-1;
+                    static thread_local std::vector<float> pw_win;
+                    bool pw_ok = v.eid_source!=FFTViewer::EID_LIVE
+                              && pw_c0==pw0 && pw_c1==pw1 && pw_cfft==fft_n && pw_cM==M
+                              && pw_cgen==v.eid_edit_gen && pw_ctotal==v.eid_total_samples
+                              && pw_cpath==v.sa_temp_path
+                              && (int)psd_db.size()==fft_n;
+                    if(!pw_ok){
+                        std::vector<float> psd(fft_n,0.f);
+                        pw_n_avg=0;
+                        if(pwin>=fft_n){
+                            if(pw_plan_n!=fft_n){
+                                if(pw_plan) fftwf_destroy_plan(pw_plan);
+                                if(pw_fin)  fftwf_free(pw_fin);
+                                if(pw_fout) fftwf_free(pw_fout);
+                                pw_fin=(fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex)*fft_n);
+                                pw_fout=(fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex)*fft_n);
+                                pw_plan=fftwf_plan_dft_1d(fft_n,pw_fin,pw_fout,FFTW_FORWARD,FFTW_ESTIMATE);
+                                pw_win.resize(fft_n);
+                                for(int i=0;i<fft_n;i++){
+                                    double x=2.0*M_PI*i/(fft_n-1);
+                                    pw_win[i]=(float)(0.35875-0.48829*cos(x)+0.14128*cos(2*x)-0.01168*cos(3*x));
                                 }
-                                fin[i][0]=zr*win[i];
-                                fin[i][1]=zi*win[i];
+                                pw_plan_n=fft_n;
                             }
-                            fftwf_execute(plan);
-                            for(int i=0;i<fft_n;i++){
-                                float mag=fout[i][0]*fout[i][0]+fout[i][1]*fout[i][1];
-                                psd[i]+=mag;
+                            int hop=fft_n/2; if(hop<1)hop=1;
+                            for(int64_t seg=pw0; seg+fft_n<=pw1; seg+=hop){
+                                for(int i=0;i<fft_n;i++){
+                                    float ri=v.eid_ch_i[seg+i], rq=v.eid_ch_q[seg+i];
+                                    float zr=ri, zi=rq;
+                                    for(int p=1;p<M;p++){
+                                        float nr=zr*ri-zi*rq;
+                                        float ni=zr*rq+zi*ri;
+                                        zr=nr; zi=ni;
+                                    }
+                                    pw_fin[i][0]=zr*pw_win[i];
+                                    pw_fin[i][1]=zi*pw_win[i];
+                                }
+                                fftwf_execute(pw_plan);
+                                for(int i=0;i<fft_n;i++){
+                                    float mag=pw_fout[i][0]*pw_fout[i][0]+pw_fout[i][1]*pw_fout[i][1];
+                                    psd[i]+=mag;
+                                }
+                                pw_n_avg++;
                             }
-                            n_avg++;
                         }
-                        fftwf_destroy_plan(plan);
-                        fftwf_free(fin);
-                        fftwf_free(fout);
-                    }
 
-                    // 평균 & dB 변환
-                    float psd_max=-999.f;
-                    std::vector<float> psd_db(fft_n);
-                    for(int i=0;i<fft_n;i++){
-                        float val=n_avg>0? psd[i]/n_avg : 1e-20f;
-                        psd_db[i]=10.f*log10f(val+1e-20f);
-                        if(psd_db[i]>psd_max) psd_max=psd_db[i];
+                        // 평균 & dB 변환
+                        psd_db.resize(fft_n);
+                        for(int i=0;i<fft_n;i++){
+                            float val=pw_n_avg>0? psd[i]/pw_n_avg : 1e-20f;
+                            psd_db[i]=10.f*log10f(val+1e-20f);
+                        }
+                        pw_c0=pw0; pw_c1=pw1; pw_cfft=fft_n; pw_cM=M;
+                        pw_cgen=v.eid_edit_gen; pw_ctotal=v.eid_total_samples;
+                        pw_cpath=v.sa_temp_path;
                     }
+                    int n_avg=pw_n_avg;
+                    float psd_max=-999.f;
+                    for(int i=0;i<fft_n;i++)
+                        if(psd_db[i]>psd_max) psd_max=psd_db[i];
                     psd_max+=10.f;
                     float psd_min=psd_max-80.f;
 
@@ -10502,13 +10644,34 @@ void run_streaming_viewer(){
                     else if(imode == 2){ chs[0]={&v.eid_phase, IM_COL32(255,200,80,255)}; nch=1; }
                     else { chs[0]={&v.eid_inst_freq, IM_COL32(255,120,200,255)}; nch=1; }
 
+                    // per-pixel (lo,hi) 컬럼 캐시 — 뷰/모드/데이터 그대로면 가시 샘플 재스캔 생략
+                    // (브릿지/Y 매핑은 캐시 밖 — Y줌이 캐시를 무효화하지 않게)
+                    static thread_local std::vector<float> td_lo, td_hi;
+                    static thread_local double td_vt0=-1.0, td_vt1=-1.0;
+                    static thread_local int td_px=-1, td_imode=-1;
+                    static thread_local float td_slope=0.f;
+                    static thread_local uint64_t td_gen=(uint64_t)-1;
+                    static thread_local int64_t td_total=-1;
+                    static thread_local std::string td_path;
+                    bool td_ok = v.eid_source!=FFTViewer::EID_LIVE
+                              && td_vt0==vt0 && td_vt1==vt1 && td_px==pixels
+                              && td_imode==imode && td_slope==detrend_slope
+                              && td_gen==v.eid_edit_gen && td_total==v.eid_total_samples
+                              && td_path==v.sa_temp_path
+                              && (int)td_lo.size()==nch*pixels;
+                    if(!td_ok && spp>1.0){
+                        td_lo.resize((size_t)nch*pixels);
+                        td_hi.resize((size_t)nch*pixels);
+                    }
+
                     for(int ci = 0; ci < nch; ci++){
                         const auto& dat = *chs[ci].d;
                         ImU32 col = chs[ci].c;
                         int64_t total = (int64_t)dat.size();
                         if(total < 1) continue;
                         if(spp <= 1.0){
-                            std::vector<ImVec2> pts;
+                            static thread_local std::vector<ImVec2> pts;
+                            pts.clear();    // 채널 루프 내부 — 채널(I/Q)마다 비움
                             int64_t s0 = std::max((int64_t)0, (int64_t)vt0);
                             int64_t s1 = std::min(total, (int64_t)ceil(vt1)+1);
                             pts.reserve(s1-s0);
@@ -10524,19 +10687,33 @@ void run_streaming_viewer(){
                                 fg->AddPolyline(pts.data(),(int)pts.size(),col,ImDrawFlags_None,1.5f);
                         } else {
                             ImU32 bc=(col&0x00FFFFFF)|0xC8000000;
+                            float* clo=td_lo.data()+(size_t)ci*pixels;
+                            float* chi=td_hi.data()+(size_t)ci*pixels;
+                            if(!td_ok){
+                                for(int px = 0; px < pixels; px++){
+                                    int64_t s0=(int64_t)(vt0+px*spp), s1=(int64_t)(vt0+(px+1)*spp);
+                                    s0=std::max((int64_t)0,std::min(s0,total-1));
+                                    s1=std::max(s0+1,std::min(s1,total));
+                                    float iv=dat[s0];
+                                    if(detrend_slope!=0.0f) iv=wrap_pi(iv-detrend_slope*(float)s0);
+                                    float lo=iv, hi=iv;
+                                    for(int64_t s=s0+1;s<s1;s++){
+                                        float v2=dat[s];
+                                        if(detrend_slope!=0.0f) v2=wrap_pi(v2-detrend_slope*(float)s);
+                                        if(v2<lo)lo=v2; if(v2>hi)hi=v2;
+                                    }
+                                    clo[px]=lo; chi[px]=hi;
+                                }
+                                if(ci==nch-1){
+                                    td_vt0=vt0; td_vt1=vt1; td_px=pixels;
+                                    td_imode=imode; td_slope=detrend_slope;
+                                    td_gen=v.eid_edit_gen; td_total=v.eid_total_samples;
+                                    td_path=v.sa_temp_path;
+                                }
+                            }
                             float prev_lo=FLT_MAX, prev_hi=-FLT_MAX;
                             for(int px = 0; px < pixels; px++){
-                                int64_t s0=(int64_t)(vt0+px*spp), s1=(int64_t)(vt0+(px+1)*spp);
-                                s0=std::max((int64_t)0,std::min(s0,total-1));
-                                s1=std::max(s0+1,std::min(s1,total));
-                                float iv=dat[s0];
-                                if(detrend_slope!=0.0f) iv=wrap_pi(iv-detrend_slope*(float)s0);
-                                float lo=iv, hi=iv;
-                                for(int64_t s=s0+1;s<s1;s++){
-                                    float v2=dat[s];
-                                    if(detrend_slope!=0.0f) v2=wrap_pi(v2-detrend_slope*(float)s);
-                                    if(v2<lo)lo=v2; if(v2>hi)hi=v2;
-                                }
+                                float lo=clo[px], hi=chi[px];
                                 // 이전 픽셀과 gap이 생기면 브릿지 (원본 lo/hi 기준)
                                 float draw_lo=lo, draw_hi=hi;
                                 if(prev_lo!=FLT_MAX){
@@ -11038,17 +11215,36 @@ void run_streaming_viewer(){
                             int64_t total=(int64_t)src_data->size();
                             float baseline=v.eid_baseline_val;
 
-                            std::vector<uint8_t> bits;
-                            {
+                            // 비트 추출 캐시 — 키 그대로면 전체 재추출 생략
+                            // (EID_LIVE 는 매 프레임 재계산 + 키 갱신)
+                            static thread_local std::vector<uint8_t> bits_cache;
+                            static thread_local double bits_c_s0=-1.0, bits_c_iv=-1.0;
+                            static thread_local float bits_c_base=0.f;
+                            static thread_local int bits_c_imode=-1;
+                            static thread_local int64_t bits_c_total=-1;
+                            static thread_local uint64_t bits_c_gen=(uint64_t)-1;
+                            bool bits_ok = v.eid_source!=FFTViewer::EID_LIVE
+                                        && bits_c_s0==v.eid_baud_s0 && bits_c_iv==interval
+                                        && bits_c_base==baseline
+                                        && bits_c_imode==v.eid_baseline_imode
+                                        && bits_c_total==total
+                                        && bits_c_gen==v.eid_edit_gen;
+                            if(!bits_ok){
+                                bits_cache.clear();
+                                bits_cache.reserve((size_t)((double)total/interval)+2);
                                 double first_edge = v.eid_baud_s0;
                                 while(first_edge - interval >= 0) first_edge -= interval;
                                 for(double edge = first_edge; edge + interval <= (double)total; edge += interval){
                                     double mid = edge + interval * 0.5;
                                     int64_t si = (int64_t)mid;
                                     if(si < 0 || si >= total) continue;
-                                    bits.push_back((*src_data)[si] > baseline ? 1 : 0);
+                                    bits_cache.push_back((*src_data)[si] > baseline ? 1 : 0);
                                 }
+                                bits_c_s0=v.eid_baud_s0; bits_c_iv=interval;
+                                bits_c_base=baseline; bits_c_imode=v.eid_baseline_imode;
+                                bits_c_total=total; bits_c_gen=v.eid_edit_gen;
                             }
+                            const std::vector<uint8_t>& bits = bits_cache;
 
                             double baud_rate=(double)sr/interval;
                             double sig_len_s = (baud_rate > 0) ? (double)bits.size() / baud_rate : 0;
@@ -11778,15 +11974,21 @@ void run_streaming_viewer(){
                 ImGui::BeginChild(child_id, ImVec2(col_w, log_h), false);
                 {
                     std::lock_guard<std::mutex> lk(v.log_mtx);
-                    for(auto& e : v.log_buf[c]){
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f,0.7f,0.75f,1.f));
-                        ImGui::Selectable(e.msg, false, ImGuiSelectableFlags_AllowDoubleClick);
-                        ImGui::PopStyleColor();
-                        // 우클릭으로 복사
-                        if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(1)){
-                            ImGui::SetClipboardText(e.msg);
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f,0.7f,0.75f,1.f));
+                    // 보이는 행만 제출 (클리퍼) — lock 범위는 그대로
+                    ImGuiListClipper clip;
+                    clip.Begin((int)v.log_buf[c].size());
+                    while(clip.Step()){
+                        for(int li=clip.DisplayStart; li<clip.DisplayEnd; li++){
+                            auto& e = v.log_buf[c][li];
+                            ImGui::Selectable(e.msg, false, ImGuiSelectableFlags_AllowDoubleClick);
+                            // 우클릭으로 복사
+                            if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(1)){
+                                ImGui::SetClipboardText(e.msg);
+                            }
                         }
                     }
+                    ImGui::PopStyleColor();
                 }
                 if(v.log_scroll[c]){
                     ImGui::SetScrollHereY(1.f);

@@ -22,7 +22,9 @@ static uint32_t sa_jet(float t){
 }
 
 // Window functions: 0=Blackman-Harris, 1=Hann, 2=Nuttall
-static void sa_apply_window(float* buf, int n, int type){
+// 윈도우 벡터 사전계산 (row마다 cos 재계산 방지)
+static void sa_build_window(std::vector<float>& win, int n, int type){
+    win.resize(n);
     for(int i=0;i<n;i++){
         float w;
         double x = 2.0*M_PI*i/(n-1);
@@ -32,8 +34,14 @@ static void sa_apply_window(float* buf, int n, int type){
         case 1: w = 0.5f*(1.0f-cosf((float)x)); break;         // Hann
         case 2: w = (float)(0.355768 - 0.487396*cos(x) + 0.144232*cos(2*x) - 0.012604*cos(3*x)); break; // Nuttall
         }
-        buf[i*2  ] *= w;
-        buf[i*2+1] *= w;
+        win[i] = w;
+    }
+}
+
+static void sa_apply_window(float* buf, int n, const float* win){
+    for(int i=0;i<n;i++){
+        buf[i*2  ] *= win[i];
+        buf[i*2+1] *= win[i];
     }
 }
 
@@ -132,12 +140,15 @@ void FFTViewer::sa_start(const std::string& wav_path){
         std::vector<float> all_db(rows * actual_fft_n);
         const float scale = 1.0f / (32768.0f * actual_fft_n);
 
+        std::vector<float> win;
+        sa_build_window(win, actual_fft_n, win_type);
+
         for(int64_t r=0; r<rows; r++){
             for(int i=0;i<actual_fft_n;i++){
                 in_f[i*2  ] = raw[(r*hop+i)*2  ] * scale;
                 in_f[i*2+1] = raw[(r*hop+i)*2+1] * scale;
             }
-            sa_apply_window(in_f.data(), actual_fft_n, win_type);
+            sa_apply_window(in_f.data(), actual_fft_n, win.data());
             fftwf_execute(plan);
 
             int half = actual_fft_n/2;
@@ -155,11 +166,14 @@ void FFTViewer::sa_start(const std::string& wav_path){
         fftwf_destroy_plan(plan); fftwf_free(out);
 
         // ── 히스토그램 이퀄라이제이션으로 대비 극대화 ───────────────────
-        // 1) dB 범위 파악 (1st~99th percentile)
+        // 1) dB 범위 파악 (1st~99th percentile) — nth_element 2단계 (전체 sort 회피)
         std::vector<float> sorted_db(all_db);
-        std::sort(sorted_db.begin(), sorted_db.end());
-        float db_lo = sorted_db[(size_t)(sorted_db.size()*0.01f)];
-        float db_hi = sorted_db[(size_t)(sorted_db.size()*0.99f)];
+        size_t lo_idx = (size_t)(sorted_db.size()*0.01f);
+        size_t hi_idx = (size_t)(sorted_db.size()*0.99f);
+        std::nth_element(sorted_db.begin(), sorted_db.begin()+lo_idx, sorted_db.end());
+        float db_lo = sorted_db[lo_idx];
+        std::nth_element(sorted_db.begin()+lo_idx, sorted_db.begin()+hi_idx, sorted_db.end());
+        float db_hi = sorted_db[hi_idx];
         if(db_hi - db_lo < 1.0f) db_hi = db_lo + 1.0f;
 
         // 2) 256-bin 히스토그램 누적분포함수(CDF) 계산
@@ -180,6 +194,9 @@ void FFTViewer::sa_start(const std::string& wav_path){
         if(cdf_rng < 1.0f) cdf_rng = 1.0f;
         std::vector<float> lut(BINS);
         for(int i=0;i<BINS;i++) lut[i] = (cdf[i]-cdf_min)/cdf_rng;
+        // jet 색상 LUT 사전계산 (픽셀마다 sa_jet 재계산 방지)
+        std::vector<uint32_t> color_lut(BINS);
+        for(int i=0;i<BINS;i++) color_lut[i] = sa_jet(lut[i]);
 
         // ── 픽셀 버퍼 생성 (히스토그램 이퀄라이제이션 LUT 적용) ──────────
         // GL 호출은 메인 스레드에서만 가능 — 기본 상한값 사용
@@ -209,7 +226,7 @@ void FFTViewer::sa_start(const std::string& wav_path){
                 if(cnt > 0) db_avg /= cnt;
                 int b = (int)((db_avg - db_lo) * db_rng_inv * (BINS-1));
                 b = b<0?0:b>=BINS?BINS-1:b;
-                pixels[r*actual_fft_n+i] = sa_jet(lut[b]);
+                pixels[r*actual_fft_n+i] = color_lut[b];
             }
         }
 
@@ -278,13 +295,15 @@ void FFTViewer::sa_recompute_from_iq(bool reset_view){
         // float IQ → FFT (scale = 1/fft_n, IQ 이미 [-1,1] 정규화됨)
         const float scale = 1.0f / actual_fft_n;
         std::vector<float> all_db(rows * actual_fft_n);
+        std::vector<float> win;
+        sa_build_window(win, actual_fft_n, win_type);
         for(int64_t r=0; r<rows; r++){
             for(int i=0;i<actual_fft_n;i++){
                 int64_t si = r*hop+i;
                 in_f[i*2  ] = chi_copy[si] * scale;
                 in_f[i*2+1] = chq_copy[si] * scale;
             }
-            sa_apply_window(in_f.data(), actual_fft_n, win_type);
+            sa_apply_window(in_f.data(), actual_fft_n, win.data());
             fftwf_execute(plan);
             int half = actual_fft_n/2;
             for(int i=0;i<actual_fft_n;i++){
@@ -297,11 +316,14 @@ void FFTViewer::sa_recompute_from_iq(bool reset_view){
         }
         fftwf_destroy_plan(plan); fftwf_free(out);
 
-        // 히스토그램 이퀄라이제이션
+        // 히스토그램 이퀄라이제이션 — nth_element 2단계 (전체 sort 회피)
         std::vector<float> sorted_db(all_db);
-        std::sort(sorted_db.begin(), sorted_db.end());
-        float db_lo = sorted_db[(size_t)(sorted_db.size()*0.01f)];
-        float db_hi = sorted_db[(size_t)(sorted_db.size()*0.99f)];
+        size_t lo_idx = (size_t)(sorted_db.size()*0.01f);
+        size_t hi_idx = (size_t)(sorted_db.size()*0.99f);
+        std::nth_element(sorted_db.begin(), sorted_db.begin()+lo_idx, sorted_db.end());
+        float db_lo = sorted_db[lo_idx];
+        std::nth_element(sorted_db.begin()+lo_idx, sorted_db.begin()+hi_idx, sorted_db.end());
+        float db_hi = sorted_db[hi_idx];
         if(db_hi - db_lo < 1.0f) db_hi = db_lo + 1.0f;
 
         const int BINS = 256;
@@ -320,6 +342,9 @@ void FFTViewer::sa_recompute_from_iq(bool reset_view){
         if(cdf_rng < 1.0f) cdf_rng = 1.0f;
         std::vector<float> lut(BINS);
         for(int i=0;i<BINS;i++) lut[i] = (cdf[i]-cdf_min)/cdf_rng;
+        // jet 색상 LUT 사전계산 (픽셀마다 sa_jet 재계산 방지)
+        std::vector<uint32_t> color_lut(BINS);
+        for(int i=0;i<BINS;i++) color_lut[i] = sa_jet(lut[i]);
 
         // 픽셀 버퍼 생성
         int max_tex = 16384;
@@ -340,7 +365,7 @@ void FFTViewer::sa_recompute_from_iq(bool reset_view){
                 if(cnt > 0) db_avg /= cnt;
                 int b = (int)((db_avg - db_lo) * db_rng_inv * (BINS-1));
                 b = b<0?0:b>=BINS?BINS-1:b;
-                pixels[r*actual_fft_n+i] = sa_jet(lut[b]);
+                pixels[r*actual_fft_n+i] = color_lut[b];
             }
         }
 

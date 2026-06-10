@@ -214,9 +214,10 @@ void CentralClient::enqueue_central(const void* hdr, size_t hdr_len,
             if(!dropped) break; // 드롭 가능한 패킷 없으면 중단
         }
     }
-    std::vector<uint8_t> pkt(total);
-    if(hdr_len && hdr)   memcpy(pkt.data(),           hdr,  hdr_len);
-    if(data_len && data) memcpy(pkt.data() + hdr_len, data, data_len);
+    std::vector<uint8_t> pkt;
+    pkt.reserve(total);
+    if(hdr_len && hdr)   pkt.insert(pkt.end(), (const uint8_t*)hdr,  (const uint8_t*)hdr  + hdr_len);
+    if(data_len && data) pkt.insert(pkt.end(), (const uint8_t*)data, (const uint8_t*)data + data_len);
     // HEARTBEAT(0x14)는 큐 front에 priority push — backed up이어도 다음 batch 첫 번째로 송신됨.
     // BEWE 헤더 type 위치: hdr_len(CentralMuxHdr 7B) + 4 (BEWE magic 뒤).
     bool is_hb = (data_len >= 9 && ((const uint8_t*)data)[4] == 0x14);

@@ -40,6 +40,9 @@ void FFTViewer::eid_start(const std::string& wav_path){
         const float SCL = 1.0f / 32768.0f;
         float prev_phase = 0.f;
         const float TWO_PI = 6.283185307f;
+        // inst_freq를 Hz 단위로 변환하는 스케일 (sr / 2π * dp) — 저장 시 바로 적용
+        uint32_t sr_val = meta_sr > 0 ? meta_sr : wav_sr;
+        const float HZ_SCL = (float)sr_val / TWO_PI;
 
         while(done < n_samples){
             int64_t todo = std::min(BLOCK, n_samples - done);
@@ -58,7 +61,7 @@ void FFTViewer::eid_start(const std::string& wav_path){
                     float dp = ph - prev_phase;
                     if(dp >  3.14159265f) dp -= TWO_PI;
                     if(dp < -3.14159265f) dp += TWO_PI;
-                    inst_freq[idx] = (idx == 0) ? 0.f : dp;
+                    inst_freq[idx] = (idx == 0) ? 0.f : dp * HZ_SCL;
                     prev_phase = ph;
                 } else {
                     float s = raw[i] * SCL;
@@ -76,18 +79,13 @@ void FFTViewer::eid_start(const std::string& wav_path){
         env.resize(done); ch_i.resize(done); ch_q.resize(done);
         phase.resize(done); inst_freq.resize(done);
 
-        // inst_freq를 Hz 단위로 변환 (sr / 2π * dp)
-        {
-            uint32_t sr_val = meta_sr > 0 ? meta_sr : wav_sr;
-            float scale = (float)sr_val / TWO_PI;
-            for(int64_t i = 0; i < done; i++) inst_freq[i] *= scale;
-        }
-
         // ── 자동 스케일: 1st~99th percentile ────────────────────────────────
         std::vector<float> sorted_env(env);
-        std::sort(sorted_env.begin(), sorted_env.end());
+        std::nth_element(sorted_env.begin(),
+                         sorted_env.begin() + (size_t)(sorted_env.size() * 0.01f),
+                         sorted_env.end());
         float amp_lo = sorted_env[(size_t)(sorted_env.size() * 0.01f)];
-        float amp_hi = sorted_env.back();  // 실제 최대값 (클리핑 방지)
+        float amp_hi = *std::max_element(env.begin(), env.end());  // 실제 최대값 (클리핑 방지)
         if(amp_hi - amp_lo < 0.001f) amp_hi = amp_lo + 0.001f;
         float margin_lo = (amp_hi - amp_lo) * 0.05f;
         float margin_hi = amp_hi * 0.20f;
@@ -96,6 +94,9 @@ void FFTViewer::eid_start(const std::string& wav_path){
         if(amp_lo < 0.f) amp_lo = 0.f;
 
         // 노이즈 레벨: 5th percentile
+        std::nth_element(sorted_env.begin(),
+                         sorted_env.begin() + (size_t)(sorted_env.size() * 0.05f),
+                         sorted_env.end());
         float noise_lvl = sorted_env[(size_t)(sorted_env.size() * 0.05f)];
 
         // inst_freq Y범위 초기화
@@ -150,7 +151,7 @@ void FFTViewer::eid_auto_analyze_tag(EidTag& tag){
 
     // threshold: 구간 내 median * 비율
     std::vector<float> seg(eid_envelope.begin()+i0, eid_envelope.begin()+i1);
-    std::sort(seg.begin(), seg.end());
+    std::nth_element(seg.begin(), seg.begin()+seg.size()/2, seg.end());
     float median = seg[seg.size()/2];
     float thr = median * 1.5f;
     if(thr < eid_noise_level * 1.2f) thr = eid_noise_level * 1.2f;
@@ -189,6 +190,7 @@ void FFTViewer::eid_recompute_derived(){
     eid_inst_freq.resize(n);
     float prev_ph = 0.f;
     const float TWO_PI = 6.283185307f;
+    float scale = (float)eid_sample_rate / TWO_PI;  // Hz 변환 — 저장 시 바로 적용
     for(int64_t i = 0; i < n; i++){
         float fi = eid_ch_i[i], fq = eid_ch_q[i];
         eid_envelope[i] = sqrtf(fi*fi + fq*fq);
@@ -197,17 +199,15 @@ void FFTViewer::eid_recompute_derived(){
         float dp = ph - prev_ph;
         if(dp >  3.14159265f) dp -= TWO_PI;
         if(dp < -3.14159265f) dp += TWO_PI;
-        eid_inst_freq[i] = (i == 0) ? 0.f : dp;
+        eid_inst_freq[i] = (i == 0) ? 0.f : dp * scale;
         prev_ph = ph;
     }
-    float scale = (float)eid_sample_rate / TWO_PI;
-    for(int64_t i = 0; i < n; i++) eid_inst_freq[i] *= scale;
 
     // auto-scale 재계산
     std::vector<float> sorted_env(eid_envelope);
-    std::sort(sorted_env.begin(), sorted_env.end());
+    std::nth_element(sorted_env.begin(), sorted_env.begin()+(size_t)(sorted_env.size()*0.01f), sorted_env.end());
     float lo = sorted_env[(size_t)(sorted_env.size()*0.01f)];
-    float hi = sorted_env.back();
+    float hi = *std::max_element(eid_envelope.begin(), eid_envelope.end());
     if(hi-lo<0.001f) hi=lo+0.001f;
     float margin_lo = (hi-lo)*0.05f;
     float margin_hi = hi*0.20f;
@@ -215,6 +215,7 @@ void FFTViewer::eid_recompute_derived(){
     eid_amp_max = hi+margin_hi;
     eid_y_min[0] = eid_amp_min;
     eid_y_max[0] = eid_amp_max;
+    std::nth_element(sorted_env.begin(), sorted_env.begin()+(size_t)(sorted_env.size()*0.05f), sorted_env.end());
     eid_noise_level = sorted_env[(size_t)(sorted_env.size()*0.05f)];
 }
 
@@ -248,6 +249,13 @@ void FFTViewer::eid_apply_bpf(float uv_lo, float uv_hi){
     double bpf_lo = ((double)uv_lo - 0.5) * sr;
     double bpf_hi = ((double)uv_hi - 0.5) * sr;
 
+    // 대역 외 bin 마스크 사전 계산 (블록마다 동일)
+    std::vector<uint8_t> zero_mask(fft_n);
+    for(int k = 0; k < fft_n; k++){
+        double freq_hz = (k <= fft_n/2) ? (double)k*sr/fft_n : (double)(k-fft_n)*sr/fft_n;
+        zero_mask[k] = (freq_hz < bpf_lo || freq_hz > bpf_hi) ? 1 : 0;
+    }
+
     for(int64_t offset = 0; offset < n; offset += fft_n){
         int64_t block_n = std::min((int64_t)fft_n, n - offset);
 
@@ -263,8 +271,7 @@ void FFTViewer::eid_apply_bpf(float uv_lo, float uv_hi){
 
         // 대역 외 bin 제로화
         for(int k = 0; k < fft_n; k++){
-            double freq_hz = (k <= fft_n/2) ? (double)k*sr/fft_n : (double)(k-fft_n)*sr/fft_n;
-            if(freq_hz < bpf_lo || freq_hz > bpf_hi){
+            if(zero_mask[k]){
                 out[k][0] = 0; out[k][1] = 0;
             }
         }
@@ -541,6 +548,7 @@ void FFTViewer::eid_select_samples(double s0, double s1){
 
 void FFTViewer::eid_cleanup(){
     if(eid_thread.joinable()) eid_thread.join();
+    eid_edit_gen++;   // 동일 파일 재로드 시 SA/EID 캐시 stale 방지
     {
         std::lock_guard<std::mutex> lk(eid_data_mtx);
         eid_envelope.clear();  eid_envelope.shrink_to_fit();

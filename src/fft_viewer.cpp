@@ -115,14 +115,16 @@ void FFTViewer::update_wf_row(int fi){
 
     // ── 노치필터: 전체 FFT의 하위 절반(중앙값 이하) bin을 노이즈 플로어 풀로 사용
     // 강한 신호 배제 + DC 가로지르는 노치도 MHz 기반 매칭으로 안전
-    std::vector<NotchFilter> nlocal;
+    static thread_local std::vector<NotchFilter> nlocal;
     {
         std::lock_guard<std::mutex> nlk(notches_mtx);
         nlocal = notches;
     }
-    std::vector<float> noise_floor_pool;
+    static thread_local std::vector<float> noise_floor_pool;
+    noise_floor_pool.clear(); // 노치 제거 시 stale pool 잔존 방지
     if(!nlocal.empty()){
-        std::vector<float> tmp(row, row+fft_size);
+        static thread_local std::vector<float> tmp;
+        tmp.assign(row, row+fft_size);
         size_t half = tmp.size()/2;
         std::nth_element(tmp.begin(), tmp.begin()+half, tmp.end());
         noise_floor_pool.assign(tmp.begin(), tmp.begin()+half);

@@ -258,9 +258,10 @@ void FFTViewer::capture_and_process_pluto(){
             bool sr_rejected = (!sr_write_ok) || (diff * 20u > new_sr);
             if(sr_rejected){
                 bewe_log_push(0,
-                    "[Pluto] *** SR CHANGE REJECTED *** requested %.3f MSPS, hardware kept %.3f MSPS\n"
-                    "        > Likely cause: FIR coefficients not loaded for sub-2.56 MSPS rates.\n",
+                    "[Pluto] *** SR CHANGE REJECTED *** requested %.3f MSPS, hardware kept %.3f MSPS\n",
                     new_sr/1e6f, actual_sr/1e6f);
+                bewe_log_push(0,
+                    "        > Likely cause: FIR coefficients not loaded for sub-2.56 MSPS rates.\n");
             } else if(actual_sr != new_sr){
                 bewe_log_push(0,"[Pluto] SR rounded: requested %u Hz, hardware=%u Hz (within 5%%)\n",
                               new_sr, actual_sr);

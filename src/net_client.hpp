@@ -4,6 +4,7 @@
 #include "channel.hpp"
 #include <string>
 #include <vector>
+#include <deque>
 #include <tuple>
 #include <thread>
 #include <mutex>
@@ -373,7 +374,7 @@ private:
 
     // FFT buffer queue (1s delay)
     std::mutex              fft_queue_mtx_;
-    std::vector<FftFrame>   fft_queue_;
+    std::deque<FftFrame>    fft_queue_;
 
     void recv_loop();
     void handle_packet(PacketType type, const uint8_t* payload, uint32_t len);

@@ -314,9 +314,11 @@ std::string FFTViewer::do_region_save_work(){
             float si = in_buf[i*2  ] / 32768.0f;
             float sq = in_buf[i*2+1] / 32768.0f;
 
-            // Mix-down
-            float cp = (float)cos(phase);
-            float sp = (float)sin(phase);
+            // Mix-down (sincos: sin/cos 동시 계산 — 결과는 개별 호출과 동일)
+            double sp_d, cp_d;
+            sincos(phase, &sp_d, &cp_d);
+            float cp = (float)cp_d;
+            float sp = (float)sp_d;
             float mi = si*cp - sq*sp;
             float mq = si*sp + sq*cp;
             phase += phase_inc;
@@ -347,8 +349,11 @@ std::string FFTViewer::do_region_save_work(){
                     float oi = mi * fir_taps[0];
                     float oq = mq * fir_taps[0];
                     int dly_sz = fir_ntaps - 1;
+                    int j = fir_dly_pos - 1;  // 방금 삽입한 샘플 위치 (감소-and-wrap, modulo 제거)
+                    if(j < 0) j += dly_sz;
                     for(int t = 1; t < fir_ntaps; t++){
-                        int idx = ((fir_dly_pos - 1 - t + dly_sz * 2) % dly_sz) * 2;
+                        if(--j < 0) j += dly_sz;
+                        int idx = j * 2;
                         oi += fir_state[idx    ] * fir_taps[t];
                         oq += fir_state[idx + 1] * fir_taps[t];
                     }

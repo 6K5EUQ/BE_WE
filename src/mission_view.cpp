@@ -134,6 +134,12 @@ static std::vector<DiskMission> scan_disk_missions(){
     return out;
 }
 
+// scan_disk_missions() 결과 캐시 — 좌측 트리가 매 프레임 3단계 opendir 워크를 돌지
+// 않도록 ~2초 TTL. 렌더 스레드 전용 (mutex 불필요). 미션 삭제 / 미션창 재오픈 시
+// g_disk_scan_time 리셋으로 즉시 재스캔.
+static std::vector<DiskMission> g_disk_scan_cache;
+static double                   g_disk_scan_time = -1.0;
+
 // Central archive 기반 미션 목록 캐시 (좌측 트리 source).
 // 광역 LIST_REQ(station, year=0, code="") 응답에서 unique (year, code, station)
 // 누적. mission_history 와 union 되어 disk/history 비어있어도 좌측 트리에 표시.
@@ -154,7 +160,12 @@ static std::vector<DiskMission> collect_visible_missions(FFTViewer& v,
     std::vector<DiskMission> out;
     bool join_mode = v.remote_mode;
     if(!join_mode){
-        out = scan_disk_missions();
+        double now = ImGui::GetTime();
+        if(g_disk_scan_time < 0.0 || (now - g_disk_scan_time) > 2.0){
+            g_disk_scan_cache = scan_disk_missions();
+            g_disk_scan_time = now;
+        }
+        out = g_disk_scan_cache;
         std::lock_guard<std::mutex> lk(v.mission_mtx);
         for(const auto& e : v.mission_history){
             if(e.year == 0 || e.code[0] == 0) continue;
@@ -284,6 +295,11 @@ static double       g_dl_started_at = 0.0;
 static double       g_dl_last_sample_t = 0.0;
 static uint64_t     g_dl_last_sample_bytes = 0;
 static double       g_dl_speed_bps = 0.0;   // EWMA bytes/sec
+
+// ── 로컬 파일시스템 변경 세대 — LOCAL by[] 스캔 / already_dl 캐시 무효화용 ──
+// 다운로드 완료 콜백(on_mission_file_dl_data_recv)은 NetClient recv 스레드에서
+// 증가시키므로 atomic. 캐시 재빌드 자체는 렌더 스레드에서만 수행.
+static std::atomic<uint32_t> g_local_fs_gen{0};
 
 // ── Upload 진행 상태 (단일 동시 업로드, 워커 스레드 기반) ────────────────
 static std::mutex   g_ul_mtx;
@@ -679,6 +695,8 @@ static void process_delete_key(NetClient* cli){
             n_local++;
         }
         g_sel_local_paths.clear();
+        if(n_local > 0)  // 로컬 파일 변경 → by[]/already_dl 캐시 무효화
+            g_local_fs_gen.fetch_add(1, std::memory_order_relaxed);
     }
 
     // CENTRAL 탭 (HIST/IQ/DEMOD) 활성 시 — subdir 일치하는 항목만 삭제.
@@ -887,6 +905,8 @@ static bool start_download(NetClient* cli, const CentralFileRow& row){
         g_dl_active = false;
         MissionView::show_toast("Download request failed");
     }
+    // 로컬 파일 생성됨 → already_dl 캐시 무효화 (다음 프레임 즉시 초록 표시)
+    g_local_fs_gen.fetch_add(1, std::memory_order_relaxed);
     return ok;
 }
 
@@ -1108,6 +1128,8 @@ static void local_context_menu(FFTViewer& v, NetClient* cli,
         if(ImGui::MenuItem("Delete")){
             unlink(full_path.c_str());
             unlink(SigMF::sidecar_path(full_path).c_str());
+            // 로컬 파일 변경 → by[]/already_dl 캐시 무효화
+            g_local_fs_gen.fetch_add(1, std::memory_order_relaxed);
             MissionView::show_toast("Local file deleted");
         }
         ImGui::PopStyleColor();
@@ -1159,39 +1181,66 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
         return;
     }
     poll_dl_speed();
+    // row별 (already_dl, actual_path) 캐시 — 매 프레임 access()×1-2 + 경로 string
+    // 빌드 방지 (~1초 TTL). 로컬 파일 변경 시 g_local_fs_gen 증가로 무효화.
+    // map 재빌드는 렌더 스레드에서만 수행.
+    static thread_local std::map<std::string, std::pair<bool, std::string>> dl_cache;
+    static thread_local double   dl_cache_time = -1.0;
+    static thread_local uint32_t dl_cache_gen  = 0;
+    {
+        double now = ImGui::GetTime();
+        uint32_t gen = g_local_fs_gen.load(std::memory_order_relaxed);
+        if(dl_cache_time < 0.0 || gen != dl_cache_gen || (now - dl_cache_time) > 1.0){
+            dl_cache.clear();
+            dl_cache_time = now;
+            dl_cache_gen  = gen;
+        }
+    }
     ImGui::BeginChild("##cf_scroll", ImVec2(0, 0), false);
     for(int cf_i = 0; cf_i < (int)rows.size(); cf_i++){
         auto& r = rows[cf_i];
         float pw = ImGui::GetContentRegionAvail().x;
         ImGui::PushID(cf_i);
 
-        // 미션별 다운로드 폴더에서 already_dl 검사 (start_download 와 동일 경로).
-        const char* sub_name = (r.subdir == MFS_IQ)    ? "iq"
-                              : (r.subdir == MFS_AUDIO) ? "audio"
-                              : (r.subdir == MFS_HIST)  ? "hist"
-                              : "misc";
-        std::string dl_dir  = BEWEPaths::downloads_mission_dir(r.station, r.year,
-                                                               r.code, sub_name);
-        std::string dl_path = dl_dir + "/" + r.filename;
-        std::string actual_path = dl_path;
-        bool already_dl = (access(dl_path.c_str(), F_OK) == 0);
-        // 로컬 recordings/missions/ 도 확인 (업로드 후 원본 보유 케이스)
-        if(!already_dl){
-            std::string rec_dir;
-            std::string st(r.station);
-            if(r.subdir == MFS_IQ)
-                rec_dir = BEWEPaths::mission_iq_dir(st, r.year, r.code);
-            else if(r.subdir == MFS_AUDIO)
-                rec_dir = BEWEPaths::mission_audio_dir(st, r.year, r.code);
-            else if(r.subdir == MFS_HIST)
-                rec_dir = BEWEPaths::mission_hist_dir(st, r.year, r.code);
-            if(!rec_dir.empty()){
-                std::string rec_path = rec_dir + "/" + r.filename;
-                if(access(rec_path.c_str(), F_OK) == 0){
-                    already_dl = true;
-                    actual_path = rec_path;
+        // 미션별 다운로드 폴더에서 already_dl 검사 (start_download 와 동일 경로) — 캐시.
+        char ckey[224];
+        snprintf(ckey, sizeof(ckey), "%s|%u|%u|%s|%s",
+                 r.station, (unsigned)r.year, (unsigned)r.subdir, r.code, r.filename);
+        bool already_dl = false;
+        std::string actual_path;
+        auto cit = dl_cache.find(ckey);
+        if(cit != dl_cache.end()){
+            already_dl  = cit->second.first;
+            actual_path = cit->second.second;
+        } else {
+            const char* sub_name = (r.subdir == MFS_IQ)    ? "iq"
+                                  : (r.subdir == MFS_AUDIO) ? "audio"
+                                  : (r.subdir == MFS_HIST)  ? "hist"
+                                  : "misc";
+            std::string dl_dir  = BEWEPaths::downloads_mission_dir(r.station, r.year,
+                                                                   r.code, sub_name);
+            std::string dl_path = dl_dir + "/" + r.filename;
+            actual_path = dl_path;
+            already_dl = (access(dl_path.c_str(), F_OK) == 0);
+            // 로컬 recordings/missions/ 도 확인 (업로드 후 원본 보유 케이스)
+            if(!already_dl){
+                std::string rec_dir;
+                std::string st(r.station);
+                if(r.subdir == MFS_IQ)
+                    rec_dir = BEWEPaths::mission_iq_dir(st, r.year, r.code);
+                else if(r.subdir == MFS_AUDIO)
+                    rec_dir = BEWEPaths::mission_audio_dir(st, r.year, r.code);
+                else if(r.subdir == MFS_HIST)
+                    rec_dir = BEWEPaths::mission_hist_dir(st, r.year, r.code);
+                if(!rec_dir.empty()){
+                    std::string rec_path = rec_dir + "/" + r.filename;
+                    if(access(rec_path.c_str(), F_OK) == 0){
+                        already_dl = true;
+                        actual_path = rec_path;
+                    }
                 }
             }
+            dl_cache.emplace(ckey, std::make_pair(already_dl, actual_path));
         }
         bool downloading = false;
         double frac = 0.0;
@@ -1269,8 +1318,9 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
             }
         }
         if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)){
-            if(already_dl) open_local_in_viewer(v, actual_path);
-            else           start_download(cli, r);
+            // 캐시 staleness 대비 — 신선한 access() 1회로 열기/다운로드 결정.
+            if(access(actual_path.c_str(), F_OK) == 0) open_local_in_viewer(v, actual_path);
+            else                                       start_download(cli, r);
         }
         central_context_menu(cli, r);
 
@@ -1333,30 +1383,50 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
         }
     };
 
-    std::vector<LocalFileEntry> by[3];
+    // by[] 디렉토리 스캔 캐시 — 매 프레임 opendir+stat 풀스캔 방지.
+    // (mission_mode, station, year, code) 키 + ~1초 TTL. 로컬 파일 변경 지점에서
+    // g_local_fs_gen 증가로 즉시 무효화. 진행 중 녹음 파일 크기는 1Hz 갱신 수용.
+    static thread_local std::vector<LocalFileEntry> by[3];
+    static thread_local bool        by_key_mission = false;
+    static thread_local int         by_key_year = 0;
+    static thread_local std::string by_key_station, by_key_code;
+    static thread_local double      by_scan_time = -1.0;
+    static thread_local uint32_t    by_scan_gen  = 0;
     int n_sec = mission_mode ? 3 : 2;   // IDLE: IQ/DEMOD 만 (HIST 없음)
-    if(mission_mode){
-        for(int s = 0; s < 3; s++){
-            scan_into(BEWEPaths::downloads_mission_dir(station, year, code, subs_name[s]), by[s]);
-            // 머신 로컬 mission 폴더 (HOST 본인 녹음, JOIN region/demod 녹음).
-            // station-keyed: recordings/missions/<station>/<year>/<code>/<sub>/
-            std::string mi_dir = (s == 0) ? BEWEPaths::mission_iq_dir(station, year, code)
-                                : (s == 1) ? BEWEPaths::mission_audio_dir(station, year, code)
-                                :            BEWEPaths::mission_hist_dir(station, year, code);
-            scan_into(mi_dir, by[s]);
-            // mtime 내림차순 정렬
-            std::sort(by[s].begin(), by[s].end(),
-                [](const LocalFileEntry& a, const LocalFileEntry& b){ return a.mtime > b.mtime; });
+    double   scan_now = ImGui::GetTime();
+    uint32_t fs_gen   = g_local_fs_gen.load(std::memory_order_relaxed);
+    bool rescan = by_scan_time < 0.0 || (scan_now - by_scan_time) > 1.0 ||
+                  fs_gen != by_scan_gen ||
+                  by_key_mission != mission_mode || by_key_year != year ||
+                  by_key_station != station || by_key_code != code;
+    if(rescan){
+        for(auto& b : by) b.clear();
+        if(mission_mode){
+            for(int s = 0; s < 3; s++){
+                scan_into(BEWEPaths::downloads_mission_dir(station, year, code, subs_name[s]), by[s]);
+                // 머신 로컬 mission 폴더 (HOST 본인 녹음, JOIN region/demod 녹음).
+                // station-keyed: recordings/missions/<station>/<year>/<code>/<sub>/
+                std::string mi_dir = (s == 0) ? BEWEPaths::mission_iq_dir(station, year, code)
+                                    : (s == 1) ? BEWEPaths::mission_audio_dir(station, year, code)
+                                    :            BEWEPaths::mission_hist_dir(station, year, code);
+                scan_into(mi_dir, by[s]);
+                // mtime 내림차순 정렬
+                std::sort(by[s].begin(), by[s].end(),
+                    [](const LocalFileEntry& a, const LocalFileEntry& b){ return a.mtime > b.mtime; });
+            }
+        } else {
+            // 비-미션(IDLE) 로컬 녹음: recordings/record/ (종료해도 보존됨).
+            //   IQ    = recordings/record/iq
+            //   DEMOD = recordings/record/audio
+            scan_into(BEWEPaths::record_iq_dir(),     by[0]);
+            scan_into(BEWEPaths::record_audio_dir(),  by[1]);
+            for(int s = 0; s < 2; s++)
+                std::sort(by[s].begin(), by[s].end(),
+                    [](const LocalFileEntry& a, const LocalFileEntry& b){ return a.mtime > b.mtime; });
         }
-    } else {
-        // 비-미션(IDLE) 로컬 녹음: recordings/record/ (종료해도 보존됨).
-        //   IQ    = recordings/record/iq
-        //   DEMOD = recordings/record/audio
-        scan_into(BEWEPaths::record_iq_dir(),     by[0]);
-        scan_into(BEWEPaths::record_audio_dir(),  by[1]);
-        for(int s = 0; s < 2; s++)
-            std::sort(by[s].begin(), by[s].end(),
-                [](const LocalFileEntry& a, const LocalFileEntry& b){ return a.mtime > b.mtime; });
+        by_key_mission = mission_mode; by_key_year = year;
+        by_key_station = station;      by_key_code = code;
+        by_scan_time   = scan_now;     by_scan_gen  = fs_gen;
     }
 
     if(mission_mode){
@@ -1997,6 +2067,7 @@ static void draw_delete_confirm_submodal(FFTViewer& v, NetClient* cli){
                     }), g_cf_known_missions.end());
             }
             g_cf_last_req_time = 0;  // 다음 프레임 즉시 refresh
+            g_disk_scan_time = -1.0; // 좌측 트리 disk 스캔 캐시도 즉시 재스캔
             if(g_sel_year == g_del_year && g_sel_code == g_del_code){
                 g_sel_year = 0; g_sel_code.clear();
             }
@@ -2014,6 +2085,7 @@ void draw_modal(FFTViewer& v, NetClient* cli){
     static bool s_prev_modal_open = false;
     bool just_opened = (v.mission_modal_open && !s_prev_modal_open);
     s_prev_modal_open = v.mission_modal_open;
+    if(just_opened) g_disk_scan_time = -1.0;  // 좌측 트리 disk 스캔 캐시 리셋
     if(!v.mission_modal_open) return;
     ImGuiIO& io = ImGui::GetIO();
     float W = io.DisplaySize.x * 0.78f;
@@ -2220,6 +2292,8 @@ void on_mission_file_dl_data_recv(const PktMissionFileDlData& d,
         g_dl_local_path.clear();
         g_dl_total = 0;
         g_dl_written = 0;
+        // NetClient recv 스레드 — 다운로드 완료/실패로 로컬 파일 변경 → 캐시 무효화 (atomic)
+        g_local_fs_gen.fetch_add(1, std::memory_order_relaxed);
     }
 }
 

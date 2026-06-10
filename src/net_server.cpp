@@ -131,6 +131,7 @@ void NetServer::inject_fd(int fd){
 // ── Client loop ───────────────────────────────────────────────────────────
 void NetServer::client_loop(std::shared_ptr<ClientConn> c){
     uint64_t pkt_count = 0;
+    std::vector<uint8_t> payload;  // 패킷당 재할당 방지 — 루프 밖에서 재사용
     while(c->alive.load()){
         PktHdr hdr{};
         if(!recv_all(c->fd, &hdr, PKT_HDR_SIZE)){
@@ -151,7 +152,7 @@ void NetServer::client_loop(std::shared_ptr<ClientConn> c){
                    c->op_index, (uint8_t)hdr.type, len);
             break;
         }
-        std::vector<uint8_t> payload(len);
+        payload.resize(len);
         if(len > 0 && !recv_all(c->fd, payload.data(), len)){
             int e = errno;
             bewe_log_push(0, "[NetServer] recv payload failed op=%d type=0x%02x len=%u errno=%d(%s)\n",
@@ -520,9 +521,15 @@ void NetServer::broadcast_fft(const float* data, int fft_size,
 
     uint32_t data_bytes = (uint32_t)fft_size;  // uint8 1 byte/bin
     uint32_t total = (uint32_t)(sizeof(PktFftFrame) + data_bytes);
-    std::vector<uint8_t> payload(total);
-    memcpy(payload.data(), &hdr, sizeof(PktFftFrame));
-    uint8_t* qdata = payload.data() + sizeof(PktFftFrame);
+    // payload + make_packet 이중 빌드 대신 wire 패킷을 재사용 버퍼에 직접 빌드
+    static thread_local std::vector<uint8_t> pkt;
+    pkt.resize(PKT_HDR_SIZE + total);
+    PktHdr* ph = reinterpret_cast<PktHdr*>(pkt.data());
+    memcpy(ph->magic, BEWE_MAGIC, 4);
+    ph->type = static_cast<uint8_t>(PacketType::FFT_FRAME);
+    ph->len  = total;
+    memcpy(pkt.data() + PKT_HDR_SIZE, &hdr, sizeof(PktFftFrame));
+    uint8_t* qdata = pkt.data() + PKT_HDR_SIZE + sizeof(PktFftFrame);
     float range = pmax - pmin;
     if(!(range > 0.f)) range = 1.f;  // 안전망
     float inv = 255.f / range;
@@ -532,8 +539,6 @@ void NetServer::broadcast_fft(const float* data, int fft_size,
         if(v > 255.f) v = 255.f;
         qdata[i] = (uint8_t)v;
     }
-
-    auto pkt = make_packet(PacketType::FFT_FRAME, payload.data(), total);
     if(cb.on_relay_broadcast){
         cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
     }
@@ -551,14 +556,19 @@ void NetServer::send_audio(uint32_t op_mask, uint8_t ch_idx, int8_t pan,
     if(bcast_pause_.load(std::memory_order_relaxed)) return;
 
     uint32_t payload_size = (uint32_t)(sizeof(PktAudioFrame) + n_samples*sizeof(float));
-    std::vector<uint8_t> payload(payload_size);
-    auto* ah = reinterpret_cast<PktAudioFrame*>(payload.data());
+    // payload + make_packet 이중 빌드 대신 wire 패킷을 재사용 버퍼에 직접 빌드
+    static thread_local std::vector<uint8_t> pkt;
+    pkt.resize(PKT_HDR_SIZE + payload_size);
+    PktHdr* ph = reinterpret_cast<PktHdr*>(pkt.data());
+    memcpy(ph->magic, BEWE_MAGIC, 4);
+    ph->type = static_cast<uint8_t>(PacketType::AUDIO_FRAME);
+    ph->len  = payload_size;
+    auto* ah = reinterpret_cast<PktAudioFrame*>(pkt.data() + PKT_HDR_SIZE);
     ah->ch_idx    = ch_idx;
     ah->pan       = (uint8_t)(int8_t)pan;
     ah->n_samples = n_samples;
-    memcpy(payload.data() + sizeof(PktAudioFrame), pcm, n_samples*sizeof(float));
+    memcpy(pkt.data() + PKT_HDR_SIZE + sizeof(PktAudioFrame), pcm, n_samples*sizeof(float));
 
-    auto pkt = make_packet(PacketType::AUDIO_FRAME, payload.data(), payload_size);
     // relay JOIN이 있을 때만 중앙서버로 전송 (없으면 큐 낭비 방지)
     if(cb.on_relay_broadcast && has_relay())
         cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
@@ -578,16 +588,21 @@ void NetServer::send_const(uint32_t op_mask, uint8_t ch_idx, float scale, uint32
     if(bcast_pause_.load(std::memory_order_relaxed)) return;
 
     uint32_t payload_size = (uint32_t)(sizeof(PktConstFrame) + n_samples*2u);
-    std::vector<uint8_t> payload(payload_size);
-    auto* ch = reinterpret_cast<PktConstFrame*>(payload.data());
+    // payload + make_packet 이중 빌드 대신 wire 패킷을 재사용 버퍼에 직접 빌드
+    static thread_local std::vector<uint8_t> pkt;
+    pkt.resize(PKT_HDR_SIZE + payload_size);
+    PktHdr* ph = reinterpret_cast<PktHdr*>(pkt.data());
+    memcpy(ph->magic, BEWE_MAGIC, 4);
+    ph->type = static_cast<uint8_t>(PacketType::CONST_FRAME);
+    ph->len  = payload_size;
+    auto* ch = reinterpret_cast<PktConstFrame*>(pkt.data() + PKT_HDR_SIZE);
     ch->ch_idx    = ch_idx;
     ch->flags     = CONST_FLAG_INT8;
     ch->n_samples = (uint16_t)n_samples;
     ch->scale     = scale;
     ch->con_sr    = con_sr;
-    memcpy(payload.data() + sizeof(PktConstFrame), iq8, n_samples*2u);
+    memcpy(pkt.data() + PKT_HDR_SIZE + sizeof(PktConstFrame), iq8, n_samples*2u);
 
-    auto pkt = make_packet(PacketType::CONST_FRAME, payload.data(), payload_size);
     // relay JOIN이 있을 때만 중앙서버로 전송 (없으면 큐 낭비 방지) — drop 허용 (lossy scope)
     if(cb.on_relay_broadcast && has_relay())
         cb.on_relay_broadcast(pkt.data(), pkt.size(), false);

@@ -35,6 +35,13 @@ namespace {
         float  wx = 0.f, wy = 0.f, wz = 0.f;
     };
     std::vector<PosCache> g_pos_cache;
+    std::vector<unsigned char> g_is_soi; // per-sat SOI flag (parallel to g_sats; avoids per-frame set lookup)
+
+    void rebuild_soi_flags() {
+        g_is_soi.assign(g_sats.size(), 0);
+        for (size_t i = 0; i < g_sats.size(); i++)
+            if (g_soi_ids.count(g_sats[i].catalog_num)) g_is_soi[i] = 1;
+    }
 
     // Frozen orbit polyline; future segments turn solid as time advances.
     struct OrbitPath {
@@ -50,7 +57,7 @@ namespace {
     ImU32 sat_color(size_t i, double alt_km) {
         const TleElem& e = g_sats[i];
         if (e.is_starlink)                  return IM_COL32(255, 255, 255, 0);
-        if (g_soi_ids.count(e.catalog_num)) return IM_COL32(255,  60,  60, 0);
+        if (g_is_soi[i])                    return IM_COL32(255,  60,  60, 0);
         if (alt_km < 2000.0)                return IM_COL32( 80, 160, 255, 0);
         if (alt_km < 35000.0)               return IM_COL32(255, 220,  60, 0);
         return                                     IM_COL32(120, 200, 255, 0);
@@ -78,7 +85,7 @@ namespace {
             double alt_km = e.semi_major_km - 6378.137;
             return alt_km < 2000.0;
         }
-        return g_soi_ids.count(g_sats[i].catalog_num) > 0;  // SAT_SOI
+        return g_is_soi[i] != 0;  // SAT_SOI
     }
 
     void update_position(size_t i, time_t now_utc) {
@@ -241,6 +248,7 @@ void sat_view_init() {
     // bottom-left panel. Loads whatever TLE files currently exist on disk.
     g_sats.clear();
     g_pos_cache.clear();
+    g_is_soi.clear();
     g_soi_ids.clear();
     g_seen_ids.clear();
     g_all_loaded = false;
@@ -272,6 +280,7 @@ void sat_view_init() {
     }
 
     g_pos_cache.assign(g_sats.size(), PosCache{});
+    rebuild_soi_flags();
     fprintf(stderr, "[sat_view] init: %d sot + %d SOI-only; %zu in SOI set; %zu total\n",
             sot_kept, soi_kept, g_soi_ids.size(), g_sats.size());
 }
@@ -300,6 +309,7 @@ namespace {
             }
         }
         g_pos_cache.assign(g_sats.size(), PosCache{});
+        rebuild_soi_flags();
         fprintf(stderr, "[sat_view] ALL: +%d starlink +%d etc; %zu total\n",
                 sl_kept, etc_kept, g_sats.size());
     }
@@ -330,6 +340,7 @@ namespace {
             }
         }
         g_pos_cache.assign(g_sats.size(), PosCache{});
+        rebuild_soi_flags();
         fprintf(stderr, "[sat_view] LEO: +%d sats (-%d starlink filtered); %zu total\n",
                 kept, skipped_sl, g_sats.size());
     }
@@ -406,8 +417,10 @@ void sat_view_draw(GlobeRenderer& globe, ImGuiIO& io, time_t now_utc) {
         if (t_norm > 1.0) t_norm = 1.0;
         int now_idx = (int)(t_norm * (N - 1));
 
-        std::vector<float> sx_arr(N), sy_arr(N);
-        std::vector<unsigned char> ok_arr(N, 0);
+        static thread_local std::vector<float> sx_arr, sy_arr;
+        static thread_local std::vector<unsigned char> ok_arr;
+        sx_arr.resize(N); sy_arr.resize(N);
+        ok_arr.assign(N, 0);
         for (int i = 0; i < N; i++) {
             ok_arr[i] = globe.project_world(
                 g_orbit.wpts[i][0], g_orbit.wpts[i][1], g_orbit.wpts[i][2],

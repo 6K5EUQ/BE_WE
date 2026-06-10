@@ -77,6 +77,19 @@ private:
     float pitch_deg_ = 0.f;   // accumulated pitch, clamped ±30°
     int   vp_w_ = 1920, vp_h_ = 1080;
 
+    // MVP cache — qw_..qz_/zoom_/vp 변경 시 mvp_dirty_ 세팅 필수
+    mutable float mvp_cache_[16];
+    mutable bool  mvp_dirty_ = true;
+
+    // Uniform locations (fetched once in init())
+    GLint loc_sky_proj_      = -1;
+    GLint loc_sky_viewrot_   = -1;
+    GLint loc_sphere_mvp_    = -1;
+    GLint loc_sphere_tex_    = -1;
+    GLint loc_sphere_hastex_ = -1;
+    GLint loc_land_mvp_      = -1;
+    GLint loc_lines_mvp_     = -1;
+
     // Drag
     float drag_ax_ = 0.f, drag_ay_ = 0.f, drag_az_ = 0.f;
 

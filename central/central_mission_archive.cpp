@@ -164,13 +164,13 @@ void CentralServer::handle_mission_file_push_meta(std::shared_ptr<HostRoom> room
     xf.high_water = 0;
     xf.archive_path = fullpath;
     xf.info_data.assign(m->info_data, strnlen(m->info_data, sizeof(m->info_data)));
-    room->mission_xfers.emplace(m->transfer_id, std::move(xf));
+    auto ins = room->mission_xfers.emplace(m->transfer_id, std::move(xf));
 
     // info sidecar 즉시 작성 (있으면)
-    if(!room->mission_xfers[m->transfer_id].info_data.empty()){
+    if(!ins.first->second.info_data.empty()){
         FILE* fi = fopen(SigMF::sidecar_path(fullpath).c_str(), "w");
         if(fi){
-            const auto& s = room->mission_xfers[m->transfer_id].info_data;
+            const auto& s = ins.first->second.info_data;
             fwrite(s.data(), 1, s.size(), fi);
             fclose(fi);
         }
@@ -473,17 +473,10 @@ void CentralServer::handle_mission_file_dl_req(std::shared_ptr<HostRoom> room,
     }
 
     constexpr uint32_t CHUNK = 256 * 1024;  // 256 KB
-    std::vector<uint8_t> chunk(CHUNK);
     uint64_t off = start;
     bool first = true;
     while(off < total){
         uint32_t want = (uint32_t)std::min((uint64_t)CHUNK, total - off);
-        size_t got = fread(chunk.data(), 1, want, fp);
-        if(got != want){
-            printf("[Central][Archive] DL_REQ read short off=%lu want=%u got=%zu\n",
-                   (unsigned long)off, want, got);
-            break;
-        }
         PktMissionFileDlData head{};
         head.key = r->key;
         head.total_bytes = total;
@@ -492,13 +485,19 @@ void CentralServer::handle_mission_file_dl_req(std::shared_ptr<HostRoom> room,
         head.is_first = first ? 1 : 0;
         head.is_last  = (off + want >= total) ? 1 : 0;
         if(first && start == 0) memcpy(head.info_data, info, sizeof(head.info_data));
-        size_t pkt_payload = sizeof(head) + want;
-        std::vector<uint8_t> bewe_payload(pkt_payload);
-        memcpy(bewe_payload.data(), &head, sizeof(head));
-        memcpy(bewe_payload.data() + sizeof(head), chunk.data(), want);
-        auto bewe = CentralServer::make_bewe_packet(
-            BEWE_TYPE_MISSION_FILE_DL_DATA,
-            bewe_payload.data(), (uint32_t)bewe_payload.size());
+        // BEWE 패킷에 직접 빌드 — 중간 chunk/payload 버퍼 복사 제거 (fread → 패킷 직행)
+        uint32_t pkt_plen = (uint32_t)(sizeof(head) + want);
+        std::vector<uint8_t> bewe(BEWE_HDR_SIZE + pkt_plen);
+        memcpy(bewe.data(), "BEWE", 4);
+        bewe[4] = BEWE_TYPE_MISSION_FILE_DL_DATA;
+        memcpy(bewe.data()+5, &pkt_plen, 4);
+        memcpy(bewe.data()+BEWE_HDR_SIZE, &head, sizeof(head));
+        size_t got = fread(bewe.data()+BEWE_HDR_SIZE+sizeof(head), 1, want, fp);
+        if(got != want){
+            printf("[Central][Archive] DL_REQ read short off=%lu want=%u got=%zu\n",
+                   (unsigned long)off, want, got);
+            break;
+        }
         if(requester){
             requester->enqueue_file(bewe.data(), bewe.size());
         } else {

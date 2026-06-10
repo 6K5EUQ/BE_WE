@@ -26,6 +26,10 @@ static constexpr size_t PIPE_BUF_SZ    = 65536;
 // HOST send 큐를 flush (host_mux_loop에서 호출)
 // blocking send: CONN_OPEN/CLOSE 같은 제어 패킷은 절대 드롭하면 안 됨
 static void flush_host_send_queue(std::shared_ptr<HostRoom>& room){
+    {   // idle 빠른 경로: 큐 비어 있으면 deque 생성/파괴 없이 종료
+        std::lock_guard<std::mutex> lk(room->host_send_mtx);
+        if(room->host_send_queue.empty()) return;
+    }
     std::deque<std::vector<uint8_t>> batch;
     {
         std::lock_guard<std::mutex> lk(room->host_send_mtx);
@@ -1053,7 +1057,8 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                     bewe_type == 0x3F ||                 // LWF_LIVE_REQ (JOIN→host opt-in)
                     bewe_type == 0x40);                  // LWF_DELETE_REQ (JOIN→host)
     // joins 스냅샷 후 lock 해제 — enqueue_file이 BLOCK 될 수 있어 joins_mtx 잡고 있으면 안 됨
-    std::vector<std::shared_ptr<JoinEntry>> targets;
+    static thread_local std::vector<std::shared_ptr<JoinEntry>> targets;
+    targets.clear();
     {
         std::lock_guard<std::mutex> jlk(room->joins_mtx);
         for(auto& je : room->joins){
@@ -1090,6 +1095,7 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         else
             je->enqueue_data(bewe_pkt, bewe_len);
     }
+    targets.clear();   // shared_ptr 즉시 해제 (수명 유지하면 JoinEntry 파괴 지연)
 }
 
 // ── JOIN→HOST 방향: 릴레이 인터셉트 ──────────────────────────────────────
@@ -1641,26 +1647,19 @@ void CentralServer::broadcast_db_list(std::shared_ptr<HostRoom> room){
     // mtime 내림차순 정렬 (최신이 위)
     std::sort(with_mtime.begin(), with_mtime.end(),
               [](const auto& a, const auto& b){ return a.first > b.first; });
-    std::vector<DbFileEntry> entries;
-    entries.reserve(with_mtime.size());
-    for(auto& p : with_mtime) entries.push_back(p.second);
-
-    // BEWE 패킷 빌드
-    uint16_t cnt = (uint16_t)std::min(entries.size(), (size_t)500);
+    // BEWE 패킷 빌드 — 중간 버퍼 없이 bewe 에 직접
+    uint16_t cnt = (uint16_t)std::min(with_mtime.size(), (size_t)500);
     size_t payload_sz = sizeof(PktDbList) + cnt * sizeof(DbFileEntry);
-    std::vector<uint8_t> payload(payload_sz, 0);
-    auto* hdr = reinterpret_cast<PktDbList*>(payload.data());
-    hdr->count = cnt;
-    if(cnt > 0)
-        memcpy(payload.data() + sizeof(PktDbList), entries.data(), cnt * sizeof(DbFileEntry));
-
-    // BEWE 패킷으로 감싸기
-    std::vector<uint8_t> bewe(9 + payload_sz);
+    std::vector<uint8_t> bewe(9 + payload_sz, 0);
     memcpy(bewe.data(), "BEWE", 4);
     bewe[4] = BEWE_TYPE_DB_LIST;
     uint32_t plen = (uint32_t)payload_sz;
     memcpy(bewe.data()+5, &plen, 4);
-    memcpy(bewe.data()+9, payload.data(), payload_sz);
+    auto* hdr = reinterpret_cast<PktDbList*>(bewe.data() + 9);
+    hdr->count = cnt;
+    auto* dst = reinterpret_cast<DbFileEntry*>(bewe.data() + 9 + sizeof(PktDbList));
+    for(uint16_t i = 0; i < cnt; i++)
+        memcpy(&dst[i], &with_mtime[i].second, sizeof(DbFileEntry));
 
     // HOST에 전송
     enqueue_host_send(room, 0xFFFF, CentralMuxType::DATA, bewe.data(), (uint32_t)bewe.size());

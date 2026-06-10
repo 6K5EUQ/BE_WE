@@ -142,7 +142,7 @@ bool NetClient::pop_fft_frame(FftFrame& out){
     // 앞에서부터 충분히 오래된 프레임만 꺼냄
     if(now_us - fft_queue_.front().recv_us < DISPLAY_DELAY_US) return false;
     out = std::move(fft_queue_.front());
-    fft_queue_.erase(fft_queue_.begin());
+    fft_queue_.pop_front();
     return true;
 }
 
@@ -198,6 +198,7 @@ void NetClient::recv_loop(){
         stats_prev_total = t; stats_prev_fft = fb;
         stats_prev_aud = ab;  stats_prev_file = fi;
     };
+    std::vector<uint8_t> payload; // 패킷당 재할당 방지 — capacity 재사용
     while(connected_.load()){
         print_stats();
         PktHdr hdr{};
@@ -227,7 +228,7 @@ void NetClient::recv_loop(){
             disc_reason = "oversized";
             break;
         }
-        std::vector<uint8_t> payload(len);
+        payload.resize(len);
         if(len > 0){
             int rc2 = recv_all_ex(fd_, payload.data(), len, connected_);
             if(rc2 == 0) continue;  // timeout mid-packet → retry
@@ -331,7 +332,7 @@ void NetClient::handle_packet(PacketType type,
             std::lock_guard<std::mutex> qlk(fft_queue_mtx_);
             // 큐가 너무 크면 오래된 것부터 drop (백로그 방지)
             if(fft_queue_.size() >= FFT_QUEUE_MAX)
-                fft_queue_.erase(fft_queue_.begin());
+                fft_queue_.pop_front();
             fft_queue_.push_back(std::move(frm));
         }
         // 단일 프레임도 업데이트 (legacy 호환)

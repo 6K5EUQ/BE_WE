@@ -175,6 +175,13 @@ bool GlobeRenderer::init() {
     prog_land_   = compile_shader(LAND_VERT,  LAND_FRAG);
     prog_sky_    = compile_shader(SKY_VERT,   SKY_FRAG);
     if (!prog_sphere_ || !prog_lines_ || !prog_land_ || !prog_sky_) return false;
+    loc_sky_proj_      = glGetUniformLocation(prog_sky_,    "uProj");
+    loc_sky_viewrot_   = glGetUniformLocation(prog_sky_,    "uViewRot");
+    loc_sphere_mvp_    = glGetUniformLocation(prog_sphere_, "uMVP");
+    loc_sphere_tex_    = glGetUniformLocation(prog_sphere_, "uEarthTex");
+    loc_sphere_hastex_ = glGetUniformLocation(prog_sphere_, "uHasTex");
+    loc_land_mvp_      = glGetUniformLocation(prog_land_,   "uMVP");
+    loc_lines_mvp_     = glGetUniformLocation(prog_lines_,  "uMVP");
     build_sphere(64, 128);
     build_land();
     build_map_lines();
@@ -186,6 +193,7 @@ bool GlobeRenderer::init() {
     qx_ = -0.103304f;
     qy_ =  0.896658f;
     qz_ = -0.308744f;
+    mvp_dirty_ = true;
     yaw_rad_   = 0.f;  // arcball 드래그 추적용 (초기값 무관)
     pitch_deg_ = 38.f; // 위도 추적용
     return true;
@@ -208,6 +216,7 @@ void GlobeRenderer::destroy() {
 }
 
 void GlobeRenderer::set_viewport(int w, int h) {
+    if (w != vp_w_ || h != vp_h_) mvp_dirty_ = true;
     vp_w_ = w; vp_h_ = h;
 }
 
@@ -225,8 +234,8 @@ void GlobeRenderer::render() {
             for (int c = 0; c < 3; c++)
                 view_rot[c*4 + r] = rot[r*4 + c];   // transpose
         glUseProgram(prog_sky_);
-        glUniformMatrix4fv(glGetUniformLocation(prog_sky_, "uProj"),    1, GL_FALSE, proj);
-        glUniformMatrix4fv(glGetUniformLocation(prog_sky_, "uViewRot"), 1, GL_FALSE, view_rot);
+        glUniformMatrix4fv(loc_sky_proj_,    1, GL_FALSE, proj);
+        glUniformMatrix4fv(loc_sky_viewrot_, 1, GL_FALSE, view_rot);
         GLboolean cull_was = glIsEnabled(GL_CULL_FACE);
         glDisable(GL_CULL_FACE);
         glDepthMask(GL_FALSE);
@@ -241,16 +250,15 @@ void GlobeRenderer::render() {
 
     // 1. Draw globe sphere (with texture if loaded, else flat color)
     glUseProgram(prog_sphere_);
-    GLint u = glGetUniformLocation(prog_sphere_, "uMVP");
-    glUniformMatrix4fv(u, 1, GL_FALSE, mvp);
+    glUniformMatrix4fv(loc_sphere_mvp_, 1, GL_FALSE, mvp);
 
     if (tex_earth_) {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, tex_earth_);
-        glUniform1i(glGetUniformLocation(prog_sphere_, "uEarthTex"), 0);
-        glUniform1i(glGetUniformLocation(prog_sphere_, "uHasTex"), 1);
+        glUniform1i(loc_sphere_tex_, 0);
+        glUniform1i(loc_sphere_hastex_, 1);
     } else {
-        glUniform1i(glGetUniformLocation(prog_sphere_, "uHasTex"), 0);
+        glUniform1i(loc_sphere_hastex_, 0);
     }
 
     glBindVertexArray(vao_sphere_);
@@ -262,8 +270,7 @@ void GlobeRenderer::render() {
     // 2. Land polygons (only drawn when no texture)
     if (!tex_earth_) {
         glUseProgram(prog_land_);
-        u = glGetUniformLocation(prog_land_, "uMVP");
-        glUniformMatrix4fv(u, 1, GL_FALSE, mvp);
+        glUniformMatrix4fv(loc_land_mvp_, 1, GL_FALSE, mvp);
         glBindVertexArray(vao_land_);
         glDrawArrays(GL_TRIANGLES, 0, land_vtx_count_);
         glBindVertexArray(0);
@@ -272,8 +279,7 @@ void GlobeRenderer::render() {
     // 3. Draw map lines only when no texture (texture already shows coastlines)
     if (!tex_earth_) {
         glUseProgram(prog_lines_);
-        u = glGetUniformLocation(prog_lines_, "uMVP");
-        glUniformMatrix4fv(u, 1, GL_FALSE, mvp);
+        glUniformMatrix4fv(loc_lines_mvp_, 1, GL_FALSE, mvp);
 
         glBindVertexArray(vao_lines_);
         if (!seg_starts_.empty())
@@ -341,6 +347,7 @@ void GlobeRenderer::on_drag(float mx, float my) {
         quat_mul(nw,nx,ny,nz, dw,0,dy,0, qw_,qx_,qy_,qz_);
         quat_normalize(nw,nx,ny,nz);
         qw_=nw; qx_=nx; qy_=ny; qz_=nz;
+        mvp_dirty_ = true;
         yaw_rad_ += angle;
     }
 
@@ -365,6 +372,7 @@ void GlobeRenderer::on_drag(float mx, float my) {
         quat_mul(nw,nx,ny,nz, dw, s*ax, s*ay, s*az, qw_,qx_,qy_,qz_);
         quat_normalize(nw,nx,ny,nz);
         qw_=nw; qx_=nx; qy_=ny; qz_=nz;
+        mvp_dirty_ = true;
     }
 }
 
@@ -380,6 +388,7 @@ void GlobeRenderer::on_scroll(float delta) {
     zoom_ -= delta * step;
     if (zoom_ < 1.05f) zoom_ = 1.05f;
     if (zoom_ > 25.f)  zoom_ = 25.f;        // GPS r≈4.16, GEO r≈6.6 — fits comfortably
+    mvp_dirty_ = true;
 }
 
 // ── Picking ───────────────────────────────────────────────────────────────
@@ -609,34 +618,39 @@ void GlobeRenderer::quat_normalize(float& w, float& x, float& y, float& z) const
 }
 
 void GlobeRenderer::get_mvp(float* mvp) const {
-    float proj[16], view_rot[16], rot[16], trans[16], view[16];
+    // 카메라 상태 (qw_..qz_/zoom_/vp) 변경 시에만 재계산 — mvp_dirty_ 캐시
+    if (mvp_dirty_) {
+        float proj[16], view_rot[16], rot[16], trans[16], view[16];
 
-    float fovy = 45.f * (float)M_PI / 180.f;
-    float aspect = (float)vp_w_ / (float)vp_h_;
-    // Near plane은 카메라-구체-앞면 거리 (zoom_ - 1)에 비례시켜 가까이 줌인해도
-    // 앞면이 잘려 뒷면이 비치는 현상 방지. zoom_=1.05 → near≈0.015, zoom_=8 → near≈2.1.
-    float near_z = (zoom_ - 1.0f) * 0.3f;
-    if (near_z < 0.01f) near_z = 0.01f;
-    mat4_perspective(proj, fovy, aspect, near_z, 100.f);
+        float fovy = 45.f * (float)M_PI / 180.f;
+        float aspect = (float)vp_w_ / (float)vp_h_;
+        // Near plane은 카메라-구체-앞면 거리 (zoom_ - 1)에 비례시켜 가까이 줌인해도
+        // 앞면이 잘려 뒷면이 비치는 현상 방지. zoom_=1.05 → near≈0.015, zoom_=8 → near≈2.1.
+        float near_z = (zoom_ - 1.0f) * 0.3f;
+        if (near_z < 0.01f) near_z = 0.01f;
+        mat4_perspective(proj, fovy, aspect, near_z, 100.f);
 
-    // Model rotation from quaternion
-    mat4_from_quat(rot, qw_, qx_, qy_, qz_);
+        // Model rotation from quaternion
+        mat4_from_quat(rot, qw_, qx_, qy_, qz_);
 
-    // View rotation = transpose of model rotation
-    // (camera orbits around globe at origin)
-    mat4_identity(view_rot);
-    for (int r=0; r<3; r++)
-        for (int c=0; c<3; c++)
-            view_rot[c*4+r] = rot[r*4+c];
+        // View rotation = transpose of model rotation
+        // (camera orbits around globe at origin)
+        mat4_identity(view_rot);
+        for (int r=0; r<3; r++)
+            for (int c=0; c<3; c++)
+                view_rot[c*4+r] = rot[r*4+c];
 
-    // Camera at (0,0,zoom_) → translate view by (0,0,-zoom_)
-    mat4_translate(trans, 0.f, 0.f, -zoom_);
+        // Camera at (0,0,zoom_) → translate view by (0,0,-zoom_)
+        mat4_translate(trans, 0.f, 0.f, -zoom_);
 
-    // view = trans * view_rot
-    mat4_mul(view, trans, view_rot);
+        // view = trans * view_rot
+        mat4_mul(view, trans, view_rot);
 
-    // mvp = proj * view
-    mat4_mul(mvp, proj, view);
+        // mvp = proj * view
+        mat4_mul(mvp_cache_, proj, view);
+        mvp_dirty_ = false;
+    }
+    memcpy(mvp, mvp_cache_, 64);
 }
 
 void GlobeRenderer::get_view_inv(float* inv) const {
