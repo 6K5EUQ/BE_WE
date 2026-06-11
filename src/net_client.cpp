@@ -364,7 +364,7 @@ void NetClient::handle_packet(PacketType type,
         int aci = ah->ch_idx;
         if(acars_on[aci].load(std::memory_order_relaxed)){
             if(!acars_prev[aci]){
-                acars_dec[aci].on_msg=[](const char* m){ bewe_log_push(0,"%s\n",m); };
+                acars_dec[aci].on_record=[this](const AcarsMsg& m){ if(on_acars) on_acars(m); };
                 acars_dec[aci].reset(48000.f, aci);   // HOST fractional resampler = 정확히 48 kHz
                 acars_prev[aci]=true;
             }

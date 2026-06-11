@@ -1522,7 +1522,7 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         ImVec2 mp = ImGui::GetIO().MousePos;
         bool ctrl = ImGui::GetIO().KeyCtrl;
         bool in_sp = (mp.x>=gx && mp.x<=gx+gw && mp.y>=gy && mp.y<=gy+gh);
-        if(!eid_panel_open && !log_panel_open && !lwf_modal_open && !mission_modal_open
+        if(!eid_panel_open && !log_panel_open && !lwf_modal_open && !mission_modal_open && !acars_panel_open
            && ctrl && in_sp &&
            ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
             notch_drag.selecting = true;
@@ -1587,11 +1587,11 @@ void FFTViewer::draw_spectrum_area(ImDrawList* dl, float full_x, float full_y, f
         ImVec2 _mp = ImGui::GetIO().MousePos;
         bool in_band_bar = band_bar_active &&
                            _mp.y >= band_bar_y && _mp.y <= band_bar_y + BAND_BAR_H;
-        bool any_ovl = eid_panel_open || log_panel_open || lwf_modal_open || mission_modal_open;
+        bool any_ovl = eid_panel_open || log_panel_open || lwf_modal_open || mission_modal_open || acars_panel_open;
         if(!any_ovl && !in_band_bar) handle_new_channel_drag(gx,gw);
     }
     int sel_before = selected_ch;
-    bool any_ovl_b = eid_panel_open || log_panel_open || lwf_modal_open || sig_lib_panel_open || mission_modal_open;
+    bool any_ovl_b = eid_panel_open || log_panel_open || lwf_modal_open || sig_lib_panel_open || mission_modal_open || acars_panel_open;
     if(!region.active && !any_ovl_b) handle_channel_interactions(gx,gw,gy,gh);
 
     // ── 좌클릭 토글 > Max Hold (채널 위가 아닌 빈 영역 클릭에서만) ──────
@@ -1807,10 +1807,10 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
         // 마우스가 워터폴 영역 안에 있을 때만 채널 드래그 시작 허용 (band bar 우클릭 보호)
         ImVec2 _mp = ImGui::GetIO().MousePos;
         bool in_wf_area = (_mp.y >= gy && _mp.y <= gy + gh);
-        bool any_ovl_w = eid_panel_open || log_panel_open || lwf_modal_open || sig_lib_panel_open || mission_modal_open;
+        bool any_ovl_w = eid_panel_open || log_panel_open || lwf_modal_open || sig_lib_panel_open || mission_modal_open || acars_panel_open;
         if(!any_ovl_w && in_wf_area) handle_new_channel_drag(gx,gw);
     }
-    bool any_ovl_w2 = eid_panel_open || log_panel_open || lwf_modal_open || sig_lib_panel_open || mission_modal_open;
+    bool any_ovl_w2 = eid_panel_open || log_panel_open || lwf_modal_open || sig_lib_panel_open || mission_modal_open || acars_panel_open;
     if(!region.active && !any_ovl_w2) handle_channel_interactions(gx,gw,gy,gh);
 
     // ── Ctrl+우클릭 드래그: 영역 IQ 녹음 선택 ────────────────────────────
@@ -1821,7 +1821,7 @@ void FFTViewer::draw_waterfall_area(ImDrawList* dl, float full_x, float full_y, 
         bool in_wf=(mp.x>=gx&&mp.x<=gx+gw&&mp.y>=gy&&mp.y<=gy+gh);
 
         // ── 신규 선택: Ctrl+우클릭 드래그 ──────────────────────────────
-        if(!eid_panel_open&&!log_panel_open&&!lwf_modal_open&&!mission_modal_open
+        if(!eid_panel_open&&!log_panel_open&&!lwf_modal_open&&!mission_modal_open&&!acars_panel_open
            &&ctrl&&ImGui::IsMouseClicked(ImGuiMouseButton_Right)&&in_wf&&(tm_iq_file_ready||remote_mode)){
             region.selecting=true; region.active=false;
             region.edit_mode=RegionSel::EDIT_NONE;
@@ -2309,6 +2309,9 @@ void run_streaming_viewer(){
     FFTViewer v;
     extern FFTViewer* g_log_viewer;
     g_log_viewer = &v;
+    // ACARS 항공기 등록 DB 로드 (offline reg→type/operator)
+    { std::string dbp = BEWEPaths::assets_dir() + "/aircraft_db.bin";
+      if(acars_db_load(dbp.c_str())) bewe_log_push(0,"[ACARS] aircraft DB loaded\n"); }
     std::thread cap;
     v.create_waterfall_texture();
     // 0=LOCAL, 1=HOST, 2=CONNECT
@@ -3158,6 +3161,8 @@ void run_streaming_viewer(){
         cli->on_const_frame = [&](int ch, uint32_t sr, const float* i, const float* q, int n){
             v.eid_live_push(ch, sr, i, q, n);
         };
+        // ACARS 디코드된 메시지 → 오버레이 저장소
+        cli->on_acars = [&](const AcarsMsg& m){ v.push_acars(m); };
         // 채널 sync 콜백 등록
         cli->on_channel_sync = [&](const PktChannelSync& sync){
             for(int i=0;i<MAX_CHANNELS;i++){
@@ -5617,7 +5622,7 @@ void run_streaming_viewer(){
         // 다른 모달이 떠있으면 그 창의 단축키만 동작.
         bool main_kbd_active = !v.eid_panel_open && !v.log_panel_open
                             && !v.lwf_modal_open && !v.sig_lib_panel_open
-                            && !v.mission_modal_open;
+                            && !v.mission_modal_open && !v.acars_panel_open;
 
         // ── Keyboard shortcuts ────────────────────────────────────────────
         if(!editing && main_kbd_active){
@@ -5919,7 +5924,7 @@ void run_streaming_viewer(){
         };
         {
             static bool prev_eid=false, prev_log=false, prev_lwf=false,
-                        prev_side=false, prev_lib=false, prev_mission=false;
+                        prev_side=false, prev_lib=false, prev_mission=false, prev_acars=false;
             bool side_now = v.right_panel_ratio > 0.01f;
             if(v.eid_panel_open != prev_eid){ v.eid_panel_open ? push_ov(1) : pop_ov(1); prev_eid=v.eid_panel_open; }
             if(v.log_panel_open != prev_log){ v.log_panel_open ? push_ov(2) : pop_ov(2); prev_log=v.log_panel_open; }
@@ -5927,6 +5932,7 @@ void run_streaming_viewer(){
             if(side_now != prev_side){ side_now ? push_ov(4) : pop_ov(4); prev_side=side_now; }
             if(v.sig_lib_panel_open != prev_lib){ v.sig_lib_panel_open ? push_ov(5) : pop_ov(5); prev_lib=v.sig_lib_panel_open; }
             if(v.mission_modal_open != prev_mission){ v.mission_modal_open ? push_ov(6) : pop_ov(6); prev_mission=v.mission_modal_open; }
+            if(v.acars_panel_open != prev_acars){ v.acars_panel_open ? push_ov(7) : pop_ov(7); prev_acars=v.acars_panel_open; }
         }
         // S키: 메인 STATUS 패널 토글. 다른 오버레이 활성 시엔 그쪽이 S 키 소비.
         if(main_kbd_active
@@ -6284,12 +6290,13 @@ void run_streaming_viewer(){
         // 한 번에 하나만 활성. 다른 게 켜져 있으면 새로 켜는 동작은 무시.
         // 끄기는 언제나 허용.
         auto any_other_overlay_open = [&](int self) -> bool {
-            // self: 0=EID, 1=LOG, 3=HIST, 4=SIG_LIB, 5=MISSION
+            // self: 0=EID, 1=LOG, 3=HIST, 4=SIG_LIB, 5=MISSION, 6=ACARS
             if(self != 0 && v.eid_panel_open) return true;
             if(self != 1 && v.log_panel_open) return true;
             if(self != 3 && v.lwf_modal_open) return true;
             if(self != 4 && v.sig_lib_panel_open) return true;
             if(self != 5 && v.mission_modal_open) return true;
+            if(self != 6 && v.acars_panel_open) return true;
             return false;
         };
         auto try_toggle = [&](int self, bool& flag){
@@ -8276,6 +8283,7 @@ void run_streaming_viewer(){
                 if(self != 3 && v.lwf_modal_open) return true;
                 if(self != 4 && v.sig_lib_panel_open) return true;
                 if(self != 5 && v.mission_modal_open) return true;
+                if(self != 6 && v.acars_panel_open) return true;
                 return false;
             };
             auto bar_try_toggle = [&](int self, bool& flag){
@@ -8308,6 +8316,9 @@ void run_streaming_viewer(){
             // 켜져있으면 초록(state=1), 꺼져있으면 빨강(state=0).
             if(click_ind_left(lx, "MSN", v.mission_modal_open ? 1 : 0)){
                 bar_try_toggle(5, v.mission_modal_open);
+            }
+            if(click_ind_left(lx, "ACARS", ov_st(v.acars_panel_open, 7))){
+                bar_try_toggle(6, v.acars_panel_open);
             }
 
             // 오른쪽>왼쪽: TM IQ AUD WF FFT LINK SDR
@@ -9176,20 +9187,7 @@ void run_streaming_viewer(){
                 bx += tsz.x + 14.f;
             }
 
-            // ── 서브바 닫기(×) 버튼 (우측 끝 항상 표시) ───────────────
-            {
-                const char* close_lbl = "×";
-                ImVec2 csz = ImGui::CalcTextSize(close_lbl);
-                float cx = ov_x1 - csz.x - 10.f;
-                float cy = sb_y0 + (SB_H - csz.y) * 0.5f;
-                bool chov = (io.MousePos.x >= cx-4 && io.MousePos.x <= cx+csz.x+4 &&
-                             io.MousePos.y >= sb_y0 && io.MousePos.y < sb_y1);
-                fg->AddText(ImVec2(cx, cy), chov ? IM_COL32(255,100,100,255) : IM_COL32(160,160,180,200), close_lbl);
-                if(chov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
-                    v.eid_panel_open = false;
-                    v.audio_play_stop(); // Audio 재생 중이었으면 정지
-                }
-            }
+            // (닫기 X 버튼 제거 — ESC / 하단바 SA 버튼으로 닫음)
 
             // FFT size + Window 콤보 (Spectrogram 모드일 때만)
             if(v.eid_view_mode == 0){
@@ -12037,6 +12035,11 @@ void run_streaming_viewer(){
         // ── Mission modal + toast ─────────────────────────────────────────
         MissionView::draw_modal(v, cli);
         MissionView::draw_toast();
+
+        // ── ACARS 오버레이 (하단바 ACARS 버튼으로 토글) ──────────────────────
+        static bool s_acars_prev=false;
+        if(v.acars_panel_open) acars_draw_overlay(v, !s_acars_prev);
+        s_acars_prev = v.acars_panel_open;
 
         ImGui::Render();
         int dw2,dh2; glfwGetFramebufferSize(win,&dw2,&dh2);

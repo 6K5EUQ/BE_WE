@@ -5,6 +5,7 @@
 #include "net_client.hpp"
 #include "hw_config.hpp"
 #include "channel.hpp"
+#include "acars_meta.hpp"
 #include "audio_playback.hpp"
 #include "mission.hpp"
 
@@ -441,6 +442,16 @@ public:
     std::mutex log_mtx;
     bool log_scroll[3] = {true,true,true};
     void log_push(int col, const char* fmt, ...);
+
+    // ── ACARS 오버레이 (A키 토글) ────────────────────────────────────────
+    bool                 acars_panel_open = false;
+    bool                 acars_scroll = true;
+    static constexpr int ACARS_MAX = 1000;
+    std::vector<AcarsMsg> acars_log;       // 디코드된 메시지 (lock 필요)
+    std::mutex            acars_mtx;
+    int                   acars_sel = -1;  // 선택 행 (상세 보기)
+    char                  acars_filter[64] = {};
+    void push_acars(AcarsMsg m);           // ch 기반 freq/time 스탬프 후 append
 
     // ── EID (Emitter ID / RF Fingerprint) 패널 ─────────────────────────────
     bool              eid_panel_open = false;
@@ -1006,3 +1017,6 @@ bool bladerf_usb_reset();
 // rtlsdr_read_sync 가 wedge된 커널 sync-URB 큐에서 영구 hang 할 때, 단순 reopen
 // 으로는 안 풀리고 포트 re-enumeration 만 복구됨. USBDEVFS_RESET ioctl 사용.
 bool rtl_usb_reset();
+
+// ── ACARS 오버레이 렌더 (acars_view.cpp) ──────────────────────────────────
+void acars_draw_overlay(FFTViewer& v, bool just_opened);

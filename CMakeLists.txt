@@ -116,6 +116,8 @@ else()
         src/audio.cpp
         src/audio_playback.cpp
         src/ui.cpp
+        src/acars_view.cpp
+        src/acars_db.cpp
         src/timemachine.cpp
         src/region_save.cpp
         src/sa_compute.cpp

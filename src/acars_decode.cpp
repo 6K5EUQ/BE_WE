@@ -33,7 +33,7 @@ void FFTViewer::acars_worker(int ch_idx){
     double aac=0; int acnt=0;
 
     AcarsDecoder dec;
-    dec.on_msg=[](const char* m){ bewe_log_push(0,"%s\n",m); };
+    dec.on_record=[this](const AcarsMsg& m){ push_acars(m); };
     dec.reset((float)actual_asr, ch_idx);
     bewe_log_push(0,"ACARS[%d] start: %.4f MHz  BW=%.1fkHz  asr=%u\n",
         ch_idx,(ch.s+ch.e)/2.0f,bw_hz/1000.f,actual_asr);
@@ -103,4 +103,16 @@ void FFTViewer::stop_acars(int ch_idx){
     ch.acars_stop_req.store(true);
     if(ch.acars_thr.joinable()) ch.acars_thr.join();
     ch.acars_on.store(false);
+}
+
+// 디코드된 메시지 저장 (ch 기반 freq/time 스탬프). GUI/headless 양쪽 빌드 공통.
+void FFTViewer::push_acars(AcarsMsg m){
+    if(m.ch>=0 && m.ch<MAX_CHANNELS && channels[m.ch].filter_active)
+        m.freq = (channels[m.ch].s + channels[m.ch].e)/2.0f;
+    m.t_ms = (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                 std::chrono::system_clock::now().time_since_epoch()).count();
+    std::lock_guard<std::mutex> lk(acars_mtx);
+    if((int)acars_log.size() >= ACARS_MAX) acars_log.erase(acars_log.begin());
+    acars_log.push_back(m);
+    acars_scroll = true;
 }

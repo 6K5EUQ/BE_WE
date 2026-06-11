@@ -166,6 +166,7 @@ public:
     std::function<void(const PktChannelSync&)> on_channel_sync;
     // 성상도 CONST_FRAME 수신 → FFTViewer::eid_live_push (int8 dequant 된 float IQ)
     std::function<void(int ch, uint32_t sr, const float* i, const float* q, int n)> on_const_frame;
+    std::function<void(const AcarsMsg&)>       on_acars;   // 디코드된 ACARS 메시지
     std::function<void(const PktSchedSync&)>   on_sched_sync;
     std::function<void(const PktBandPlan&)>    on_band_plan;
     std::function<void(const PktBandCatSync&)> on_band_cat;

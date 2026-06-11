@@ -19,10 +19,12 @@
 #include <cstdio>
 #include <cmath>
 #include <functional>
+#include "acars_meta.hpp"
 
 class AcarsDecoder {
 public:
-    std::function<void(const char*)> on_msg;   // one decoded/diagnostic line
+    std::function<void(const char*)>       on_msg;     // diagnostic line (console)
+    std::function<void(const AcarsMsg&)>   on_record;  // structured decoded message
 
     void reset(float sample_rate, int ch_idx){
         sr = sample_rate>1.f ? sample_rate : 48000.f;
@@ -160,20 +162,37 @@ private:
     void emit(){
         if(flen<13) return;                              // shorter than a valid header
         uint16_t c = bcs_crc(frame, flen);
-        bool ok = ((c&0xFF)==bcs[0]) && ((c>>8)==bcs[1]);
         // fields: [0]=mode [1..7]=registration [8]=ack [9..10]=label [11]=block
         //         [12]=STX (if any text) [13..]=text  [last]=ETX/ETB
-        char reg[10]={0}; int ri=0;
-        for(int i=1;i<=7;i++){ uint8_t v=frame[i]&0x7F; if((v=='.'||v==' ')&&ri==0)continue; reg[ri++]=pc(v); }
-        char label[3]={ pc(frame[9]), pc(frame[10]), 0 };
-        char text[256]; int ti=0;
+        AcarsMsg m;
+        m.ch = ch;
+        m.crc_ok = ((c&0xFF)==bcs[0]) && ((c>>8)==bcs[1]);
+        m.mode = pc(frame[0]);
+        m.ack  = pc(frame[8]);
+        m.block= pc(frame[11]);
+        m.label[0]=pc(frame[9]); m.label[1]=pc(frame[10]); m.label[2]=0;
+        int ri=0;
+        for(int i=1;i<=7;i++){ uint8_t v=frame[i]&0x7F; if((v=='.'||v==' ')&&ri==0)continue; if(ri<9) m.reg[ri++]=pc(v); }
+        m.reg[ri]=0;
+        int ti=0;
         if(flen>13 && (frame[12]&0x7F)==0x02)
-            for(int i=13;i<flen-1 && ti<255;i++) text[ti++]=pc(frame[i]);
-        text[ti]=0;
-        char out[400];
-        snprintf(out,sizeof(out),"ACARS[%d] reg=%s mode=%c lbl=%s blk=%c CRC=%s | %s",
-                 ch, reg[0]?reg:"------", pc(frame[0]), label, pc(frame[11]), ok?"OK":"FAIL", text);
+            for(int i=13;i<flen-1 && ti<255;i++) m.text[ti++]=pc(frame[i]);
+        m.text[ti]=0;
+        // best-effort flight id (downlink text starts with 4-char MSN + 6-char flight)
+        if(ti>=10){
+            bool letter=false, alnum=true;
+            for(int i=4;i<10;i++){ char cc=m.text[i];
+                if(!((cc>='A'&&cc<='Z')||(cc>='0'&&cc<='9'))){ alnum=false; break; }
+                if(cc>='A'&&cc<='Z') letter=true; }
+            if(alnum && letter){ for(int i=0;i<6;i++) m.flight[i]=m.text[4+i]; m.flight[6]=0; m.downlink=true; }
+        }
         d_msgs++;
-        if(on_msg) on_msg(out);
+        if(on_record) on_record(m);
+        if(on_msg){
+            char out[400];
+            snprintf(out,sizeof(out),"ACARS[%d] reg=%s mode=%c lbl=%s blk=%c CRC=%s | %s",
+                     ch, m.reg[0]?m.reg:"------", m.mode, m.label, m.block, m.crc_ok?"OK":"FAIL", m.text);
+            on_msg(out);
+        }
     }
 };
