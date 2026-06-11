@@ -24,6 +24,12 @@ void FFTViewer::dem_worker(int ch_idx){
     uint32_t actual_asr=actual_inter/actual_ad;
     bewe_log("DEM[%d]: mode=%d  cf=%.4fMHz  off=%.0fHz  cap_dec=%u  asr=%u\n",
            ch_idx,(int)mode,(ch.s+ch.e)/2.0f,off_hz,cap_decim,actual_asr);
+    // 분수 리샘플러: actual_asr(=msr/cap_decim/actual_ad)는 msr이 48k의 정수배가
+    // 아니면 48000과 어긋남 (3.2M: +1.01%, 2.56M: +0.63%). 생산률 > 소비율(ALSA 48k)이면
+    // JOIN jitter buffer가 JITTER_MAX 도달 시마다 ~100ms를 잘라내 주기적 글리치 발생.
+    // 위상 누적 + 선형보간으로 정확히 48 kHz 출력 (비율이 1 근방이라 보간 왜곡 무시 가능).
+    double rs_step=(double)msr/(double)cap_decim/(double)actual_ad/(double)AUDIO_SR;
+    double rs_pos=0.0; float rs_prev=0.0f;
 
     // ── DSP state ─────────────────────────────────────────────────────────
     Oscillator osc; osc.set_freq((double)off_hz,(double)msr);
@@ -78,6 +84,7 @@ void FFTViewer::dem_worker(int ch_idx){
             for(int k=0;k<4;k++){ lpi[k].s=lpq[k].s=0; }
             alf.s=0; prev_i=prev_q=0; am_dc=0;
             aac=0; acnt=0; cap_i=cap_q=0; cap_cnt=0;
+            rs_pos=0.0; rs_prev=0.0f;
             lag=(wp-rp)&IQ_RING_MASK;
         }
         if(lag==0){ std::this_thread::sleep_for(std::chrono::microseconds(50)); continue; }
@@ -127,20 +134,27 @@ void FFTViewer::dem_worker(int ch_idx){
                 aac+=samp; acnt++;
                 if(acnt>=(int)actual_ad){
                     float raw_out=std::max(-1.0f,std::min(1.0f,(float)(aac/acnt)));
-                    float out=gate_open?raw_out:0.0f;
                     aac=0; acnt=0;
-                    ch.maybe_rec_audio(raw_out, gate_open);
-                    ch.push_audio(out);
-                    // ── 네트워크 오디오 전송 (스컬치 초과 시만) ────────────────────────
-                    if(net_srv && gate_open && (ch.audio_mask.load() & ~0x1u)){
-                        net_audio_buf.push_back(out);
-                        if((int)net_audio_buf.size()>=NET_AUDIO_BATCH){
-                            uint32_t mask=(ch.audio_mask.load()>>1);
-                            net_srv->send_audio(mask,(uint8_t)ch_idx,(int8_t)ch.pan,
-                                net_audio_buf.data(),(uint32_t)net_audio_buf.size());
-                            net_audio_buf.clear();
+                    // 분수 리샘플 (actual_asr → 정확히 AUDIO_SR): rs_pos<1 동안 보간 출력
+                    while(rs_pos<1.0){
+                        float r=rs_prev+(float)rs_pos*(raw_out-rs_prev);
+                        float out=gate_open?r:0.0f;
+                        ch.maybe_rec_audio(r, gate_open);
+                        ch.push_audio(out);
+                        // ── 네트워크 오디오 전송 (스컬치 초과 시만) ────────────────────
+                        if(net_srv && gate_open && (ch.audio_mask.load() & ~0x1u)){
+                            net_audio_buf.push_back(out);
+                            if((int)net_audio_buf.size()>=NET_AUDIO_BATCH){
+                                uint32_t mask=(ch.audio_mask.load()>>1);
+                                net_srv->send_audio(mask,(uint8_t)ch_idx,(int8_t)ch.pan,
+                                    net_audio_buf.data(),(uint32_t)net_audio_buf.size());
+                                net_audio_buf.clear();
+                            }
                         }
+                        rs_pos+=rs_step;
                     }
+                    rs_pos-=1.0;
+                    rs_prev=raw_out;
                 }
             }
         }
