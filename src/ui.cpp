@@ -7108,19 +7108,30 @@ void run_streaming_viewer(){
                                 if(bi<3) ImGui::SameLine(0,2);
                             }
 
-                            // ── ACARS 디코드 토글 (AM 채널 + 로컬 demod 일 때) ──
+                            // ── ACARS 디코드 토글 (AM 채널) ──
+                            // 로컬: HOST 가 IQ 탭으로 디코드. 원격(JOIN): 수신 AM 오디오를 JOIN 이 디코드.
                             ImGui::SameLine(0,8);
                             {
                                 bool aon = ch.acars_on.load();
-                                bool eligible = (ch.mode==Channel::DM_AM) && !v.remote_mode;
+                                bool am  = (ch.mode==Channel::DM_AM);
                                 if(aon) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f,0.42f,0.72f,1.f));
-                                else if(!eligible) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f,0.5f,0.5f,1.f));
+                                else if(!am) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f,0.5f,0.5f,1.f));
                                 if(ImGui::SmallButton("ACARS")){
-                                    if(aon) v.stop_acars(ci);
-                                    else if(eligible) v.start_acars(ci);
-                                    else bewe_log_push(0,"ACARS: set channel to AM on local host first\n");
+                                    if(aon){
+                                        ch.acars_on.store(false);
+                                        if(v.remote_mode){ if(v.net_cli) v.net_cli->set_acars(ci,false); }
+                                        else v.stop_acars(ci);
+                                    } else if(am){
+                                        if(v.remote_mode){
+                                            if(v.net_cli){
+                                                if(v.local_ch_out[ci]==3) set_local_out(ci,1); // 음소거면 수신 켜서 오디오 흐르게
+                                                v.net_cli->set_acars(ci,true);
+                                                ch.acars_on.store(true);
+                                            }
+                                        } else v.start_acars(ci);   // 로컬: ch.acars_on 내부에서 set
+                                    } else bewe_log_push(0,"ACARS: set channel to AM first\n");
                                 }
-                                if(aon || !eligible) ImGui::PopStyleColor();
+                                if(aon || !am) ImGui::PopStyleColor();
                             }
 
 

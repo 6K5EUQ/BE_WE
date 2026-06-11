@@ -2,6 +2,7 @@
 #include "config.hpp"
 #include "net_protocol.hpp"
 #include "channel.hpp"
+#include "acars_decode.hpp"
 #include <string>
 #include <vector>
 #include <deque>
@@ -217,6 +218,12 @@ public:
 
     // ── Audio rings (one per channel) ─────────────────────────────────────
     NetAudioRing audio[MAX_CHANNELS];
+
+    // ── JOIN-side ACARS decode (수신 AM 오디오를 직접 디코드 → JOIN 로그) ──
+    std::atomic<bool> acars_on[MAX_CHANNELS]{};
+    AcarsDecoder      acars_dec[MAX_CHANNELS];   // recv 스레드 전용
+    bool              acars_prev[MAX_CHANNELS]={};
+    void set_acars(int ch, bool on){ if(ch>=0&&ch<MAX_CHANNELS) acars_on[ch].store(on); }
 
     // ── Chat ──────────────────────────────────────────────────────────────
     struct ChatMsg { char from[32]; char msg[256]; };
