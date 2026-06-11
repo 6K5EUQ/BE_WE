@@ -17,7 +17,6 @@
 class AcarsDecoder {
 public:
     std::function<void(const char*)> on_msg;
-    std::function<void(uint8_t)> on_byte;   // 디버그용 (복조 바이트 스트림 탭)
 
     void reset(float sample_rate, int ch_idx){
         fs = sample_rate>1.f ? sample_rate : 48000.f;
@@ -105,7 +104,6 @@ private:
 
     void process_byte(){
         uint8_t r = outbits;
-        if(on_byte) on_byte(r);
         switch(st){
         case WSYN:
             if(r==SYN){ st=SYN2; nbits=8; }
@@ -132,19 +130,19 @@ private:
         }
     }
 
-    static uint16_t crc_x25(const uint8_t* p, int n){
-        uint16_t crc=0xFFFF;
+    // ACARS BCS: CRC-16, reflected poly 0x8408, init 0, no final XOR (over raw 8-bit bytes)
+    static uint16_t crc_acars(const uint8_t* p, int n){
+        uint16_t crc=0;
         for(int i=0;i<n;i++){ crc^=p[i]; for(int k=0;k<8;k++) crc=(crc&1)?(crc>>1)^0x8408:(crc>>1); }
-        return crc^0xFFFF;
+        return crc;
     }
     static char pr(uint8_t c){ c&=0x7F; return (c>=0x20&&c<0x7F)?(char)c:'.'; }
 
     void finalize(){
         if(txtlen<13){ return; }
-        uint8_t buf[300]; for(int i=0;i<txtlen;i++) buf[i]=txt[i]&0x7F;   // parity-stripped 7-bit
-        uint16_t crc=crc_x25(buf,txtlen);
+        uint16_t crc=crc_acars(txt,txtlen);   // raw 8-bit bytes (parity 포함, 와이어 그대로)
         uint8_t lo=crc&0xFF, hi=(crc>>8)&0xFF;
-        bool ok=(lo==crcb[0]&&hi==crcb[1])||(hi==crcb[0]&&lo==crcb[1]);
+        bool ok=(lo==crcb[0]&&hi==crcb[1]);
         char reg[10]={0}; int ri=0;
         for(int i=1;i<=7;i++){ uint8_t c=txt[i]&0x7F; if((c=='.'||c==' ')&&ri==0)continue; reg[ri++]=pr(c); }
         char label[3]={ pr(txt[9]), pr(txt[10]), 0 };
