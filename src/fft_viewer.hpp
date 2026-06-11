@@ -952,6 +952,11 @@ public:
     void start_iq_rec(int ch_idx);
     void stop_iq_rec(int ch_idx);
     void iq_only_worker(int ch_idx);  // demod 우회 IQ-only 녹음 worker
+
+    // ACARS 디코드 (demod 우회, IQ ring 자체 read-ptr 탭)
+    void acars_worker(int ch_idx);
+    void start_acars(int ch_idx);
+    void stop_acars(int ch_idx);
     void start_join_audio_rec(int ch_idx); // JOIN 모드 로컬 오디오 녹음
     void stop_join_audio_rec(int ch_idx);
 

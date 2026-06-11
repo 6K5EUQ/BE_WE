@@ -108,6 +108,12 @@ struct Channel {
     std::thread         iq_only_thr;
     std::atomic<size_t> iq_only_rp{0};
 
+    // ACARS decode thread (demod 우회 — IQ ring 자체 read-ptr 로 탭 → AM 포락선 → 디코드)
+    std::atomic<bool>   acars_on{false};
+    std::atomic<bool>   acars_stop_req{false};
+    std::thread         acars_thr;
+    std::atomic<size_t> acars_rp{0};
+
     // Per-channel audio ring (float mono)
     static constexpr size_t AR_SZ   = 16384;
     static constexpr size_t AR_MASK = AR_SZ-1;
@@ -308,6 +314,7 @@ struct Channel {
         dem_paused.store(false);
         dem_paused_mode=DM_NONE;
         iq_only_rp.store(0);
+        acars_rp.store(0);
         // audio ring
         ar_wp.store(0);
         ar_rp.store(0);

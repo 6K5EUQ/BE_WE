@@ -26,6 +26,7 @@ if(CLI)
         src/fft_viewer.cpp
         src/bladerf_io.cpp
         src/demod.cpp
+        src/acars_decode.cpp
         src/iq_record.cpp
         src/constellation.cpp
         src/ofdm_demod.cpp
@@ -105,6 +106,7 @@ else()
         src/fft_viewer.cpp
         src/bladerf_io.cpp
         src/demod.cpp
+        src/acars_decode.cpp
         src/iq_record.cpp
         src/constellation.cpp
         src/ofdm_demod.cpp
