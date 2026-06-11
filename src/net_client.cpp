@@ -369,6 +369,11 @@ void NetClient::handle_packet(PacketType type,
                 acars_prev[aci]=true;
             }
             for(uint32_t i=0;i<n;i++) acars_dec[aci].feed(pcm[i]);
+            // 진단: 수신 AM 오디오를 raw f32@48k 로 덤프 (오프라인 레퍼런스 분석용, ~15s)
+            static FILE* adump=nullptr; static long adn=0;
+            if(!adump){ adump=fopen("/tmp/acars_audio.f32","wb"); adn=0; }
+            if(adump && adn<720000){ fwrite(pcm,sizeof(float),n,adump); adn+=n; fflush(adump);
+                if(adn>=720000) bewe_log_push(0,"ACARS: 15s audio dumped to /tmp/acars_audio.f32\n"); }
         } else acars_prev[aci]=false;
         break;
     }
