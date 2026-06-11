@@ -27,10 +27,20 @@ public:
         mixph = 0; li1=li2=lq1=lq2=0; pbi=pbq=0;
         t=0; bacc=0; prevds=0;
         lastsym=0; for(int k=0;k<4;k++) hist[k]=0;
+        dfw=0; dlacc=0; dsw=0; dsync=0;
         unlock();
     }
 
     void feed(float audio){
+        // 진단: fed 샘플 ~4초마다 rms/syms/syncs 보고
+        dfw++; dlacc += (double)audio*audio;
+        if(dfw >= (long)(fs*4.f)){
+            char db[160];
+            snprintf(db,sizeof(db),"ACARS[%d] diag rms=%.4f syms/4s=%ld syncs=%ld lock=%d",
+                     ch, std::sqrt(dlacc/(double)dfw), dsw, dsync, locked?1:0);
+            if(on_msg) on_msg(db);
+            dfw=0; dlacc=0; dsw=0;
+        }
         // 1800 Hz complex down-mix
         double c=std::cos(mixph), s=std::sin(mixph);
         mixph += mixst; if(mixph>2.0*M_PI) mixph-=2.0*M_PI;
@@ -64,6 +74,8 @@ private:
     double spb=20.0, mixst=0, lpfa=0;
     double mixph=0, li1=0,li2=0,lq1=0,lq2=0, pbi=0,pbq=0;
     double t=0, bacc=0; int prevds=0;
+    // ── 진단 카운터 (audio 도달/demod/sync 어디서 막히는지) ──
+    long dfw=0; double dlacc=0; long dsw=0, dsync=0;
     // ── sync search ──
     int      lastsym=0;
     uint32_t hist[4]={0,0,0,0};            // 24-bit histories for 4 bit-derivations
@@ -81,6 +93,7 @@ private:
     }
 
     void push_sym(int sym){
+        dsw++;
         int d[4];
         d[0]=sym;                d[1]=sym^1;
         d[2]=(sym^lastsym)^1;    d[3]=(sym^lastsym);
@@ -89,6 +102,7 @@ private:
             for(int k=0;k<4;k++){
                 hist[k]=((hist[k]<<1)|(uint32_t)d[k]) & 0xFFFFFFu;
                 if(hist[k]==SYNC){
+                    dsync++;
                     locked=true; hyp=k; curbyte=0; bytebit=0;
                     state=ST_TEXT; bcs_n=0; frame.clear();
                     break;
