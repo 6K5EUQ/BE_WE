@@ -28,6 +28,7 @@ public:
         t=0; bacc=0; prevds=0;
         lastsym=0; for(int k=0;k<4;k++) hist[k]=0;
         dfw=0; dlacc=0; dsw=0; dsync=0;
+        dumpleft=14; ddn=0; ddcur=0; ddcb=0;
         unlock();
     }
 
@@ -76,6 +77,7 @@ private:
     double t=0, bacc=0; int prevds=0;
     // ── 진단 카운터 (audio 도달/demod/sync 어디서 막히는지) ──
     long dfw=0; double dlacc=0; long dsw=0, dsync=0;
+    int dumpleft=0; uint8_t ddbuf[24]; int ddn=0; uint8_t ddcur=0; int ddcb=0;
     // ── sync search ──
     int      lastsym=0;
     uint32_t hist[4]={0,0,0,0};            // 24-bit histories for 4 bit-derivations
@@ -94,6 +96,15 @@ private:
 
     void push_sym(int sym){
         dsw++;
+        // 진단: 잠금 전 raw 톤-sym 스트림을 hex 로 덤프 (pre-key=00/FF 런, 그 뒤 구조 확인용)
+        if(!locked && dumpleft>0){
+            ddcur=(uint8_t)((ddcur<<1)|(sym&1));
+            if(++ddcb==8){ ddbuf[ddn++]=ddcur; ddcur=0; ddcb=0;
+                if(ddn>=20){ char hb[96]; int o=snprintf(hb,sizeof(hb),"ACARS[%d] sym",ch);
+                    for(int i=0;i<20;i++) o+=snprintf(hb+o,(size_t)(sizeof(hb)-o)," %02X",ddbuf[i]);
+                    if(on_msg) on_msg(hb); ddn=0; dumpleft--; }
+            }
+        }
         int d[4];
         d[0]=sym;                d[1]=sym^1;
         d[2]=(sym^lastsym)^1;    d[3]=(sym^lastsym);
