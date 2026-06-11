@@ -29,8 +29,10 @@ void FFTViewer::dem_worker(int ch_idx){
     Oscillator osc; osc.set_freq((double)off_hz,(double)msr);
     uint64_t prev_cf = init_cf;
     double cap_i=0,cap_q=0; int cap_cnt=0;
-    IIR1 lpi,lpq;
-    { float cn=(bw_hz*0.5f)/(float)actual_inter; if(cn>0.45f)cn=0.45f; lpi.set(cn); lpq.set(cn); }
+    // BW LPF cascade (4-stage IIR1) — pre-decim 단계에서 anti-alias
+    IIR1 lpi[4],lpq[4];
+    { float cn=(bw_hz*0.5f)/(float)msr; if(cn>0.45f)cn=0.45f;
+      for(int k=0;k<4;k++){ lpi[k].set(cn); lpq[k].set(cn); } }
     float prev_i=0,prev_q=0,am_dc=0;
     float am_dc_alpha=1.0f-expf(-2.0f*M_PI*30.0f/(float)actual_inter);
     // v4.5.0 — alf 적응형: 채널 BW/2 와 12 kHz 중 작은 쪽 (좁은 채널 → 좁은 LPF → 잡음 ↓).
@@ -73,7 +75,8 @@ void FFTViewer::dem_worker(int ch_idx){
             size_t keep=(size_t)(msr*0.02);
             rp=(wp-keep)&IQ_RING_MASK;
             ch.dem_rp.store(rp,std::memory_order_release);
-            lpi.s=lpq.s=alf.s=0; prev_i=prev_q=0; am_dc=0;
+            for(int k=0;k<4;k++){ lpi[k].s=lpq[k].s=0; }
+            alf.s=0; prev_i=prev_q=0; am_dc=0;
             aac=0; acnt=0; cap_i=cap_q=0; cap_cnt=0;
             lag=(wp-rp)&IQ_RING_MASK;
         }
@@ -84,11 +87,14 @@ void FFTViewer::dem_worker(int ch_idx){
             size_t pos=(rp+s)&IQ_RING_MASK;
             float si=ring[pos*2]/hw.iq_scale, sq=ring[pos*2+1]/hw.iq_scale;
             float mi,mq; osc.mix(si,sq,mi,mq);
-            cap_i+=mi; cap_q+=mq; cap_cnt++;
+            // 4-stage LPF cascade (anti-alias BEFORE decimation)
+            float mi_aa=mi, mq_aa=mq;
+            mi_aa=lpi[0].p(mi_aa); mi_aa=lpi[1].p(mi_aa); mi_aa=lpi[2].p(mi_aa); mi_aa=lpi[3].p(mi_aa);
+            mq_aa=lpq[0].p(mq_aa); mq_aa=lpq[1].p(mq_aa); mq_aa=lpq[2].p(mq_aa); mq_aa=lpq[3].p(mq_aa);
+            cap_i+=mi_aa; cap_q+=mq_aa; cap_cnt++;
             if(cap_cnt<(int)cap_decim) continue;
             float fi=(float)(cap_i/cap_cnt), fq=(float)(cap_q/cap_cnt);
             cap_i=cap_q=0; cap_cnt=0;
-            fi=lpi.p(fi); fq=lpq.p(fq);
 
             // 스컬치 게이트 읽기 (UI 스레드에서 FFT 기반으로 관리)
             float p_inst=fi*fi+fq*fq;
