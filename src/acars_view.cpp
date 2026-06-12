@@ -68,6 +68,11 @@ void acars_draw_overlay(FFTViewer& v, bool just_opened){
        ImGui::IsKeyPressed(ImGuiKey_Escape, false))
         v.acars_panel_open = false;
 
+    // Ctrl+F / Tab → 필터 입력창 포커스. draw_overlay 는 ACARS 열렸을 때만 호출되므로 항상 적용.
+    // (창 focus 여부 무관 — SetKeyboardFocusHere 가 필터+ACARS창 focus 를 가져와 메인 freq Tab 으로 새는 것 차단)
+    bool focus_filter =
+        (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false)) || ImGui::IsKeyPressed(ImGuiKey_Tab, false);
+
     static AcarsMsg sel; static bool has_sel=false;
     static int  sort_col=-1;     // -1=정렬안함(삽입순), 0~9=해당 컬럼
     static bool sort_asc=true;
@@ -83,6 +88,7 @@ void acars_draw_overlay(FFTViewer& v, bool just_opened){
     int total; { std::lock_guard<std::mutex> lk(v.acars_mtx); total=(int)v.acars_log.size(); }
     ImGui::Text("%d msg", total);
     ImGui::SameLine(0,20); ImGui::SetCursorPosY(fy);
+    if(focus_filter) ImGui::SetKeyboardFocusHere();   // Ctrl+F / Tab 시 입력 활성화
     ImGui::SetNextItemWidth(220);
     ImGui::InputText("##flt", v.acars_filter, sizeof(v.acars_filter));   // 힌트 없음(빈칸)
     float cwb=ImGui::CalcTextSize("Clear").x + ImGui::GetStyle().FramePadding.x*2;

@@ -6011,7 +6011,9 @@ void run_streaming_viewer(){
             float px=std::max(2.0f,(box_w-tw)*0.5f-1.0f);
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,ImVec2(px,ImGui::GetStyle().FramePadding.y));
             ImGui::SetNextItemWidth(box_w);
+            ImGui::PushTabStop(false);   // Tab 으로 포커스 안 됨 (ACARS 필터 Tab 이 여기로 새는 것 차단)
             ImGui::InputFloat("##freq",&new_freq,0,0,"%.3f MHz");
+            ImGui::PopTabStop();
             ImGui::PopStyleVar();
         }
         if(ImGui::IsItemDeactivatedAfterEdit()){
