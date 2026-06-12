@@ -372,9 +372,7 @@ bool FFTViewer::mission_end(){
 }
 
 void FFTViewer::mission_rollover_utc0(){
-    // 24/7 운용: KST 0시마다 자동 rollover.
-    // - ACTIVE 였으면: 종료 후 새 미션 자동 start (기존 동작).
-    // - IDLE 이었으면: 자동으로 새 미션 start ("auto" 운영자 표기).
+    // KST 0시 rollover: ACTIVE이면 종료 후 새 미션 시작, IDLE이면 그대로 유지.
     char prev_started_by[32] = {};
     uint8_t prev_op = 0;
     bool was_active = false;
@@ -390,8 +388,7 @@ void FFTViewer::mission_rollover_utc0(){
         mission_end();
         mission_start(prev_started_by, prev_op, /*rollover=*/true);
     } else {
-        // IDLE 에서 새 KST 일자 시작 — 자동으로 새 미션 등록.
-        mission_start("auto", /*op_index=*/0, /*rollover=*/true);
+        bewe_log_push(0, "[MISSION] rollover: IDLE — skip auto-start\n");
     }
 }
 
