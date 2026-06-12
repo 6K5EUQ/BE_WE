@@ -86,8 +86,6 @@ enum class PacketType : uint8_t {
     MISSION_FILE_DELETE    = 0x54,  // any → central: Central archive 파일 삭제
     MISSION_FILE_RENAME    = 0x55,  // any → central: Central archive 파일 이름 변경
     MISSION_FILE_PUSH_ACK  = 0x56,  // central → host: PUSH 전송 종료 ACK (HOST가 로컬 unlink 트리거)
-    // ── Live constellation (성상도) ──────────────────────────────────────
-    CONST_FRAME            = 0x57,  // host → join(s): 채널 성상도 데이터 (int8 IQ snapshot), per-JOIN 필터
     // ── Module data pipe (src/modules/ 선택형 모듈 공용 전송로) ─────────
     MODULE_PIPE            = 0x58,  // 양방향: PktModulePipe + payload (mod_id 다중화, Central opaque relay)
 };
@@ -174,19 +172,6 @@ struct __attribute__((packed)) PktAudioFrame {
     // float[n_samples] follows
 };
 
-// ── CONST_FRAME ───────────────────────────────────────────────────────────
-// 채널 성상도 데이터 (full-BW baseband 의 int8 양자화 IQ snapshot).
-// 복원: i = qi * scale/127, q = qq * scale/127. 페이로드 = int8 pair[n_samples].
-static constexpr uint8_t CONST_FLAG_INT8 = 0x01;  // flags bit0: int8 quantized
-struct __attribute__((packed)) PktConstFrame {
-    uint8_t  ch_idx;
-    uint8_t  flags;       // bit0 = int8 quantized
-    uint16_t n_samples;   // 이 프레임의 complex pair 개수
-    float    scale;       // dequant 스케일 (max|i,q|)
-    uint32_t con_sr;      // 이 점들의 sample rate (detrend/시간 라벨용)
-    // int8 pair[n_samples] = [qi,qq, qi,qq, ...] 따라옴
-};
-
 // ── CMD ───────────────────────────────────────────────────────────────────
 enum class CmdType : uint8_t {
     SET_FREQ     = 0x01,
@@ -215,14 +200,11 @@ enum class CmdType : uint8_t {
     RX_START        = 0x18,  // JOIN → server: /rx start
     START_IQ_REC    = 0x19,  // JOIN → server: start per-ch IQ recording
     STOP_IQ_REC     = 0x1A,  // JOIN → server: stop per-ch IQ recording + transfer
-    TOGGLE_CONST_RECV = 0x1B,  // JOIN → central(+host): enable/disable 성상도 수신 + host const_mask
-    SET_CONST_SYNC    = 0x1C,  // JOIN → host: 성상도 심볼동기 파라미터 (on/baud/mod/rolloff)
     SET_ANTENNA     = 0x1D,  // bidirectional: set HOST antenna free text (char[32])
     ADD_SCHED       = 0x1E,  // JOIN → server: add scheduled IQ recording
     REMOVE_SCHED    = 0x1F,  // JOIN → server: remove own scheduled entry
     SET_HW          = 0x21,  // JOIN → server: switch HOST SDR runtime ("bladerf"/"pluto"/"rtlsdr")
     TOGGLE_FFT_RECV = 0x22,  // JOIN → central: enable/disable FFT stream (audio/HB unaffected)
-    SET_OFDM_SYNC   = 0x23,  // JOIN → host: OFDM 블라인드 복조 파라미터 (auto/fft/cp/mod)
 };
 
 struct __attribute__((packed)) PktCmd {
@@ -240,11 +222,6 @@ struct __attribute__((packed)) PktCmd {
         struct { uint8_t idx; float thr; }                set_sq_thresh;
         struct { uint8_t dummy; }                          set_autoscale;
         struct { uint8_t idx; uint8_t enable; }            toggle_recv;
-        struct { uint8_t idx; uint8_t enable; }            toggle_const_recv;
-        struct { uint8_t idx; uint8_t on; uint8_t mod; uint8_t _pad;
-                 float baud; float rolloff; }              set_const_sync;
-        struct { uint8_t idx; uint8_t autoest; uint8_t mod; uint8_t _pad;
-                 uint16_t fft_size; uint16_t cp_len; }     set_ofdm_sync;
         struct { uint8_t idx; float s; float e; }          update_ch_range;
         struct { uint8_t dummy; }                          toggle_tm_iq;
         struct { uint8_t pause; }                          set_capture_pause;

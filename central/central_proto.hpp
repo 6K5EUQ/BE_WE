@@ -178,7 +178,6 @@ static constexpr uint8_t BEWE_TYPE_MISSION_FILE_DL_DATA   = 0x53;
 static constexpr uint8_t BEWE_TYPE_MISSION_FILE_DELETE    = 0x54;
 static constexpr uint8_t BEWE_TYPE_MISSION_FILE_RENAME    = 0x55;
 static constexpr uint8_t BEWE_TYPE_MISSION_FILE_PUSH_ACK  = 0x56;
-static constexpr uint8_t BEWE_TYPE_CONST    = 0x57;  // 성상도 데이터 (per-JOIN recv_const[] 필터)
 
 static constexpr uint8_t BEWE_TYPE_CHAT     = 0x07;
 
@@ -194,7 +193,6 @@ static constexpr int BEWE_MAX_OPERATORS = 16;
 
 // CMD subtypes (BEWE payload offset 0 = cmd byte)
 static constexpr uint8_t BEWE_CMD_TOGGLE_RECV = 0x0C;
-static constexpr uint8_t BEWE_CMD_TOGGLE_CONST_RECV = 0x1B;  // 성상도 수신 구독 (recv_const[] + HOST 포워드)
 static constexpr uint8_t BEWE_CMD_CREATE_CH    = 0x03;
 static constexpr uint8_t BEWE_CMD_DELETE_CH    = 0x04;
 static constexpr uint8_t BEWE_CMD_TOGGLE_FFT_RECV = 0x22;

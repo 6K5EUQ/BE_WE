@@ -152,12 +152,6 @@ struct ServerCallbacks {
     std::function<void(int idx, float thr)>          on_set_sq_thresh;
     std::function<void()>                            on_set_autoscale;
     std::function<void(int ch_idx, uint8_t op_idx, bool enable)> on_toggle_recv;
-    // 성상도(DM_CONST) 수신 구독: HOST const_mask 비트 set/clear → con_worker emit 게이트
-    std::function<void(int ch_idx, uint8_t op_idx, bool enable)> on_toggle_const_recv;
-    // 성상도 심볼동기 파라미터 (on/baud/mod/rolloff) → con_worker 체인 설정
-    std::function<void(int ch_idx, bool on, float baud, uint8_t mod, float rolloff)> on_set_const_sync;
-    // OFDM 블라인드 복조 파라미터 (auto/fft/cp/mod) → ofdm_worker 설정
-    std::function<void(int ch_idx, bool autoest, uint16_t fft, uint16_t cp, uint8_t mod)> on_set_ofdm_sync;
     std::function<void(int idx, float s, float e)>   on_update_ch_range;
     std::function<void()>                            on_toggle_tm_iq;
     std::function<void(bool pause)>                  on_set_capture_pause;
@@ -258,11 +252,6 @@ public:
     // Audio → all clients unconditionally (릴레이 서버가 per-JOIN 필터링)
     void broadcast_audio_all(uint8_t ch_idx, int8_t pan,
                              const float* pcm, uint32_t n_samples);
-
-    // 성상도 데이터 → const_mask 매칭 operator (relay 는 recv_const[]로 per-JOIN 필터).
-    // iq8 = 인터리브 int8 [qi,qq,...], n_samples = complex pair 개수, scale = max|i,q|.
-    void send_const(uint32_t op_mask, uint8_t ch_idx, float scale, uint32_t con_sr,
-                    const int8_t* iq8, uint32_t n_samples);
 
 
 

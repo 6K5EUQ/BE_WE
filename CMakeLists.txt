@@ -39,8 +39,6 @@ if(CLI)
         src/module_registry.cpp
         ${BEWE_MODULE_SRCS_CLI}
         src/iq_record.cpp
-        src/constellation.cpp
-        src/ofdm_demod.cpp
         src/sched_record.cpp
         src/mission.cpp
         src/mission_push.cpp
@@ -121,8 +119,6 @@ else()
         src/demod_panel.cpp
         ${BEWE_MODULE_SRCS}
         src/iq_record.cpp
-        src/constellation.cpp
-        src/ofdm_demod.cpp
         src/sched_record.cpp
         src/mission.cpp
         src/mission_push.cpp

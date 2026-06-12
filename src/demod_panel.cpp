@@ -12,8 +12,8 @@
 #include <vector>
 
 static const char* mode_name(uint8_t m){
-    static const char* n[] = {"NONE","AM","FM","CONST","OFDM"};
-    return (m < 5) ? n[m] : "?";
+    static const char* n[] = {"NONE","AM","FM"};
+    return (m < 3) ? n[m] : "?";
 }
 // station_id "DGS-2_DGS-2" → 표시명 "DGS-2"
 static void station_disp(const char* sid, char* out, size_t cap){

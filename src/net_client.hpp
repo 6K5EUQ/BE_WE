@@ -163,8 +163,6 @@ public:
     // ── Channel sync (from CHANNEL_SYNC packets) ──────────────────────────
     // Applied directly to a FFTViewer's channels array via callback
     std::function<void(const PktChannelSync&)> on_channel_sync;
-    // 성상도 CONST_FRAME 수신 → FFTViewer::eid_live_push (int8 dequant 된 float IQ)
-    std::function<void(int ch, uint32_t sr, const float* i, const float* q, int n)> on_const_frame;
     // 모듈 파이프: HOST→JOIN MODULE_PIPE 수신 (payload = PktModulePipe+data)
     std::function<void(const uint8_t*, uint32_t)> on_module_pipe;
     std::function<void(const PktSchedSync&)>   on_sched_sync;
@@ -241,7 +239,6 @@ public:
     // JOIN 주기 STATS 출력용 누적(타입별 RX 바이트)
     std::atomic<uint64_t> stat_rx_fft_bytes{0};
     std::atomic<uint64_t> stat_rx_audio_bytes{0};
-    std::atomic<uint64_t> stat_rx_const_bytes{0};  // 성상도 CONST_FRAME RX
     std::atomic<uint64_t> stat_rx_hb_bytes{0};
     std::atomic<uint64_t> stat_rx_db_bytes{0};  // DB 파일 송수신 (DB_SAVE_* / DB_DOWNLOAD_*)
     std::atomic<uint64_t> stat_tx_db_bytes{0};  // 업로드 측 누적 (cmd_db_save 호출 시 추적)
@@ -289,9 +286,6 @@ public:
     bool cmd_set_sq_thresh(int idx, float thr);
     bool cmd_set_autoscale();
     bool cmd_toggle_recv(int ch_idx, bool enable);
-    bool cmd_toggle_const_recv(int ch_idx, bool enable);  // 성상도 수신 구독 토글
-    bool cmd_set_const_sync(int ch_idx, bool on, float baud, uint8_t mod, float rolloff); // 심볼동기 파라미터
-    bool cmd_set_ofdm_sync(int ch_idx, bool autoest, uint16_t fft, uint16_t cp, uint8_t mod); // OFDM 블라인드 파라미터
     bool cmd_toggle_fft_recv(bool enable);  // central에서 이 JOIN으로 FFT 송신 토글 (audio/HB 무관)
     bool cmd_update_ch_range(int idx, float s, float e);
     bool cmd_toggle_tm_iq();

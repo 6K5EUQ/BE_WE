@@ -510,29 +510,6 @@ public:
     int    eid_const_win = 4096;    // 윈도우 크기 (샘플)
     float  eid_const_zoom = 0.0f;   // 0 = 자동 스케일, >0 = 수동 줌 배율
 
-    // ── LIVE constellation source (DM_CONST) ──────────────────────────────
-    // eid_source==EID_LIVE 면 eid_ch_i/q 가 채널 성상도 실시간 스트림으로 채워짐 (파일 재생 대신).
-    enum EidSource { EID_FILE=0, EID_LIVE=1 };
-    int  eid_source  = EID_FILE;
-    int  eid_live_ch = -1;          // LIVE 바인딩된 채널 (-1=none)
-    // freeze = !eid_const_playing 재사용 (정지 시 누적 중단 → 인덱스 고정, 스크럽 가능)
-    // 인바운드 pending: con_worker(host-local) 또는 net CONST_FRAME 수신 스레드가 append,
-    // UI 렌더 스레드가 매 프레임 drain → eid_ch_i/q rolling 버퍼로 이동.
-    std::mutex         live_const_mtx;
-    std::vector<float> live_const_i, live_const_q;
-    int                live_const_ch = -1;
-    uint32_t           live_const_sr = 0;
-    static constexpr size_t LIVE_CONST_CAP = 65536;   // eid rolling 버퍼 상한
-    // LIVE 성상도 심볼동기(clean) UI 상태 (eid_live_ch 채널에 적용)
-    bool  eid_sync_on = false;
-    float eid_sync_baud = 0.f;
-    int   eid_sync_mod = 2;        // 2=BPSK 4=QPSK 8=8PSK
-    float eid_sync_rolloff = 0.35f;
-    // LIVE OFDM 블라인드 복조(DM_OFDM) UI 상태 (eid_live_ch 채널에 적용)
-    bool  eid_ofdm_auto = true;
-    int   eid_ofdm_fft  = 0;       // 0=auto
-    int   eid_ofdm_cp   = 0;       // 0=auto
-    int   eid_ofdm_mod  = 4;       // 2=BPSK 4=QPSK/QAM (M-th power 등화 차수)
 
     // M-th power spectrum 분석 상태
     int    eid_power_order = 1;     // M 값 (1, 2, 4, 8)
@@ -935,16 +912,6 @@ public:
 
     void stop_all_dem();
     void update_dem_by_freq(float new_cf_mhz); // 주파수 변경 시 복조 pause/resume
-
-    // ── constellation.cpp (DM_CONST: 성상도 실시간 처리/스트림) ────────────
-    void con_worker(int ch_idx);   // DM_CONST worker — dem 슬롯(dem_thr/dem_rp/dem_stop_req) 재사용
-    // ── ofdm_demod.cpp (DM_OFDM: 블라인드 CP-OFDM → 부반송파 성상도 스트림) ──
-    void ofdm_worker(int ch_idx);  // dem 슬롯 재사용, 출력은 con_worker와 동일한 CONST_FRAME 경로
-    // thread-safe: con_worker(host-local) 또는 net CONST_FRAME 수신 스레드가 호출
-    void eid_live_push(int ch_idx, uint32_t sr, const float* i, const float* q, int n);
-    void eid_live_drain();          // UI thread: pending → eid_ch_i/q rolling
-    void eid_open_live(int ch_idx); // SA 패널을 LIVE 모드로 + 채널 바인딩
-    void eid_close_live();
 
     // ── iq_record.cpp ─────────────────────────────────────────────────────
     void rec_worker();
