@@ -178,13 +178,16 @@ private:
         if(flen>13 && (frame[12]&0x7F)==0x02)
             for(int i=13;i<flen-1 && ti<255;i++) m.text[ti++]=pc(frame[i]);
         m.text[ti]=0;
-        // best-effort flight id (downlink text starts with 4-char MSN + 6-char flight)
-        if(ti>=10){
+        // direction: ARINC 618 Block ID — downlink 는 숫자(0-9) 순환, uplink 는 영문자(A-Z)/NUL.
+        // (mode 바이트 '2' 는 VHF Category A 표시로 양방향 공통이라 판별자로 못 씀)
+        m.downlink = (m.block >= '0' && m.block <= '9');
+        // flight id: downlink text 선두 = 4자리 MSN + 6자리 편명 (uplink 엔 없음 → 오탐 방지)
+        if(m.downlink && ti>=10){
             bool letter=false, alnum=true;
             for(int i=4;i<10;i++){ char cc=m.text[i];
                 if(!((cc>='A'&&cc<='Z')||(cc>='0'&&cc<='9'))){ alnum=false; break; }
                 if(cc>='A'&&cc<='Z') letter=true; }
-            if(alnum && letter){ for(int i=0;i<6;i++) m.flight[i]=m.text[4+i]; m.flight[6]=0; m.downlink=true; }
+            if(alnum && letter){ for(int i=0;i<6;i++) m.flight[i]=m.text[4+i]; m.flight[6]=0; }
         }
         d_msgs++;
         if(on_record) on_record(m);
