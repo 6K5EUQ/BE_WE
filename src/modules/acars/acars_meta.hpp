@@ -13,6 +13,7 @@ struct AcarsMsg {
     char    mode=0;
     char    block=0;
     char    ack=0;
+    char    station[16]={};// 복조한 기지 표시명 (DGS-2 / LOCAL)
     char    reg[10]={};    // aircraft registration (tail)
     char    flight[8]={};  // flight id / callsign (best-effort)
     char    label[3]={};

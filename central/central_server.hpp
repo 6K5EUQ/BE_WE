@@ -1,5 +1,7 @@
 #pragma once
 #include "central_proto.hpp"
+#include <set>
+#include <map>
 #include "../src/net_protocol.hpp"  // PktBandEntry/PktBandPlan/PktBandRemove
 #include "emitter_db.hpp"
 #include <thread>
@@ -73,6 +75,10 @@ struct JoinEntry {
     // P 키로 JOIN이 FFT 수신 일시정지 요청. dispatch_to_joins가 FFT_FRAME만 스킵.
     // audio/HB/CMD/STATUS 등 다른 트래픽은 그대로.
     std::atomic<bool> fft_paused{false};
+
+    // ── 모듈 데이터 구독 (MODULE_PIPE BEWE_MK_RECV) ──
+    std::mutex            mod_recv_mtx;
+    std::set<std::string> mod_recv;   // 구독 중 모듈 id
 
     // ── 독립 송신 큐 ──────────────────────────────────────────────────────
     // 우선순위: ctrl_queue > file_queue > send_queue(FFT) > audio_queue
@@ -277,6 +283,7 @@ struct HostRoom {
     std::vector<uint8_t>      cached_op_list;     // 릴레이가 빌드
     std::vector<uint8_t>      cached_sched_sync;  // 예약 리스트 (JSON에 영속화)
     std::vector<uint8_t>      cached_mission_sync; // 미션 스냅샷 (JSON에 영속화)
+    std::map<std::string,uint32_t> mod_mask;        // 모듈 id → 디코드 채널 mask (cache_mtx)
 
     // Status page v2 — host periodic state cache (CentralHostStateFull).
     // Updated whenever a HOST_STATE MUX message arrives. has_state_ false
@@ -376,6 +383,14 @@ private:
     // send_to_host: true=HOST에도 재작성 CH_SYNC 전송, false=JOIN에게만
     // host_mux_loop 경유 시 false (HOST fd에 blocking write → 데드락 방지)
     void rebuild_and_broadcast_ch_sync(std::shared_ptr<HostRoom> room, bool send_to_host = true);
+
+    // ── Module control plane (MODULE_PIPE 0x58) ──────────────────────────
+    void handle_host_module_pipe(std::shared_ptr<HostRoom> room,
+                                 const uint8_t* bewe_pkt, size_t bewe_len);
+    void handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
+                                 const uint8_t* bewe_pkt, size_t bewe_len);
+    // sub_mod == nullptr → 전 JOIN, != nullptr → 그 모듈 구독자만
+    void broadcast_module_pkt_all(const uint8_t* bewe_pkt, size_t bewe_len, const char* sub_mod);
 
     // DB 파일 목록 스캔 → 모든 JOIN + HOST에 브로드캐스트
     void broadcast_db_list(std::shared_ptr<HostRoom> room);

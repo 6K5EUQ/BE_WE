@@ -102,14 +102,34 @@ static constexpr int PKT_HDR_SIZE = sizeof(PktHdr);
 
 // ── MODULE_PIPE ───────────────────────────────────────────────────────────
 // 선택 설치형 모듈 (src/modules/<id>/) 의 공용 데이터 파이프.
-// JOIN→HOST 명령 / HOST→전JOIN 브로드캐스트 / 파일(히스토리) 청크 전송을
-// 전부 이 한 타입으로 다중화. kind 의미는 모듈이 정의.
+// Central 이 컨트롤플레인: 채널 타깃 목록 집계, 크로스 스테이션 명령 라우팅,
+// 상태 캐시/전파, 데이터 수집(일 단위 저장) + 구독 JOIN 팬아웃.
 struct __attribute__((packed)) PktModulePipe {
     char     mod_id[8];   // 모듈 wire id, null-padded ("acars")
-    uint8_t  kind;        // 모듈 정의 opcode
+    uint8_t  kind;        // 아래 framework kind (0xF0+) — 모듈 자체 kind 는 0x01~0xEF
     uint8_t  _rsv[3];
     uint32_t data_len;    // 이 헤더 뒤에 붙는 데이터 길이
 };
+
+// framework kind (코어/Central 이 처리; 모듈은 payload 포맷만 소유)
+enum : uint8_t {
+    BEWE_MK_CH_LIST_REQ = 0xF0,  // JOIN→Central: 전 스테이션 채널 타깃 목록 요청
+    BEWE_MK_CH_LIST     = 0xF1,  // Central→JOIN(unicast): MpChEntry[n]
+    BEWE_MK_SET         = 0xF2,  // JOIN→Central→해당 HOST: MpSet (디코드 on/off)
+    BEWE_MK_STATE       = 0xF3,  // HOST→Central→전 JOIN: MpState (스테이션별 mask)
+    BEWE_MK_DATA        = 0xF4,  // HOST→Central: MpData+payload (저장 + 구독자 팬아웃)
+    BEWE_MK_RECV        = 0xF5,  // JOIN→Central: MpRecv (구독 on → 히스토리+라이브)
+    BEWE_MK_HIST_META   = 0xF6,  // Central→JOIN: MpHistMeta
+    BEWE_MK_HIST_CHUNK  = 0xF7,  // Central→JOIN: 저장 파일 바이트 청크
+    BEWE_MK_HIST_DONE   = 0xF8,  // Central→JOIN: 끝
+};
+struct __attribute__((packed)) MpSet      { char station[24]; uint8_t ch; uint8_t on; };
+struct __attribute__((packed)) MpState    { char station[24]; uint32_t mask; };
+struct __attribute__((packed)) MpChEntry  { char station[24]; uint8_t ch; uint8_t mode; uint8_t decode_on; uint8_t _r; float lo, hi; };
+struct __attribute__((packed)) MpRecv     { uint8_t on; };
+struct __attribute__((packed)) MpHistMeta { uint32_t total_bytes; };
+struct __attribute__((packed)) MpData     { char station[24]; };  // 뒤에 모듈 payload
+// Central 저장 파일 (.dat) 레코드: u32 len + (MpData+payload) 반복
 
 // ── AUTH_REQ ──────────────────────────────────────────────────────────────
 struct __attribute__((packed)) PktAuthReq {

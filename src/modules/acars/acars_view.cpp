@@ -1,4 +1,4 @@
-// ── ACARS 모듈 GUI: DEMOD 패널 탭 내용 + 채널 행 토글 버튼 ──────────────────
+// ── ACARS 모듈 GUI: DEMOD 패널 데이터 뷰 탭 ─────────────────────────────────
 #include "fft_viewer.hpp"
 #include "acars_module.hpp"
 #include "acars_db.hpp"
@@ -29,6 +29,7 @@ bool match(const AcarsMsg& m, const char* f){
     return ci_find(ts,f) || ci_find(fq,f) || ci_find(m.reg,f) || ci_find(m.flight,f)
         || ci_find(acars_country(m.reg),f) || ci_find(acars_airline_of(m),f)
         || ci_find(acars_db_type(m.reg),f) || ci_find(m.downlink?"Down":"Up", f)
+        || ci_find(m.station,f)
         || ci_find(m.label,f) || ci_find(m.crc_ok?"OK":"FAIL", f) || ci_find(m.text,f);
 }
 // 셀 내 중앙정렬 텍스트
@@ -38,7 +39,8 @@ void ctr(const char* s){
     ImGui::TextUnformatted(s);
 }
 void ctrc(const char* s, ImVec4 col){ ImGui::PushStyleColor(ImGuiCol_Text,col); ctr(s); ImGui::PopStyleColor(); }
-// 컬럼별 정렬 비교 (Text 외 헤더 인덱스와 동일 순서)
+// 컬럼별 정렬 비교 (헤더 인덱스 순서)
+// 0 Time / 1 Freq / 2 Reg / 3 Type / 4 Flight / 5 Country / 6 Airline / 7 Link / 8 Station / 9 Lbl / 10 CRC / 11 Text
 int col_cmp(int c, const AcarsMsg& a, const AcarsMsg& b){
     switch(c){
         case 0:  return a.t_ms<b.t_ms?-1:(a.t_ms>b.t_ms?1:0);
@@ -49,40 +51,18 @@ int col_cmp(int c, const AcarsMsg& a, const AcarsMsg& b){
         case 5:  return strcmp(acars_country(a.reg),acars_country(b.reg));
         case 6:  return strcmp(acars_airline_of(a),acars_airline_of(b));
         case 7:  return (int)a.downlink-(int)b.downlink;
-        case 8:  return strcmp(a.label,b.label);
-        case 9:  return (int)a.crc_ok-(int)b.crc_ok;
+        case 8:  return strcmp(a.station,b.station);
+        case 9:  return strcmp(a.label,b.label);
+        case 10: return (int)a.crc_ok-(int)b.crc_ok;
         default: return strcmp(a.text,b.text);
     }
 }
 } // anonymous namespace
 
-// ── 채널 행 토글 버튼 (코어 channel_ui hook) ───────────────────────────────
-void channel_ui(FFTViewer& v, int ci){
-    Channel& ch = v.channels[ci];
-    bool aon = ((on_mask.load()>>ci)&1) != 0;
-    bool am  = (ch.mode==Channel::DM_AM);
-    if(aon) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f,0.42f,0.72f,1.f));
-    else if(!am) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f,0.5f,0.5f,1.f));
-    if(ImGui::SmallButton("ACARS")){
-        if(aon){
-            if(v.remote_mode){
-                WireToggle t{(uint8_t)ci, 0};
-                bewe_mod_send_to_host("acars", K_TOGGLE, &t, sizeof(t));
-            } else host_set(v, ci, false);
-        } else if(am){
-            if(v.remote_mode){
-                WireToggle t{(uint8_t)ci, 1};
-                bewe_mod_send_to_host("acars", K_TOGGLE, &t, sizeof(t));
-            } else host_set(v, ci, true);
-        } else bewe_log_push(0,"ACARS: set channel to AM first\n");
-    }
-    if(aon || !am) ImGui::PopStyleColor();
-}
-
-// ── DEMOD 패널 탭 내용 ─────────────────────────────────────────────────────
 void draw_content(FFTViewer& v, bool just_opened){
     ImGuiIO& io = ImGui::GetIO();
-    if(just_opened) request_history(v);   // 탭 열림 → 오늘 히스토리 로드 (원격: HOST 요청 / 로컬: 파일)
+    bool remote = v.remote_mode;
+    if(just_opened && !remote) local_load_today(v);   // LOCAL: 오늘 아카이브 로드
 
     ImVec2 avail = ImGui::GetContentRegionAvail();
     float W = avail.x, H = avail.y;
@@ -93,7 +73,7 @@ void draw_content(FFTViewer& v, bool just_opened){
         (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false)) || ImGui::IsKeyPressed(ImGuiKey_Tab, false);
 
     static AcarsMsg sel; static bool has_sel=false;
-    static int  sort_col=-1;     // -1=정렬안함(삽입순), 0~10=해당 컬럼
+    static int  sort_col=-1;     // -1=원래상태(수신순), 0~11=해당 컬럼
     static bool sort_asc=true;
 
     // ── 헤더 바 ──
@@ -106,13 +86,28 @@ void draw_content(FFTViewer& v, bool just_opened){
     ImGui::SameLine(0,16); ImGui::SetCursorPosY(ty);
     int total; { std::lock_guard<std::mutex> lk(mtx); total=(int)msglog.size(); }
     ImGui::Text("%d msg", total);
-    if(hist_waiting.load()){ ImGui::SameLine(0,12); ImGui::SetCursorPosY(ty); ImGui::TextDisabled("loading..."); }
+    if(bewe_mod_hist_loading("acars")){ ImGui::SameLine(0,12); ImGui::SetCursorPosY(ty); ImGui::TextDisabled("loading..."); }
     ImGui::SameLine(0,20); ImGui::SetCursorPosY(fy);
     if(focus_filter) ImGui::SetKeyboardFocusHere();   // Ctrl+F / Tab 시 입력 활성화
     ImGui::SetNextItemWidth(220);
     ImGui::InputText("##flt", filter, sizeof(filter));   // 힌트 없음(빈칸)
-    float cwb=ImGui::CalcTextSize("Clear").x + ImGui::GetStyle().FramePadding.x*2;
-    ImGui::SameLine(); ImGui::SetCursorPos(ImVec2(W - cwb - 12, fy));    // Clear 우측정렬
+    // 우측: [Recv][Clear]
+    float cwb = ImGui::CalcTextSize("Clear").x + ImGui::GetStyle().FramePadding.x*2;
+    float rwb = ImGui::CalcTextSize("Recv").x  + ImGui::GetStyle().FramePadding.x*2;
+    if(remote){
+        bool rcv = bewe_mod_recv("acars");
+        ImGui::SameLine(); ImGui::SetCursorPos(ImVec2(W - cwb - rwb - 20, fy));
+        // Recv: 기본 빨강(미수신) / 초록(Central 수신 중)
+        ImGui::PushStyleColor(ImGuiCol_Button, rcv?ImVec4(0.15f,0.55f,0.2f,1.f):ImVec4(0.6f,0.15f,0.15f,1.f));
+        if(ImGui::Button("Recv")){
+            if(!rcv){ std::lock_guard<std::mutex> lk(mtx); msglog.clear(); has_sel=false; }
+            bewe_mod_set_recv(v, "acars", !rcv);   // on → 오늘 히스토리 + 라이브
+        }
+        ImGui::PopStyleColor();
+        ImGui::SameLine(); ImGui::SetCursorPos(ImVec2(W - cwb - 12, fy));
+    } else {
+        ImGui::SameLine(); ImGui::SetCursorPos(ImVec2(W - cwb - 12, fy));
+    }
     if(ImGui::Button("Clear")){ std::lock_guard<std::mutex> lk(mtx); msglog.clear(); has_sel=false; }
     ImGui::EndChild();
     ImGui::PopStyleColor();
@@ -125,7 +120,7 @@ void draw_content(FFTViewer& v, bool just_opened){
     ImGui::SetCursorPosX(x0);
     ImGuiTableFlags tf = ImGuiTableFlags_ScrollY|ImGuiTableFlags_ScrollX|ImGuiTableFlags_RowBg|
                          ImGuiTableFlags_BordersInnerV|ImGuiTableFlags_Resizable;
-    if(ImGui::BeginTable("##acars_tbl", 11, tf, ImVec2(W, table_h))){
+    if(ImGui::BeginTable("##acars_tbl", 12, tf, ImVec2(W, table_h))){
         ImGui::TableSetupScrollFreeze(3,1);   // Time/Freq/Reg + 헤더 고정
         ImGui::TableSetupColumn("Time",   ImGuiTableColumnFlags_WidthFixed, 68);
         ImGui::TableSetupColumn("Freq",   ImGuiTableColumnFlags_WidthFixed, 60);
@@ -135,12 +130,13 @@ void draw_content(FFTViewer& v, bool just_opened){
         ImGui::TableSetupColumn("Country",ImGuiTableColumnFlags_WidthFixed, 84);
         ImGui::TableSetupColumn("Airline",ImGuiTableColumnFlags_WidthFixed, 130);
         ImGui::TableSetupColumn("Link",   ImGuiTableColumnFlags_WidthFixed, 52);
+        ImGui::TableSetupColumn("Station",ImGuiTableColumnFlags_WidthFixed, 64);
         ImGui::TableSetupColumn("Lbl",    ImGuiTableColumnFlags_WidthFixed, 36);
         ImGui::TableSetupColumn("CRC",    ImGuiTableColumnFlags_WidthFixed, 44);
         ImGui::TableSetupColumn("Text",   ImGuiTableColumnFlags_WidthFixed, 2400);
-        // 중앙정렬 헤더 + 클릭 정렬 (Text 만 좌측)
+        // 중앙정렬 헤더 + 클릭 정렬: 오름차순 → 내림차순 → 원래상태 (3단계 순환)
         ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-        for(int c=0;c<11;c++){
+        for(int c=0;c<12;c++){
             ImGui::TableSetColumnIndex(c);
             const char* nm=ImGui::TableGetColumnName(c);
             char hdr[24];
@@ -150,11 +146,13 @@ void draw_content(FFTViewer& v, bool just_opened){
             ImVec2 hp=ImGui::GetCursorPos();
             ImGui::PushID(c);
             if(ImGui::InvisibleButton("##h", ImVec2(cw>1?cw:1, ImGui::GetFrameHeight()))){
-                if(sort_col==c) sort_asc=!sort_asc; else { sort_col=c; sort_asc=true; }
+                if(sort_col!=c){ sort_col=c; sort_asc=true; }       // 1) 오름차순
+                else if(sort_asc) sort_asc=false;                   // 2) 내림차순
+                else sort_col=-1;                                   // 3) 원래상태 (tail 자동스크롤 복귀)
             }
             ImGui::PopID();
             float tw=ImGui::CalcTextSize(hdr).x;
-            float ox=(c==10)?0.f:(tw<cw?(cw-tw)*0.5f:0.f);
+            float ox=(c==11)?0.f:(tw<cw?(cw-tw)*0.5f:0.f);
             ImGui::SetCursorPos(ImVec2(hp.x+ox, hp.y+2));
             ImGui::TextUnformatted(hdr);
         }
@@ -178,7 +176,10 @@ void draw_content(FFTViewer& v, bool just_opened){
             bool is_sel = has_sel && m.t_ms==sel.t_ms && !strcmp(m.reg,sel.reg) && !strcmp(m.text,sel.text);
             ImGui::PushID(vis[r]);
             if(ImGui::Selectable("##s", is_sel,
-                 ImGuiSelectableFlags_SpanAllColumns|ImGuiSelectableFlags_AllowOverlap)){ sel=m; has_sel=true; }
+                 ImGuiSelectableFlags_SpanAllColumns|ImGuiSelectableFlags_AllowOverlap)){
+                if(is_sel) has_sel=false;            // 선택된 행 재클릭 → 해제 (상세창 닫힘)
+                else { sel=m; has_sel=true; }
+            }
             ImGui::PopID();
             char ts[12]; hms(m.t_ms, ts);
             float tw0=ImGui::CalcTextSize(ts).x;
@@ -193,14 +194,15 @@ void draw_content(FFTViewer& v, bool just_opened){
             ImGui::TableSetColumnIndex(6); ctrc(acars_airline_of(m), ImVec4(0.62f,0.7f,0.62f,1.f)); // Airline
             ImGui::TableSetColumnIndex(7);
             ctrc(m.downlink?"Down":"Up", m.downlink?ImVec4(0.5f,0.8f,1.f,1.f):ImVec4(0.7f,0.7f,0.75f,1.f)); // Link
-            ImGui::TableSetColumnIndex(8); ctr(m.label);                              // Lbl
-            ImGui::TableSetColumnIndex(9);
+            ImGui::TableSetColumnIndex(8); ctrc(m.station, ImVec4(0.85f,0.75f,0.5f,1.f)); // Station
+            ImGui::TableSetColumnIndex(9); ctr(m.label);                              // Lbl
+            ImGui::TableSetColumnIndex(10);
             ctrc(m.crc_ok?"OK":"FAIL", m.crc_ok?ImVec4(0.4f,0.85f,0.4f,1.f):ImVec4(0.85f,0.5f,0.35f,1.f)); // CRC
-            ImGui::TableSetColumnIndex(10);                                           // Text (좌측정렬)
+            ImGui::TableSetColumnIndex(11);                                           // Text (좌측정렬)
             if(m.crc_ok) ImGui::TextUnformatted(m.text);
             else { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f,0.6f,0.6f,1.f)); ImGui::TextUnformatted(m.text); ImGui::PopStyleColor(); }
         }
-        // tail 스크롤: 맨 아래면 새 메시지 자동 따라감, 위로 올려두면 유지(수동), 맨 아래 복귀 시 재개
+        // tail 스크롤: 원래상태(정렬 해제)에서 맨 아래면 새 메시지 자동 따라감
         static bool s_at_bottom=true;
         bool forced=false;
         if(scroll){
@@ -222,7 +224,7 @@ void draw_content(FFTViewer& v, bool just_opened){
         const char* ty2=acars_db_type(sel.reg);
         char tsd[12]; hms(sel.t_ms, tsd);
         ImVec4 V(0.85f,0.85f,0.9f,1.f);   // 일반 값 색
-        // 표와 동일 순서/구성: Time Freq Reg Type Flight Country Airline Link Lbl CRC
+        // 표와 동일 순서/구성: Time Freq Reg Type Flight Country Airline Link Station Lbl CRC
         ImGui::Text("Time:");    ImGui::SameLine(); ImGui::TextColored(V,"%s", tsd);
         ImGui::SameLine(0,16); ImGui::Text("Freq:");   ImGui::SameLine(); ImGui::TextColored(V,"%.3f", sel.freq);
         ImGui::SameLine(0,16); ImGui::Text("Reg:");    ImGui::SameLine(); ImGui::TextColored(ImVec4(0.5f,0.8f,1.f,1.f),"%s", sel.reg[0]?sel.reg:"-");
@@ -231,6 +233,7 @@ void draw_content(FFTViewer& v, bool just_opened){
         ImGui::SameLine(0,16); ImGui::Text("Country:");ImGui::SameLine(); ImGui::TextDisabled("%s", cc[0]?cc:"-");
         ImGui::SameLine(0,16); ImGui::Text("Airline:");ImGui::SameLine(); ImGui::TextColored(ImVec4(0.62f,0.7f,0.62f,1.f),"%s", al[0]?al:"-");
         ImGui::SameLine(0,16); ImGui::Text("Link:");   ImGui::SameLine(); ImGui::TextColored(sel.downlink?ImVec4(0.5f,0.8f,1.f,1.f):ImVec4(0.7f,0.7f,0.75f,1.f),"%s", sel.downlink?"Down":"Up");
+        ImGui::SameLine(0,16); ImGui::Text("Station:");ImGui::SameLine(); ImGui::TextColored(ImVec4(0.85f,0.75f,0.5f,1.f),"%s", sel.station[0]?sel.station:"-");
         ImGui::SameLine(0,16); ImGui::Text("Lbl:");    ImGui::SameLine(); ImGui::TextUnformatted(sel.label[0]?sel.label:"-");
         ImGui::SameLine(0,16); ImGui::Text("CRC:");    ImGui::SameLine(); ImGui::TextColored(sel.crc_ok?ImVec4(0.4f,0.85f,0.4f,1.f):ImVec4(0.85f,0.5f,0.35f,1.f),"%s", sel.crc_ok?"OK":"FAIL");
         ImGui::SameLine(); ImGui::SetCursorPosX(W-72);

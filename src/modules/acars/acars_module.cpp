@@ -1,5 +1,6 @@
-// ── ACARS 모듈 본체: 등록, 파이프 프로토콜, 일 단위 저장, 워커 관리 ──────────
+// ── ACARS 모듈 본체: 등록, 워커 관리, 일 단위 아카이브, framework 연동 ──────
 // GUI/CLI 공통 (BEWE_HEADLESS 가드로 GUI hook 만 분기).
+// 제어/전송은 전부 framework (module_api) 경유 — 모듈은 복조 + 레코드 포맷만 소유.
 #include "acars_module.hpp"
 #include "acars_db.hpp"
 #include "module_api.hpp"
@@ -18,7 +19,6 @@ std::mutex            mtx;
 std::vector<AcarsMsg> msglog;
 bool                  scroll = true;
 char                  filter[64] = {};
-std::atomic<uint32_t> on_mask{0};
 
 // ── 워커 슬롯 ──────────────────────────────────────────────────────────────
 struct ChWork {
@@ -28,48 +28,61 @@ struct ChWork {
     std::thread         thr;
 };
 static ChWork g_w[MAX_CHANNELS];
+// start/stop 은 여러 스레드에서 동시 도달 가능 (Central mux 스레드 / relay client_loop
+// 스레드 / GUI 렌더 스레드) — join/move-assign 직렬화 필수
+static std::mutex g_mgmt;
 std::atomic<size_t>& worker_rp(int ch){ return g_w[ch].rp; }
 bool worker_stop_req(int ch){ return g_w[ch].stop.load(std::memory_order_relaxed); }
-// 워커 자연 종료(채널 삭제 등) 시 호출 — 상태 정리 + 브로드캐스트
-void worker_natural_exit(int ch){
+// 워커 자연 종료(채널 삭제/스트림 에러) — framework mask 정리 + 상태 전파
+void worker_natural_exit(FFTViewer& v, int ch){
     g_w[ch].on.store(false);
-    on_mask.fetch_and(~(1u<<ch));
-    WireState st{ on_mask.load() };
-    bewe_mod_broadcast("acars", K_STATE, &st, sizeof(st));
+    bewe_mod_host_mask_clear(v, "acars", ch);
 }
 
-void host_set(FFTViewer& v, int ch, bool on){
-    if(ch<0 || ch>=MAX_CHANNELS) return;
+static bool host_start(FFTViewer& v, int ch){
+    if(ch<0 || ch>=MAX_CHANNELS) return false;
+    std::lock_guard<std::mutex> lk(g_mgmt);
     ChWork& w = g_w[ch];
-    // 죽은 스레드 회수 (자연 종료 후 joinable 잔존)
-    if(!w.on.load() && w.thr.joinable()) w.thr.join();
-    if(on){
-        if(w.on.load()) return;
-        if(!v.channels[ch].filter_active) return;
-        w.stop.store(false);
-        w.on.store(true);
-        w.thr = std::thread(worker, std::ref(v), ch);
-        on_mask.fetch_or(1u<<ch);
-    } else {
-        if(w.on.load()){
-            w.stop.store(true);
-            if(w.thr.joinable()) w.thr.join();
-            w.on.store(false);
-        }
-        on_mask.fetch_and(~(1u<<ch));
-    }
-    WireState st{ on_mask.load() };
-    bewe_mod_broadcast("acars", K_STATE, &st, sizeof(st));
+    if(!w.on.load() && w.thr.joinable()) w.thr.join();   // 죽은 스레드 회수
+    if(w.on.load()) return true;
+    if(!v.channels[ch].filter_active) return false;
+    if(v.channels[ch].mode != Channel::DM_AM) return false;
+    w.stop.store(false);
+    w.on.store(true);
+    w.thr = std::thread(worker, std::ref(v), ch);
+    return true;
 }
 
-static void host_stop_all(FFTViewer& v){
-    for(int i=0;i<MAX_CHANNELS;i++) if(g_w[i].on.load()) host_set(v, i, false);
+static void host_stop(FFTViewer& v, int ch){
+    (void)v;
+    if(ch<0 || ch>=MAX_CHANNELS) return;
+    std::lock_guard<std::mutex> lk(g_mgmt);
+    ChWork& w = g_w[ch];
+    if(w.on.load()){
+        w.stop.store(true);
+        if(w.thr.joinable()) w.thr.join();
+        w.on.store(false);
+    } else if(w.thr.joinable()) w.thr.join();
+}
+
+// 채널 demod 종료/모드변경 (코어 stop_dem hook)
+static void on_ch_stop(FFTViewer& v, int ch){
+    if((bewe_mod_host_mask("acars")>>ch)&1){
+        host_stop(v, ch);
+        bewe_mod_host_mask_clear(v, "acars", ch);
+    }
 }
 
 // ── 로그 ──────────────────────────────────────────────────────────────────
 void append_log(const AcarsMsg& m){
     std::lock_guard<std::mutex> lk(mtx);
-    if((int)msglog.size() >= LOG_MAX) msglog.erase(msglog.begin());
+    // dedup: 히스토리/라이브 경계·재구독에서 같은 레코드 중복 도달 가능
+    int n = (int)msglog.size();
+    for(int i=n-1; i>=0 && i>=n-64; i--){
+        if(msglog[i].t_ms==m.t_ms && !strcmp(msglog[i].reg,m.reg) && !strcmp(msglog[i].text,m.text))
+            return;
+    }
+    if(n >= LOG_MAX) msglog.erase(msglog.begin());
     msglog.push_back(m);
     scroll = true;
 }
@@ -93,8 +106,16 @@ void wire_to_msg(const WireMsg& w, AcarsMsg& m){
     memcpy(m.text,w.text,sizeof(m.text)); m.text[sizeof(m.text)-1]=0;
 }
 
-// ── 일 단위 JSONL 저장소 ───────────────────────────────────────────────────
-std::string store_dir(){
+// station_id ("DGS-2_DGS-2") → 표시명 ("DGS-2")
+static void station_disp(const char* sid, char* out, size_t cap){
+    size_t o=0;
+    for(const char* p=sid; *p && *p!='_' && o+1<cap; ++p) out[o++]=*p;
+    if(o==0 && cap>5){ strncpy(out,"LOCAL",cap); out[cap-1]=0; return; }
+    out[o]=0;
+}
+
+// ── 호스트 일 단위 JSONL 아카이브 ──────────────────────────────────────────
+static std::string store_dir(){
     const char* home = getenv("HOME");
     std::string base = home ? std::string(home) : std::string(".");
     return base + "/BE_WE/modules/acars";
@@ -112,7 +133,7 @@ static void kst_date_of(int64_t t_ms, char out[9]){
     KST::to_tm((time_t)(t_ms/1000), tmv);
     snprintf(out, 9, "%04d%02d%02d", tmv.tm_year+1900, tmv.tm_mon+1, tmv.tm_mday);
 }
-std::string store_path_today(){
+static std::string store_path_today(){
     int64_t now = (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
                       std::chrono::system_clock::now().time_since_epoch()).count();
     char d[9]; kst_date_of(now, d);
@@ -207,134 +228,40 @@ void store_parse_jsonl(const char* data, size_t n, std::vector<AcarsMsg>& out){
     }
 }
 
-// ── HOST: 워커 디코드 → 스탬프 + 로그 + 저장 + 브로드캐스트 ──────────────────
+// ── HOST: 워커 디코드 → 스탬프 + 아카이브 + framework emit ──────────────────
+// (framework 가 Central 전송 + 로컬 on_data 반영을 처리)
 void host_emit(FFTViewer& v, AcarsMsg m){
     if(m.ch>=0 && m.ch<MAX_CHANNELS && v.channels[m.ch].filter_active)
         m.freq = (v.channels[m.ch].s + v.channels[m.ch].e)/2.0f;
     m.t_ms = (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
                  std::chrono::system_clock::now().time_since_epoch()).count();
-    append_log(m);
     store_append(m);
     WireMsg w; msg_to_wire(m, w);
-    bewe_mod_broadcast("acars", K_MSG, &w, sizeof(w));
+    bewe_mod_emit(v, "acars", &w, sizeof(w));
 }
 
-// ── 파이프 수신: HOST 측 (JOIN→HOST) ───────────────────────────────────────
-static void on_pipe_host(FFTViewer& v, uint8_t kind, const uint8_t* d, size_t n){
-    switch(kind){
-    case K_TOGGLE: {
-        if(n < sizeof(WireToggle)) break;
-        auto* t = reinterpret_cast<const WireToggle*>(d);
-        int ch = t->ch;
-        if(ch<0 || ch>=MAX_CHANNELS) break;
-        if(t->on){
-            if(!v.channels[ch].filter_active) break;
-            host_set(v, ch, true);
-        } else host_set(v, ch, false);
-        break;
-    }
-    case K_HIST_REQ: {
-        std::string body;
-        store_read_today(body);   // 없으면 빈 파일 (META 0 → JOIN 은 빈 로그)
-        WireHistMeta meta{ (uint32_t)body.size() };
-        bewe_mod_broadcast("acars", K_HIST_META, &meta, sizeof(meta));
-        constexpr size_t CHUNK = 8192;
-        for(size_t off=0; off<body.size(); off+=CHUNK){
-            size_t len = std::min(CHUNK, body.size()-off);
-            bewe_mod_broadcast("acars", K_HIST_CHUNK, body.data()+off, len);
-        }
-        bewe_mod_broadcast("acars", K_HIST_DONE, nullptr, 0);
-        break;
-    }
-    default: break;
-    }
-}
-
-// ── 파이프 수신: JOIN 측 (HOST→JOIN) ───────────────────────────────────────
-#ifndef BEWE_HEADLESS
-std::atomic<bool> hist_waiting{false};
-std::string       hist_buf;
-static std::vector<AcarsMsg> hist_pending;   // 전송 중 도착한 라이브 메시지
-#endif
-
-static void on_pipe_join(FFTViewer& v, uint8_t kind, const uint8_t* d, size_t n){
+// ── framework 데이터 수신 (라이브 + 히스토리 공용) ──────────────────────────
+static void on_data(FFTViewer& v, const char* station, const uint8_t* d, size_t n){
     (void)v;
+    if(n < sizeof(WireMsg)) return;
+    AcarsMsg m; wire_to_msg(*reinterpret_cast<const WireMsg*>(d), m);
+    station_disp(station, m.station, sizeof(m.station));
+    append_log(m);
+}
+
 #ifndef BEWE_HEADLESS
-    switch(kind){
-    case K_STATE: {
-        if(n < sizeof(WireState)) break;
-        on_mask.store(reinterpret_cast<const WireState*>(d)->mask);
-        break;
-    }
-    case K_MSG: {
-        if(n < sizeof(WireMsg)) break;
-        AcarsMsg m; wire_to_msg(*reinterpret_cast<const WireMsg*>(d), m);
-        if(hist_waiting.load()){ std::lock_guard<std::mutex> lk(mtx); hist_pending.push_back(m); }
-        else append_log(m);
-        break;
-    }
-    case K_HIST_META:
-        if(hist_waiting.load()){ hist_buf.clear(); }
-        break;
-    case K_HIST_CHUNK:
-        if(hist_waiting.load() && n) hist_buf.append((const char*)d, n);
-        break;
-    case K_HIST_DONE: {
-        if(!hist_waiting.exchange(false)) break;
-        std::vector<AcarsMsg> parsed;
-        store_parse_jsonl(hist_buf.data(), hist_buf.size(), parsed);
-        hist_buf.clear(); hist_buf.shrink_to_fit();
-        std::lock_guard<std::mutex> lk(mtx);
-        msglog = std::move(parsed);
-        // 전송 중 도착분 합류 (파일 끝과 겹치면 t_ms+text 로 dedup)
-        for(auto& m : hist_pending){
-            bool dup=false;
-            for(int i=(int)msglog.size()-1; i>=0 && i>=(int)msglog.size()-8; i--)
-                if(msglog[i].t_ms==m.t_ms && strcmp(msglog[i].text,m.text)==0){ dup=true; break; }
-            if(!dup) msglog.push_back(m);
-        }
-        hist_pending.clear();
-        if((int)msglog.size() > LOG_MAX) msglog.erase(msglog.begin(), msglog.end()-LOG_MAX);
-        scroll = true;
-        break;
-    }
-    default: break;
-    }
-#else
-    (void)kind; (void)d; (void)n;
-#endif
-}
-
-// 채널 demod 종료/모드변경 → 워커 정리 (코어 stop_dem hook)
-static void on_ch_stop(FFTViewer& v, int ch){
-    if((on_mask.load()>>ch)&1) host_set(v, ch, false);
-}
-
-// ── HOST: 새 JOIN 접속 → 현재 상태 push ────────────────────────────────────
-static void on_join_open(FFTViewer& v){
+// LOCAL: 오늘 아카이브 직접 로드 (Recv 개념 없음)
+void local_load_today(FFTViewer& v){
     (void)v;
-    WireState st{ on_mask.load() };
-    bewe_mod_broadcast("acars", K_STATE, &st, sizeof(st));
-}
-
-#ifndef BEWE_HEADLESS
-// 히스토리 로드 트리거 (탭 열릴 때 view 가 호출)
-void request_history(FFTViewer& v){
-    if(v.remote_mode){
-        hist_waiting.store(true);
-        hist_buf.clear();
-        bewe_mod_send_to_host("acars", K_HIST_REQ, nullptr, 0);
-    } else {
-        // LOCAL: 오늘 파일 직접 로드 (저장소가 세션 로그의 superset)
-        std::string body;
-        if(!store_read_today(body)) return;
-        std::vector<AcarsMsg> parsed;
-        store_parse_jsonl(body.data(), body.size(), parsed);
-        std::lock_guard<std::mutex> lk(mtx);
-        if(!parsed.empty()) msglog = std::move(parsed);
-        if((int)msglog.size() > LOG_MAX) msglog.erase(msglog.begin(), msglog.end()-LOG_MAX);
-        scroll = true;
-    }
+    std::string body;
+    if(!store_read_today(body)) return;
+    std::vector<AcarsMsg> parsed;
+    store_parse_jsonl(body.data(), body.size(), parsed);
+    for(auto& m : parsed) strncpy(m.station, "LOCAL", sizeof(m.station)-1);
+    std::lock_guard<std::mutex> lk(mtx);
+    if(!parsed.empty()) msglog = std::move(parsed);
+    if((int)msglog.size() > LOG_MAX) msglog.erase(msglog.begin(), msglog.end()-LOG_MAX);
+    scroll = true;
 }
 
 static void init_gui(FFTViewer& v){
@@ -349,15 +276,15 @@ static bool s_registered = [](){
     BeweModule m{};
     m.id    = "acars";
     m.label = "ACARS";
+    m.target_modes = (uint8_t)(1u << Channel::DM_AM);
 #ifndef BEWE_HEADLESS
     m.init         = &init_gui;
     m.draw_content = &draw_content;
-    m.channel_ui   = &channel_ui;
 #endif
-    m.on_pipe_join = &on_pipe_join;
-    m.on_pipe_host = &on_pipe_host;
-    m.on_join_open = &on_join_open;
-    m.on_ch_stop   = &on_ch_stop;
+    m.host_start = &host_start;
+    m.host_stop  = &host_stop;
+    m.on_ch_stop = &on_ch_stop;
+    m.on_data    = &on_data;
     bewe_register_module(m);
     return true;
 }();

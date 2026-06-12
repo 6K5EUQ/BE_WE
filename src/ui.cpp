@@ -2313,7 +2313,7 @@ void run_streaming_viewer(){
     // 설치된 모듈 초기화 (DB 로드 등) — 모듈 없으면 no-op
     for(auto& bm : bewe_modules()) if(bm.init) bm.init(v);
     // 모듈 파이프 송신 백엔드 (연결 여부는 호출 시점에 판단)
-    bewe_mod_set_send_to_host([&v](const void* pl, uint32_t len){
+    bewe_mod_set_send_up([&v](const void* pl, uint32_t len){
         return v.net_cli ? v.net_cli->send_module_pipe(pl, len) : false; });
     bewe_mod_set_broadcast([&v](const void* pl, uint32_t len){
         if(!v.net_srv) return false; v.net_srv->broadcast_module_pipe(pl, len); return true; });
@@ -3139,6 +3139,7 @@ void run_streaming_viewer(){
         if(rfd >= 0){
             cli = new NetClient();
             cli->stat_room_id = s_central_join_station_id;
+            bewe_mod_set_my_station(s_central_join_station_id.c_str());
             if(!cli->connect_fd(rfd, connect_id, connect_pw, connect_tier)){
                 close(rfd);
                 delete cli; cli = nullptr;
@@ -4453,6 +4454,10 @@ void run_streaming_viewer(){
                             v.station_lat, v.station_lon,
                             (uint8_t)login_get_tier());
                         if(rfd >= 0){
+                            bewe_mod_set_my_station(sid.c_str());
+                            central_cli.set_on_central_module_pipe([&v](const uint8_t* pkt, size_t len){
+                                if(len > 9) bewe_mod_route(v, true, pkt+9, len-9);   // BEWE 헤더 스킵
+                            });
                             // 릴레이가 재작성한 CHANNEL_SYNC > HOST의 audio_mask 갱신
                             central_cli.set_on_central_ch_sync([&v](const uint8_t* pkt, size_t len){
                                 if(len < 9 + 60*10) return;  // BEWE_HDR + 10 entries
@@ -4568,7 +4573,7 @@ void run_streaming_viewer(){
                                 // MISSION_UPDATE는 자동 캡처 모델에서 의미 없음 — 콜백 미등록.
 
                                 central_cli.set_on_central_conn_open([&v, &central_cli](uint16_t /*cid*/){
-                                    for(auto& bm : bewe_modules()) if(bm.on_join_open) bm.on_join_open(v);
+                                    bewe_mod_host_announce(v);
                                     std::vector<uint8_t> bp_pkt;
                                     { std::lock_guard<std::mutex> lk(HostBandPlan::g_mtx);
                                       bp_pkt = HostBandPlan::g_cached_pkt; }
@@ -4696,6 +4701,7 @@ void run_streaming_viewer(){
                                             v.station_lat, v.station_lon,
                                             (uint8_t)login_get_tier());
                                         if(rfd2 >= 0){
+                                            bewe_mod_set_my_station(sid.c_str());
                                             central_cli.start_mux_adapter(rfd2,
                                                 [&v](int fd2){ if(v.net_srv) v.net_srv->inject_fd(fd2); },
                                                 [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; },
@@ -6334,6 +6340,14 @@ void run_streaming_viewer(){
            && !ImGui::IsAnyItemActive()){
             try_toggle(3, v.lwf_modal_open);
         }
+        // ── DEMOD 모듈 패널 토글 — D 키 (모듈 설치 시에만).
+        // 메인페이지에서 채널 선택 중엔 기존 D=OFDM 단축키가 우선 — 미선택일 때만.
+        if(!bewe_modules().empty()
+           && !(v.selected_ch>=0 && v.selected_ch<MAX_CHANNELS && v.channels[v.selected_ch].filter_active)
+           && ImGui::IsKeyPressed(ImGuiKey_D, false) && !io.WantTextInput
+           && !ImGui::IsAnyItemActive()){
+            try_toggle(6, v.demod_panel_open);
+        }
         // ── Signal Library 토글 (L키) — 새 오버레이 ────
         if(!viewer_open_blocking && ImGui::IsKeyPressed(ImGuiKey_L, false) && !io.WantTextInput){
             if(try_toggle(4, v.sig_lib_panel_open) && v.sig_lib_panel_open){
@@ -7126,9 +7140,6 @@ void run_streaming_viewer(){
                                 if(bi<3) ImGui::SameLine(0,2);
                             }
 
-                            // ── 설치된 모듈의 채널 행 버튼 (모듈 없으면 아무것도 안 그림) ──
-                            for(auto& bm : bewe_modules())
-                                if(bm.channel_ui){ ImGui::SameLine(0,8); bm.channel_ui(v,ci); }
 
 
                             ImGui::PopID();

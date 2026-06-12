@@ -182,6 +182,7 @@ private:
     std::function<void(const uint8_t*, size_t)> on_central_emitter_list_;
     std::function<void(const uint8_t*, size_t)> on_central_sighting_list_;
     std::function<void(uint16_t)>               on_central_conn_open_;   // 새 JOIN 도착 알림 (cid)
+    std::function<void(const uint8_t*, size_t)> on_central_module_pipe_;  // MODULE_PIPE (0x58) Central→HOST
     // Mission File archive (Central → HOST): PUSH_ACK / LIST / DL_DATA
     std::function<void(const uint8_t*, size_t)> on_central_mf_push_ack_;
     std::function<void(const uint8_t*, size_t)> on_central_mf_list_;
@@ -220,6 +221,9 @@ public:
     // 새 JOIN이 Central을 통해 접속하면 호출 (Host가 BAND_PLAN_SYNC 푸시 트리거로 사용)
     void set_on_central_conn_open(std::function<void(uint16_t)> cb){
         on_central_conn_open_ = std::move(cb);
+    }
+    void set_on_central_module_pipe(std::function<void(const uint8_t*, size_t)> cb){
+        on_central_module_pipe_ = std::move(cb);
     }
     // Mission file archive: Central → HOST.
     void set_on_central_mf_push_ack(std::function<void(const uint8_t*, size_t)> cb){

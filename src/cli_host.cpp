@@ -1040,6 +1040,10 @@ void run_cli_host(){
                 v.station_lat, v.station_lon,
                 (uint8_t)login_get_tier());
             if(rfd >= 0){
+                bewe_mod_set_my_station(sid.c_str());
+                central_cli.set_on_central_module_pipe([&v](const uint8_t* pkt, size_t len){
+                    if(len > 9) bewe_mod_route(v, true, pkt+9, len-9);   // BEWE 헤더 스킵
+                });
                 // Relay CHANNEL_SYNC callback
                 central_cli.set_on_central_ch_sync([&v](const uint8_t* pkt, size_t len){
                     size_t entry_sz = sizeof(ChSyncEntry); // 80 bytes
@@ -1319,7 +1323,7 @@ void run_cli_host(){
                     if(!bp_pkt.empty())
                         central_cli.enqueue_relay_broadcast(bp_pkt.data(), bp_pkt.size(), true);
                     // 설치된 모듈 상태 push (예: ACARS 채널 디코드 on/off)
-                    for(auto& bm : bewe_modules()) if(bm.on_join_open) bm.on_join_open(v);
+                    bewe_mod_host_announce(v);
                     // LIVE_START는 JOIN이 STREAM 버튼으로 명시 요청(LWF_LIVE_REQ)할 때만 unicast.
                     // mission_sync는 on_auth 200ms 스레드에서 AUTH_ACK 이후에 전송 (pre-auth 전송 시 JOIN이 skip함)
                 });

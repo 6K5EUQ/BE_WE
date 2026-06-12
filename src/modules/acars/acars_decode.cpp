@@ -14,7 +14,7 @@ namespace acars_mod {
 // acars_module.cpp 의 워커 슬롯 접근자
 std::atomic<size_t>& worker_rp(int ch);
 bool worker_stop_req(int ch);
-void worker_natural_exit(int ch);
+void worker_natural_exit(FFTViewer& v, int ch);
 
 void worker(FFTViewer& v, int ch_idx){
     Channel& ch=v.channels[ch_idx];
@@ -96,7 +96,7 @@ void worker(FFTViewer& v, int ch_idx){
         my_rp.store((rp+avail)&IQ_RING_MASK,std::memory_order_release);
     }
     // 정지 요청 없이 끝났으면 (채널 삭제/스트림 에러) 상태 정리 + 브로드캐스트
-    if(!worker_stop_req(ch_idx)) worker_natural_exit(ch_idx);
+    if(!worker_stop_req(ch_idx)) worker_natural_exit(v, ch_idx);
     bewe_log_push(0,"ACARS[%d] stop\n",ch_idx);
 }
 

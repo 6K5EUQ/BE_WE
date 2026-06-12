@@ -535,6 +535,11 @@ void CentralClient::mux_loop(int central_fd,
                 if(btype == 0x31){  // BAND_PLAN_SYNC: host owns it; ignore any incoming.
                     continue;
                 }
+                if(btype == 0x58){  // MODULE_PIPE: Central → HOST (모듈 SET 라우팅)
+                    if(on_central_module_pipe_)
+                        on_central_module_pipe_(buf.data(), mux.len);
+                    continue;
+                }
                 if(btype == 0x51){  // MISSION_FILE_LIST: Central → HOST
                     if(on_central_mf_list_)
                         on_central_mf_list_(buf.data(), mux.len);

@@ -831,6 +831,12 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
         return;
     }
 
+    // ── MODULE_PIPE 인터셉트: 상태 캐시/글로벌 전파 + 데이터 저장/구독자 팬아웃
+    if(bewe_type == 0x58){
+        handle_host_module_pipe(room, bewe_pkt, bewe_len);
+        return;
+    }
+
     // ── CHANNEL_SYNC 인터셉트: 캐시 저장 → audio_mask 재작성 후 broadcast
     // (rebuild_and_broadcast_ch_sync 내부에서 cache_mtx를 잡으므로 여기서 중복 잠금 없이 처리)
     if(bewe_type == BEWE_TYPE_CH_SYNC){
@@ -1055,8 +1061,7 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                     bewe_type == 0x3D ||                 // LWF_LIVE_ROW (행 누락 = stream 깨짐)
                     bewe_type == 0x3E ||                 // LWF_LIVE_STOP
                     bewe_type == 0x3F ||                 // LWF_LIVE_REQ (JOIN→host opt-in)
-                    bewe_type == 0x40 ||                 // LWF_DELETE_REQ (JOIN→host)
-                    bewe_type == 0x58);                  // MODULE_PIPE (모듈 상태/데이터, 드롭 불가)
+                    bewe_type == 0x40);                  // LWF_DELETE_REQ (JOIN→host)
     // joins 스냅샷 후 lock 해제 — enqueue_file이 BLOCK 될 수 있어 joins_mtx 잡고 있으면 안 됨
     static thread_local std::vector<std::shared_ptr<JoinEntry>> targets;
     targets.clear();
@@ -1115,6 +1120,12 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
        bewe_type == BEWE_TYPE_MISSION_DELETE)
         printf("[Central] MISSION relay: bewe_type=0x%02x len=%zu conn_id=%u '%s' authed=%d → forwarding to HOST\n",
                bewe_type, bewe_len, je->conn_id, je->name, (int)je->authed);
+
+    // ── MODULE_PIPE: Central 컨트롤플레인 (목록/SET 라우팅/구독) ──
+    if(bewe_type == 0x58){
+        if(je->authed) handle_join_module_pipe(je, bewe_pkt, bewe_len);
+        return true;
+    }
 
     // ── DB_LIST_REQ: 즉시 재전송 ─────────────────────────────────
     if(bewe_type == BEWE_TYPE_DB_LIST_REQ){
@@ -1676,6 +1687,154 @@ void CentralServer::broadcast_db_list(std::shared_ptr<HostRoom> room){
 }
 
 // ── CHANNEL_SYNC audio_mask 재작성 + broadcast ───────────────────────────
+// ── Module control plane ────────────────────────────────────────────────
+// 일 단위 저장 (Central 집계본): ~/BE_WE/modules/<mod>/<mod>_YYYYMMDD.dat
+// 레코드 = u32 len + (MpData + 모듈 payload)
+static std::string module_store_today(const char* mod){
+    const char* home = getenv("HOME");
+    std::string dir = std::string(home?home:".") + "/BE_WE/modules/" + mod;
+    std::string p;
+    for(char c : dir){ p += c; if(c=='/' && p.size()>1) mkdir(p.c_str(), 0755); }
+    mkdir(dir.c_str(), 0755);
+    time_t t = time(nullptr) + 9*3600;   // KST
+    struct tm tmv; gmtime_r(&t, &tmv);
+    char f[64]; snprintf(f, sizeof(f), "/%s_%04d%02d%02d.dat",
+                         mod, tmv.tm_year+1900, tmv.tm_mon+1, tmv.tm_mday);
+    return dir + f;
+}
+
+void CentralServer::broadcast_module_pkt_all(const uint8_t* bewe_pkt, size_t bewe_len,
+                                             const char* sub_mod){
+    std::lock_guard<std::mutex> rlk(rooms_mtx_);
+    for(auto& r : rooms_){
+        if(!r->alive.load()) continue;
+        std::lock_guard<std::mutex> jlk(r->joins_mtx);
+        for(auto& je : r->joins){
+            if(!je->authed || !je->alive.load() || je->fd < 0) continue;
+            if(sub_mod){
+                std::lock_guard<std::mutex> mlk(je->mod_recv_mtx);
+                if(!je->mod_recv.count(sub_mod)) continue;
+            }
+            je->enqueue_ctrl(bewe_pkt, bewe_len);
+        }
+    }
+}
+
+void CentralServer::handle_host_module_pipe(std::shared_ptr<HostRoom> room,
+                                            const uint8_t* bewe_pkt, size_t bewe_len){
+    if(bewe_len < BEWE_HDR_SIZE + sizeof(PktModulePipe)) return;
+    const uint8_t* pl = bewe_pkt + BEWE_HDR_SIZE;
+    auto* h = reinterpret_cast<const PktModulePipe*>(pl);
+    if(BEWE_HDR_SIZE + sizeof(PktModulePipe) + h->data_len > bewe_len) return;
+    char mod[9]={}; memcpy(mod, h->mod_id, 8);
+    const uint8_t* d = pl + sizeof(PktModulePipe);
+
+    if(h->kind == BEWE_MK_STATE && h->data_len >= sizeof(MpState)){
+        auto* st = reinterpret_cast<const MpState*>(d);
+        { std::lock_guard<std::mutex> clk(room->cache_mtx); room->mod_mask[mod] = st->mask; }
+        broadcast_module_pkt_all(bewe_pkt, bewe_len, nullptr);   // 상태는 전 JOIN
+        return;
+    }
+    if(h->kind == BEWE_MK_DATA && h->data_len >= sizeof(MpData)){
+        FILE* f = fopen(module_store_today(mod).c_str(), "ab");
+        if(f){ uint32_t rl = h->data_len; fwrite(&rl,4,1,f); fwrite(d,1,rl,f); fclose(f); }
+        broadcast_module_pkt_all(bewe_pkt, bewe_len, mod);       // 데이터는 구독자만
+        return;
+    }
+}
+
+void CentralServer::handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
+                                            const uint8_t* bewe_pkt, size_t bewe_len){
+    if(bewe_len < BEWE_HDR_SIZE + sizeof(PktModulePipe)) return;
+    const uint8_t* pl = bewe_pkt + BEWE_HDR_SIZE;
+    auto* h = reinterpret_cast<const PktModulePipe*>(pl);
+    if(BEWE_HDR_SIZE + sizeof(PktModulePipe) + h->data_len > bewe_len) return;
+    char mod[9]={}; memcpy(mod, h->mod_id, 8);
+    const uint8_t* d = pl + sizeof(PktModulePipe);
+
+    auto make_mp = [&](uint8_t kind, const void* data, size_t n){
+        std::vector<uint8_t> body(sizeof(PktModulePipe) + n);
+        auto* mh = reinterpret_cast<PktModulePipe*>(body.data());
+        memset(mh, 0, sizeof(*mh));
+        memcpy(mh->mod_id, mod, 8); mh->kind = kind; mh->data_len = (uint32_t)n;
+        if(n) memcpy(body.data()+sizeof(PktModulePipe), data, n);
+        return make_packet(PacketType::MODULE_PIPE, body.data(), (uint32_t)body.size());
+    };
+
+    if(h->kind == BEWE_MK_CH_LIST_REQ){
+        // 전 스테이션 활성 채널 목록 집계 (cached_ch_sync + mod_mask)
+        std::vector<MpChEntry> list;
+        std::lock_guard<std::mutex> rlk(rooms_mtx_);
+        for(auto& r : rooms_){
+            if(!r->alive.load()) continue;
+            std::vector<uint8_t> sync; uint32_t mmask = 0;
+            {
+                std::lock_guard<std::mutex> clk(r->cache_mtx);
+                sync = r->cached_ch_sync;
+                auto it = r->mod_mask.find(mod);
+                if(it != r->mod_mask.end()) mmask = it->second;
+            }
+            if(sync.size() < BEWE_HDR_SIZE + sizeof(ChSyncEntry)*MAX_CHANNELS_RELAY) continue;
+            auto* ent = reinterpret_cast<const ChSyncEntry*>(sync.data() + BEWE_HDR_SIZE);
+            for(int i=0;i<MAX_CHANNELS_RELAY;i++){
+                if(!ent[i].active) continue;
+                MpChEntry e{};
+                strncpy(e.station, r->station_id.c_str(), sizeof(e.station)-1);
+                e.ch = ent[i].idx; e.mode = ent[i].mode;
+                e.lo = ent[i].s;   e.hi = ent[i].e;
+                e.decode_on = ((mmask >> ent[i].idx) & 1) ? 1 : 0;
+                list.push_back(e);
+            }
+        }
+        auto pkt = make_mp(BEWE_MK_CH_LIST, list.data(), list.size()*sizeof(MpChEntry));
+        je->enqueue_ctrl(pkt.data(), pkt.size());
+        return;
+    }
+
+    if(h->kind == BEWE_MK_SET && h->data_len >= sizeof(MpSet)){
+        auto* st = reinterpret_cast<const MpSet*>(d);
+        std::string stn(st->station, strnlen(st->station, sizeof(st->station)));
+        std::lock_guard<std::mutex> rlk(rooms_mtx_);
+        for(auto& r : rooms_){
+            if(!r->alive.load() || r->fd < 0) continue;
+            if(r->station_id != stn) continue;
+            enqueue_host_send(r, 0xFFFF, CentralMuxType::DATA, bewe_pkt, (uint32_t)bewe_len);
+            break;
+        }
+        return;
+    }
+
+    if(h->kind == BEWE_MK_RECV && h->data_len >= sizeof(MpRecv)){
+        bool on = reinterpret_cast<const MpRecv*>(d)->on != 0;
+        {
+            std::lock_guard<std::mutex> mlk(je->mod_recv_mtx);
+            if(on) je->mod_recv.insert(mod); else je->mod_recv.erase(mod);
+        }
+        if(on){
+            // 오늘 집계 파일 → 히스토리 스트림 (unicast)
+            std::string body;
+            FILE* f = fopen(module_store_today(mod).c_str(), "rb");
+            if(f){
+                char buf[8192]; size_t n;
+                while((n=fread(buf,1,sizeof(buf),f))>0) body.append(buf,n);
+                fclose(f);
+            }
+            MpHistMeta meta{ (uint32_t)body.size() };
+            auto mp = make_mp(BEWE_MK_HIST_META, &meta, sizeof(meta));
+            je->enqueue_ctrl(mp.data(), mp.size());
+            constexpr size_t CHUNK = 8192;
+            for(size_t off=0; off<body.size(); off+=CHUNK){
+                size_t len = std::min(CHUNK, body.size()-off);
+                auto cp = make_mp(BEWE_MK_HIST_CHUNK, body.data()+off, len);
+                je->enqueue_ctrl(cp.data(), cp.size());
+            }
+            auto dp = make_mp(BEWE_MK_HIST_DONE, nullptr, 0);
+            je->enqueue_ctrl(dp.data(), dp.size());
+        }
+        return;
+    }
+}
+
 void CentralServer::rebuild_and_broadcast_ch_sync(std::shared_ptr<HostRoom> room, bool send_to_host){
     std::vector<uint8_t> base_sync;
     {
