@@ -196,6 +196,9 @@ struct ServerCallbacks {
     // no_drop: IQ_CHUNK 등 드롭하면 안 되는 패킷
     std::function<void(const uint8_t*, size_t, bool no_drop)> on_relay_broadcast;
 
+    // ── Module pipe: JOIN→HOST MODULE_PIPE 수신 (payload = PktModulePipe+data) ──
+    std::function<void(const uint8_t* payload, uint32_t len)> on_module_pipe;
+
     // ── Band plan (host owns ~/BE_WE/band_plan.json) ─────────────────────
     // JOIN/HOST 어느쪽이든 보낸 ADD/UPDATE/REMOVE 가 도달하면 호출.
     // 핸들러는 HostBandPlan::apply_*() 후 save+rebuild+broadcast 한다.
@@ -285,6 +288,7 @@ public:
     // Mission state snapshot → all clients (via central relay).
     // HOST가 미션 상태 변화 시 호출.
     void broadcast_mission_sync(const PktMissionSync& pkt);
+    void broadcast_module_pipe(const void* payload, uint32_t len);
     void broadcast_band_plan(const PktBandPlan& pkt);
     void broadcast_band_categories(const PktBandCatSync& pkt);
 

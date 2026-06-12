@@ -6,6 +6,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(CLI "Build CLI-only binary (no OpenGL/GLFW/ImGui)" OFF)
 
+# ── 선택 설치형 모듈 (src/modules/<id>/) — 존재하는 모듈만 컴파일 ─────────────
+# 폴더가 없으면 빈 목록 → 코어만 빌드 (기능 흔적 없음).
+# *_view.cpp 는 ImGui 의존 → GUI 빌드 전용.
+file(GLOB BEWE_MODULE_SRCS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/modules/*/*.cpp)
+file(GLOB BEWE_MODULE_VIEW_SRCS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/modules/*/*_view.cpp)
+set(BEWE_MODULE_SRCS_CLI ${BEWE_MODULE_SRCS})
+if(BEWE_MODULE_VIEW_SRCS)
+    list(REMOVE_ITEM BEWE_MODULE_SRCS_CLI ${BEWE_MODULE_VIEW_SRCS})
+endif()
+
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(BLADERF REQUIRED libbladeRF)
 pkg_check_modules(FFTW    REQUIRED fftw3f)
@@ -26,7 +36,8 @@ if(CLI)
         src/fft_viewer.cpp
         src/bladerf_io.cpp
         src/demod.cpp
-        src/acars_decode.cpp
+        src/module_registry.cpp
+        ${BEWE_MODULE_SRCS_CLI}
         src/iq_record.cpp
         src/constellation.cpp
         src/ofdm_demod.cpp
@@ -106,7 +117,9 @@ else()
         src/fft_viewer.cpp
         src/bladerf_io.cpp
         src/demod.cpp
-        src/acars_decode.cpp
+        src/module_registry.cpp
+        src/demod_panel.cpp
+        ${BEWE_MODULE_SRCS}
         src/iq_record.cpp
         src/constellation.cpp
         src/ofdm_demod.cpp
@@ -116,8 +129,6 @@ else()
         src/audio.cpp
         src/audio_playback.cpp
         src/ui.cpp
-        src/acars_view.cpp
-        src/acars_db.cpp
         src/timemachine.cpp
         src/region_save.cpp
         src/sa_compute.cpp

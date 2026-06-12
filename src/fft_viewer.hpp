@@ -5,7 +5,6 @@
 #include "net_client.hpp"
 #include "hw_config.hpp"
 #include "channel.hpp"
-#include "acars_meta.hpp"
 #include "audio_playback.hpp"
 #include "mission.hpp"
 
@@ -443,15 +442,8 @@ public:
     bool log_scroll[3] = {true,true,true};
     void log_push(int col, const char* fmt, ...);
 
-    // ── ACARS 오버레이 (A키 토글) ────────────────────────────────────────
-    bool                 acars_panel_open = false;
-    bool                 acars_scroll = true;
-    static constexpr int ACARS_MAX = 1000;
-    std::vector<AcarsMsg> acars_log;       // 디코드된 메시지 (lock 필요)
-    std::mutex            acars_mtx;
-    int                   acars_sel = -1;  // 선택 행 (상세 보기)
-    char                  acars_filter[64] = {};
-    void push_acars(AcarsMsg m);           // ch 기반 freq/time 스탬프 후 append
+    // ── DEMOD 모듈 패널 (src/modules/ 설치형 모듈 컨테이너) ──────────────
+    bool                 demod_panel_open = false;
 
     // ── EID (Emitter ID / RF Fingerprint) 패널 ─────────────────────────────
     bool              eid_panel_open = false;
@@ -964,10 +956,6 @@ public:
     void stop_iq_rec(int ch_idx);
     void iq_only_worker(int ch_idx);  // demod 우회 IQ-only 녹음 worker
 
-    // ACARS 디코드 (demod 우회, IQ ring 자체 read-ptr 탭)
-    void acars_worker(int ch_idx);
-    void start_acars(int ch_idx);
-    void stop_acars(int ch_idx);
     void start_join_audio_rec(int ch_idx); // JOIN 모드 로컬 오디오 녹음
     void stop_join_audio_rec(int ch_idx);
 
@@ -1018,5 +1006,5 @@ bool bladerf_usb_reset();
 // 으로는 안 풀리고 포트 re-enumeration 만 복구됨. USBDEVFS_RESET ioctl 사용.
 bool rtl_usb_reset();
 
-// ── ACARS 오버레이 렌더 (acars_view.cpp) ──────────────────────────────────
-void acars_draw_overlay(FFTViewer& v, bool just_opened);
+// ── DEMOD 모듈 패널 렌더 (demod_panel.cpp) ────────────────────────────────
+void demod_draw_panel(FFTViewer& v, bool just_opened);

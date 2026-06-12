@@ -1,9 +1,15 @@
+// ── ACARS 모듈 GUI: DEMOD 패널 탭 내용 + 채널 행 토글 버튼 ──────────────────
 #include "fft_viewer.hpp"
+#include "acars_module.hpp"
+#include "acars_db.hpp"
+#include "module_api.hpp"
 #include <imgui.h>
 #include <cstring>
 #include <cctype>
 #include <vector>
 #include <algorithm>
+
+namespace acars_mod {
 
 namespace {
 bool ci_find(const char* hay, const char* nee){
@@ -48,33 +54,46 @@ int col_cmp(int c, const AcarsMsg& a, const AcarsMsg& b){
         default: return strcmp(a.text,b.text);
     }
 }
+} // anonymous namespace
+
+// ── 채널 행 토글 버튼 (코어 channel_ui hook) ───────────────────────────────
+void channel_ui(FFTViewer& v, int ci){
+    Channel& ch = v.channels[ci];
+    bool aon = ((on_mask.load()>>ci)&1) != 0;
+    bool am  = (ch.mode==Channel::DM_AM);
+    if(aon) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f,0.42f,0.72f,1.f));
+    else if(!am) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f,0.5f,0.5f,1.f));
+    if(ImGui::SmallButton("ACARS")){
+        if(aon){
+            if(v.remote_mode){
+                WireToggle t{(uint8_t)ci, 0};
+                bewe_mod_send_to_host("acars", K_TOGGLE, &t, sizeof(t));
+            } else host_set(v, ci, false);
+        } else if(am){
+            if(v.remote_mode){
+                WireToggle t{(uint8_t)ci, 1};
+                bewe_mod_send_to_host("acars", K_TOGGLE, &t, sizeof(t));
+            } else host_set(v, ci, true);
+        } else bewe_log_push(0,"ACARS: set channel to AM first\n");
+    }
+    if(aon || !am) ImGui::PopStyleColor();
 }
 
-// ── ACARS 오버레이 (A키) — 메시지 테이블 + 필터 + 상세 ──────────────────────
-void acars_draw_overlay(FFTViewer& v, bool just_opened){
+// ── DEMOD 패널 탭 내용 ─────────────────────────────────────────────────────
+void draw_content(FFTViewer& v, bool just_opened){
     ImGuiIO& io = ImGui::GetIO();
-    // SA 오버레이와 동일: 상단부터 꽉 채우고 하단바만 남김 (상단 주파수바 덮음)
-    float W = io.DisplaySize.x, H = io.DisplaySize.y - TOPBAR_H;
-    ImGui::SetNextWindowPos(ImVec2(0, 0));
-    ImGui::SetNextWindowSize(ImVec2(W, H));
-    if(just_opened) ImGui::SetNextWindowFocus();   // 열릴 때만 앞으로 (필터 입력 focus 보존)
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
-    ImGui::Begin("##acars_overlay", nullptr,
-        ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove|
-        ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
+    if(just_opened) request_history(v);   // 탭 열림 → 오늘 히스토리 로드 (원격: HOST 요청 / 로컬: 파일)
 
-    // ESC로 닫기 (Close 버튼과 동일) — 포커스된 경우만. 필터 입력 중엔 InputText가 ESC 소비.
-    if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
-       ImGui::IsKeyPressed(ImGuiKey_Escape, false))
-        v.acars_panel_open = false;
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    float W = avail.x, H = avail.y;
+    float x0 = ImGui::GetCursorPosX();
 
-    // Ctrl+F / Tab → 필터 입력창 포커스. draw_overlay 는 ACARS 열렸을 때만 호출되므로 항상 적용.
-    // (창 focus 여부 무관 — SetKeyboardFocusHere 가 필터+ACARS창 focus 를 가져와 메인 freq Tab 으로 새는 것 차단)
+    // Ctrl+F / Tab → 필터 입력창 포커스 (이 탭이 활성일 때만 호출됨)
     bool focus_filter =
         (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false)) || ImGui::IsKeyPressed(ImGuiKey_Tab, false);
 
     static AcarsMsg sel; static bool has_sel=false;
-    static int  sort_col=-1;     // -1=정렬안함(삽입순), 0~9=해당 컬럼
+    static int  sort_col=-1;     // -1=정렬안함(삽입순), 0~10=해당 컬럼
     static bool sort_asc=true;
 
     // ── 헤더 바 ──
@@ -85,22 +104,25 @@ void acars_draw_overlay(FFTViewer& v, bool just_opened){
     ImGui::SetCursorPos(ImVec2(12, ty));
     ImGui::TextColored(ImVec4(0.5f,0.8f,1.f,1.f), "ACARS");
     ImGui::SameLine(0,16); ImGui::SetCursorPosY(ty);
-    int total; { std::lock_guard<std::mutex> lk(v.acars_mtx); total=(int)v.acars_log.size(); }
+    int total; { std::lock_guard<std::mutex> lk(mtx); total=(int)msglog.size(); }
     ImGui::Text("%d msg", total);
+    if(hist_waiting.load()){ ImGui::SameLine(0,12); ImGui::SetCursorPosY(ty); ImGui::TextDisabled("loading..."); }
     ImGui::SameLine(0,20); ImGui::SetCursorPosY(fy);
     if(focus_filter) ImGui::SetKeyboardFocusHere();   // Ctrl+F / Tab 시 입력 활성화
     ImGui::SetNextItemWidth(220);
-    ImGui::InputText("##flt", v.acars_filter, sizeof(v.acars_filter));   // 힌트 없음(빈칸)
+    ImGui::InputText("##flt", filter, sizeof(filter));   // 힌트 없음(빈칸)
     float cwb=ImGui::CalcTextSize("Clear").x + ImGui::GetStyle().FramePadding.x*2;
     ImGui::SameLine(); ImGui::SetCursorPos(ImVec2(W - cwb - 12, fy));    // Clear 우측정렬
-    if(ImGui::Button("Clear")){ std::lock_guard<std::mutex> lk(v.acars_mtx); v.acars_log.clear(); has_sel=false; }
+    if(ImGui::Button("Clear")){ std::lock_guard<std::mutex> lk(mtx); msglog.clear(); has_sel=false; }
     ImGui::EndChild();
     ImGui::PopStyleColor();
 
     float detail_h = has_sel ? 150.f : 0.f;
-    float table_h  = H - 30 - detail_h - 16;   // 헤더30 + 블록간 ItemSpacing 보정 → 창 오버플로/휠스크롤 방지
+    float table_h  = H - 30 - detail_h - 16;   // 헤더30 + 블록간 ItemSpacing 보정 → 오버플로 방지
+    if(table_h < 60) table_h = 60;
 
     // ── 메시지 테이블 (가로+세로 스크롤, Text 외 중앙정렬, 좌측 3열 고정) ──
+    ImGui::SetCursorPosX(x0);
     ImGuiTableFlags tf = ImGuiTableFlags_ScrollY|ImGuiTableFlags_ScrollX|ImGuiTableFlags_RowBg|
                          ImGuiTableFlags_BordersInnerV|ImGuiTableFlags_Resizable;
     if(ImGui::BeginTable("##acars_tbl", 11, tf, ImVec2(W, table_h))){
@@ -137,18 +159,18 @@ void acars_draw_overlay(FFTViewer& v, bool just_opened){
             ImGui::TextUnformatted(hdr);
         }
 
-        std::lock_guard<std::mutex> lk(v.acars_mtx);
+        std::lock_guard<std::mutex> lk(mtx);
         static std::vector<int> vis; vis.clear();
-        for(int i=0;i<(int)v.acars_log.size();i++) if(match(v.acars_log[i], v.acars_filter)) vis.push_back(i);
+        for(int i=0;i<(int)msglog.size();i++) if(match(msglog[i], filter)) vis.push_back(i);
         if(sort_col>=0 && vis.size()>1)
             std::stable_sort(vis.begin(), vis.end(), [&](int a, int b){
-                int cmp=col_cmp(sort_col, v.acars_log[a], v.acars_log[b]);
+                int cmp=col_cmp(sort_col, msglog[a], msglog[b]);
                 return sort_asc ? cmp<0 : cmp>0;
             });
 
         ImGuiListClipper clip; clip.Begin((int)vis.size());
         while(clip.Step()) for(int r=clip.DisplayStart;r<clip.DisplayEnd;r++){
-            const AcarsMsg& m = v.acars_log[vis[r]];
+            const AcarsMsg& m = msglog[vis[r]];
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             float cw0 = ImGui::GetContentRegionAvail().x;   // col0 폭 (selectable 전에 캡처)
@@ -181,9 +203,9 @@ void acars_draw_overlay(FFTViewer& v, bool just_opened){
         // tail 스크롤: 맨 아래면 새 메시지 자동 따라감, 위로 올려두면 유지(수동), 맨 아래 복귀 시 재개
         static bool s_at_bottom=true;
         bool forced=false;
-        if(v.acars_scroll){
+        if(scroll){
             if(s_at_bottom && sort_col<0){ ImGui::SetScrollHereY(1.0f); forced=true; }
-            v.acars_scroll=false;
+            scroll=false;
         }
         if(forced) s_at_bottom=true;
         else s_at_bottom = (ImGui::GetScrollMaxY()<=0.0f) || (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()-4.0f);
@@ -192,18 +214,19 @@ void acars_draw_overlay(FFTViewer& v, bool just_opened){
 
     // ── 상세 패널 ──
     if(has_sel){
+        ImGui::SetCursorPosX(x0);
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.08f,0.09f,0.12f,1.f));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12,10));   // 내부 여백 (좌/상 딱붙음 방지)
         ImGui::BeginChild("##acars_detail", ImVec2(W, detail_h), true);
         const char* cc=acars_country(sel.reg); const char* al=acars_airline_of(sel);
-        const char* ty=acars_db_type(sel.reg);
+        const char* ty2=acars_db_type(sel.reg);
         char tsd[12]; hms(sel.t_ms, tsd);
         ImVec4 V(0.85f,0.85f,0.9f,1.f);   // 일반 값 색
         // 표와 동일 순서/구성: Time Freq Reg Type Flight Country Airline Link Lbl CRC
         ImGui::Text("Time:");    ImGui::SameLine(); ImGui::TextColored(V,"%s", tsd);
         ImGui::SameLine(0,16); ImGui::Text("Freq:");   ImGui::SameLine(); ImGui::TextColored(V,"%.3f", sel.freq);
         ImGui::SameLine(0,16); ImGui::Text("Reg:");    ImGui::SameLine(); ImGui::TextColored(ImVec4(0.5f,0.8f,1.f,1.f),"%s", sel.reg[0]?sel.reg:"-");
-        ImGui::SameLine(0,16); ImGui::Text("Type:");   ImGui::SameLine(); ImGui::TextColored(ImVec4(0.72f,0.85f,1.f,1.f),"%s", ty[0]?ty:"-");
+        ImGui::SameLine(0,16); ImGui::Text("Type:");   ImGui::SameLine(); ImGui::TextColored(ImVec4(0.72f,0.85f,1.f,1.f),"%s", ty2[0]?ty2:"-");
         ImGui::SameLine(0,16); ImGui::Text("Flight:"); ImGui::SameLine(); ImGui::TextColored(V,"%s", sel.flight[0]?sel.flight:"-");
         ImGui::SameLine(0,16); ImGui::Text("Country:");ImGui::SameLine(); ImGui::TextDisabled("%s", cc[0]?cc:"-");
         ImGui::SameLine(0,16); ImGui::Text("Airline:");ImGui::SameLine(); ImGui::TextColored(ImVec4(0.62f,0.7f,0.62f,1.f),"%s", al[0]?al:"-");
@@ -218,7 +241,6 @@ void acars_draw_overlay(FFTViewer& v, bool just_opened){
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
     }
-
-    ImGui::End();
-    ImGui::PopStyleVar();
 }
+
+} // namespace acars_mod

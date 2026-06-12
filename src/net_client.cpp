@@ -360,16 +360,11 @@ void NetClient::handle_packet(PacketType type,
         int8_t pan = (int8_t)ah->pan;
         auto& ring = audio[ah->ch_idx];
         for(uint32_t i=0; i<n; i++) ring.push(pcm[i], pan);
-        // ── ACARS: 이 채널 디코드 활성 시 수신 AM 오디오를 디코더에 먹임 ──
-        int aci = ah->ch_idx;
-        if(acars_on[aci].load(std::memory_order_relaxed)){
-            if(!acars_prev[aci]){
-                acars_dec[aci].on_record=[this](const AcarsMsg& m){ if(on_acars) on_acars(m); };
-                acars_dec[aci].reset(48000.f, aci);   // HOST fractional resampler = 정확히 48 kHz
-                acars_prev[aci]=true;
-            }
-            for(uint32_t i=0;i<n;i++) acars_dec[aci].feed(pcm[i]);
-        } else acars_prev[aci]=false;
+        break;
+    }
+
+    case PacketType::MODULE_PIPE: {
+        if(on_module_pipe) on_module_pipe(payload, len);
         break;
     }
 

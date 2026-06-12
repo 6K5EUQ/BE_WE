@@ -3,6 +3,7 @@
 // GLFW/OpenGL/ImGui 의존성 없음
 
 #include "fft_viewer.hpp"
+#include "module_api.hpp"
 #include "sigmf.hpp"
 #include "iq_filename.hpp"
 #include "login.hpp"
@@ -444,6 +445,11 @@ void run_cli_host(){
         v.update_dem_by_freq(v.header.center_frequency/1e6f);
         srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
     };
+    srv->cb.on_module_pipe = [&](const uint8_t* pl, uint32_t len){
+        bewe_mod_route(v, true, pl, len);
+    };
+    bewe_mod_set_broadcast([&v](const void* pl, uint32_t len){
+        if(!v.net_srv) return false; v.net_srv->broadcast_module_pipe(pl, len); return true; });
     srv->cb.on_delete_ch  = [&](const char* who, int idx){
         if(idx<0||idx>=MAX_CHANNELS) return;
         bewe_log_push(0, "[CMD:%s] CH%d deleted\n", who, idx);
@@ -1312,6 +1318,8 @@ void run_cli_host(){
                         central_cli.enqueue_relay_broadcast(bc_pkt.data(), bc_pkt.size(), true);
                     if(!bp_pkt.empty())
                         central_cli.enqueue_relay_broadcast(bp_pkt.data(), bp_pkt.size(), true);
+                    // 설치된 모듈 상태 push (예: ACARS 채널 디코드 on/off)
+                    for(auto& bm : bewe_modules()) if(bm.on_join_open) bm.on_join_open(v);
                     // LIVE_START는 JOIN이 STREAM 버튼으로 명시 요청(LWF_LIVE_REQ)할 때만 unicast.
                     // mission_sync는 on_auth 200ms 스레드에서 AUTH_ACK 이후에 전송 (pre-auth 전송 시 JOIN이 skip함)
                 });

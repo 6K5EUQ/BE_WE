@@ -1,4 +1,5 @@
 #include "fft_viewer.hpp"
+#include "module_api.hpp"
 #include "net_server.hpp"
 #include <cmath>
 #include <algorithm>
@@ -184,7 +185,8 @@ void FFTViewer::start_dem(int ch_idx, Channel::DemodMode mode){
 
 void FFTViewer::stop_dem(int ch_idx){
     Channel& ch=channels[ch_idx];
-    stop_acars(ch_idx);   // AM 채널 demod 종료/모드변경 시 ACARS 디코더도 정리
+    for(auto& bm : bewe_modules())                       // 모듈 정리 (예: ACARS 워커)
+        if(bm.on_ch_stop) bm.on_ch_stop(*this, ch_idx);
     if(!ch.dem_run.load()) return;
     ch.dem_stop_req.store(true);
     if(ch.dem_thr.joinable()) ch.dem_thr.join();

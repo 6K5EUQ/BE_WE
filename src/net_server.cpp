@@ -461,6 +461,12 @@ void NetServer::handle_packet(std::shared_ptr<ClientConn> c,
     }
     // MISSION_UPDATE 제거 — 자동 캡처 모델에서 운영자 편집 필드 없음.
 
+    case PacketType::MODULE_PIPE: {
+        if(!c->authed || len < sizeof(PktModulePipe)) break;
+        if(cb.on_module_pipe) cb.on_module_pipe(payload, len);
+        break;
+    }
+
     default: break;
     }
 }
@@ -700,6 +706,19 @@ void NetServer::broadcast_sched_sync(const PktSchedSync& sync){
 // Central은 이 패킷을 가로채 station 캐시 + missions.json 영속화 (D5).
 void NetServer::broadcast_mission_sync(const PktMissionSync& sync){
     auto pkt = make_packet(PacketType::MISSION_SYNC, &sync, sizeof(sync));
+    if(cb.on_relay_broadcast)
+        cb.on_relay_broadcast(pkt.data(), pkt.size(), true /*no_drop*/);
+    std::lock_guard<std::mutex> lk(clients_mtx_);
+    for(auto& c : clients_){
+        if(c->is_relay || !c->authed || !c->alive.load()) continue;
+        c->enqueue(pkt, false);
+    }
+}
+
+// ── Broadcast module pipe payload (HOST → all JOINs, LAN + relay) ────────
+// payload = PktModulePipe + data. 모듈 상태/라이브/파일청크 공용 (no_drop).
+void NetServer::broadcast_module_pipe(const void* payload, uint32_t len){
+    auto pkt = make_packet(PacketType::MODULE_PIPE, payload, len);
     if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size(), true /*no_drop*/);
     std::lock_guard<std::mutex> lk(clients_mtx_);

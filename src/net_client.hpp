@@ -2,7 +2,6 @@
 #include "config.hpp"
 #include "net_protocol.hpp"
 #include "channel.hpp"
-#include "acars_decode.hpp"
 #include <string>
 #include <vector>
 #include <deque>
@@ -166,7 +165,8 @@ public:
     std::function<void(const PktChannelSync&)> on_channel_sync;
     // 성상도 CONST_FRAME 수신 → FFTViewer::eid_live_push (int8 dequant 된 float IQ)
     std::function<void(int ch, uint32_t sr, const float* i, const float* q, int n)> on_const_frame;
-    std::function<void(const AcarsMsg&)>       on_acars;   // 디코드된 ACARS 메시지
+    // 모듈 파이프: HOST→JOIN MODULE_PIPE 수신 (payload = PktModulePipe+data)
+    std::function<void(const uint8_t*, uint32_t)> on_module_pipe;
     std::function<void(const PktSchedSync&)>   on_sched_sync;
     std::function<void(const PktBandPlan&)>    on_band_plan;
     std::function<void(const PktBandCatSync&)> on_band_cat;
@@ -220,11 +220,10 @@ public:
     // ── Audio rings (one per channel) ─────────────────────────────────────
     NetAudioRing audio[MAX_CHANNELS];
 
-    // ── JOIN-side ACARS decode (수신 AM 오디오를 직접 디코드 → JOIN 로그) ──
-    std::atomic<bool> acars_on[MAX_CHANNELS]{};
-    AcarsDecoder      acars_dec[MAX_CHANNELS];   // recv 스레드 전용
-    bool              acars_prev[MAX_CHANNELS]={};
-    void set_acars(int ch, bool on){ if(ch>=0&&ch<MAX_CHANNELS) acars_on[ch].store(on); }
+    // ── 모듈 파이프 송신 (JOIN→HOST) ──────────────────────────────────────
+    bool send_module_pipe(const void* payload, uint32_t len){
+        return raw_send(PacketType::MODULE_PIPE, payload, len);
+    }
 
     // ── Chat ──────────────────────────────────────────────────────────────
     struct ChatMsg { char from[32]; char msg[256]; };

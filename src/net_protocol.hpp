@@ -88,6 +88,8 @@ enum class PacketType : uint8_t {
     MISSION_FILE_PUSH_ACK  = 0x56,  // central → host: PUSH 전송 종료 ACK (HOST가 로컬 unlink 트리거)
     // ── Live constellation (성상도) ──────────────────────────────────────
     CONST_FRAME            = 0x57,  // host → join(s): 채널 성상도 데이터 (int8 IQ snapshot), per-JOIN 필터
+    // ── Module data pipe (src/modules/ 선택형 모듈 공용 전송로) ─────────
+    MODULE_PIPE            = 0x58,  // 양방향: PktModulePipe + payload (mod_id 다중화, Central opaque relay)
 };
 
 // ── Packet header (9 bytes, packed) ──────────────────────────────────────
@@ -97,6 +99,17 @@ struct __attribute__((packed)) PktHdr {
     uint32_t len;       // payload length (LE)
 };
 static constexpr int PKT_HDR_SIZE = sizeof(PktHdr);
+
+// ── MODULE_PIPE ───────────────────────────────────────────────────────────
+// 선택 설치형 모듈 (src/modules/<id>/) 의 공용 데이터 파이프.
+// JOIN→HOST 명령 / HOST→전JOIN 브로드캐스트 / 파일(히스토리) 청크 전송을
+// 전부 이 한 타입으로 다중화. kind 의미는 모듈이 정의.
+struct __attribute__((packed)) PktModulePipe {
+    char     mod_id[8];   // 모듈 wire id, null-padded ("acars")
+    uint8_t  kind;        // 모듈 정의 opcode
+    uint8_t  _rsv[3];
+    uint32_t data_len;    // 이 헤더 뒤에 붙는 데이터 길이
+};
 
 // ── AUTH_REQ ──────────────────────────────────────────────────────────────
 struct __attribute__((packed)) PktAuthReq {
