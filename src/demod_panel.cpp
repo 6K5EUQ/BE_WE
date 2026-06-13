@@ -8,8 +8,11 @@
 #include "fft_viewer.hpp"
 #include "module_api.hpp"
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <cstring>
 #include <vector>
+#include <string>
+#include <algorithm>
 
 static const char* mode_name(uint8_t m){
     static const char* n[] = {"NONE","AM","FM"};
@@ -152,15 +155,25 @@ void demod_draw_panel(FFTViewer& v, bool just_opened){
     auto& mods = bewe_modules();
     static std::vector<bool> open(mods.size(), false);    // 모듈별 데이터 뷰 탭 열림
     static std::vector<bool> was_active(mods.size(), false);
+    static std::vector<int>  open_seq;                    // 켠 순서 = 탭 제출 순서
+    static std::vector<std::string> tab_disp;             // 직전 프레임 탭 표시 순서 (drag reorder 반영)
     static int sel_mod = 0;                               // 런처에서 선택된 모듈
-    if(open.size() != mods.size()){ open.assign(mods.size(), false); was_active.assign(mods.size(), false); }
+    if(open.size() != mods.size()){ open.assign(mods.size(), false); was_active.assign(mods.size(), false); open_seq.clear(); }
+    auto open_tab = [&](int i){ if(i>=0 && i<(int)mods.size() && !open[i]){ open[i]=true; open_seq.push_back(i); } };
 
-    // 숫자 키 1~9 → 현재 탭(표시) 순서대로 이동 (텍스트 입력 중엔 무시)
+    // 숫자 키 1~9 → 현재 탭(표시) 순서대로 이동 (텍스트 입력 중엔 무시).
+    // tab_disp = 직전 프레임 표시 순서 → drag 로 순서 바꿔도 그 순서로 매핑.
     int jump_to = 0, tab_ord = 0;
     if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !io.WantTextInput){
         for(int k=0;k<9;k++)
             if(ImGui::IsKeyPressed((ImGuiKey)(ImGuiKey_1+k), false)){ jump_to = k+1; break; }
     }
+    std::string jump_name = (jump_to>=1 && jump_to<=(int)tab_disp.size()) ? tab_disp[jump_to-1] : std::string();
+    auto sel_flag = [&](const char* nm)->ImGuiTabItemFlags {
+        tab_ord++;
+        bool hit = jump_name.empty() ? (jump_to==tab_ord) : (jump_name==nm);
+        return hit ? ImGuiTabItemFlags_SetSelected : 0;
+    };
 
     ImGui::SetCursorPos(ImVec2(8, 4));
     extern bool GImCenterTabLabels;   // ImGui 패치: 탭 라벨 중앙정렬 (DEMOD 탭바 한정)
@@ -168,7 +181,7 @@ void demod_draw_panel(FFTViewer& v, bool just_opened){
     if(ImGui::BeginTabBar("##demod_tabs", ImGuiTabBarFlags_Reorderable)){
 
         // ── Modules 탭 (런처): 좌측 모듈 목록 + 우측 타깃 테이블 ──
-        if(ImGui::BeginTabItem("Modules", nullptr, (jump_to==++tab_ord)?ImGuiTabItemFlags_SetSelected:0)){
+        if(ImGui::BeginTabItem("Modules", nullptr, sel_flag("Modules"))){
             for(size_t i=0;i<mods.size();i++) was_active[i]=false;
             auto shown=[&](int i){ return i>=0 && i<(int)mods.size() &&
                 (mods[i].planned || mods[i].target_modes || mods[i].draw_content); };
@@ -189,7 +202,7 @@ void demod_draw_panel(FFTViewer& v, bool just_opened){
                 }
                 if(ImGui::Selectable(mods[i].label, sel_mod==(int)i, ImGuiSelectableFlags_AllowDoubleClick)){
                     sel_mod=(int)i;
-                    if(mods[i].draw_content && ImGui::IsMouseDoubleClicked(0)) open[i]=true;
+                    if(mods[i].draw_content && ImGui::IsMouseDoubleClicked(0)) open_tab((int)i);
                 }
                 if(running_any){
                     ImGui::SameLine();
@@ -209,7 +222,7 @@ void demod_draw_panel(FFTViewer& v, bool just_opened){
                     ImGui::PushID((int)i);
                     if(ImGui::Selectable(mods[i].label, sel_mod==(int)i, ImGuiSelectableFlags_AllowDoubleClick)){
                         sel_mod=(int)i;
-                        if(ImGui::IsMouseDoubleClicked(0)) open[i]=true;
+                        if(ImGui::IsMouseDoubleClicked(0)) open_tab((int)i);
                     }
                     ImGui::PopID();
                 }
@@ -228,11 +241,12 @@ void demod_draw_panel(FFTViewer& v, bool just_opened){
             ImGui::EndTabItem();
         }
 
-        // ── 열린 모듈 데이터 뷰 탭들 (예정 모듈은 제네릭 프리뷰) ──
-        for(size_t i=0;i<mods.size();i++){
-            if(!open[i] || !(mods[i].draw_content || mods[i].planned)) continue;
+        // ── 열린 모듈 데이터 뷰 탭들: 켠 순서(open_seq)대로 제출. 예정 모듈은 제네릭 프리뷰 ──
+        for(size_t s=0; s<open_seq.size(); s++){
+            int i = open_seq[s];
+            if(i<0 || i>=(int)mods.size() || !open[i] || !(mods[i].draw_content || mods[i].planned)) continue;
             bool keep = true;
-            ImGuiTabItemFlags jf = (jump_to==++tab_ord)?ImGuiTabItemFlags_SetSelected:0;
+            ImGuiTabItemFlags jf = sel_flag(mods[i].label);
             if(ImGui::BeginTabItem(mods[i].label, &keep, jf)){
                 bool ja = !was_active[i];
                 was_active[i] = true;
@@ -241,6 +255,14 @@ void demod_draw_panel(FFTViewer& v, bool just_opened){
                 ImGui::EndTabItem();
             } else was_active[i] = false;
             if(!keep){ open[i]=false; was_active[i]=false; }
+        }
+        // 닫힌 탭은 open_seq 에서 제거 (순서 유지)
+        open_seq.erase(std::remove_if(open_seq.begin(), open_seq.end(),
+            [&](int i){ return i<0 || i>=(int)mods.size() || !open[i]; }), open_seq.end());
+        // 현재 표시 순서 캐시 (drag reorder 반영) — 다음 프레임 숫자키 매핑에 사용
+        if(ImGuiTabBar* tb = ImGui::GetCurrentTabBar()){
+            tab_disp.clear();
+            for(int k=0;k<tb->Tabs.Size;k++) tab_disp.push_back(ImGui::TabBarGetTabName(tb, &tb->Tabs[k]));
         }
         ImGui::EndTabBar();
     }
