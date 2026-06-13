@@ -23,8 +23,30 @@ static void station_disp(const char* sid, char* out, size_t cap){
     out[o]=0;
 }
 
-// ── 런처: 선택 모듈의 타깃 테이블 ──
+// 셀 텍스트 중앙정렬
+static void cell_ctr(const char* s){
+    float av=ImGui::GetContentRegionAvail().x, tw=ImGui::CalcTextSize(s).x;
+    if(tw<av) ImGui::SetCursorPosX(ImGui::GetCursorPosX()+(av-tw)*0.5f);
+    ImGui::TextUnformatted(s);
+}
+static void cell_ctr_col(const char* s, ImVec4 c){ ImGui::PushStyleColor(ImGuiCol_Text,c); cell_ctr(s); ImGui::PopStyleColor(); }
+// 셀 안에서 다음 버튼을 가로 중앙에 배치
+static void cell_btn_center(const char* label){
+    float bw = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x*2.f;
+    float av = ImGui::GetContentRegionAvail().x;
+    if(bw<av) ImGui::SetCursorPosX(ImGui::GetCursorPosX()+(av-bw)*0.5f);
+}
+
+// ── 런처: 선택 모듈의 타깃 테이블 (예정 모듈은 안내만) ──
 static void draw_launcher(FFTViewer& v, const BeweModule& m){
+    if(m.planned){   // 복조기 미설치 — UI 프리뷰
+        ImGui::Dummy(ImVec2(0,10)); ImGui::Indent(6);
+        ImGui::TextDisabled("%s - UI preview. Decoder module not installed yet.", m.label);
+        ImGui::Dummy(ImVec2(0,4));
+        ImGui::TextDisabled("Double-click the module in the list to open its view.");
+        ImGui::Unindent(6);
+        return;
+    }
     // 원격이면 주기적으로 타깃 목록 갱신
     if(v.remote_mode){
         static double s_last_req = 0;
@@ -35,18 +57,24 @@ static void draw_launcher(FFTViewer& v, const BeweModule& m){
     auto targets = bewe_mod_targets(v, m.id);
     ImGuiTableFlags tf = ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInnerV|ImGuiTableFlags_ScrollY;
     float th = ImGui::GetContentRegionAvail().y - 8;
-    if(ImGui::BeginTable("##mod_targets", 6, tf, ImVec2(720, th>120?th:120))){
-        ImGui::TableSetupColumn("Station", ImGuiTableColumnFlags_WidthFixed, 90);
-        ImGui::TableSetupColumn("CH",      ImGuiTableColumnFlags_WidthFixed, 40);
-        ImGui::TableSetupColumn("Freq (MHz)", ImGuiTableColumnFlags_WidthFixed, 170);
-        ImGui::TableSetupColumn("Mode",    ImGuiTableColumnFlags_WidthFixed, 60);
-        ImGui::TableSetupColumn("State",   ImGuiTableColumnFlags_WidthFixed, 80);
-        ImGui::TableSetupColumn("",        ImGuiTableColumnFlags_WidthFixed, 80);
-        ImGui::TableHeadersRow();
+    float tw = ImGui::GetContentRegionAvail().x - 8;
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(8,5));
+    if(ImGui::BeginTable("##mod_targets", 6, tf, ImVec2(tw>200?tw:200, th>120?th:120))){
+        ImGui::TableSetupColumn("Station",    ImGuiTableColumnFlags_WidthFixed, 100);
+        ImGui::TableSetupColumn("CH",         ImGuiTableColumnFlags_WidthFixed, 44);
+        ImGui::TableSetupColumn("Freq (MHz)", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Mode",       ImGuiTableColumnFlags_WidthFixed, 64);
+        ImGui::TableSetupColumn("State",      ImGuiTableColumnFlags_WidthFixed, 72);
+        ImGui::TableSetupColumn("",           ImGuiTableColumnFlags_WidthFixed, 84);
+        // 헤더: Station 좌, 나머지 중앙 (셀과 정렬 일치)
+        ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+        const char* hn[6]={"Station","CH","Freq (MHz)","Mode","State",""};
+        const bool  hc[6]={false,true,true,true,true,false};
+        for(int c=0;c<6;c++){ ImGui::TableSetColumnIndex(c); if(hc[c]) cell_ctr(hn[c]); else ImGui::TextUnformatted(hn[c]); }
 
         if(targets.empty()){
             ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
-            ImGui::TextDisabled("(no active channel filters)");
+            ImGui::TextDisabled("(no channels)");
         }
         for(size_t i=0;i<targets.size();i++){
             MpChEntry& e = targets[i];
@@ -57,29 +85,52 @@ static void draw_launcher(FFTViewer& v, const BeweModule& m){
             char sd[16]; station_disp(e.station, sd, sizeof(sd));
             if(!eligible) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f,0.45f,0.45f,1.f));
             ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted(sd);
-            ImGui::TableSetColumnIndex(1); ImGui::Text("%d", e.ch);
-            ImGui::TableSetColumnIndex(2); ImGui::Text("%.4f - %.4f", e.lo, e.hi);
-            ImGui::TableSetColumnIndex(3); ImGui::TextUnformatted(mode_name(e.mode));
+            ImGui::TableSetColumnIndex(1); { char b[8];  snprintf(b,sizeof(b),"%d",e.ch); cell_ctr(b); }
+            ImGui::TableSetColumnIndex(2); { char b[40]; snprintf(b,sizeof(b),"%.4f - %.4f",e.lo,e.hi); cell_ctr(b); }
+            ImGui::TableSetColumnIndex(3); cell_ctr(mode_name(e.mode));
             if(!eligible) ImGui::PopStyleColor();
             ImGui::TableSetColumnIndex(4);
-            if(running) ImGui::TextColored(ImVec4(0.3f,0.9f,0.3f,1.f), "[RUN]");
-            else        ImGui::TextDisabled("-");
+            if(running) cell_ctr_col("[RUN]", ImVec4(0.3f,0.9f,0.3f,1.f));
+            else        cell_ctr_col("-",     ImVec4(0.5f,0.5f,0.5f,1.f));
             ImGui::TableSetColumnIndex(5);
             if(running){
+                cell_btn_center("Stop");
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f,0.15f,0.15f,1.f));
-                if(ImGui::SmallButton("Stop"))
-                    bewe_mod_set_target(v, m.id, e.station, e.ch, false);
+                if(ImGui::SmallButton("Stop")) bewe_mod_set_target(v, m.id, e.station, e.ch, false);
                 ImGui::PopStyleColor();
             } else if(eligible){
+                cell_btn_center("Start");
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f,0.42f,0.2f,1.f));
-                if(ImGui::SmallButton("Start"))
-                    bewe_mod_set_target(v, m.id, e.station, e.ch, true);
+                if(ImGui::SmallButton("Start")) bewe_mod_set_target(v, m.id, e.station, e.ch, true);
                 ImGui::PopStyleColor();
-            } else ImGui::TextDisabled("mode");
+            } else cell_ctr_col("mode", ImVec4(0.5f,0.5f,0.5f,1.f));
             ImGui::PopID();
         }
         ImGui::EndTable();
     }
+    ImGui::PopStyleVar();
+}
+
+// ── 예정 모듈 데이터 뷰 (복조기 미설치 — 모듈-무관 제네릭 프리뷰) ──
+static void draw_preview_content(FFTViewer& v, const char* label){
+    (void)v;
+    float W = ImGui::GetContentRegionAvail().x;
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.10f,0.12f,0.16f,1.f));
+    ImGui::BeginChild("##pv_hdr", ImVec2(W, 30), false);
+    float th=ImGui::GetTextLineHeight();
+    ImGui::SetCursorPos(ImVec2(12, 15.f-th*0.5f));
+    ImGui::TextColored(ImVec4(0.5f,0.8f,1.f,1.f), "%s", label);
+    ImGui::SameLine(0,16); ImGui::SetCursorPosY(15.f-th*0.5f); ImGui::TextDisabled("0 msg");
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+
+    ImVec2 rem = ImGui::GetContentRegionAvail();
+    const char* l1 = "Decoder module not installed.";
+    const char* l2 = "UI preview - no live data.";
+    float lh = ImGui::GetTextLineHeightWithSpacing();
+    if(rem.y > lh*3) ImGui::Dummy(ImVec2(0, rem.y*0.5f - lh));
+    float w1=ImGui::CalcTextSize(l1).x; ImGui::SetCursorPosX((W-w1)*0.5f); ImGui::TextDisabled("%s", l1);
+    float w2=ImGui::CalcTextSize(l2).x; ImGui::SetCursorPosX((W-w2)*0.5f); ImGui::TextDisabled("%s", l2);
 }
 
 void demod_draw_panel(FFTViewer& v, bool just_opened){
@@ -112,9 +163,13 @@ void demod_draw_panel(FFTViewer& v, bool just_opened){
         // ── Modules 탭 (런처): 좌측 모듈 목록 + 우측 타깃 테이블 ──
         if(ImGui::BeginTabItem("Modules")){
             for(size_t i=0;i<mods.size();i++) was_active[i]=false;
+            auto shown=[&](int i){ return i>=0 && i<(int)mods.size() &&
+                (mods[i].planned || mods[i].target_modes || mods[i].draw_content); };
             ImGui::Dummy(ImVec2(0,6));
             ImGui::BeginChild("##mod_list", ImVec2(180, 0), true);
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 7));
             ImGui::Indent(8.0f);   // 라벨 앞 여백
+            ImGui::Dummy(ImVec2(0,2));
             // 동작 모듈: 클릭=선택, 더블클릭=데이터 뷰 탭 열기
             for(size_t i=0;i<mods.size();i++){
                 if(mods[i].planned) continue;
@@ -137,27 +192,28 @@ void demod_draw_panel(FFTViewer& v, bool just_opened){
                 }
                 ImGui::PopID();
             }
-            // 예정(placeholder) 모듈: 비활성 표시
+            // 예정 모듈: 동일하게 선택/더블클릭 가능 (복조기 미설치 → 데이터 없음)
             bool any_planned=false;
             for(size_t i=0;i<mods.size();i++) if(mods[i].planned){ any_planned=true; break; }
             if(any_planned){
-                ImGui::Dummy(ImVec2(0,4)); ImGui::Separator(); ImGui::Dummy(ImVec2(0,2));
+                ImGui::Dummy(ImVec2(0,3)); ImGui::Separator(); ImGui::Dummy(ImVec2(0,3));
                 for(size_t i=0;i<mods.size();i++){
                     if(!mods[i].planned) continue;
-                    ImGui::TextDisabled("%s", mods[i].label);
-                    ImGui::SameLine(); ImGui::TextDisabled("(soon)");
+                    ImGui::PushID((int)i);
+                    if(ImGui::Selectable(mods[i].label, sel_mod==(int)i, ImGuiSelectableFlags_AllowDoubleClick)){
+                        sel_mod=(int)i;
+                        if(ImGui::IsMouseDoubleClicked(0)) open[i]=true;
+                    }
+                    ImGui::PopID();
                 }
             }
+            ImGui::Dummy(ImVec2(0,2));
             ImGui::Unindent(8.0f);
+            ImGui::PopStyleVar();
             ImGui::EndChild();
             ImGui::SameLine();
-            // sel_mod 가 유효한 동작 모듈을 가리키도록 보정 (예정/무효 → 첫 동작 모듈)
-            if(sel_mod<0 || sel_mod>=(int)mods.size() || mods[sel_mod].planned ||
-               (!mods[sel_mod].target_modes && !mods[sel_mod].draw_content)){
-                sel_mod=-1;
-                for(size_t i=0;i<mods.size();i++)
-                    if(!mods[i].planned && (mods[i].target_modes||mods[i].draw_content)){ sel_mod=(int)i; break; }
-            }
+            // sel_mod 가 목록에 보이는 모듈을 가리키도록 보정
+            if(!shown(sel_mod)){ sel_mod=-1; for(size_t i=0;i<mods.size();i++) if(shown((int)i)){ sel_mod=(int)i; break; } }
             ImGui::BeginChild("##mod_detail", ImVec2(0, 0), false);
             if(sel_mod >= 0 && sel_mod < (int)mods.size())
                 draw_launcher(v, mods[sel_mod]);
@@ -165,14 +221,15 @@ void demod_draw_panel(FFTViewer& v, bool just_opened){
             ImGui::EndTabItem();
         }
 
-        // ── 열린 모듈 데이터 뷰 탭들 ──
+        // ── 열린 모듈 데이터 뷰 탭들 (예정 모듈은 제네릭 프리뷰) ──
         for(size_t i=0;i<mods.size();i++){
-            if(!open[i] || !mods[i].draw_content) continue;
+            if(!open[i] || !(mods[i].draw_content || mods[i].planned)) continue;
             bool keep = true;
             if(ImGui::BeginTabItem(mods[i].label, &keep)){
                 bool ja = !was_active[i];
                 was_active[i] = true;
-                mods[i].draw_content(v, ja);
+                if(mods[i].draw_content) mods[i].draw_content(v, ja);
+                else                     draw_preview_content(v, mods[i].label);
                 ImGui::EndTabItem();
             } else was_active[i] = false;
             if(!keep){ open[i]=false; was_active[i]=false; }
