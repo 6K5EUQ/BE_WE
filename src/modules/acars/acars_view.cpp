@@ -76,21 +76,27 @@ void draw_content(FFTViewer& v, bool just_opened){
     static int  sort_col=-1;     // -1=원래상태(수신순), 0~11=해당 컬럼
     static bool sort_asc=true;
 
+    // 스페이스바 → Recv 토글 (이 탭 활성 + 텍스트 입력 중 아님). 버튼과 동일 동작, 모듈별 독립.
+    if(remote && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
+       && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Space, false)){
+        bool rcv = bewe_mod_recv("acars");
+        if(!rcv){ std::lock_guard<std::mutex> lk(mtx); msglog.clear(); has_sel=false; }
+        bewe_mod_set_recv(v, "acars", !rcv);
+    }
+
     // ── 헤더 바 ──
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.10f,0.12f,0.16f,1.f));
     ImGui::BeginChild("##acars_hdr", ImVec2(W, 30), false);
     float fh=ImGui::GetFrameHeight(), th=ImGui::GetTextLineHeight();
     float ty=15.f-th*0.5f, fy=15.f-fh*0.5f;   // 30px 헤더 세로 중앙 (text/frame 각각)
-    ImGui::SetCursorPos(ImVec2(12, ty));
-    ImGui::TextColored(ImVec4(0.5f,0.8f,1.f,1.f), "ACARS");
-    ImGui::SameLine(0,16); ImGui::SetCursorPosY(ty);
     int total; { std::lock_guard<std::mutex> lk(mtx); total=(int)msglog.size(); }
-    ImGui::Text("%d msg", total);
-    if(bewe_mod_hist_loading("acars")){ ImGui::SameLine(0,12); ImGui::SetCursorPosY(ty); ImGui::TextDisabled("loading..."); }
-    ImGui::SameLine(0,20); ImGui::SetCursorPosY(fy);
+    ImGui::SetCursorPos(ImVec2(12, fy));
     if(focus_filter) ImGui::SetKeyboardFocusHere();   // Ctrl+F / Tab 시 입력 활성화
     ImGui::SetNextItemWidth(220);
     ImGui::InputText("##flt", filter, sizeof(filter));   // 힌트 없음(빈칸)
+    ImGui::SameLine(0,16); ImGui::SetCursorPosY(ty);
+    ImGui::Text("%d msg", total);
+    if(bewe_mod_hist_loading("acars")){ ImGui::SameLine(0,12); ImGui::SetCursorPosY(ty); ImGui::TextDisabled("loading..."); }
     // 우측: [Recv][Clear]
     float cwb = ImGui::CalcTextSize("Clear").x + ImGui::GetStyle().FramePadding.x*2;
     float rwb = ImGui::CalcTextSize("Recv").x  + ImGui::GetStyle().FramePadding.x*2;
