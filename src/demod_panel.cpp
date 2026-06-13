@@ -155,13 +155,20 @@ void demod_draw_panel(FFTViewer& v, bool just_opened){
     static int sel_mod = 0;                               // 런처에서 선택된 모듈
     if(open.size() != mods.size()){ open.assign(mods.size(), false); was_active.assign(mods.size(), false); }
 
+    // 숫자 키 1~9 → 현재 탭(표시) 순서대로 이동 (텍스트 입력 중엔 무시)
+    int jump_to = 0, tab_ord = 0;
+    if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !io.WantTextInput){
+        for(int k=0;k<9;k++)
+            if(ImGui::IsKeyPressed((ImGuiKey)(ImGuiKey_1+k), false)){ jump_to = k+1; break; }
+    }
+
     ImGui::SetCursorPos(ImVec2(8, 4));
     extern bool GImCenterTabLabels;   // ImGui 패치: 탭 라벨 중앙정렬 (DEMOD 탭바 한정)
     GImCenterTabLabels = true;
     if(ImGui::BeginTabBar("##demod_tabs", ImGuiTabBarFlags_Reorderable)){
 
         // ── Modules 탭 (런처): 좌측 모듈 목록 + 우측 타깃 테이블 ──
-        if(ImGui::BeginTabItem("Modules")){
+        if(ImGui::BeginTabItem("Modules", nullptr, (jump_to==++tab_ord)?ImGuiTabItemFlags_SetSelected:0)){
             for(size_t i=0;i<mods.size();i++) was_active[i]=false;
             auto shown=[&](int i){ return i>=0 && i<(int)mods.size() &&
                 (mods[i].planned || mods[i].target_modes || mods[i].draw_content); };
@@ -225,7 +232,8 @@ void demod_draw_panel(FFTViewer& v, bool just_opened){
         for(size_t i=0;i<mods.size();i++){
             if(!open[i] || !(mods[i].draw_content || mods[i].planned)) continue;
             bool keep = true;
-            if(ImGui::BeginTabItem(mods[i].label, &keep)){
+            ImGuiTabItemFlags jf = (jump_to==++tab_ord)?ImGuiTabItemFlags_SetSelected:0;
+            if(ImGui::BeginTabItem(mods[i].label, &keep, jf)){
                 bool ja = !was_active[i];
                 was_active[i] = true;
                 if(mods[i].draw_content) mods[i].draw_content(v, ja);
