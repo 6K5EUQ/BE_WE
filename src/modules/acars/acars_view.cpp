@@ -193,7 +193,7 @@ void draw_content(FFTViewer& v, bool just_opened){
             ImGui::TableSetColumnIndex(5); ctrc(acars_country(m.reg), ImVec4(0.6f,0.6f,0.6f,1.f)); // Country
             ImGui::TableSetColumnIndex(6); ctrc(acars_airline_of(m), ImVec4(0.62f,0.7f,0.62f,1.f)); // Airline
             ImGui::TableSetColumnIndex(7);
-            ctrc(m.downlink?"Down":"Up", m.downlink?ImVec4(0.5f,0.8f,1.f,1.f):ImVec4(0.7f,0.7f,0.75f,1.f)); // Link
+            if(m.crc_ok) ctrc(m.downlink?"Down":"Up", m.downlink?ImVec4(0.5f,0.8f,1.f,1.f):ImVec4(0.7f,0.7f,0.75f,1.f)); // Link (CRC OK 일 때만)
             ImGui::TableSetColumnIndex(8); ctrc(m.station, ImVec4(0.85f,0.75f,0.5f,1.f)); // Station
             ImGui::TableSetColumnIndex(9); ctr(m.label);                              // Lbl
             ImGui::TableSetColumnIndex(10);
@@ -232,7 +232,7 @@ void draw_content(FFTViewer& v, bool just_opened){
         ImGui::SameLine(0,16); ImGui::Text("Flight:"); ImGui::SameLine(); ImGui::TextColored(V,"%s", sel.flight[0]?sel.flight:"-");
         ImGui::SameLine(0,16); ImGui::Text("Country:");ImGui::SameLine(); ImGui::TextDisabled("%s", cc[0]?cc:"-");
         ImGui::SameLine(0,16); ImGui::Text("Airline:");ImGui::SameLine(); ImGui::TextColored(ImVec4(0.62f,0.7f,0.62f,1.f),"%s", al[0]?al:"-");
-        ImGui::SameLine(0,16); ImGui::Text("Link:");   ImGui::SameLine(); ImGui::TextColored(sel.downlink?ImVec4(0.5f,0.8f,1.f,1.f):ImVec4(0.7f,0.7f,0.75f,1.f),"%s", sel.downlink?"Down":"Up");
+        ImGui::SameLine(0,16); ImGui::Text("Link:");   ImGui::SameLine(); ImGui::TextColored(sel.downlink?ImVec4(0.5f,0.8f,1.f,1.f):ImVec4(0.7f,0.7f,0.75f,1.f),"%s", sel.crc_ok?(sel.downlink?"Down":"Up"):"-");
         ImGui::SameLine(0,16); ImGui::Text("Station:");ImGui::SameLine(); ImGui::TextColored(ImVec4(0.85f,0.75f,0.5f,1.f),"%s", sel.station[0]?sel.station:"-");
         ImGui::SameLine(0,16); ImGui::Text("Lbl:");    ImGui::SameLine(); ImGui::TextUnformatted(sel.label[0]?sel.label:"-");
         ImGui::SameLine(0,16); ImGui::Text("CRC:");    ImGui::SameLine(); ImGui::TextColored(sel.crc_ok?ImVec4(0.4f,0.85f,0.4f,1.f):ImVec4(0.85f,0.5f,0.35f,1.f),"%s", sel.crc_ok?"OK":"FAIL");
