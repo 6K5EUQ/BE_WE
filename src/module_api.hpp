@@ -24,6 +24,7 @@ struct BeweModule {
     const char* id;        // wire id, 7자 이내 ("acars")
     const char* label;     // DEMOD 패널 표시 이름 ("ACARS")
     uint8_t target_modes;  // 적합 채널 demod 모드 비트 (1<<DM_AM 등). 0 = 채널타깃형 아님
+    bool planned;          // true = 예정(placeholder) 모듈: 런처 목록에 비활성 표시, 기능 없음
     // ── GUI hooks (CLI 빌드에선 nullptr) ──
     void (*init)(FFTViewer& v);                            // 시작 시 1회 (DB 로드 등)
     void (*draw_content)(FFTViewer& v, bool just_opened);  // 데이터 뷰 탭 내용

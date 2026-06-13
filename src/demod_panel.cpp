@@ -24,14 +24,7 @@ static void station_disp(const char* sid, char* out, size_t cap){
 }
 
 // ── 런처: 선택 모듈의 타깃 테이블 ──
-static void draw_launcher(FFTViewer& v, const BeweModule& m, std::vector<bool>& open, size_t mi){
-    ImGui::TextColored(ImVec4(0.5f,0.8f,1.f,1.f), "%s", m.label);
-    ImGui::SameLine(0,20);
-    if(m.draw_content && ImGui::Button("Open View")) open[mi] = true;
-    ImGui::SameLine(0,12);
-    ImGui::TextDisabled("decode targets — any user can start/stop, synced to all");
-    ImGui::Dummy(ImVec2(0,6));
-
+static void draw_launcher(FFTViewer& v, const BeweModule& m){
     // 원격이면 주기적으로 타깃 목록 갱신
     if(v.remote_mode){
         static double s_last_req = 0;
@@ -119,7 +112,10 @@ void demod_draw_panel(FFTViewer& v, bool just_opened){
             for(size_t i=0;i<mods.size();i++) was_active[i]=false;
             ImGui::Dummy(ImVec2(0,6));
             ImGui::BeginChild("##mod_list", ImVec2(180, 0), true);
+            ImGui::Indent(8.0f);   // 라벨 앞 여백
+            // 동작 모듈: 클릭=선택, 더블클릭=데이터 뷰 탭 열기
             for(size_t i=0;i<mods.size();i++){
+                if(mods[i].planned) continue;
                 if(!mods[i].target_modes && !mods[i].draw_content) continue;
                 ImGui::PushID((int)i);
                 bool running_any = false;
@@ -127,7 +123,10 @@ void demod_draw_panel(FFTViewer& v, bool just_opened){
                     auto tg = bewe_mod_targets(v, mods[i].id);
                     for(auto& t : tg) if(t.decode_on){ running_any = true; break; }
                 }
-                if(ImGui::Selectable(mods[i].label, sel_mod==(int)i)) sel_mod=(int)i;
+                if(ImGui::Selectable(mods[i].label, sel_mod==(int)i, ImGuiSelectableFlags_AllowDoubleClick)){
+                    sel_mod=(int)i;
+                    if(mods[i].draw_content && ImGui::IsMouseDoubleClicked(0)) open[i]=true;
+                }
                 if(running_any){
                     ImGui::SameLine();
                     float rx = ImGui::GetContentRegionAvail().x;
@@ -136,11 +135,30 @@ void demod_draw_panel(FFTViewer& v, bool just_opened){
                 }
                 ImGui::PopID();
             }
+            // 예정(placeholder) 모듈: 비활성 표시
+            bool any_planned=false;
+            for(size_t i=0;i<mods.size();i++) if(mods[i].planned){ any_planned=true; break; }
+            if(any_planned){
+                ImGui::Dummy(ImVec2(0,4)); ImGui::Separator(); ImGui::Dummy(ImVec2(0,2));
+                for(size_t i=0;i<mods.size();i++){
+                    if(!mods[i].planned) continue;
+                    ImGui::TextDisabled("%s", mods[i].label);
+                    ImGui::SameLine(); ImGui::TextDisabled("(soon)");
+                }
+            }
+            ImGui::Unindent(8.0f);
             ImGui::EndChild();
             ImGui::SameLine();
+            // sel_mod 가 유효한 동작 모듈을 가리키도록 보정 (예정/무효 → 첫 동작 모듈)
+            if(sel_mod<0 || sel_mod>=(int)mods.size() || mods[sel_mod].planned ||
+               (!mods[sel_mod].target_modes && !mods[sel_mod].draw_content)){
+                sel_mod=-1;
+                for(size_t i=0;i<mods.size();i++)
+                    if(!mods[i].planned && (mods[i].target_modes||mods[i].draw_content)){ sel_mod=(int)i; break; }
+            }
             ImGui::BeginChild("##mod_detail", ImVec2(0, 0), false);
             if(sel_mod >= 0 && sel_mod < (int)mods.size())
-                draw_launcher(v, mods[sel_mod], open, (size_t)sel_mod);
+                draw_launcher(v, mods[sel_mod]);
             ImGui::EndChild();
             ImGui::EndTabItem();
         }
