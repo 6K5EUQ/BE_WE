@@ -105,6 +105,8 @@ void demod_draw_panel(FFTViewer& v, bool just_opened){
     if(open.size() != mods.size()){ open.assign(mods.size(), false); was_active.assign(mods.size(), false); }
 
     ImGui::SetCursorPos(ImVec2(8, 4));
+    extern bool GImCenterTabLabels;   // ImGui 패치: 탭 라벨 중앙정렬 (DEMOD 탭바 한정)
+    GImCenterTabLabels = true;
     if(ImGui::BeginTabBar("##demod_tabs", ImGuiTabBarFlags_Reorderable)){
 
         // ── Modules 탭 (런처): 좌측 모듈 목록 + 우측 타깃 테이블 ──
@@ -177,6 +179,7 @@ void demod_draw_panel(FFTViewer& v, bool just_opened){
         }
         ImGui::EndTabBar();
     }
+    GImCenterTabLabels = false;
 
     ImGui::End();
     ImGui::PopStyleVar();

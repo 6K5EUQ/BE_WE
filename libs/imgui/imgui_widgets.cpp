@@ -10712,6 +10712,10 @@ void ImGui::TabItemBackground(ImDrawList* draw_list, const ImRect& bb, ImGuiTabI
 
 // Render text label (with custom clipping) + Unsaved Document marker + Close Button logic
 // We tend to lock style.FramePadding for a given tab-bar, hence the 'frame_padding' parameter.
+// BE_WE: when true, TabItemLabelAndCloseButton centers the label horizontally.
+// Toggled around a specific tab bar (DEMOD panel) so other tab bars are unaffected.
+bool GImCenterTabLabels = false;
+
 void ImGui::TabItemLabelAndCloseButton(ImDrawList* draw_list, const ImRect& bb, ImGuiTabItemFlags flags, ImVec2 frame_padding, const char* label, ImGuiID tab_id, ImGuiID close_button_id, bool is_contents_visible, bool* out_just_closed, bool* out_text_clipped)
 {
     ImGuiContext& g = *GImGui;
@@ -10799,8 +10803,18 @@ void ImGui::TabItemLabelAndCloseButton(ImDrawList* draw_list, const ImRect& bb, 
             text_ellipsis_clip_bb.Max.x -= button_sz * 1.00f;
         }
     }
+    // BE_WE: optional horizontally-centered label (reserves close-button space so it
+    // doesn't shift when the close button appears on hover).
+    ImVec2 be_text_pos = text_ellipsis_clip_bb.Min;
+    float  be_emax = ellipsis_max_x;
+    if (GImCenterTabLabels)
+    {
+        float be_right = text_ellipsis_clip_bb.Max.x - ((close_button_id != 0) ? button_sz * 0.90f : 0.0f);
+        float be_avail = be_right - text_ellipsis_clip_bb.Min.x;
+        if (label_size.x < be_avail) { be_text_pos.x += (be_avail - label_size.x) * 0.5f; be_emax = be_text_pos.x + label_size.x; }
+    }
     LogSetNextTextDecoration("/", "\\");
-    RenderTextEllipsis(draw_list, text_ellipsis_clip_bb.Min, text_ellipsis_clip_bb.Max, ellipsis_max_x, label, NULL, &label_size);
+    RenderTextEllipsis(draw_list, be_text_pos, text_ellipsis_clip_bb.Max, be_emax, label, NULL, &label_size);
 
 #if 0
     if (!is_contents_visible)
