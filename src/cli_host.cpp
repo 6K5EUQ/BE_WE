@@ -13,6 +13,7 @@
 #include "net_protocol.hpp"
 #include "host_band_plan.hpp"
 #include "host_band_categories.hpp"
+#include "host_state.hpp"
 #include "long_waterfall.hpp"
 
 #include <cstdio>
@@ -342,9 +343,19 @@ void run_cli_host(){
     v.station_location_set = true;
     strncpy(v.host_name, login_get_id(), 31);
 
+    // ── Restore saved host state — 재시작 시 직전 상태 그대로 (cf/sr 먼저) ──
+    HostState::Snapshot saved_state = HostState::load(station_str);
+    float init_sr = 0.f;
+    if(saved_state.ok){
+        if(saved_state.cf_mhz >= 0.1f && saved_state.cf_mhz <= 6000.f) cf = saved_state.cf_mhz;
+        if(saved_state.sr_msps >= 0.1f && saved_state.sr_msps <= 61.44f) init_sr = saved_state.sr_msps;
+        bewe_log_push(0,"[BEWE CLI] restoring state for %s: cf=%.4f MHz sr=%.4f MSPS, %d channel(s)\n",
+                      station_str.c_str(), cf, init_sr, saved_state.n_chans);
+    }
+
     // ── SDR init ─────────────────────────────────────────────────────────
     std::thread cap;
-    if(!v.initialize(cf)){
+    if(!v.initialize(cf, init_sr)){
         bewe_log_push(0,"[BEWE CLI] SDR init failed - running without hardware\n");
         v.sdr_stream_error.store(true);
         // 초기 SDR 없음 → 파일 분석 모드. 주기적 재탐지 비활성화 (CPU/로그 스팸 방지)
@@ -370,6 +381,10 @@ void run_cli_host(){
             cap = std::thread(&FFTViewer::capture_and_process_pluto, &v);
         else
             cap = std::thread(&FFTViewer::capture_and_process_rtl, &v);
+        if(saved_state.ok && saved_state.has_gain){
+            v.gain_db = saved_state.gain_db;
+            v.set_gain(saved_state.gain_db);
+        }
     }
     v.mix_stop.store(false);
     v.mix_thr = std::thread(&FFTViewer::mix_worker, &v);
@@ -1452,6 +1467,15 @@ void run_cli_host(){
     bewe_log_push(0,"[BEWE CLI] Ready. Type /help for commands.\n");
     fflush(stdout);
 
+    // ── Restore saved channel filters (net_srv 기동 후 — JOIN 에 sync) ────
+    if(saved_state.ok && saved_state.n_chans > 0){
+        HostState::apply_channels(v, saved_state);
+        if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+        bewe_log_push(0,"[BEWE CLI] restored %d channel filter(s)\n", saved_state.n_chans);
+        fflush(stdout);
+    }
+    uint64_t last_state_fp = HostState::fingerprint(v);
+
     // ══════════════════════════════════════════════════════════════════════
     //  Main loop
     // ══════════════════════════════════════════════════════════════════════
@@ -1483,6 +1507,15 @@ void run_cli_host(){
                 long long io_now=read_io_ms();
                 v.sysmon_io=std::min(100.0f,(float)(io_now-io_last_ms)/10.0f);
                 io_last_ms=io_now;
+            }
+        }
+
+        // ── Persist host state on change (재시작 복원용 — 변경 즉시 저장) ──
+        {
+            uint64_t fp = HostState::fingerprint(v);
+            if(fp != last_state_fp){
+                HostState::save(v, station_str);
+                last_state_fp = fp;
             }
         }
 
@@ -2224,6 +2257,9 @@ void run_cli_host(){
             }
         }
     }
+
+    // 종료 직전 마지막 상태 저장 (graceful) — 재시작 시 그대로 복원
+    HostState::save(v, station_str);
 
     // ══════════════════════════════════════════════════════════════════════
     //  Cleanup

@@ -33,6 +33,7 @@ if(CLI)
     add_executable(BE_WE
         src/main.cpp
         src/cli_host.cpp
+        src/host_state.cpp
         src/fft_viewer.cpp
         src/bladerf_io.cpp
         src/demod.cpp
