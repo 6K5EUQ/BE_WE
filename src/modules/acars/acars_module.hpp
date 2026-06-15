@@ -26,7 +26,7 @@ extern std::mutex            mtx;
 extern std::vector<AcarsMsg> msglog;
 extern bool                  scroll;
 extern char                  filter[64];
-constexpr int LOG_MAX = 5000;
+constexpr int LOG_MAX = 100000;
 
 // ── HOST 워커 (acars_decode.cpp) ──
 void worker(FFTViewer& v, int ch_idx);

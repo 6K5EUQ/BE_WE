@@ -196,13 +196,26 @@ void draw_content(FFTViewer& v, bool just_opened){
         }
 
         std::lock_guard<std::mutex> lk(mtx);
-        static std::vector<int> vis; vis.clear();
-        for(int i=0;i<(int)msglog.size();i++) if(match(msglog[i], filter)) vis.push_back(i);
-        if(sort_col>=0 && vis.size()>1)
-            std::stable_sort(vis.begin(), vis.end(), [&](int a, int b){
-                int cmp=col_cmp(sort_col, msglog[a], msglog[b]);
-                return sort_asc ? cmp<0 : cmp>0;
-            });
+        // vis(필터+정렬 결과) 캐시: msglog/필터/정렬이 바뀔 때만 재구성.
+        // 10만 건을 매 프레임 스캔/정렬하면 UI 가 렉 → 시그니처(개수,마지막t_ms,필터,정렬)로 게이팅.
+        static std::vector<int> vis;
+        static size_t  c_n=(size_t)-1; static int64_t c_last=-1;
+        static char    c_filter[64]={'\xff'}; static int c_sortc=-99; static bool c_asc=false;
+        size_t  n_now  = msglog.size();
+        int64_t last_t = n_now ? msglog.back().t_ms : 0;
+        if(n_now!=c_n || last_t!=c_last || strncmp(c_filter,filter,sizeof(c_filter))
+           || c_sortc!=sort_col || c_asc!=sort_asc){
+            vis.clear();
+            for(int i=0;i<(int)n_now;i++) if(match(msglog[i], filter)) vis.push_back(i);
+            if(sort_col>=0 && vis.size()>1)
+                std::stable_sort(vis.begin(), vis.end(), [&](int a, int b){
+                    int cmp=col_cmp(sort_col, msglog[a], msglog[b]);
+                    return sort_asc ? cmp<0 : cmp>0;
+                });
+            c_n=n_now; c_last=last_t;
+            strncpy(c_filter,filter,sizeof(c_filter)-1); c_filter[sizeof(c_filter)-1]=0;
+            c_sortc=sort_col; c_asc=sort_asc;
+        }
 
         ImGuiListClipper clip; clip.Begin((int)vis.size());
         while(clip.Step()) for(int r=clip.DisplayStart;r<clip.DisplayEnd;r++){
