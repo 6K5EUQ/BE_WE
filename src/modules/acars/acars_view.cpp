@@ -239,7 +239,11 @@ void draw_content(FFTViewer& v, bool just_opened){
                     if(row_sel) sel_keys.erase(k); else sel_keys.insert(k);
                     anchor_key=k;
                 } else {
-                    sel_keys.clear(); sel_keys.insert(k); anchor_key=k;
+                    if(row_sel && sel_keys.size()==1){
+                        sel_keys.clear(); anchor_key.clear();   // 같은 단일 선택 행 재클릭 → 해제 + 세부창 닫힘
+                    } else {
+                        sel_keys.clear(); sel_keys.insert(k); anchor_key=k;
+                    }
                 }
                 focus=m; has_focus=!sel_keys.empty();
             }
