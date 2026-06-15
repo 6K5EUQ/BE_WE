@@ -2068,6 +2068,96 @@ void run_cli_host(){
                     }
                 }
                 fflush(stdout);
+            } else if(line == "/ch" || line.rfind("/ch ", 0) == 0){
+                // /ch add <CF_MHz> <BW_kHz> [none|am|fm]  /  /ch list  /  /ch del <n>
+                // 채널 필터 생성/목록/삭제 — 네트워크 CREATE_CH(+SET_CH_MODE)/DELETE_CH 경로와 동일 로직
+                static const char* mn[] = {"NONE","AM","FM"};
+                std::string sub = line.size() > 3 ? line.substr(3) : "";
+                while(!sub.empty() && sub.front() == ' ') sub.erase(sub.begin());
+                if(sub.empty() || sub == "help"){
+                    bewe_log_push(0,"  Usage: /ch add <CF_MHz> <BW_kHz> [none|am|fm]\n");
+                    bewe_log_push(0,"         /ch list\n");
+                    bewe_log_push(0,"         /ch del <n>\n");
+                } else if(sub.rfind("add", 0) == 0){
+                    float cf2=0, bw_khz=0; char modebuf[16]={0};
+                    int n = sscanf(sub.c_str()+3, "%f %f %15s", &cf2, &bw_khz, modebuf);
+                    Channel::DemodMode dm = Channel::DM_NONE;
+                    bool mode_ok = true;
+                    if(n >= 3){
+                        for(char* p=modebuf; *p; ++p) if(*p>='A'&&*p<='Z') *p+=32;
+                        if(!strcmp(modebuf,"am"))        dm=Channel::DM_AM;
+                        else if(!strcmp(modebuf,"fm"))   dm=Channel::DM_FM;
+                        else if(!strcmp(modebuf,"none")) dm=Channel::DM_NONE;
+                        else mode_ok=false;
+                    }
+                    if(n < 2){
+                        bewe_log_push(0,"  Usage: /ch add <CF_MHz> <BW_kHz> [none|am|fm]\n");
+                    } else if(!mode_ok){
+                        bewe_log_push(0,"  Invalid mode '%s' (none|am|fm)\n", modebuf);
+                    } else if(cf2 < 0.1f || cf2 > 6000.f){
+                        bewe_log_push(0,"  Invalid CF (0.1~6000 MHz): %.4f\n", cf2);
+                    } else if(bw_khz <= 0.f || bw_khz > 61440.f){
+                        bewe_log_push(0,"  Invalid BW (0~61440 kHz): %.2f\n", bw_khz);
+                    } else {
+                        int slot=-1;
+                        for(int i=0;i<MAX_CHANNELS;i++) if(!v.channels[i].filter_active){ slot=i; break; }
+                        if(slot < 0){
+                            bewe_log_push(0,"  No free channel slot (max %d)\n", MAX_CHANNELS);
+                        } else {
+                            float half = (bw_khz * 1e-3f) * 0.5f;
+                            float s = cf2 - half, e = cf2 + half;
+                            // create (mirror on_create_ch)
+                            v.stop_dem(slot);
+                            v.channels[slot].reset_slot();
+                            v.channels[slot].s=s; v.channels[slot].e=e;
+                            v.channels[slot].filter_active=true;
+                            strncpy(v.channels[slot].owner, login_get_id(), 31);
+                            v.channels[slot].audio_mask.store(0xFFFFFFFFu & ~0x1u);
+                            v.local_ch_out[slot] = 3;
+                            v.update_dem_by_freq(v.header.center_frequency/1e6f);
+                            // set mode (mirror on_set_ch_mode)
+                            if(dm != Channel::DM_NONE){
+                                v.stop_dem(slot);
+                                v.channels[slot].mode = dm;
+                                if(v.channels[slot].filter_active) v.start_dem(slot, dm);
+                            }
+                            if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+                            bewe_log_push(0,"[CMD:CLI] CH%d create cf=%.4f bw=%.2fkHz mode=%s%s\n",
+                                          slot, cf2, bw_khz, mn[dm],
+                                          v.channels[slot].dem_paused.load()?" (Holding)":"");
+                        }
+                    }
+                } else if(sub == "list"){
+                    int cnt=0;
+                    for(int i=0;i<MAX_CHANNELS;i++){
+                        Channel& ch=v.channels[i];
+                        if(!ch.filter_active) continue;
+                        float cfm=(ch.s+ch.e)*0.5f, bwk=fabsf(ch.e-ch.s)*1e3f;
+                        bewe_log_push(0,"  CH%d  cf=%.4f MHz  bw=%.2f kHz  mode=%s%s  owner=%s\n",
+                                      i, cfm, bwk, mn[ch.mode],
+                                      ch.dem_paused.load()?" (Holding)":"", ch.owner);
+                        cnt++;
+                    }
+                    if(!cnt) bewe_log_push(0,"  No active channels.\n");
+                } else if(sub.rfind("del", 0) == 0){
+                    int idx=-1;
+                    if(sscanf(sub.c_str()+3, "%d", &idx) != 1 || idx<0 || idx>=MAX_CHANNELS){
+                        bewe_log_push(0,"  Usage: /ch del <n>  (0~%d)\n", MAX_CHANNELS-1);
+                    } else if(!v.channels[idx].filter_active){
+                        bewe_log_push(0,"  CH%d not active\n", idx);
+                    } else {
+                        // mirror on_delete_ch
+                        if(v.channels[idx].audio_rec_on.load()) v.stop_audio_rec(idx);
+                        v.stop_dem(idx);
+                        v.channels[idx].reset_slot();
+                        v.local_ch_out[idx] = 1;
+                        if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+                        bewe_log_push(0,"[CMD:CLI] CH%d deleted\n", idx);
+                    }
+                } else {
+                    bewe_log_push(0,"  Unknown /ch subcommand. Try: /ch help\n");
+                }
+                fflush(stdout);
             } else if(line.rfind("/mission", 0) == 0){
                 // /mission start [comment]  /  /mission end  /  /mission status
                 std::string sub = line.substr(8);
@@ -2112,6 +2202,9 @@ void run_cli_host(){
                 bewe_log_push(0,"  /clients         - List connected operators\n");
                 bewe_log_push(0,"  /freq <MHz>      - Change center frequency\n");
                 bewe_log_push(0,"  /sr <MSPS>       - Change sample rate\n");
+                bewe_log_push(0,"  /ch add <CF> <BW> [mode] - Create channel filter (CF MHz, BW kHz, mode none|am|fm)\n");
+                bewe_log_push(0,"  /ch list         - List active channel filters\n");
+                bewe_log_push(0,"  /ch del <n>      - Delete channel filter n\n");
                 bewe_log_push(0,"  /mission start   - Begin a new mission\n");
                 bewe_log_push(0,"  /mission end     - End active mission\n");
                 bewe_log_push(0,"  /mission status  - Show current mission state\n");
