@@ -3,6 +3,7 @@
 #include "acars_module.hpp"
 #include "acars_db.hpp"
 #include "module_api.hpp"
+#include "../modview.hpp"
 #include <imgui.h>
 #include <cstring>
 #include <cctype>
@@ -34,13 +35,9 @@ bool match(const AcarsMsg& m, const char* f){
         || ci_find(m.station,f)
         || ci_find(m.label,f) || ci_find(m.crc_ok?"OK":"FAIL", f) || ci_find(m.text,f);
 }
-// 셀 내 중앙정렬 텍스트
-void ctr(const char* s){
-    float avail=ImGui::GetContentRegionAvail().x, tw=ImGui::CalcTextSize(s).x;
-    if(tw<avail) ImGui::SetCursorPosX(ImGui::GetCursorPosX()+(avail-tw)*0.5f);
-    ImGui::TextUnformatted(s);
-}
-void ctrc(const char* s, ImVec4 col){ ImGui::PushStyleColor(ImGuiCol_Text,col); ctr(s); ImGui::PopStyleColor(); }
+// 셀 내 중앙정렬 텍스트 (공용 modview 위임 — 전 해독모듈 통일)
+void ctr(const char* s){ modview::cell(s); }
+void ctrc(const char* s, ImVec4 col){ modview::cell(s, col); }
 // 컬럼별 정렬 비교 (헤더 인덱스 순서)
 // 0 Time / 1 Freq / 2 Reg / 3 Type / 4 Flight / 5 Country / 6 Airline / 7 Link / 8 Station / 9 Lbl / 10 CRC / 11 Text
 int col_cmp(int c, const AcarsMsg& a, const AcarsMsg& b){
@@ -87,12 +84,10 @@ void draw_content(FFTViewer& v, bool just_opened){
     };
     bool win_focus = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
-    // 스페이스바 → Recv 토글 (이 탭 활성 + 텍스트 입력 중 아님). 버튼과 동일 동작, 모듈별 독립.
-    if(remote && win_focus && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Space, false)){
-        bool rcv = bewe_mod_recv("acars");
-        if(!rcv){ std::lock_guard<std::mutex> lk(mtx); msglog.clear(); sel_keys.clear(); has_focus=false; }
-        bewe_mod_set_recv(v, "acars", !rcv);
-    }
+    // 로그+선택 초기화 (Clear / Recv 켜기 공용)
+    auto on_clear = [&](){ std::lock_guard<std::mutex> lk(mtx); msglog.clear(); sel_keys.clear(); has_focus=false; anchor_key.clear(); };
+    // 스페이스바 → Recv 토글 (공용 modview)
+    modview::space_toggle_recv(v, "acars", remote, win_focus, on_clear);
 
     // Ctrl+C → 선택된 행 전체(모든 컬럼, 탭 구분)를 클립보드 복사. 한 행당 한 줄.
     // (상세창 텍스트에 포커스면 io.WantTextInput=true → InputText 가 Ctrl+C 처리하므로 여기선 무시)
@@ -116,39 +111,9 @@ void draw_content(FFTViewer& v, bool just_opened){
         if(!out.empty()) ImGui::SetClipboardText(out.c_str());
     }
 
-    // ── 헤더 바 ──
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.10f,0.12f,0.16f,1.f));
-    ImGui::BeginChild("##acars_hdr", ImVec2(W, 30), false);
-    float fh=ImGui::GetFrameHeight(), th=ImGui::GetTextLineHeight();
-    float ty=15.f-th*0.5f, fy=15.f-fh*0.5f;   // 30px 헤더 세로 중앙 (text/frame 각각)
+    // ── 헤더 바 (공용 modview — 좌[filter | msg수]  우[Recv | Clear]) ──
     int total; { std::lock_guard<std::mutex> lk(mtx); total=(int)msglog.size(); }
-    ImGui::SetCursorPos(ImVec2(12, fy));
-    if(focus_filter) ImGui::SetKeyboardFocusHere();   // Ctrl+F / Tab 시 입력 활성화
-    ImGui::SetNextItemWidth(220);
-    ImGui::InputText("##flt", filter, sizeof(filter));   // 힌트 없음(빈칸)
-    ImGui::SameLine(0,16); ImGui::SetCursorPosY(ty);
-    ImGui::Text("%d msg", total);
-    if(bewe_mod_hist_loading("acars")){ ImGui::SameLine(0,12); ImGui::SetCursorPosY(ty); ImGui::TextDisabled("loading..."); }
-    // 우측: [Recv][Clear]
-    float cwb = ImGui::CalcTextSize("Clear").x + ImGui::GetStyle().FramePadding.x*2;
-    float rwb = ImGui::CalcTextSize("Recv").x  + ImGui::GetStyle().FramePadding.x*2;
-    if(remote){
-        bool rcv = bewe_mod_recv("acars");
-        ImGui::SameLine(); ImGui::SetCursorPos(ImVec2(W - cwb - rwb - 20, fy));
-        // Recv: 기본 빨강(미수신) / 초록(Central 수신 중)
-        ImGui::PushStyleColor(ImGuiCol_Button, rcv?ImVec4(0.15f,0.55f,0.2f,1.f):ImVec4(0.6f,0.15f,0.15f,1.f));
-        if(ImGui::Button("Recv")){
-            if(!rcv){ std::lock_guard<std::mutex> lk(mtx); msglog.clear(); sel_keys.clear(); has_focus=false; }
-            bewe_mod_set_recv(v, "acars", !rcv);   // on → 오늘 히스토리 + 라이브
-        }
-        ImGui::PopStyleColor();
-        ImGui::SameLine(); ImGui::SetCursorPos(ImVec2(W - cwb - 12, fy));
-    } else {
-        ImGui::SameLine(); ImGui::SetCursorPos(ImVec2(W - cwb - 12, fy));
-    }
-    if(ImGui::Button("Clear")){ std::lock_guard<std::mutex> lk(mtx); msglog.clear(); sel_keys.clear(); has_focus=false; }
-    ImGui::EndChild();
-    ImGui::PopStyleColor();
+    modview::header_bar(v, "acars", filter, sizeof(filter), total, remote, focus_filter, on_clear);
 
     float detail_h = has_focus ? 150.f : 0.f;
     float table_h  = H - 30 - detail_h - 16;   // 헤더30 + 블록간 ItemSpacing 보정 → 오버플로 방지
@@ -172,28 +137,8 @@ void draw_content(FFTViewer& v, bool just_opened){
         ImGui::TableSetupColumn("Lbl",    ImGuiTableColumnFlags_WidthFixed, 36);
         ImGui::TableSetupColumn("CRC",    ImGuiTableColumnFlags_WidthFixed, 44);
         ImGui::TableSetupColumn("Text",   ImGuiTableColumnFlags_WidthFixed, 2400);
-        // 중앙정렬 헤더 + 클릭 정렬: 오름차순 → 내림차순 → 원래상태 (3단계 순환)
-        ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-        for(int c=0;c<12;c++){
-            ImGui::TableSetColumnIndex(c);
-            const char* nm=ImGui::TableGetColumnName(c);
-            char hdr[24];
-            if(c==sort_col) snprintf(hdr,sizeof(hdr),"%s%s", nm, sort_asc?" ^":" v");
-            else            snprintf(hdr,sizeof(hdr),"%s", nm);
-            float cw=ImGui::GetContentRegionAvail().x;
-            ImVec2 hp=ImGui::GetCursorPos();
-            ImGui::PushID(c);
-            if(ImGui::InvisibleButton("##h", ImVec2(cw>1?cw:1, ImGui::GetFrameHeight()))){
-                if(sort_col!=c){ sort_col=c; sort_asc=true; }       // 1) 오름차순
-                else if(sort_asc) sort_asc=false;                   // 2) 내림차순
-                else sort_col=-1;                                   // 3) 원래상태 (tail 자동스크롤 복귀)
-            }
-            ImGui::PopID();
-            float tw=ImGui::CalcTextSize(hdr).x;
-            float ox=(c==11)?0.f:(tw<cw?(cw-tw)*0.5f:0.f);
-            ImGui::SetCursorPos(ImVec2(hp.x+ox, hp.y+2));
-            ImGui::TextUnformatted(hdr);
-        }
+        // 3-state 정렬 헤더 (공용 modview — Text 컬럼=11 좌측정렬)
+        modview::sortable_headers(12, sort_col, sort_asc, 11);
 
         std::lock_guard<std::mutex> lk(mtx);
         // vis(필터+정렬 결과) 캐시: msglog/필터/정렬이 바뀔 때만 재구성.
@@ -228,23 +173,10 @@ void draw_content(FFTViewer& v, bool just_opened){
             ImGui::PushID(vis[r]);
             if(ImGui::Selectable("##s", row_sel,
                  ImGuiSelectableFlags_SpanAllColumns|ImGuiSelectableFlags_AllowOverlap)){
-                // 단일=선택, Ctrl=토글, Shift=anchor~클릭 range (미션창 파일 선택과 동일)
+                // 단일=선택 / Ctrl=토글 / Shift=anchor~행 범위 (공용 modview 알고리즘)
                 std::string k = msg_key(m);
-                if(io.KeyShift && !anchor_key.empty()){
-                    int a=-1; for(int i=0;i<(int)vis.size();i++) if(msg_key(msglog[vis[i]])==anchor_key){ a=i; break; }
-                    if(a>=0){ int lo=std::min(a,r), hi=std::max(a,r);
-                        for(int i=lo;i<=hi;i++) sel_keys.insert(msg_key(msglog[vis[i]]));
-                    } else { sel_keys.clear(); sel_keys.insert(k); anchor_key=k; }
-                } else if(io.KeyCtrl){
-                    if(row_sel) sel_keys.erase(k); else sel_keys.insert(k);
-                    anchor_key=k;
-                } else {
-                    if(row_sel && sel_keys.size()==1){
-                        sel_keys.clear(); anchor_key.clear();   // 같은 단일 선택 행 재클릭 → 해제 + 세부창 닫힘
-                    } else {
-                        sel_keys.clear(); sel_keys.insert(k); anchor_key=k;
-                    }
-                }
+                modview::apply_click(sel_keys, anchor_key, k, r,
+                    [&](int i){ return msg_key(msglog[vis[i]]); }, (int)vis.size(), io.KeyCtrl, io.KeyShift);
                 focus=m; has_focus=!sel_keys.empty();
             }
             ImGui::PopID();

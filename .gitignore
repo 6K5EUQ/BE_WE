@@ -77,3 +77,6 @@ secrets*
 # OS
 .DS_Store
 Thumbs.db
+
+# 런타임 모듈 데이터 아카이브 (acars/wifi JSONL + IQ 덤프)
+/modules/

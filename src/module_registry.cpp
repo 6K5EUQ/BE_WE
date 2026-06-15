@@ -49,9 +49,14 @@ static ModFw& fw(const char* id){ return g_fw[id]; }   // 호출측이 g_fw_mtx 
 void bewe_mod_set_my_station(const char* s){
     memset(g_my_station, 0, sizeof(g_my_station));
     if(s) strncpy(g_my_station, s, sizeof(g_my_station)-1);
-    // (재)접속 시점 — 이전 연결의 구독/히스토리 상태는 무효 (Central 은 conn 단위 구독)
+    // (재)접속 시점 — 이전 연결의 구독/히스토리 + 타깃/마스크 잔여 상태 전부 무효
+    // (다른 기지로 전환 시 이전 기지 채널/RUN 상태가 남아 어긋나 보이는 것 방지)
     std::lock_guard<std::mutex> lk(g_fw_mtx);
-    for(auto& kv : g_fw){ kv.second.recv=false; kv.second.hist_loading=false; kv.second.hist_buf.clear(); }
+    for(auto& kv : g_fw){
+        kv.second.recv=false; kv.second.hist_loading=false; kv.second.hist_started=false;
+        kv.second.hist_buf.clear(); kv.second.live_pending.clear();
+        kv.second.targets.clear(); kv.second.masks.clear();
+    }
 }
 
 static std::vector<uint8_t> build_pipe(const char* mod_id, uint8_t kind, const void* d, size_t n){
@@ -185,6 +190,14 @@ void bewe_mod_set_target(FFTViewer& v, const char* id, const char* station, int 
         MpSet st{}; strncpy(st.station, station, sizeof(st.station)-1);
         st.ch = (uint8_t)ch; st.on = on?1:0;
         send_up(id, BEWE_MK_SET, &st, sizeof(st));
+        // 낙관적 갱신: STATE 왕복(JOIN→Central→HOST→STATE) 전 즉시 [RUN] 반영.
+        // 권위 STATE 가 곧 도착해 확정/정정 → HOST 와 동일한 즉각 반응감.
+        {
+            std::lock_guard<std::mutex> lk(g_fw_mtx);
+            for(auto& t : fw(id).targets)
+                if(t.ch==ch && strncmp(t.station, station, sizeof(t.station))==0)
+                    t.decode_on = on?1:0;
+        }
         return;
     }
     // LOCAL / HOST GUI: 직접 적용 (+상태 브로드캐스트는 host_apply_set 내부)

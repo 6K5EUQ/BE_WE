@@ -1,0 +1,140 @@
+// ── AIS HOST 워커: IQ ring 독립 read-ptr 탭 → 채널 DDC → FM 판별기 → GMSK 비트동기
+//    → NRZI → HDLC 프레임 디코드. demod_worker/오디오 ring 과 완전 분리.
+//    결과는 host_emit() 으로 로그+일단위 저장+전 JOIN 브로드캐스트 (ACARS/WiFi 와 동형).
+#include "fft_viewer.hpp"
+#include "ais_module.hpp"
+#include "ais_decode.hpp"
+#include <cmath>
+#include <algorithm>
+#include <chrono>
+#include <thread>
+
+namespace ais_mod {
+
+static int64_t now_ms(){
+    return (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+// GMSK 정합 가우시안 LPF (9600 bps @ ~48 kHz, 5 sps). GNU AIS receiver.c 계수.
+static const float GMSK_FIR[36] = {
+   2.5959e-55f,2.9479e-49f,1.4741e-43f,3.2462e-38f,3.1480e-33f,
+   1.3443e-28f,2.5280e-24f,2.0934e-20f,7.6339e-17f,1.2259e-13f,
+   8.6690e-11f,2.6996e-08f,3.7020e-06f,2.2355e-04f,5.9448e-03f,
+   6.9616e-02f,3.5899e-01f,8.1522e-01f,8.1522e-01f,3.5899e-01f,
+   6.9616e-02f,5.9448e-03f,2.2355e-04f,3.7020e-06f,2.6996e-08f,
+   8.6690e-11f,1.2259e-13f,7.6339e-17f,2.0934e-20f,2.5280e-24f,
+   1.3443e-28f,3.1480e-33f,3.2462e-38f,1.4741e-43f,2.9479e-49f,
+   2.5959e-55f };
+
+void worker(FFTViewer& v, int ch_idx){
+    Channel& ch = v.channels[ch_idx];
+    uint32_t msr = v.header.sample_rate;
+    uint64_t init_cf = v.live_cf_hz.load(std::memory_order_acquire);
+    float off_hz = (((ch.s+ch.e)/2.0f) - (float)(init_cf/1e6f)) * 1e6f;
+    float bw_hz  = fabsf(ch.e-ch.s) * 1e6f;
+
+    // ── DDC: ~48 kHz 정수배 데시메이트 (9600 bps → ~5 sps) ──
+    uint32_t decim  = std::max(1u, (uint32_t)llround((double)msr / 48000.0));
+    uint32_t out_sr = msr / decim;
+
+    Oscillator osc; osc.set_freq((double)off_hz, (double)msr);
+    uint64_t prev_cf = init_cf;
+    // 데시메이션 전 anti-alias LPF: cutoff = min(채널BW/2, out_sr*0.45)
+    IIR1 lpi[4], lpq[4];
+    { float cut = std::min(bw_hz*0.5f, out_sr*0.45f);
+      float cn = cut/(float)msr; if(cn>0.45f)cn=0.45f; if(cn<0.005f)cn=0.005f;
+      for(int k=0;k<4;k++){ lpi[k].set(cn); lpq[k].set(cn); } }
+    double dec_i=0, dec_q=0; uint32_t dec_cnt=0;
+
+    // FM 판별기 상태 + GMSK 정합 FIR 딜레이라인
+    float prev_i=0, prev_q=0;
+    float fir[36]={}; int fir_pos=0;
+
+    // DPLL 비트동기 (GNU AIS 구조): pllinc 1비트 = out_sr/9600 샘플
+    const uint32_t PLLINC = (uint32_t)llround(65536.0*9600.0/(double)out_sr);
+    uint32_t pll=0; int prev_zc=0; uint8_t lastbit=0;
+
+    AisDecoder dec; dec.reset_all();
+    long frames=0;
+    dec.on_record = [&](const AisRecord& r){
+        frames++;
+        AisRecord m=r; m.ch=ch_idx;
+        host_emit(v, m);
+    };
+
+    bewe_log_push(0,"AIS[%d] start: %.4f MHz  BW=%.1f kHz  station=%u  decim=%u out=%u Hz (%.2f sps)\n",
+        ch_idx,(ch.s+ch.e)/2.0f, bw_hz/1000.f, msr, decim, out_sr, (double)out_sr/9600.0);
+
+    const size_t MAX_LAG=(size_t)(msr*0.08);
+    const size_t BATCH  =std::max<size_t>(4096, msr/50);
+    std::atomic<size_t>& my_rp = worker_rp(ch_idx);
+    my_rp.store(v.ring_wp.load());
+    int64_t last_diag=now_ms(); long diag_bits=0;
+
+    while(!worker_stop_req(ch_idx) && !v.sdr_stream_error.load() && ch.filter_active){
+        { uint64_t cur=v.live_cf_hz.load(std::memory_order_acquire);
+          if(cur!=prev_cf){
+              off_hz=(((ch.s+ch.e)/2.0f)-(float)(cur/1e6f))*1e6f;
+              osc.set_freq((double)off_hz,(double)msr); prev_cf=cur;
+          }
+        }
+        size_t wp=v.ring_wp.load(std::memory_order_acquire);
+        size_t rp=my_rp.load(std::memory_order_relaxed);
+        size_t lag=(wp-rp)&IQ_RING_MASK;
+        if(lag>MAX_LAG){                                   // 과부하 → 경계 점프 + 상태 리셋
+            size_t keep=(size_t)(msr*0.02);
+            rp=(wp-keep)&IQ_RING_MASK; my_rp.store(rp,std::memory_order_release);
+            for(int k=0;k<4;k++){ lpi[k].s=lpq[k].s=0; }
+            dec_i=dec_q=0; dec_cnt=0; prev_i=prev_q=0;
+            lag=(wp-rp)&IQ_RING_MASK;
+        }
+        if(lag==0){ std::this_thread::sleep_for(std::chrono::microseconds(50)); continue; }
+
+        size_t avail=std::min(lag,BATCH);
+        for(size_t s=0;s<avail;s++){
+            size_t pos=(rp+s)&IQ_RING_MASK;
+            float si=v.ring[pos*2]/v.hw.iq_scale, sq=v.ring[pos*2+1]/v.hw.iq_scale;
+            float mi,mq; osc.mix(si,sq,mi,mq);
+            mi=lpi[0].p(mi); mi=lpi[1].p(mi); mi=lpi[2].p(mi); mi=lpi[3].p(mi);
+            mq=lpq[0].p(mq); mq=lpq[1].p(mq); mq=lpq[2].p(mq); mq=lpq[3].p(mq);
+            dec_i+=mi; dec_q+=mq;
+            if(++dec_cnt < decim) continue;
+            float oi=(float)(dec_i/dec_cnt), oq=(float)(dec_q/dec_cnt);
+            dec_i=dec_q=0; dec_cnt=0;
+
+            // FM 판별: arg(z * conj(prev)) — 순시주파수 (GMSK mark/space). 부호모호성은 NRZI 가 흡수.
+            float d = atan2f(oq*prev_i - oi*prev_q, oi*prev_i + oq*prev_q + 1e-20f);
+            prev_i=oi; prev_q=oq;
+
+            // GMSK 정합 가우시안 FIR
+            fir[fir_pos]=d;
+            float out=0; int idx=fir_pos;
+            for(int k=0;k<36;k++){ out+=GMSK_FIR[k]*fir[idx]; if(--idx<0) idx=35; }
+            fir_pos=(fir_pos+1)%36;
+
+            // DPLL: 영교차마다 위상 보정, wrap 마다 1심볼 샘플 → slice → NRZI → 디코더
+            int curr=(out>0);
+            if((curr^prev_zc)==1){ if(pll<0x8000) pll+=PLLINC/16; else pll-=PLLINC/16; }
+            prev_zc=curr;
+            pll+=PLLINC;
+            if(pll>0xFFFF){
+                uint8_t bit=(out>0)?1:0;
+                uint8_t b=(uint8_t)!(bit^lastbit);          // NRZI
+                dec.feed_bit(b);
+                lastbit=bit; pll&=0xFFFF; diag_bits++;
+            }
+        }
+        my_rp.store((rp+avail)&IQ_RING_MASK,std::memory_order_release);
+
+        int64_t t=now_ms();
+        if(t-last_diag>=10000){                              // 10초마다 진단 (콘솔만)
+            bewe_log_push(0,"AIS[%d] diag: bits/10s=%ld frames=%ld\n", ch_idx, diag_bits, frames);
+            last_diag=t; diag_bits=0;
+        }
+    }
+    if(!worker_stop_req(ch_idx)) worker_natural_exit(v, ch_idx);
+    bewe_log_push(0,"AIS[%d] stop\n",ch_idx);
+}
+
+} // namespace ais_mod
