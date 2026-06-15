@@ -4,6 +4,12 @@
 #include "fft_viewer.hpp"
 #include "wifi_module.hpp"
 #include "wifi_decode.hpp"
+#include "wifi_ofdm.hpp"
+#include "wifi_dsss.hpp"
+#include <functional>
+#include <complex>
+#include <unordered_map>
+#include <string>
 #include "bewe_paths.hpp"
 #include "kst_time.hpp"
 #include <cmath>
@@ -28,8 +34,9 @@ void worker(FFTViewer& v, int ch_idx){
     float off_hz = (((ch.s+ch.e)/2.0f) - (float)(init_cf/1e6f)) * 1e6f;
     float bw_hz  = fabsf(ch.e-ch.s) * 1e6f;              // 채널필터 폭 (~20 MHz)
 
-    // DDC: 채널 BW 유지하며 ~20 MSPS 로 데시메이트 (정수배). 광대역 캡처의 sub-band 추출.
-    uint32_t decim = std::max(1u, (uint32_t)llround((double)msr / 20.0e6));
+    // DDC: 채널 BW 유지하며 ~20 MSPS 로 데시메이트. floor → 출력 항상 ≥20 MSPS
+    // (20 MHz WiFi 채널이 들어가려면 출력 ≥20 MSPS 필수. round 면 30.72→15.36 으로 채널 손실).
+    uint32_t decim = std::max(1u, (uint32_t)((double)msr / 20.0e6));
     uint32_t out_sr = msr / decim;
 
     Oscillator osc; osc.set_freq((double)off_hz, (double)msr);
@@ -65,6 +72,9 @@ void worker(FFTViewer& v, int ch_idx){
     my_rp.store(v.ring_wp.load());
     int64_t last_emit = now_ms();
     std::vector<float> dbuf; dbuf.reserve(BATCH*2/std::max(1u,decim)+4);
+    // OFDM 비콘 디코드용 누적 버퍼 (채널 baseband, ~0.12s 마다 스캔)
+    std::vector<std::complex<float>> wbuf; size_t wcap=(size_t)(out_sr/8); wbuf.reserve(wcap+4096);
+    std::unordered_map<std::string,int64_t> seen;   // BSSID → 마지막 emit (dedup, 10s)
 
     while(!worker_stop_req(ch_idx) && !v.sdr_stream_error.load() && ch.filter_active){
         { uint64_t cur=v.live_cf_hz.load(std::memory_order_acquire);
@@ -97,13 +107,30 @@ void worker(FFTViewer& v, int ch_idx){
             if(++dec_cnt < decim) continue;
             float oi=(float)(dec_i/dec_cnt), oq=(float)(dec_q/dec_cnt);
             dec_i=dec_q=0; dec_cnt=0;
-            dec.feed(oi,oq);                              // 측정/(M2)디코드
+            dec.feed(oi,oq);                              // 진단 측정
+            wbuf.push_back(std::complex<float>(oi,oq));   // OFDM 디코드 누적
             if(dump && dump_n<dump_cap){ dbuf.push_back(oi); dbuf.push_back(oq); dump_n++; }
         }
         if(dump && !dbuf.empty()) fwrite(dbuf.data(),sizeof(float),dbuf.size(),dump);
         if(dump && dump_n>=dump_cap){ fclose(dump); dump=nullptr;
             bewe_log_push(0,"WiFi[%d] IQ dump done: %s (%llu samples)\n",ch_idx,fn,(unsigned long long)dump_cap); }
         my_rp.store((rp+avail)&IQ_RING_MASK,std::memory_order_release);
+
+        // ── 주기적 비콘 디코드 (OFDM 6Mbps + DSSS 1Mbps) → FCS 유효 비콘만 host_emit ──
+        if(wbuf.size()>=wcap){
+            int64_t tn=now_ms();
+            auto emit=[&](const WifiRecord& br){
+                std::string key=br.bssid;
+                auto it=seen.find(key);
+                if(it!=seen.end() && tn-it->second < 10000) return;  // 10s dedup per BSSID
+                seen[key]=tn;
+                WifiRecord m=br; m.ch=ch_idx; host_emit(v, m);
+            };
+            wifi_ofdm::decode_buffer(wbuf.data(), wbuf.size(), (double)out_sr, emit);
+            wifi_dsss::decode_buffer_dsss(wbuf.data(), wbuf.size(), (double)out_sr, emit);
+            size_t keep=std::min<size_t>(wbuf.size(), 4096);   // 패킷 경계 overlap
+            wbuf.erase(wbuf.begin(), wbuf.end()-keep);
+        }
 
         // 1초마다 진단 레코드 (end-to-end 파이프 검증 + 측정)
         int64_t t=now_ms();
