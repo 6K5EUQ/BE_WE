@@ -848,6 +848,10 @@ public:
     std::vector<RecEntry> rec_entries;
     std::mutex            rec_entries_mtx;
 
+    // 광대역 모듈(WiFi 등)이 full-rate IQ ring 공급을 요청 — rec/dem 없이 ring 채움.
+    // (복조 없는 채널필터에 모듈 활성 시 host_start 가 raise, host_stop/on_ch_stop 가 lower)
+    std::atomic<bool>     mod_wants_ring{false};
+
     // ── IQ Recording ──────────────────────────────────────────────────────
     std::atomic<bool>     rec_on{false}, rec_stop{false};
     std::thread           rec_thr;

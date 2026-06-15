@@ -312,7 +312,8 @@ void FFTViewer::capture_and_process(){
                     iq_buf[k] = (int16_t)i8[k];
             }
             // IQ Ring write: 전체 청크를 한 번에 ring에 추가
-            bool need_ring=rec_on.load(std::memory_order_relaxed);
+            bool need_ring=rec_on.load(std::memory_order_relaxed)
+                          ||mod_wants_ring.load(std::memory_order_relaxed); // 광대역 모듈(WiFi)이 full-rate ring 요청
             if(!need_ring) for(int i=0;i<MAX_CHANNELS;i++){
                 if(channels[i].dem_run.load()){need_ring=true;break;}
             }
