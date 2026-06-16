@@ -80,3 +80,6 @@ Thumbs.db
 
 # 런타임 모듈 데이터 아카이브 (acars/wifi JSONL + IQ 덤프)
 /modules/
+
+# HOST 세션상태 (런타임, 머신별)
+host_state_*.json

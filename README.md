@@ -108,6 +108,22 @@ HF · VHF · UHF concurrent demodulation across ten channels — the Holding Lis
 
 ![Tactical band plan](assets/band_plan.png)
 
+### Protocol Decode Modules (DEMOD)
+
+Beyond raw collection, BEWE decodes the **content** of structured digital transmissions. Decode modules are licensed per subscription and activate without redeployment — a station gains a capability the moment its module is provisioned.
+
+- **Distributed activation** — from the DEMOD panel an analyst selects a decoder and applies it to any channel filter on any station across the Central. The owning HOST performs the demodulation; decoded records fan out through Central to every subscribed JOIN (Recv).
+- **Unified collection plane** — every module shares one HOST↔Central↔JOIN transport and writes a per-day archive on Central with live and historical playback. No per-module network plumbing.
+- **Capability isolation** — a module absent from a build leaves no trace in the binary; provisioning its folder enables it immediately, with every other feature unaffected.
+
+| Module | Signal | Decoded |
+|---|---|---|
+| **ACARS** | VHF aircraft datalink (~131 MHz) | Aircraft registration · flight · type · airline · country · message label/text · uplink/downlink direction |
+| **AIS** | Maritime VHF (161.975 / 162.025 MHz) | Vessel MMSI · position · course · type · name — rendered on a 2D map overlay |
+| **WiFi (802.11)** | 2.4 / 5 GHz beacons | SSID · primary channel · security (Open/WPA/WPA2) · PHY generation (11b/g/n/ac/ax) · BSSID — decoded from both 6 Mbps OFDM and 1 Mbps DSSS beacons |
+
+Each station presents its decoded inventory — aircraft overhead, vessels in the littoral, access points in the operational area — as a continuously updated, cross-station fused picture.
+
 ### Electronic Intelligence (ELINT) and Missile Signal Analysis
 
 Radar, missile seeker, and telemetry signals — automatic parameter extraction across nine analysis domains.
