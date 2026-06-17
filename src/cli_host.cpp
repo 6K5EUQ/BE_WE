@@ -1376,6 +1376,9 @@ void run_cli_host(){
                                     [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; },
                                     *reconnect_fn);
                                 bewe_log_push(0,"[CLI] Central auto-reconnected\n");
+                                // 재연결 직후 모듈 디코드 상태 재방송 (Central 의 새 빈 mod_mask 즉시 복구
+                                // → JOIN 들이 stale decode_on=0 안 보게). JOIN CONN_OPEN 만 의존하지 않음.
+                                bewe_mod_host_announce(v);
                                 // 재연결 직후 미션이 ACTIVE면 Central에 상태 재동기화 + HIST 재개
                                 if(v.mission_state == Mission::State::ACTIVE){
                                     bewe_log_push(0,"[CLI] re-broadcasting mission_sync after auto-reconnect\n");

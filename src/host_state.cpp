@@ -3,6 +3,7 @@
 #include "channel.hpp"
 #include "bewe_paths.hpp"
 #include "json_scan.hpp"
+#include "module_api.hpp"   // 디코드 모듈 on/off 상태 영속화 (bewe_modules / host_mask)
 #include <cstdio>
 #include <cstring>
 #include <sys/stat.h>
@@ -56,6 +57,17 @@ void save(const FFTViewer& v, const std::string& station){
             (unsigned)ch.audio_mask.load(), ch.pan, ch.sq_threshold.load());
         out += buf;
         out += oesc;
+        // 이 채널에 켜진 디코드 모듈 id (host_mask 비트) — 재시작 시 디코드 재개용
+        std::string dmods;
+        for(const auto& m : bewe_modules()){
+            if(!m.target_modes) continue;
+            if(bewe_mod_host_mask(m.id) & (1u<<i)){
+                if(!dmods.empty()) dmods += ',';
+                dmods += m.id;
+            }
+        }
+        out += "\",\"decode_mods\":\"";
+        out += dmods;          // 모듈 id 는 안전 문자 (escaping 불필요)
         out += "\"}";
     }
     out += "\n  ]\n}\n";
@@ -110,6 +122,7 @@ Snapshot load(const std::string& station){
                     else if(k=="pan"){ double d=0; js.read_number(d); c.pan=(int)d; }
                     else if(k=="sq"){ double d=0; js.read_number(d); c.sq=(float)d; }
                     else if(k=="owner"){ std::string s; js.read_string(s); strncpy(c.owner, s.c_str(), 31); }
+                    else if(k=="decode_mods"){ std::string s; js.read_string(s); strncpy(c.decode_mods, s.c_str(), sizeof(c.decode_mods)-1); }
                     else {  // 미지 키 — 문자열/숫자/배열/객체 모두 스킵
                         if(js.peek('"')){ std::string t; js.read_string(t); }
                         else if(js.consume('[') || js.consume('{')){
@@ -168,6 +181,11 @@ uint64_t fingerprint(const FFTViewer& v){
         h = mix(h, f2u(ch.sq_threshold.load()));
         for(int k=0;k<32 && ch.owner[k]; k++) h = mix(h, (uint64_t)(unsigned char)ch.owner[k]);
     }
+    // 디코드 모듈 on/off 변경도 감지 → 토글 시 저장 트리거
+    for(const auto& m : bewe_modules()){
+        if(!m.target_modes) continue;
+        h = mix(h, (uint64_t)bewe_mod_host_mask(m.id));
+    }
     return h;
 }
 
@@ -189,6 +207,13 @@ void apply_channels(FFTViewer& v, const Snapshot& st){
                                                          : Channel::DM_NONE;
         v.channels[slot].mode = dm;
         if(dm != Channel::DM_NONE) v.start_dem(slot, dm);
+        // 저장된 디코드 모듈 재개 (필터처럼 복원 — 재시작 후에도 디코드 유지).
+        // LOCAL 경로 → host_apply_set → 워커 재기동 + host_mask 복구 + STATE 브로드캐스트.
+        if(c.decode_mods[0]){
+            char tmp[64]; strncpy(tmp, c.decode_mods, sizeof(tmp)-1); tmp[sizeof(tmp)-1]=0;
+            for(char* tok=strtok(tmp,","); tok; tok=strtok(nullptr,","))
+                bewe_mod_set_target(v, tok, bewe_mod_my_station(), slot, true);
+        }
     }
     // 범위 밖 채널은 Holding 으로 (복조 중이면 mode 보존 + stop)
     v.update_dem_by_freq(v.header.center_frequency/1e6f);

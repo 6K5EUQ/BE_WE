@@ -4,6 +4,13 @@
 #include <map>
 #include <mutex>
 #include <vector>
+#include <chrono>
+#include <utility>
+
+static int64_t mod_now_ms(){
+    return (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 // ── 모듈 레지스트리 + framework (GUI/CLI 공통, 모듈 무관) ───────────────────
 // Central 컨트롤플레인 구조: 타깃 목록/명령/상태/데이터/구독/히스토리는 전부
@@ -35,6 +42,9 @@ struct ModFw {
     uint32_t host_mask = 0;                  // HOST: 자기 워커 mask
     std::vector<MpChEntry> targets;          // JOIN: CH_LIST 미러
     std::map<std::string,uint32_t> masks;    // JOIN: station→mask (STATE 미러)
+    // JOIN: 진행 중 낙관적 SET (key={station,ch} → {want_on, ts_ms}). 폴링 CH_LIST 가
+    // SET 왕복 전 옛 decode_on 으로 덮어써 버튼 깜빡이는 것 방지. 권위 STATE 도착/만료 시 제거.
+    std::map<std::pair<std::string,int>, std::pair<uint8_t,int64_t>> pending;
     bool recv = false;                       // JOIN: 구독 상태
     bool hist_loading = false;               // 구독 on → DONE 처리까지 (UI 표시 + 라이브 버퍼링)
     bool hist_started = false;               // META 수신 후에만 CHUNK 수락 (잔여 스트림 차단)
@@ -55,7 +65,7 @@ void bewe_mod_set_my_station(const char* s){
     for(auto& kv : g_fw){
         kv.second.recv=false; kv.second.hist_loading=false; kv.second.hist_started=false;
         kv.second.hist_buf.clear(); kv.second.live_pending.clear();
-        kv.second.targets.clear(); kv.second.masks.clear();
+        kv.second.targets.clear(); kv.second.masks.clear(); kv.second.pending.clear();
     }
 }
 
@@ -197,6 +207,8 @@ void bewe_mod_set_target(FFTViewer& v, const char* id, const char* station, int 
             for(auto& t : fw(id).targets)
                 if(t.ch==ch && strncmp(t.station, station, sizeof(t.station))==0)
                     t.decode_on = on?1:0;
+            // in-flight 표시 → 다음 폴링 CH_LIST 가 옛 값으로 되돌리지 못하게
+            fw(id).pending[{std::string(station), ch}] = { (uint8_t)(on?1:0), mod_now_ms() };
         }
         return;
     }
@@ -235,6 +247,20 @@ void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t
         size_t cnt = n / sizeof(MpChEntry);
         auto* e = reinterpret_cast<const MpChEntry*>(d);
         for(size_t i=0;i<cnt;i++) f.targets.push_back(e[i]);
+        // 라이브 STATE(푸시) 우선: 폴링 스냅샷보다 신선한 권위 mask 로 decode_on 덮어씀
+        // (STATE 가 첫 CH_LIST 전에 와도 여기서 반영 — H4 누락 방지).
+        for(auto& t : f.targets){
+            auto mit = f.masks.find(std::string(t.station, strnlen(t.station, sizeof(t.station))));
+            if(mit != f.masks.end()) t.decode_on = ((mit->second >> t.ch) & 1) ? 1 : 0;
+        }
+        // 진행 중 낙관적 SET 우선: 왕복 완료(STATE) 또는 만료(4s) 전까지 유지 → 버튼 깜빡임 제거
+        int64_t tn = mod_now_ms();
+        for(auto& t : f.targets){
+            auto pit = f.pending.find({std::string(t.station, strnlen(t.station, sizeof(t.station))), (int)t.ch});
+            if(pit == f.pending.end()) continue;
+            if(tn - pit->second.second > 4000) f.pending.erase(pit);
+            else t.decode_on = pit->second.first;
+        }
         break;
     }
     case BEWE_MK_STATE: {
@@ -247,6 +273,11 @@ void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t
         for(auto& t : f.targets)
             if(strncmp(t.station, st->station, 24)==0)
                 t.decode_on = ((st->mask>>t.ch)&1) ? 1 : 0;
+        // 권위 STATE 도착 → 이 기지 낙관적 pending 확정/제거
+        for(auto it=f.pending.begin(); it!=f.pending.end(); ){
+            if(it->first.first == std::string(stn)) it = f.pending.erase(it);
+            else ++it;
+        }
         break;
     }
     case BEWE_MK_DATA: {

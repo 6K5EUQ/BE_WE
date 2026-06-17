@@ -4704,6 +4704,8 @@ void run_streaming_viewer(){
                                                 [&v](){ return v.net_srv ? (uint8_t)v.net_srv->client_count() : (uint8_t)0; },
                                                 *reconnect_fn);
                                             bewe_log_push(2,"[UI] Central auto-reconnected\n");
+                                            // 재연결 직후 모듈 디코드 상태 재방송 (새 mod_mask 즉시 복구)
+                                            bewe_mod_host_announce(v);
                                             return;
                                         }
                                     }

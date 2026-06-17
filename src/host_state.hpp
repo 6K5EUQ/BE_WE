@@ -25,6 +25,7 @@ struct ChanSnap {
     uint32_t audio_mask = 0xFFFFFFFFu;
     int      pan = 0;
     float    sq = -50.0f;
+    char     decode_mods[64] = {};   // 이 채널에 켜진 디코드 모듈 id (콤마구분, 예 "wifi,acars")
 };
 
 struct Snapshot {
