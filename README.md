@@ -121,6 +121,7 @@ Beyond raw collection, BEWE decodes the **content** of structured digital transm
 | **ACARS** | VHF aircraft datalink (~131 MHz) | Aircraft registration · flight · type · airline · country · message label/text · uplink/downlink direction |
 | **AIS** | Maritime VHF (161.975 / 162.025 MHz) | Vessel MMSI · position · course · type · name — rendered on a 2D map overlay |
 | **WiFi (802.11)** | 2.4 / 5 GHz beacons | SSID · primary channel · security (Open/WPA/WPA2) · PHY generation (11b/g/n/ac/ax) · BSSID — decoded from both 6 Mbps OFDM and 1 Mbps DSSS beacons |
+| **DMR** | Digital Mobile Radio (4FSK, 12.5 kHz · UHF/VHF) | Color code · timeslot · source/destination ID (talkgroup) · call type (group/individual) · LC/CSBK opcode — Tier II conventional, FEC-verified (Golay Slot Type · BPTC(196,96) · CRC) from the 4FSK burst (signalling/metadata; AMBE voice not decoded) |
 
 Each station presents its decoded inventory — aircraft overhead, vessels in the littoral, access points in the operational area — as a continuously updated, cross-station fused picture.
 
