@@ -403,17 +403,14 @@ static void open_note_db(const DbFileEntry& e){
                      strnlen(e.info_data, sizeof(e.info_data)))));
     g_note_open = true;
 }
-// 직전 그린 항목(파일행) 호버 시 노트 툴팁. note 비면 발견용 힌트.
+// 직전 그린 항목(파일행) 호버 시 노트 툴팁. 노트 없으면 안 띄움.
 static void draw_note_tooltip(const std::string& note){
+    if(note.empty()) return;
     if(!ImGui::IsItemHovered()) return;
     ImGui::BeginTooltip();
-    if(!note.empty()){
-        ImGui::PushTextWrapPos(360.f);
-        ImGui::TextWrapped("%s", note.c_str());
-        ImGui::PopTextWrapPos();
-    } else {
-        ImGui::TextDisabled("(메모 없음 · 우클릭 Note)");
-    }
+    ImGui::PushTextWrapPos(360.f);
+    ImGui::TextWrapped("%s", note.c_str());
+    ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
 }
 
@@ -967,7 +964,7 @@ static void central_context_menu(NetClient* cli, const CentralFileRow& row){
         if(ImGui::MenuItem("Download")){
             start_download(cli, row);
         }
-        if(ImGui::MenuItem("Note...")){
+        if(ImGui::MenuItem("Note")){
             open_note_central(row);
         }
         ImGui::Separator();
@@ -1177,7 +1174,7 @@ static void local_context_menu(FFTViewer& v, NetClient* cli,
                 MissionView::show_toast("DB upload started");
             }
         }
-        if(ImGui::MenuItem("Note...")){
+        if(ImGui::MenuItem("Note")){
             open_note_local(full_path, name);
         }
         ImGui::Separator();
@@ -1799,7 +1796,7 @@ static void draw_db_list(FFTViewer& v, NetClient* cli){
                     }
                     ImGui::Separator();
                 }
-                if(ImGui::MenuItem("Note...")){
+                if(ImGui::MenuItem("Note")){
                     open_note_db(e);
                 }
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.35f, 0.35f, 1.f));
@@ -2071,13 +2068,12 @@ static void draw_note_editor_submodal(FFTViewer& v, NetClient* cli){
     ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x*0.5f - 240.f,
                                    ImGui::GetIO().DisplaySize.y*0.32f),
                             ImGuiCond_Appearing);
-    ImGui::OpenPopup("File Note##file_note");
+    ImGui::OpenPopup("Note##file_note");
     bool open = true;
-    if(ImGui::BeginPopupModal("File Note##file_note", &open,
+    if(ImGui::BeginPopupModal("Note##file_note", &open,
         ImGuiWindowFlags_NoResize|ImGuiWindowFlags_AlwaysAutoResize)){
         ImGui::TextDisabled("%s", g_note_title.c_str());
         ImGui::Separator();
-        ImGui::TextUnformatted("Note (이 파일 메모 — 특징/추가사항):");
         ImGui::InputTextMultiline("##note_edit", g_note_buf, sizeof(g_note_buf),
                                   ImVec2(456, 110));
         ImGui::Spacing();
