@@ -75,15 +75,15 @@ static void draw_targets(FFTViewer& v){
     if(ImGui::BeginTable("##uni_targets", 9, tf, ImVec2(0, th>120?th:120))){
         ImGui::TableSetupColumn("Station",      ImGuiTableColumnFlags_WidthFixed, 92);
         ImGui::TableSetupColumn("CH",           ImGuiTableColumnFlags_WidthFixed, 40);
-        ImGui::TableSetupColumn("Center (MHz)", ImGuiTableColumnFlags_WidthFixed, 100);
-        ImGui::TableSetupColumn("BW",           ImGuiTableColumnFlags_WidthFixed, 96);
-        ImGui::TableSetupColumn("Mode",         ImGuiTableColumnFlags_WidthFixed, 56);
+        ImGui::TableSetupColumn("Center (MHz)", ImGuiTableColumnFlags_WidthFixed, 104);
+        ImGui::TableSetupColumn("BW (kHz)",     ImGuiTableColumnFlags_WidthFixed, 96);
+        ImGui::TableSetupColumn("Mode",         ImGuiTableColumnFlags_WidthFixed, 66);
         ImGui::TableSetupColumn("State",        ImGuiTableColumnFlags_WidthFixed, 56);
         ImGui::TableSetupColumn("Rate",         ImGuiTableColumnFlags_WidthFixed, 104);
         ImGui::TableSetupColumn("Decode",       ImGuiTableColumnFlags_WidthFixed, 152);
         ImGui::TableSetupColumn("##sp",         ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-        const char* hn[9]={"Station","CH","Center (MHz)","BW","Mode","State","Rate","Decode",""};
+        const char* hn[9]={"Station","CH","Center (MHz)","BW (kHz)","Mode","State","Rate","Decode",""};
         const bool  hc[9]={false,true,true,true,true,true,true,false,false};
         for(int c=0;c<9;c++){ ImGui::TableSetColumnIndex(c); if(hc[c]) cell_ctr(hn[c]); else ImGui::TextUnformatted(hn[c]); }
 
@@ -93,14 +93,38 @@ static void draw_targets(FFTViewer& v){
         for(size_t i=0;i<rows.size();i++){
             Row& r=rows[i];
             ImGui::TableNextRow();
-            ImGui::PushID((int)i);
+            char rid[64]; snprintf(rid,sizeof(rid),"%s#%d",r.station.c_str(),r.ch);
+            ImGui::PushID(rid);                                  // 정렬 순서 무관 안정 ID (편집 중 끊김 방지)
+            // 편집 위젯 공용 대비 스타일 (input/combo 프레임 + 팝업)
+            ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.17f,0.20f,0.25f,1.0f));
+            ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.22f,0.26f,0.32f,1.0f));
+            ImGui::PushStyleColor(ImGuiCol_PopupBg,        ImVec4(0.11f,0.13f,0.17f,1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Header,         ImVec4(0.20f,0.42f,0.30f,1.0f));
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered,  ImVec4(0.18f,0.40f,0.55f,1.0f));
             char sd[16]; station_disp(r.station.c_str(), sd, sizeof(sd));
             ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted(sd);
             ImGui::TableSetColumnIndex(1); { char b[8];  snprintf(b,sizeof(b),"%d",r.ch); cell_ctr(b); }
             float cf=(r.lo+r.hi)*0.5f, bw=(r.hi>r.lo? r.hi-r.lo : r.lo-r.hi);
-            ImGui::TableSetColumnIndex(2); { char b[24]; snprintf(b,sizeof(b),"%.4f",cf); cell_ctr(b); }
-            ImGui::TableSetColumnIndex(3); { char b[24]; if(bw>=1.f) snprintf(b,sizeof(b),"%.3f MHz",bw); else snprintf(b,sizeof(b),"%.1f kHz",bw*1000.f); cell_ctr(b); }
-            ImGui::TableSetColumnIndex(4); cell_ctr(mode_name(r.mode));
+            // ── Center(MHz) 편집 → lo/hi 갱신(BW 유지), 전 유저 동기화 ──
+            ImGui::TableSetColumnIndex(2);
+            { float cfv=cf; ImGui::SetNextItemWidth(-1);
+              ImGui::InputFloat("##cf",&cfv,0,0,"%.4f");
+              if(ImGui::IsItemDeactivatedAfterEdit() && cfv>0.f){
+                  float hh=bw*0.5f; bewe_mod_edit_ch(v, r.station.c_str(), r.ch, r.mode, cfv-hh, cfv+hh); } }
+            // ── BW(kHz) 편집 → lo/hi 갱신(Center 유지) ──
+            ImGui::TableSetColumnIndex(3);
+            { float bwk=bw*1000.f; ImGui::SetNextItemWidth(-1);
+              ImGui::InputFloat("##bw",&bwk,0,0,"%.1f");
+              if(ImGui::IsItemDeactivatedAfterEdit() && bwk>0.f){
+                  float nb=bwk/1000.f; bewe_mod_edit_ch(v, r.station.c_str(), r.ch, r.mode, cf-nb*0.5f, cf+nb*0.5f); } }
+            // ── Mode 편집 ──
+            ImGui::TableSetColumnIndex(4);
+            { int cm=r.mode<3?r.mode:0; ImGui::SetNextItemWidth(-1);
+              if(ImGui::BeginCombo("##md", mode_name((uint8_t)cm))){
+                  for(int k=0;k<3;k++){ bool s=(k==cm);
+                      if(ImGui::Selectable(mode_name((uint8_t)k),s) && !s)
+                          bewe_mod_edit_ch(v, r.station.c_str(), r.ch, k, r.lo, r.hi); }
+                  ImGui::EndCombo(); } }
             // ── State: 행별 동작 표시 (RUN 초록 / idle 회색) ──
             ImGui::TableSetColumnIndex(5);
             if(r.running>=0){ ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.35f,0.95f,0.45f,1.f)); cell_ctr("RUN");  ImGui::PopStyleColor(); }
@@ -117,15 +141,10 @@ static void draw_targets(FFTViewer& v){
                     ImGui::PushStyleColor(ImGuiCol_Text,col); cell_ctr(b); ImGui::PopStyleColor();
                 } else { ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(0.6f,0.6f,0.45f,1.f)); cell_ctr("waiting"); ImGui::PopStyleColor(); }
             } else { ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(0.45f,0.45f,0.5f,1.f)); cell_ctr("-"); ImGui::PopStyleColor(); }
-            // ── Decode 콤보 (팝업/버튼 대비 강화) ──
+            // ── Decode 콤보 ──
             ImGui::TableSetColumnIndex(7);
             const char* cur = r.running>=0 ? mods[r.running].label : "None";
             ImGui::SetNextItemWidth(-1);
-            ImGui::PushStyleColor(ImGuiCol_PopupBg,        ImVec4(0.11f,0.13f,0.17f,1.0f));  // 팝업 배경 불투명·뚜렷
-            ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.17f,0.20f,0.25f,1.0f));  // 콤보 박스 배경
-            ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.22f,0.26f,0.32f,1.0f));
-            ImGui::PushStyleColor(ImGuiCol_Header,         ImVec4(0.20f,0.42f,0.30f,1.0f));  // 선택 항목
-            ImGui::PushStyleColor(ImGuiCol_HeaderHovered,  ImVec4(0.18f,0.40f,0.55f,1.0f));  // 마우스오버 항목
             ImVec4 lblc = r.running>=0 ? ImVec4(0.45f,0.95f,0.55f,1.f) : ImVec4(0.80f,0.80f,0.85f,1.f);
             ImGui::PushStyleColor(ImGuiCol_Text, lblc);
             bool open = ImGui::BeginCombo("##dec", cur);
@@ -143,7 +162,7 @@ static void draw_targets(FFTViewer& v){
                 if(dm.empty()) ImGui::TextDisabled("(no decoder installed)");
                 ImGui::EndCombo();
             }
-            ImGui::PopStyleColor(5);  // PopupBg,FrameBg,FrameBgHovered,Header,HeaderHovered
+            ImGui::PopStyleColor(5);  // FrameBg,FrameBgHovered,PopupBg,Header,HeaderHovered
             ImGui::PopID();
         }
         ImGui::EndTable();

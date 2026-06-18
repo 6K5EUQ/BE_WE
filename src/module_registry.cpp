@@ -1,5 +1,6 @@
 #include "module_api.hpp"
 #include "fft_viewer.hpp"
+#include "net_server.hpp"   // CH_EDIT 적용 시 broadcast_channel_sync
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -129,6 +130,33 @@ static void host_apply_set(FFTViewer& v, const BeweModule& m, int ch, bool on){
     host_send_state(m.id);
 }
 
+// ── CH_EDIT 로컬 적용 (HOST): geometry/mode 변경 + 디코더/오디오데모드 재시작 + 동기화 ──
+// 동작 중 디코더 정지 → s/e/mode 변경 → 오디오 데모드 재시작 → CHANNEL_SYNC 브로드캐스트
+// (Central 캐시 → 전 JOIN 의 다음 CH_LIST 폴링에 새 geometry 반영) → 디코더 새 band 재시작.
+static void apply_ch_edit_local(FFTViewer& v, int ch, int mode, float lo, float hi){
+    if(ch<0 || ch>=MAX_CHANNELS) return;
+    if(!v.channels[ch].filter_active) return;
+    if(lo>hi){ float t=lo; lo=hi; hi=t; }
+    if(hi-lo < 0.001f) hi = lo + 0.001f;                  // 최소 폭 1 kHz 가드
+    std::vector<const BeweModule*> wasrun;
+    for(auto& mm : reg())
+        if(mm.target_modes && ((bewe_mod_host_mask(mm.id)>>ch)&1)) wasrun.push_back(&mm);
+    for(auto* mm : wasrun) host_apply_set(v, *mm, ch, false);   // 디코더 정지 (mask off)
+    v.channels[ch].s = lo; v.channels[ch].e = hi;
+    if(mode>=0 && mode<=2){
+        auto dm=(Channel::DemodMode)mode;
+        if((int)v.channels[ch].mode != mode){
+            v.stop_dem(ch); v.channels[ch].mode = dm;
+            if(dm!=Channel::DM_NONE && v.channels[ch].filter_active) v.start_dem(ch, dm);
+        } else if(v.channels[ch].dem_run.load()){ v.stop_dem(ch); v.start_dem(ch, dm); }
+    } else if(v.channels[ch].dem_run.load()){
+        Channel::DemodMode md=v.channels[ch].mode; v.stop_dem(ch); v.start_dem(ch, md);
+    }
+    v.update_dem_by_freq(v.header.center_frequency/1e6f);
+    if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+    for(auto* mm : wasrun) host_apply_set(v, *mm, ch, true);    // 새 band 로 재시작
+}
+
 // ── 채널별 디코드 레이트 통계 (id|station|ch → 최근 60s 타임스탬프 deque) ──
 static std::mutex g_stat_mtx;
 static std::map<std::string, std::deque<int64_t>> g_stat;
@@ -249,6 +277,17 @@ void bewe_mod_set_target(FFTViewer& v, const char* id, const char* station, int 
     host_apply_set(v, *m, ch, on);
 }
 
+// 채널 geometry/mode 변경 (어느 기지든). 원격은 Central→해당 HOST, LOCAL/HOST 는 즉시.
+void bewe_mod_edit_ch(FFTViewer& v, const char* station, int ch, int mode, float lo, float hi){
+    if(g_send_up && v.remote_mode){
+        MpChEdit e{}; strncpy(e.station, station?station:"", sizeof(e.station)-1);
+        e.ch=(uint8_t)ch; e.mode=(uint8_t)(mode&0xFF); e.lo=lo; e.hi=hi;
+        send_up("*", BEWE_MK_CH_EDIT, &e, sizeof(e));   // mod_id 무관 (채널 op)
+        return;
+    }
+    apply_ch_edit_local(v, ch, mode, lo, hi);
+}
+
 // ── 수신 라우팅 ─────────────────────────────────────────────────────────────
 void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t len){
     if(len < sizeof(PktModulePipe)) return;
@@ -257,6 +296,14 @@ void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t
     char id[9]={}; memcpy(id, h->mod_id, 8);
     const uint8_t* d = payload + sizeof(PktModulePipe);
     size_t n = h->data_len;
+    // CH_EDIT 는 모듈 무관(채널 op) — find_mod 전에 처리
+    if(host_side && h->kind==BEWE_MK_CH_EDIT && n>=sizeof(MpChEdit)){
+        auto* e=reinterpret_cast<const MpChEdit*>(d);
+        char stn[25]={}; memcpy(stn, e->station, 24);
+        if(g_my_station[0] && strncmp(stn, g_my_station, 24)!=0) return;  // 다른 기지 명령
+        apply_ch_edit_local(v, e->ch, e->mode, e->lo, e->hi);
+        return;
+    }
     const BeweModule* m = find_mod(id);
     if(!m) return;   // 미설치 모듈 → 조용히 무시
 

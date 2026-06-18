@@ -68,5 +68,8 @@ bool bewe_mod_hist_loading(const char* id);
 void bewe_mod_req_ch_list(const char* id);                       // 타깃 목록 요청 (런처 폴링)
 std::vector<MpChEntry> bewe_mod_targets(FFTViewer& v, const char* id); // 타깃 목록 (LOCAL 이면 로컬 채널)
 void bewe_mod_set_target(FFTViewer& v, const char* id, const char* station, int ch, bool on); // 디코드 on/off
+// 채널필터 geometry/mode 변경 (어느 기지든): center/bw → lo/hi, mode=0/1/2. 원격은 Central
+// 경유 해당 HOST 적용 + CHANNEL_SYNC 로 전 유저 동기화. LOCAL/HOST 는 즉시 적용.
+void bewe_mod_edit_ch(FFTViewer& v, const char* station, int ch, int mode, float lo, float hi);
 const char* bewe_mod_my_station();                               // 자기 station_id ("" = LOCAL)
 void bewe_mod_set_my_station(const char* station_id);            // 코어가 접속 시 설정

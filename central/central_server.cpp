@@ -1815,6 +1815,19 @@ void CentralServer::handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
         return;
     }
 
+    if(h->kind == BEWE_MK_CH_EDIT && h->data_len >= sizeof(MpChEdit)){
+        auto* e = reinterpret_cast<const MpChEdit*>(d);
+        std::string stn(e->station, strnlen(e->station, sizeof(e->station)));
+        std::lock_guard<std::mutex> rlk(rooms_mtx_);
+        for(auto& r : rooms_){
+            if(!r->alive.load() || r->fd < 0) continue;
+            if(r->station_id != stn) continue;
+            enqueue_host_send(r, 0xFFFF, CentralMuxType::DATA, bewe_pkt, (uint32_t)bewe_len);
+            break;
+        }
+        return;
+    }
+
     if(h->kind == BEWE_MK_RECV && h->data_len >= sizeof(MpRecv)){
         bool on = reinterpret_cast<const MpRecv*>(d)->on != 0;
         {
