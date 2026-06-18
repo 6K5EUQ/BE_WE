@@ -6,6 +6,8 @@
 #include <vector>
 #include <chrono>
 #include <utility>
+#include <deque>
+#include <string>
 
 static int64_t mod_now_ms(){
     return (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -125,6 +127,37 @@ static void host_apply_set(FFTViewer& v, const BeweModule& m, int ch, bool on){
         if(!on)        fw(m.id).host_mask &= ~(1u<<ch);
     }
     host_send_state(m.id);
+}
+
+// ── 채널별 디코드 레이트 통계 (id|station|ch → 최근 60s 타임스탬프 deque) ──
+static std::mutex g_stat_mtx;
+static std::map<std::string, std::deque<int64_t>> g_stat;
+static std::string stat_key(const char* id, const char* station, int ch){
+    const char* s = (station && station[0]) ? station : "LOCAL";   // 빈 station = LOCAL (타깃표와 일치)
+    std::string k = id; k += '|'; k += s; k += '|'; k += std::to_string(ch);
+    return k;
+}
+void bewe_mod_stat_bump(const char* id, const char* station, int ch, int64_t t_ms){
+    if(!id) return;
+    std::lock_guard<std::mutex> lk(g_stat_mtx);
+    auto& dq = g_stat[stat_key(id, station, ch)];
+    dq.push_back(t_ms);
+    int64_t cut = t_ms - 60000;
+    while(!dq.empty() && dq.front() < cut) dq.pop_front();
+    if(dq.size() > 4096) dq.pop_front();           // 폭주 가드
+}
+void bewe_mod_ch_stat(const char* id, const char* station, int ch, int64_t now_ms,
+                      int& cnt60, int64_t& last_ms){
+    cnt60 = 0; last_ms = 0;
+    if(!id) return;
+    std::lock_guard<std::mutex> lk(g_stat_mtx);
+    auto it = g_stat.find(stat_key(id, station, ch));
+    if(it == g_stat.end()) return;
+    auto& dq = it->second;
+    int64_t cut = now_ms - 60000;
+    while(!dq.empty() && dq.front() < cut) dq.pop_front();
+    cnt60 = (int)dq.size();
+    if(!dq.empty()) last_ms = dq.back();
 }
 
 // HOST 워커 → 디코드 1건: Central 전송 + 로컬 뷰 반영

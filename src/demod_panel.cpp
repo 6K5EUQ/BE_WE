@@ -1,9 +1,10 @@
 // ── DEMOD 패널 (코어, 모듈 무관) ────────────────────────────────────────────
 // 하단바 DEMOD 버튼 / D 키 → 이 패널.
-// Modules 탭(런처): 설치 모듈 목록 + 선택 모듈의 전 스테이션 채널 타깃 테이블.
+// Modules 탭: 좌측 모듈 목록(데이터 뷰 열기용) + 우측 통합 채널 타깃 테이블.
+//   - 우측은 어느 모듈을 클릭했는지와 무관한 단일 통합 목록: 전 스테이션 채널필터 한 줄씩.
+//   - 채널 행마다 Decode 콤보로 그 채널에 돌릴 복조 모듈을 고른다 (None / 모드 적합 모듈).
+//     한 채널 = 한 모듈만 (콤보가 기존 모듈 stop → 새 모듈 start). 전 유저 동기화.
 //   - 타깃 목록은 Central 집계 (CH_LIST, 2초 폴링). LOCAL 은 로컬 채널.
-//   - Start/Stop 으로 어느 기지 어느 채널이든 디코드 on/off (전 유저 동기화).
-//   - 동작 중 타깃은 [RUN] 초록 표시.
 // 모듈별 데이터 뷰는 탭으로 (다중 오픈, 전환).
 #include "fft_viewer.hpp"
 #include "module_api.hpp"
@@ -13,6 +14,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <chrono>
 
 static const char* mode_name(uint8_t m){
     static const char* n[] = {"NONE","AM","FM"};
@@ -32,81 +34,116 @@ static void cell_ctr(const char* s){
     if(tw<av) ImGui::SetCursorPosX(ImGui::GetCursorPosX()+(av-tw)*0.5f);
     ImGui::TextUnformatted(s);
 }
-static void cell_ctr_col(const char* s, ImVec4 c){ ImGui::PushStyleColor(ImGuiCol_Text,c); cell_ctr(s); ImGui::PopStyleColor(); }
-// 셀 안에서 다음 버튼을 가로 중앙에 배치
-static void cell_btn_center(const char* label){
-    float bw = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x*2.f;
-    float av = ImGui::GetContentRegionAvail().x;
-    if(bw<av) ImGui::SetCursorPosX(ImGui::GetCursorPosX()+(av-bw)*0.5f);
-}
 
-// ── 런처: 선택 모듈의 타깃 테이블 (예정 모듈은 안내만) ──
-static void draw_launcher(FFTViewer& v, const BeweModule& m){
-    if(m.planned){   // 복조기 미설치 — UI 프리뷰
-        ImGui::Dummy(ImVec2(0,10)); ImGui::Indent(6);
-        ImGui::TextDisabled("%s - UI preview. Decoder module not installed yet.", m.label);
-        ImGui::Dummy(ImVec2(0,4));
-        ImGui::TextDisabled("Double-click the module in the list to open its view.");
-        ImGui::Unindent(6);
-        return;
-    }
-    // 원격이면 주기적으로 타깃 목록 갱신
+// ── 통합 타깃 테이블 (모듈 선택 무관): 전 스테이션 채널필터 1목록 + 행별 Decode 콤보 ──
+// 한 채널 = 한 복조 모듈. 콤보에서 전 복조 모듈 중 아무거나 고르면(모드 무관 — 워커가 IQ
+// 직접 탭) 기존 모듈 stop 후 새 모듈 start (None = 정지). 어느 기지든 동일 제어, 전 유저 동기화.
+static void draw_targets(FFTViewer& v){
+    auto& mods = bewe_modules();
+    // 복조 가능한(설치+채널타깃형) 모듈 인덱스
+    std::vector<int> dm;
+    for(size_t i=0;i<mods.size();i++) if(!mods[i].planned && mods[i].target_modes) dm.push_back((int)i);
+
+    // 원격: 모든 복조 모듈의 CH_LIST 주기 폴링 (통합 목록이라 전부 필요)
     if(v.remote_mode){
-        static double s_last_req = 0;
-        double now = ImGui::GetTime();
-        if(now - s_last_req > 2.0){ bewe_mod_req_ch_list(m.id); s_last_req = now; }
+        static double s_last=0; double now=ImGui::GetTime();
+        if(now-s_last>2.0){ for(int mi:dm) bewe_mod_req_ch_list(mods[mi].id); s_last=now; }
     }
 
-    auto targets = bewe_mod_targets(v, m.id);
-    ImGuiTableFlags tf = ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInnerV|ImGuiTableFlags_ScrollY;
-    float th = ImGui::GetContentRegionAvail().y - 8;
-    float tw = ImGui::GetContentRegionAvail().x - 8;
-    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(8,5));
-    if(ImGui::BeginTable("##mod_targets", 6, tf, ImVec2(tw>200?tw:200, th>120?th:120))){
-        ImGui::TableSetupColumn("Station",    ImGuiTableColumnFlags_WidthFixed, 100);
-        ImGui::TableSetupColumn("CH",         ImGuiTableColumnFlags_WidthFixed, 44);
-        ImGui::TableSetupColumn("Freq (MHz)", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Mode",       ImGuiTableColumnFlags_WidthFixed, 64);
-        ImGui::TableSetupColumn("State",      ImGuiTableColumnFlags_WidthFixed, 72);
-        ImGui::TableSetupColumn("",           ImGuiTableColumnFlags_WidthFixed, 84);
-        // 헤더: Station 좌, 나머지 중앙 (셀과 정렬 일치)
-        ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-        const char* hn[6]={"Station","CH","Freq (MHz)","Mode","State",""};
-        const bool  hc[6]={false,true,true,true,true,false};
-        for(int c=0;c<6;c++){ ImGui::TableSetColumnIndex(c); if(hc[c]) cell_ctr(hn[c]); else ImGui::TextUnformatted(hn[c]); }
-
-        if(targets.empty()){
-            ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
-            ImGui::TextDisabled("(no channels)");
+    // 채널 행 통합 (key = station|ch). freq/mode 는 채널 고유, running = decode_on 인 모듈.
+    struct Row{ std::string station; int ch; uint8_t mode; float lo,hi; int running; };
+    std::vector<Row> rows;
+    for(int mi:dm){
+        auto ts = bewe_mod_targets(v, mods[mi].id);
+        for(auto& e : ts){
+            Row* r=nullptr;
+            for(auto& x:rows) if(x.ch==(int)e.ch && x.station==e.station){ r=&x; break; }
+            if(!r){ rows.push_back({e.station,(int)e.ch,e.mode,e.lo,e.hi,-1}); r=&rows.back(); }
+            if(e.decode_on) r->running = mi;
         }
-        for(size_t i=0;i<targets.size();i++){
-            MpChEntry& e = targets[i];
-            bool eligible = m.target_modes & (1u << e.mode);
-            bool running  = e.decode_on != 0;
+    }
+    std::sort(rows.begin(),rows.end(),[](const Row&a,const Row&b){
+        if(a.station!=b.station) return a.station<b.station; return a.ch<b.ch; });
+
+    // 데이터 컬럼은 고정폭, 남는 폭은 끝의 빈 stretch 컬럼이 흡수 → Center 안 늘어나고 Decode 안 짤림
+    ImGuiTableFlags tf = ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInner|
+                         ImGuiTableFlags_BordersOuter|ImGuiTableFlags_ScrollY;
+    float th=ImGui::GetContentRegionAvail().y-8;
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(6,5));
+    int64_t now_ms=(int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    if(ImGui::BeginTable("##uni_targets", 9, tf, ImVec2(0, th>120?th:120))){
+        ImGui::TableSetupColumn("Station",      ImGuiTableColumnFlags_WidthFixed, 92);
+        ImGui::TableSetupColumn("CH",           ImGuiTableColumnFlags_WidthFixed, 40);
+        ImGui::TableSetupColumn("Center (MHz)", ImGuiTableColumnFlags_WidthFixed, 100);
+        ImGui::TableSetupColumn("BW",           ImGuiTableColumnFlags_WidthFixed, 96);
+        ImGui::TableSetupColumn("Mode",         ImGuiTableColumnFlags_WidthFixed, 56);
+        ImGui::TableSetupColumn("State",        ImGuiTableColumnFlags_WidthFixed, 56);
+        ImGui::TableSetupColumn("Rate",         ImGuiTableColumnFlags_WidthFixed, 104);
+        ImGui::TableSetupColumn("Decode",       ImGuiTableColumnFlags_WidthFixed, 152);
+        ImGui::TableSetupColumn("##sp",         ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+        const char* hn[9]={"Station","CH","Center (MHz)","BW","Mode","State","Rate","Decode",""};
+        const bool  hc[9]={false,true,true,true,true,true,true,false,false};
+        for(int c=0;c<9;c++){ ImGui::TableSetColumnIndex(c); if(hc[c]) cell_ctr(hn[c]); else ImGui::TextUnformatted(hn[c]); }
+
+        if(rows.empty()){
+            ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0); ImGui::TextDisabled("(no channels)");
+        }
+        for(size_t i=0;i<rows.size();i++){
+            Row& r=rows[i];
             ImGui::TableNextRow();
             ImGui::PushID((int)i);
-            char sd[16]; station_disp(e.station, sd, sizeof(sd));
-            if(!eligible) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f,0.45f,0.45f,1.f));
+            char sd[16]; station_disp(r.station.c_str(), sd, sizeof(sd));
             ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted(sd);
-            ImGui::TableSetColumnIndex(1); { char b[8];  snprintf(b,sizeof(b),"%d",e.ch); cell_ctr(b); }
-            ImGui::TableSetColumnIndex(2); { char b[40]; snprintf(b,sizeof(b),"%.4f - %.4f",e.lo,e.hi); cell_ctr(b); }
-            ImGui::TableSetColumnIndex(3); cell_ctr(mode_name(e.mode));
-            if(!eligible) ImGui::PopStyleColor();
-            ImGui::TableSetColumnIndex(4);
-            if(running) cell_ctr_col("[RUN]", ImVec4(0.3f,0.9f,0.3f,1.f));
-            else        cell_ctr_col("-",     ImVec4(0.5f,0.5f,0.5f,1.f));
+            ImGui::TableSetColumnIndex(1); { char b[8];  snprintf(b,sizeof(b),"%d",r.ch); cell_ctr(b); }
+            float cf=(r.lo+r.hi)*0.5f, bw=(r.hi>r.lo? r.hi-r.lo : r.lo-r.hi);
+            ImGui::TableSetColumnIndex(2); { char b[24]; snprintf(b,sizeof(b),"%.4f",cf); cell_ctr(b); }
+            ImGui::TableSetColumnIndex(3); { char b[24]; if(bw>=1.f) snprintf(b,sizeof(b),"%.3f MHz",bw); else snprintf(b,sizeof(b),"%.1f kHz",bw*1000.f); cell_ctr(b); }
+            ImGui::TableSetColumnIndex(4); cell_ctr(mode_name(r.mode));
+            // ── State: 행별 동작 표시 (RUN 초록 / idle 회색) ──
             ImGui::TableSetColumnIndex(5);
-            if(running){
-                cell_btn_center("Stop");
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f,0.15f,0.15f,1.f));
-                if(ImGui::SmallButton("Stop")) bewe_mod_set_target(v, m.id, e.station, e.ch, false);
-                ImGui::PopStyleColor();
-            } else if(eligible){
-                cell_btn_center("Start");
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f,0.42f,0.2f,1.f));
-                if(ImGui::SmallButton("Start")) bewe_mod_set_target(v, m.id, e.station, e.ch, true);
-                ImGui::PopStyleColor();
-            } else cell_ctr_col("mode", ImVec4(0.5f,0.5f,0.5f,1.f));
+            if(r.running>=0){ ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.35f,0.95f,0.45f,1.f)); cell_ctr("RUN");  ImGui::PopStyleColor(); }
+            else            { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f,0.5f,0.56f,1.f));   cell_ctr("idle"); ImGui::PopStyleColor(); }
+            // ── Rate: 최근 1분 디코드 건수 + 마지막 수신 경과 (동작 검증) ──
+            ImGui::TableSetColumnIndex(6);
+            if(r.running>=0){
+                int cnt; int64_t last;
+                bewe_mod_ch_stat(mods[r.running].id, r.station.c_str(), r.ch, now_ms, cnt, last);
+                if(last){
+                    long age=(long)((now_ms-last)/1000); if(age<0) age=0;
+                    char b[28]; snprintf(b,sizeof(b),"%d/m  %lds", cnt, age);
+                    ImVec4 col = cnt>0 ? ImVec4(0.55f,0.85f,0.6f,1.f) : ImVec4(0.9f,0.6f,0.35f,1.f); // 0건=정체 주황
+                    ImGui::PushStyleColor(ImGuiCol_Text,col); cell_ctr(b); ImGui::PopStyleColor();
+                } else { ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(0.6f,0.6f,0.45f,1.f)); cell_ctr("waiting"); ImGui::PopStyleColor(); }
+            } else { ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(0.45f,0.45f,0.5f,1.f)); cell_ctr("-"); ImGui::PopStyleColor(); }
+            // ── Decode 콤보 (팝업/버튼 대비 강화) ──
+            ImGui::TableSetColumnIndex(7);
+            const char* cur = r.running>=0 ? mods[r.running].label : "None";
+            ImGui::SetNextItemWidth(-1);
+            ImGui::PushStyleColor(ImGuiCol_PopupBg,        ImVec4(0.11f,0.13f,0.17f,1.0f));  // 팝업 배경 불투명·뚜렷
+            ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.17f,0.20f,0.25f,1.0f));  // 콤보 박스 배경
+            ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.22f,0.26f,0.32f,1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Header,         ImVec4(0.20f,0.42f,0.30f,1.0f));  // 선택 항목
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered,  ImVec4(0.18f,0.40f,0.55f,1.0f));  // 마우스오버 항목
+            ImVec4 lblc = r.running>=0 ? ImVec4(0.45f,0.95f,0.55f,1.f) : ImVec4(0.80f,0.80f,0.85f,1.f);
+            ImGui::PushStyleColor(ImGuiCol_Text, lblc);
+            bool open = ImGui::BeginCombo("##dec", cur);
+            ImGui::PopStyleColor();   // Text — 버튼 라벨만 색, 팝업 항목은 기본색
+            if(open){
+                if(ImGui::Selectable("None", r.running<0) && r.running>=0)
+                    bewe_mod_set_target(v, mods[r.running].id, r.station.c_str(), r.ch, false);
+                for(int mi:dm){
+                    bool is_cur=(mi==r.running);
+                    if(ImGui::Selectable(mods[mi].label, is_cur) && !is_cur){
+                        if(r.running>=0) bewe_mod_set_target(v, mods[r.running].id, r.station.c_str(), r.ch, false);
+                        bewe_mod_set_target(v, mods[mi].id, r.station.c_str(), r.ch, true);
+                    }
+                }
+                if(dm.empty()) ImGui::TextDisabled("(no decoder installed)");
+                ImGui::EndCombo();
+            }
+            ImGui::PopStyleColor(5);  // PopupBg,FrameBg,FrameBgHovered,Header,HeaderHovered
             ImGui::PopID();
         }
         ImGui::EndTable();
@@ -232,11 +269,10 @@ void demod_draw_panel(FFTViewer& v, bool just_opened){
             ImGui::PopStyleVar();
             ImGui::EndChild();
             ImGui::SameLine();
-            // sel_mod 가 목록에 보이는 모듈을 가리키도록 보정
+            // sel_mod 보정 (좌측 목록 하이라이트용 — 우측 통합 테이블은 선택과 무관)
             if(!shown(sel_mod)){ sel_mod=-1; for(size_t i=0;i<mods.size();i++) if(shown((int)i)){ sel_mod=(int)i; break; } }
             ImGui::BeginChild("##mod_detail", ImVec2(0, 0), false);
-            if(sel_mod >= 0 && sel_mod < (int)mods.size())
-                draw_launcher(v, mods[sel_mod]);
+            draw_targets(v);   // 통합 채널 타깃 테이블 (전 스테이션 1목록 + Decode 콤보)
             ImGui::EndChild();
             ImGui::EndTabItem();
         }

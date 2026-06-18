@@ -54,6 +54,13 @@ uint32_t bewe_mod_host_mask(const char* id);                     // HOST 자기 
 // HOST 워커 → 디코드 1건 방출: Central 전송(+로컬 뷰 반영). payload = 모듈 정의 레코드
 void bewe_mod_emit(FFTViewer& v, const char* id, const void* payload, size_t n);
 
+// ── 채널별 디코드 레이트 통계 (코어 보관, 모듈이 on_data 에서 1건마다 bump) ──
+// key = (id, station_raw, ch). DEMOD 통합 테이블이 행마다 "N/min · 마지막수신" 표시용.
+// 와이어 변경 없음 — 레코드가 보이는 곳(HOST 로컬 / Recv 구독 JOIN)에서만 집계.
+void bewe_mod_stat_bump(const char* id, const char* station, int ch, int64_t t_ms);
+void bewe_mod_ch_stat(const char* id, const char* station, int ch, int64_t now_ms,
+                      int& cnt60, int64_t& last_ms);
+
 // ── JOIN/뷰어 측 framework (런처·뷰 UI 가 사용) ──
 bool bewe_mod_recv(const char* id);                              // Recv 구독 상태
 void bewe_mod_set_recv(FFTViewer& v, const char* id, bool on);   // 구독 토글 (on → 히스토리+라이브)

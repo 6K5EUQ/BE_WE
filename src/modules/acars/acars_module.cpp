@@ -45,8 +45,7 @@ static bool host_start(FFTViewer& v, int ch){
     ChWork& w = g_w[ch];
     if(!w.on.load() && w.thr.joinable()) w.thr.join();   // 죽은 스레드 회수
     if(w.on.load()) return true;
-    if(!v.channels[ch].filter_active) return false;
-    if(v.channels[ch].mode != Channel::DM_AM) return false;
+    if(!v.channels[ch].filter_active) return false;   // 복조 모드 무관 — 워커가 IQ ring 직접 탭
     w.stop.store(false);
     w.on.store(true);
     w.thr = std::thread(worker, std::ref(v), ch);
@@ -245,6 +244,7 @@ static void on_data(FFTViewer& v, const char* station, const uint8_t* d, size_t 
     (void)v;
     if(n < sizeof(WireMsg)) return;
     AcarsMsg m; wire_to_msg(*reinterpret_cast<const WireMsg*>(d), m);
+    bewe_mod_stat_bump("acars", station, m.ch, m.t_ms);
     station_disp(station, m.station, sizeof(m.station));
     append_log(m);
 }

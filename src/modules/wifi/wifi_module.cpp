@@ -146,6 +146,7 @@ static void on_data(FFTViewer& v, const char* station, const uint8_t* d, size_t 
     (void)v; (void)station;
     if(n < sizeof(WifiWireMsg)) return;
     WifiRecord m; wifi_wire_to_msg(*reinterpret_cast<const WifiWireMsg*>(d), m);
+    bewe_mod_stat_bump("wifi", station, m.ch, m.t_ms);
     append_log(m);
 }
 

@@ -62,6 +62,15 @@ void info_str(const AisRecord& m, char* o, size_t n){
 }
 // MMSI별 최신 head + 항적 꼬리 (지도용)
 struct AisTrack { AisRecord head; std::deque<std::array<float,2>> trail; };
+// 선종(ITU shiptype)별 마커 색 — 화물/유조/여객/어선 등 한눈 구분
+ImU32 type_color(int t){
+    if(t>=60&&t<=69) return IM_COL32(120,200,255,255);  // passenger 파랑
+    if(t>=70&&t<=79) return IM_COL32(110,230,140,255);  // cargo 초록
+    if(t>=80&&t<=89) return IM_COL32(255,160, 90,255);  // tanker 주황
+    if(t>=30&&t<=39) return IM_COL32(235,215,120,255);  // fishing/특수 노랑
+    if(t>=40&&t<=59) return IM_COL32(200,150,255,255);  // 고속/특수 보라
+    return IM_COL32(90,200,255,255);                    // 미상 시안
+}
 } // anonymous
 
 void draw_content(FFTViewer& v, bool just_opened){
@@ -151,7 +160,7 @@ void draw_content(FFTViewer& v, bool just_opened){
         mpt.lat=m.lat; mpt.lon=m.lon; mpt.id=m.mmsi;
         mpt.heading = (m.cog>=0.f)? m.cog : (m.heading!=511? (float)m.heading : -1.f);
         mpt.selected = (has_focus && focus.mmsi==m.mmsi);
-        mpt.color = mpt.selected? IM_COL32(255,210,80,255) : IM_COL32(80,200,255,255);
+        mpt.color = mpt.selected? IM_COL32(255,210,80,255) : type_color(m.ship_type);
         mpt.label = m.name[0]? m.name : nullptr;
         trailbuf.emplace_back();
         for(auto& pr : kv.second.trail){ trailbuf.back().push_back(pr[0]); trailbuf.back().push_back(pr[1]); }
