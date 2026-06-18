@@ -325,6 +325,9 @@ void CentralServer::handle_mission_file_list_req(std::shared_ptr<HostRoom> room,
                     if(!nl) break;
                     p = nl + 1;
                 }
+                // 파일별 note (IQ=bewe:notes / 그 외=Note: 라인) — 호버 툴팁용
+                std::string nt = SigMF::note_from_text(std::string(buf, br));
+                strncpy(e.note, nt.c_str(), sizeof(e.note)-1);
             }
             rows.push_back(e);
         }
@@ -561,6 +564,30 @@ void CentralServer::handle_mission_file_rename(std::shared_ptr<HostRoom> room,
     int rc2 = rename(SigMF::sidecar_path(src).c_str(), SigMF::sidecar_path(dst).c_str());
     printf("[Central][Archive] RENAME %s → %s (file=%d info=%d)\n",
            src.c_str(), newfn, rc1, rc2);
+}
+
+// ── SET_NOTE: 파일별 메모를 사이드카에 기입 (IQ=bewe:notes / 그 외=Note: 라인) ──
+// 클라가 다음 LIST_REQ(2초 폴링)에서 갱신된 note 를 받아 호버 툴팁 반영.
+void CentralServer::handle_mission_file_set_note(std::shared_ptr<HostRoom> room,
+                                                 std::shared_ptr<JoinEntry> requester,
+                                                 const uint8_t* payload, size_t plen){
+    (void)room; (void)requester;
+    if(plen < sizeof(PktMissionFileSetNote)) return;
+    const auto* r = reinterpret_cast<const PktMissionFileSetNote*>(payload);
+    char station[65]={}; memcpy(station, r->key.station, 64); station[64]=0;
+    char code[9]={};    memcpy(code,    r->key.code,    8);  code[8]=0;
+    char fname[129]={}; memcpy(fname,   r->key.filename,128); fname[128]=0;
+    char note[257]={};  memcpy(note,    r->note,        256); note[256]=0;
+    if(!path_component_safe(station, 64) || !path_component_safe(code, 8) ||
+       !path_component_safe(fname, 128) || subdir_name(r->key.subdir) == nullptr){
+        printf("[Central][Archive] SET_NOTE invalid key\n");
+        return;
+    }
+    std::string dir = archive_dir(station, r->key.year, code, r->key.subdir);
+    if(dir.empty()) return;
+    std::string full = dir + "/" + fname;
+    bool ok = SigMF::update_note(full, note);
+    printf("[Central][Archive] SET_NOTE %s (ok=%d, %zu chars)\n", full.c_str(), (int)ok, strlen(note));
 }
 
 // ── LWF live stream → HIST archive tap ───────────────────────────────────

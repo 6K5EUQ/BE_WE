@@ -266,6 +266,7 @@ struct CentralFileRow {
     uint64_t size_bytes;
     int64_t  mtime_unix;
     char     operator_name[32];   // wire 의 MissionFileEntry::operator_name 사본
+    char     note[256];           // wire 의 MissionFileEntry::note 사본 (호버 툴팁)
     uint32_t seen_gen;            // 마지막으로 이 row 를 확인한 LIST_REQ 세대 (stale 정리용)
 };
 static std::mutex                     g_cf_mtx;
@@ -364,6 +365,56 @@ static bool central_in_selection(const CentralSelKey& k){
 }
 static bool db_in_selection(const std::string& filename){
     return g_sel_db_files.count(filename) > 0;
+}
+
+// ── 파일별 Note 에디터 (LOCAL/CENTRAL/DB 공통) ────────────────────────────────
+// 노트는 기존 사이드카(.sigmf-meta bewe:notes / .info Note:)에 저장. LOCAL 은 디스크
+// 직접, CENTRAL/DB 는 Central 에 set-note 보내 사이드카 갱신.
+static bool           g_note_open = false;
+static char           g_note_buf[256] = {};
+static int            g_note_src  = 0;          // 0=LOCAL, 1=CENTRAL, 2=DB
+static std::string    g_note_local_path;        // LOCAL: 풀 경로
+static std::string    g_note_db_file;           // DB: filename
+static MissionFileKey g_note_key{};             // CENTRAL: key
+static std::string    g_note_title;             // 모달 표시 파일명
+
+static void note_set_buf(const std::string& s){
+    strncpy(g_note_buf, s.c_str(), sizeof(g_note_buf)-1);
+    g_note_buf[sizeof(g_note_buf)-1] = 0;
+}
+static void open_note_local(const std::string& full_path, const std::string& name){
+    g_note_src = 0; g_note_local_path = full_path; g_note_title = name;
+    note_set_buf(SigMF::read_note(full_path));
+    g_note_open = true;
+}
+static void open_note_central(const CentralFileRow& r){
+    g_note_src = 1; g_note_title = r.filename;
+    g_note_key = MissionFileKey{};
+    strncpy(g_note_key.station, r.station,  sizeof(g_note_key.station)-1);
+    g_note_key.year = r.year; g_note_key.subdir = r.subdir;
+    strncpy(g_note_key.code,     r.code,     sizeof(g_note_key.code)-1);
+    strncpy(g_note_key.filename, r.filename, sizeof(g_note_key.filename)-1);
+    note_set_buf(r.note);
+    g_note_open = true;
+}
+static void open_note_db(const DbFileEntry& e){
+    g_note_src = 2; g_note_db_file = e.filename; g_note_title = e.filename;
+    note_set_buf(SigMF::note_from_text(std::string(e.info_data,
+                     strnlen(e.info_data, sizeof(e.info_data)))));
+    g_note_open = true;
+}
+// 직전 그린 항목(파일행) 호버 시 노트 툴팁. note 비면 발견용 힌트.
+static void draw_note_tooltip(const std::string& note){
+    if(!ImGui::IsItemHovered()) return;
+    ImGui::BeginTooltip();
+    if(!note.empty()){
+        ImGui::PushTextWrapPos(360.f);
+        ImGui::TextWrapped("%s", note.c_str());
+        ImGui::PopTextWrapPos();
+    } else {
+        ImGui::TextDisabled("(메모 없음 · 우클릭 Note)");
+    }
+    ImGui::EndTooltip();
 }
 
 // ── Start / End 서브모달 ────────────────────────────────────────────────
@@ -916,6 +967,9 @@ static void central_context_menu(NetClient* cli, const CentralFileRow& row){
         if(ImGui::MenuItem("Download")){
             start_download(cli, row);
         }
+        if(ImGui::MenuItem("Note...")){
+            open_note_central(row);
+        }
         ImGui::Separator();
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.35f, 0.35f, 1.f));
         if(ImGui::MenuItem("Delete")){
@@ -1123,6 +1177,9 @@ static void local_context_menu(FFTViewer& v, NetClient* cli,
                 MissionView::show_toast("DB upload started");
             }
         }
+        if(ImGui::MenuItem("Note...")){
+            open_note_local(full_path, name);
+        }
         ImGui::Separator();
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.35f, 0.35f, 1.f));
         if(ImGui::MenuItem("Delete")){
@@ -1271,6 +1328,7 @@ static void draw_central_list(FFTViewer& v, NetClient* cli, uint8_t subdir){
             ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick,
             ImVec2(pw, 0));
         ImGui::PopStyleColor();
+        draw_note_tooltip(r.note);
 
         if(clicked){
             // 단일 클릭 = 선택; Ctrl+클릭 = 토글; Shift+클릭 = anchor~click range; 더블클릭 = open/download
@@ -1510,6 +1568,7 @@ static void draw_local_list(FFTViewer& v, NetClient* cli){
                 ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick,
                 ImVec2(pw, 0));
             ImGui::PopStyleColor();
+            if(ImGui::IsItemHovered()) draw_note_tooltip(SigMF::read_note(full));
             if(clicked){
                 bool ctrl  = ImGui::GetIO().KeyCtrl;
                 bool shift = ImGui::GetIO().KeyShift;
@@ -1696,6 +1755,8 @@ static void draw_db_list(FFTViewer& v, NetClient* cli){
                 ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick,
                 ImVec2(pw, 0));
             ImGui::PopStyleColor();
+            draw_note_tooltip(SigMF::note_from_text(std::string(e.info_data,
+                                  strnlen(e.info_data, sizeof(e.info_data)))));
             if(clicked){
                 bool ctrl  = ImGui::GetIO().KeyCtrl;
                 bool shift = ImGui::GetIO().KeyShift;
@@ -1737,6 +1798,9 @@ static void draw_db_list(FFTViewer& v, NetClient* cli){
                         open_local_in_viewer(v, local_path);
                     }
                     ImGui::Separator();
+                }
+                if(ImGui::MenuItem("Note...")){
+                    open_note_db(e);
                 }
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.35f, 0.35f, 1.f));
                 if(ImGui::MenuItem("Delete (DB)")){
@@ -1978,6 +2042,58 @@ static void draw_left_tree(FFTViewer& v){
 }
 
 // ── Delete 확인 모달 ────────────────────────────────────────────────────
+// 노트 저장: LOCAL=디스크 사이드카 직접 / CENTRAL,DB=Central 에 set-note (사이드카 갱신).
+static void save_note(NetClient* cli){
+    if(g_note_src == 0){                       // LOCAL
+        SigMF::update_note(g_note_local_path, g_note_buf);
+    } else if(g_note_src == 1){                // CENTRAL archive
+        if(cli) cli->send_mission_file_set_note(g_note_key, g_note_buf);
+        std::lock_guard<std::mutex> lk(g_cf_mtx);   // 옵티미스틱: 다음 LIST 폴링 전 즉시 반영
+        for(auto& r : g_cf_rows)
+            if(r.year == g_note_key.year && r.subdir == g_note_key.subdir &&
+               strncmp(r.station,  g_note_key.station,  sizeof(r.station))  == 0 &&
+               strncmp(r.code,     g_note_key.code,     sizeof(r.code))     == 0 &&
+               strncmp(r.filename, g_note_key.filename, sizeof(r.filename)) == 0){
+                strncpy(r.note, g_note_buf, sizeof(r.note)-1); r.note[sizeof(r.note)-1]=0;
+                break;
+            }
+    } else {                                   // DB (Central re-broadcast 가 list 갱신)
+        if(cli) cli->cmd_db_set_note(g_note_db_file.c_str(), g_note_buf);
+    }
+    MissionView::show_toast("Note saved");
+}
+
+// 파일별 Note 에디터 모달 (g_note_open 트리거).
+static void draw_note_editor_submodal(FFTViewer& v, NetClient* cli){
+    (void)v;
+    if(!g_note_open) return;
+    ImGui::SetNextWindowSize(ImVec2(480, 0));
+    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x*0.5f - 240.f,
+                                   ImGui::GetIO().DisplaySize.y*0.32f),
+                            ImGuiCond_Appearing);
+    ImGui::OpenPopup("File Note##file_note");
+    bool open = true;
+    if(ImGui::BeginPopupModal("File Note##file_note", &open,
+        ImGuiWindowFlags_NoResize|ImGuiWindowFlags_AlwaysAutoResize)){
+        ImGui::TextDisabled("%s", g_note_title.c_str());
+        ImGui::Separator();
+        ImGui::TextUnformatted("Note (이 파일 메모 — 특징/추가사항):");
+        ImGui::InputTextMultiline("##note_edit", g_note_buf, sizeof(g_note_buf),
+                                  ImVec2(456, 110));
+        ImGui::Spacing();
+        if(ImGui::Button("Save", ImVec2(120, 0))){
+            save_note(cli);
+            g_note_open = false; ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if(ImGui::Button("Cancel", ImVec2(120, 0))){
+            g_note_open = false; ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    if(!open) g_note_open = false;
+}
+
 static void draw_delete_confirm_submodal(FFTViewer& v, NetClient* cli){
     if(g_del_year == 0 || g_del_code.empty()) return;
     ImGui::SetNextWindowSize(ImVec2(480, 0));
@@ -2166,6 +2282,7 @@ void draw_modal(FFTViewer& v, NetClient* cli){
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
 
+    draw_note_editor_submodal(v, cli);
     draw_start_submodal(v, cli);
     draw_end_confirm_submodal(v, cli);
     draw_delete_confirm_submodal(v, cli);
@@ -2206,6 +2323,7 @@ void on_mission_file_list_recv(const PktMissionFileList& page,
         r.size_bytes = src.size_bytes;
         r.mtime_unix = src.mtime_unix;
         memcpy(r.operator_name, src.operator_name, sizeof(r.operator_name));
+        memcpy(r.note, src.note, sizeof(r.note));
         r.seen_gen = g_cf_req_gen;
         g_cf_rows.push_back(r);
     }

@@ -468,6 +468,9 @@ private:
     void handle_mission_file_rename(std::shared_ptr<HostRoom> room,
                                     std::shared_ptr<JoinEntry> requester,
                                     const uint8_t* payload, size_t plen);
+    void handle_mission_file_set_note(std::shared_ptr<HostRoom> room,
+                                      std::shared_ptr<JoinEntry> requester,
+                                      const uint8_t* payload, size_t plen);
 
     // LWF live stream → HIST archive 탭 (host_mux_loop의 LWF_LIVE_* 분기에서 호출)
     void archive_hist_on_live_start(std::shared_ptr<HostRoom> room,

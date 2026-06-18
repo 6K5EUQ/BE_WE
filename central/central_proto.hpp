@@ -142,6 +142,7 @@ static constexpr uint8_t BEWE_TYPE_DB_LIST      = 0x26;
 static constexpr uint8_t BEWE_TYPE_DB_DL_REQ    = 0x27;
 static constexpr uint8_t BEWE_TYPE_DB_DL_DATA   = 0x28;
 static constexpr uint8_t BEWE_TYPE_DB_DELETE    = 0x29;
+static constexpr uint8_t BEWE_TYPE_DB_SET_NOTE  = 0x2A;
 static constexpr uint8_t BEWE_TYPE_DB_DL_INFO   = 0x2D;
 static constexpr uint8_t BEWE_TYPE_DB_LIST_REQ  = 0x2E;
 static constexpr uint8_t BEWE_TYPE_SCHED_SYNC      = 0x30;
@@ -178,6 +179,7 @@ static constexpr uint8_t BEWE_TYPE_MISSION_FILE_DL_DATA   = 0x53;
 static constexpr uint8_t BEWE_TYPE_MISSION_FILE_DELETE    = 0x54;
 static constexpr uint8_t BEWE_TYPE_MISSION_FILE_RENAME    = 0x55;
 static constexpr uint8_t BEWE_TYPE_MISSION_FILE_PUSH_ACK  = 0x56;
+static constexpr uint8_t BEWE_TYPE_MISSION_FILE_SET_NOTE  = 0x57;
 
 static constexpr uint8_t BEWE_TYPE_CHAT     = 0x07;
 

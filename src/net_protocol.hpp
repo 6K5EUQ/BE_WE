@@ -41,6 +41,7 @@ enum class PacketType : uint8_t {
     DB_DOWNLOAD_REQ    = 0x27,  // client → central: request DB file download
     DB_DOWNLOAD_DATA   = 0x28,  // central → client: DB file data chunk
     DB_DELETE_REQ      = 0x29,  // client → central: delete DB file
+    DB_SET_NOTE        = 0x2A,  // client → central: update DB file note (사이드카 Note 갱신 + list 재방송)
     DB_DOWNLOAD_INFO   = 0x2D,  // central → client: DB file .info contents (sent before DATA)
     DB_LIST_REQ        = 0x2E,  // client → central: request DB list refresh
     SCHED_SYNC         = 0x30,  // server → all clients: scheduled recording list snapshot
@@ -86,6 +87,7 @@ enum class PacketType : uint8_t {
     MISSION_FILE_DELETE    = 0x54,  // any → central: Central archive 파일 삭제
     MISSION_FILE_RENAME    = 0x55,  // any → central: Central archive 파일 이름 변경
     MISSION_FILE_PUSH_ACK  = 0x56,  // central → host: PUSH 전송 종료 ACK (HOST가 로컬 unlink 트리거)
+    MISSION_FILE_SET_NOTE  = 0x57,  // any → central: archive 파일 note 갱신 (사이드카 Note + list 재발송)
     // ── Module data pipe (src/modules/ 선택형 모듈 공용 전송로) ─────────
     MODULE_PIPE            = 0x58,  // 양방향: PktModulePipe + payload (mod_id 다중화, Central opaque relay)
 };
@@ -583,6 +585,13 @@ struct __attribute__((packed)) PktDbDeleteReq {
     char     operator_name[32];
 };
 
+// ── DB_SET_NOTE ───────────────────────────────────────────────────────────
+// client → central: DB 파일 note 갱신 (사이드카 Note 기입 후 list 재방송)
+struct __attribute__((packed)) PktDbSetNote {
+    char     filename[128];
+    char     note[256];
+};
+
 // ── Signal Library / Emitter DB (0x41–0x47) ──────────────────────────────
 // 운영자가 .info에 직접 적은 값 + 녹음 시점 자동 기재값만 매칭에 사용.
 // 자동 검출 결과(PRI 등 SA 분석 산출물)는 .info 에 자동 stamp 되지 않으므로
@@ -817,6 +826,7 @@ struct __attribute__((packed)) MissionFileEntry {
     uint64_t size_bytes;
     int64_t  mtime_unix;
     char     operator_name[32];   // .info "Operator:" 필드 (Central 측 파싱)
+    char     note[256];           // 파일별 메모 (Central 이 사이드카에서 파싱) — 호버 툴팁용
 };
 
 // Central → caller: 파일 목록 응답 (count > MAX → 다중 패킷)
@@ -851,6 +861,12 @@ struct __attribute__((packed)) PktMissionFileDlData {
 // any → Central: 파일 삭제
 struct __attribute__((packed)) PktMissionFileDelete {
     MissionFileKey key;
+};
+
+// any → Central: archive 파일 note 갱신 (Central 이 사이드카 Note 기입 후 list 재발송)
+struct __attribute__((packed)) PktMissionFileSetNote {
+    MissionFileKey key;
+    char           note[256];
 };
 
 // any → Central: 파일 이름 변경 (subdir 내에서만)

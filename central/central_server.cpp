@@ -806,6 +806,11 @@ void CentralServer::dispatch_to_joins(std::shared_ptr<HostRoom> room,
                                    bewe_pkt + BEWE_HDR_SIZE, bewe_len - BEWE_HDR_SIZE);
         return;
     }
+    if(bewe_type == BEWE_TYPE_MISSION_FILE_SET_NOTE){
+        handle_mission_file_set_note(room, nullptr,
+                                     bewe_pkt + BEWE_HDR_SIZE, bewe_len - BEWE_HDR_SIZE);
+        return;
+    }
 
     // ── LWF live stream tap: Central archive 전용 (JOIN으로는 relay 안 함) ──
     // JOIN은 미션창에서 archive 파일을 수동 다운로드만 — 실시간 row 스트림 불필요.
@@ -1344,6 +1349,34 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
         return true;
     }
 
+    // ── DB_SET_NOTE: DB 파일 note 를 사이드카에 기입 후 list 재방송 ────
+    if(bewe_type == BEWE_TYPE_DB_SET_NOTE){
+        const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
+        size_t plen = bewe_len - BEWE_HDR_SIZE;
+        if(plen >= sizeof(PktDbSetNote)){
+            const auto* r = reinterpret_cast<const PktDbSetNote*>(payload);
+            char fn[129]={};  memcpy(fn,   r->filename, 128); fn[128]=0;
+            char nt[257]={};  memcpy(nt,   r->note,     256); nt[256]=0;
+            std::string db_base = db_base_dir();
+            const char* primary_sub = db_subdir_for(fn);
+            std::string fpath = db_base + "/" + primary_sub + "/" + fn;
+            struct stat _st{};
+            if(stat(fpath.c_str(), &_st) != 0){
+                static const char* subs[3] = {"iq","audio","hist"};
+                bool found = false;
+                for(int i=0;i<3 && !found;i++){
+                    std::string p = db_base + "/" + subs[i] + "/" + fn;
+                    if(stat(p.c_str(), &_st) == 0){ fpath = p; found = true; }
+                }
+                if(!found) fpath = db_base + "/" + fn;
+            }
+            bool ok = SigMF::update_note(fpath, nt);
+            printf("[Central] DB_SET_NOTE %s (ok=%d, %zu chars)\n", fpath.c_str(), (int)ok, strlen(nt));
+            broadcast_db_list(room);
+        }
+        return true;
+    }
+
     // ── REPORT_ADD: emitter DB에 ingest (.info 디스크 저장 없음) ─────
     if(bewe_type == 0x23){ // REPORT_ADD
         const uint8_t* payload = bewe_pkt + BEWE_HDR_SIZE;
@@ -1470,6 +1503,11 @@ bool CentralServer::intercept_join_cmd(std::shared_ptr<JoinEntry> je,
     if(bewe_type == BEWE_TYPE_MISSION_FILE_RENAME){
         handle_mission_file_rename(room, je,
                                    bewe_pkt + BEWE_HDR_SIZE, bewe_len - BEWE_HDR_SIZE);
+        return true;
+    }
+    if(bewe_type == BEWE_TYPE_MISSION_FILE_SET_NOTE){
+        handle_mission_file_set_note(room, je,
+                                     bewe_pkt + BEWE_HDR_SIZE, bewe_len - BEWE_HDR_SIZE);
         return true;
     }
     // JOIN → Central: PUSH_META/PUSH_DATA (LOCAL 우클릭 Upload).

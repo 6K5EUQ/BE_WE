@@ -186,6 +186,82 @@ inline void update_duration(const std::string& any_path, double duration_s){
     write_meta(any_path, m);
 }
 
+// ── per-file NOTE (미션창 파일별 메모) ─────────────────────────────────────────
+// 노트는 기존 사이드카에 저장 — IQ(.sigmf-meta)는 "bewe:notes" JSON 필드, 그 외
+// (.info plain-text)는 "Note: <text>" 한 줄(개행은 \n 으로 escape). 신규 파일 안 만듦.
+
+// 사이드카 텍스트(JSON 또는 plain .info)에서 노트만 추출. DB info_data 처럼 파일 경로
+// 없이 내용만 있는 경우용 (Central 이 list 에 실어 보낸 사이드카 본문).
+inline std::string note_from_text(const std::string& s){
+    std::string out;
+    if(meta_find_str(s, "bewe:notes", out)) return out;   // .sigmf-meta JSON
+    // plain .info: "Note:" 로 시작하는 줄
+    size_t p = 0;
+    while(p < s.size()){
+        size_t eol = s.find('\n', p);
+        std::string line = s.substr(p, eol == std::string::npos ? std::string::npos : eol - p);
+        if(line.rfind("Note:", 0) == 0){
+            std::string v = line.substr(5);
+            size_t b = v.find_first_not_of(" \t");
+            v = (b == std::string::npos) ? std::string() : v.substr(b);
+            std::string dec;                              // "\n" → 개행 복원
+            for(size_t i = 0; i < v.size(); i++){
+                if(v[i] == '\\' && i + 1 < v.size() && v[i+1] == 'n'){ dec += '\n'; i++; }
+                else dec += v[i];
+            }
+            return dec;
+        }
+        if(eol == std::string::npos) break;
+        p = eol + 1;
+    }
+    return out;
+}
+
+// 사이드카 파일에서 노트 읽기 (data 파일 경로 → sidecar_path 변환).
+inline std::string read_note(const std::string& data_path){
+    std::string sc = sidecar_path(data_path);
+    FILE* f = fopen(sc.c_str(), "rb");
+    if(!f) return std::string();
+    std::string buf; char tmp[4096]; size_t r;
+    while((r = fread(tmp, 1, sizeof(tmp), f)) > 0) buf.append(tmp, r);
+    fclose(f);
+    return note_from_text(buf);
+}
+
+// 노트만 사이드카에 갱신 (다른 필드/라인은 보존). 사이드카 없으면 생성.
+inline bool update_note(const std::string& data_path, const std::string& note){
+    if(is_sigmf_data(data_path)){
+        Meta m; read_meta(data_path, m);   // 없으면 기본값 — notes 만 세팅 후 기록
+        m.notes = note;
+        return write_meta(data_path, m);
+    }
+    // plain .info: 기존 라인 보존, "Note:" 라인만 교체
+    std::string sc = sidecar_path(data_path);
+    std::string buf;
+    if(FILE* f = fopen(sc.c_str(), "rb")){
+        char tmp[4096]; size_t r;
+        while((r = fread(tmp, 1, sizeof(tmp), f)) > 0) buf.append(tmp, r);
+        fclose(f);
+    }
+    std::string esc;                       // 개행 → "\n" (한 줄 저장)
+    for(char c : note){ if(c == '\n') esc += "\\n"; else if(c == '\r'){} else esc += c; }
+    std::string out;
+    size_t p = 0;
+    while(p < buf.size()){
+        size_t eol = buf.find('\n', p);
+        std::string line = buf.substr(p, eol == std::string::npos ? std::string::npos : eol - p);
+        if(line.rfind("Note:", 0) != 0 && !line.empty()){ out += line; out += '\n'; }
+        if(eol == std::string::npos) break;
+        p = eol + 1;
+    }
+    if(!esc.empty()){ out += "Note: "; out += esc; out += '\n'; }
+    FILE* w = fopen(sc.c_str(), "w");
+    if(!w) return false;
+    fwrite(out.data(), 1, out.size(), w);
+    fclose(w);
+    return true;
+}
+
 // ── unified IQ/audio source open (readers) ───────────────────────────────────
 // On success f is positioned at the first sample. nch: 2=IQ(ci16/stereo),
 // 1=mono audio (legacy demod .wav). data_size is in bytes.

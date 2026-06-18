@@ -319,6 +319,7 @@ public:
     bool cmd_lwf_dl_req(const char* filename);
     bool cmd_lwf_delete_req(const char* filename);
     bool cmd_db_delete(const char* filename, const char* operator_name);
+    bool cmd_db_set_note(const char* filename, const char* note);
     bool cmd_db_download(const char* filename, const char* operator_name);
     bool cmd_report_add(const char* filename, const char* info_data);
     bool cmd_db_save(const char* filepath, const char* operator_name);
@@ -355,6 +356,7 @@ public:
     bool send_mission_file_dl_req(const MissionFileKey& key, uint64_t start_offset = 0);
     bool send_mission_file_delete(const MissionFileKey& key);
     bool send_mission_file_rename(const MissionFileKey& key, const char* new_filename);
+    bool send_mission_file_set_note(const MissionFileKey& key, const char* note);
 
     // DB list received from Central
     std::function<void(const std::vector<DbFileEntry>&)> on_db_list;

@@ -899,6 +899,12 @@ bool NetClient::cmd_db_delete(const char* filename, const char* operator_name){
     strncpy(req.operator_name, operator_name, 31);
     return raw_send(PacketType::DB_DELETE_REQ, &req, sizeof(req));
 }
+bool NetClient::cmd_db_set_note(const char* filename, const char* note){
+    PktDbSetNote req{};
+    strncpy(req.filename, filename, sizeof(req.filename) - 1);
+    if(note) strncpy(req.note, note, sizeof(req.note) - 1);
+    return raw_send(PacketType::DB_SET_NOTE, &req, sizeof(req));
+}
 bool NetClient::cmd_db_download(const char* filename, const char* operator_name){
     PktDbDownloadReq req{};
     strncpy(req.filename, filename, 127);
@@ -1039,6 +1045,12 @@ bool NetClient::send_mission_file_rename(const MissionFileKey& key,
         strncpy(r.new_filename, new_filename, sizeof(r.new_filename) - 1);
     }
     return raw_send(PacketType::MISSION_FILE_RENAME, &r, sizeof(r));
+}
+bool NetClient::send_mission_file_set_note(const MissionFileKey& key, const char* note){
+    PktMissionFileSetNote r{};
+    r.key = key;
+    if(note) strncpy(r.note, note, sizeof(r.note) - 1);
+    return raw_send(PacketType::MISSION_FILE_SET_NOTE, &r, sizeof(r));
 }
 bool NetClient::cmd_db_save(const char* filepath, const char* operator_name){
     FILE* fp = fopen(filepath, "rb");
