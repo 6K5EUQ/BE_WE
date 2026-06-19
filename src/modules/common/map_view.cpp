@@ -44,7 +44,7 @@ static const float* land_latlon(int& nverts){
         for(int i=0;i+2<LAND_TRI_COUNT;i+=3){
             float x=LAND_TRI_DATA[i], y=LAND_TRI_DATA[i+1], z=LAND_TRI_DATA[i+2];
             if(y>1.f)y=1.f; if(y<-1.f)y=-1.f;
-            g.push_back(std::asin(y)*57.29578f);
+            g.push_back(-std::asin(y)*57.29578f);     // 글로브 local frame: y=-sin(lat) (pick() 와 동일) → lat=-asin(y)
             g.push_back(std::atan2(z,x)*57.29578f);
         }
     }

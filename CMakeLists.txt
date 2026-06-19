@@ -16,6 +16,13 @@ if(BEWE_MODULE_VIEW_SRCS)
     list(REMOVE_ITEM BEWE_MODULE_SRCS_CLI ${BEWE_MODULE_VIEW_SRCS})
 endif()
 
+# ── mbelib (DMR AMBE+2 음성 보코더, ISC) — DMR 모듈 있을 때만 컴파일 ──────────
+# 모듈 부재 = 흔적 없음 원칙 유지. libs/mbelib 는 C 소스.
+set(MBELIB_SRCS "")
+if(EXISTS ${CMAKE_SOURCE_DIR}/src/modules/dmr)
+    file(GLOB MBELIB_SRCS ${CMAKE_SOURCE_DIR}/libs/mbelib/*.c)
+endif()
+
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(BLADERF REQUIRED libbladeRF)
 pkg_check_modules(FFTW    REQUIRED fftw3f)
@@ -39,6 +46,7 @@ if(CLI)
         src/demod.cpp
         src/module_registry.cpp
         ${BEWE_MODULE_SRCS_CLI}
+        ${MBELIB_SRCS}
         src/iq_record.cpp
         src/sched_record.cpp
         src/mission.cpp
@@ -67,6 +75,7 @@ if(CLI)
 
     target_include_directories(BE_WE PRIVATE
         src
+        ${CMAKE_SOURCE_DIR}/libs/mbelib
         ${BLADERF_INCLUDE_DIRS}
         ${FFTW_INCLUDE_DIRS}
         ${ALSA_INCLUDE_DIRS}
@@ -119,6 +128,7 @@ else()
         src/module_registry.cpp
         src/demod_panel.cpp
         ${BEWE_MODULE_SRCS}
+        ${MBELIB_SRCS}
         src/iq_record.cpp
         src/sched_record.cpp
         src/mission.cpp
@@ -155,6 +165,7 @@ else()
 
     target_include_directories(BE_WE PRIVATE
         src
+        ${CMAKE_SOURCE_DIR}/libs/mbelib
         ${BLADERF_INCLUDE_DIRS}
         ${FFTW_INCLUDE_DIRS}
         ${ALSA_INCLUDE_DIRS}
