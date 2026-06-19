@@ -29,6 +29,9 @@ public:
         polVote_[0]=polVote_[1]=0; polLock_=-1;
         voicePend_.clear();
     }
+    // 스컬치 닫힘 시: 예약된 음성 슈퍼프레임(B–F) 폐기 → 잔향 음성 차단.
+    //   polLock_/omega_ 는 유지(동일 RF 경로 재키업 시 빠른 재획득).
+    void clear_voice(){ voicePend_.clear(); lastVoiceSmp_=-1e18; }
 
     void feed(float s){
         buf_.push_back(s);

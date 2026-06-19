@@ -87,6 +87,7 @@ void worker(FFTViewer& v, int ch_idx){
     std::atomic<size_t>& my_rp = worker_rp(ch_idx);
     my_rp.store(v.ring_wp.load());
     int64_t last_diag=now_ms();
+    bool gate_prev=false;   // 스컬치 게이트 이전상태 (AM/FM 과 동일 sq_gate 사용)
 
     while(!worker_stop_req(ch_idx) && !v.sdr_stream_error.load() && ch.filter_active){
         { uint64_t cur=v.live_cf_hz.load(std::memory_order_acquire);
@@ -109,6 +110,13 @@ void worker(FFTViewer& v, int ch_idx){
         }
         if(lag==0){ std::this_thread::sleep_for(std::chrono::microseconds(50)); continue; }
 
+        // ── 스컬치 게이트: AM/FM 과 동일한 ch.sq_gate (HOST FFT 기반) 사용.
+        //    닫힘 = 신호 없음 → 복조기에 노이즈 안 넣음(가짜 voice-sync 방지).
+        //    닫힘 edge 에서 예약 음성(B–F) 폐기 + AMBE 리셋 → 잔향/클릭 차단.
+        bool gate = ch.sq_gate.load(std::memory_order_relaxed);
+        if(gate_prev && !gate){ dec.clear_voice(); ambe.reset(); a_prev=0.f; }
+        gate_prev = gate;
+
         size_t avail=std::min(lag,BATCH);
         for(size_t s=0;s<avail;s++){
             size_t pos=(rp+s)&IQ_RING_MASK;
@@ -126,7 +134,7 @@ void worker(FFTViewer& v, int ch_idx){
             prev_i=oi; prev_q=oq;
             box_sum += dft - box[box_pos]; box[box_pos]=dft;
             if(++box_pos>=W) box_pos=0;
-            dec.feed((float)(box_sum/W));
+            if(gate) dec.feed((float)(box_sum/W));   // 스컬치 열림 구간만 복조
         }
         my_rp.store((rp+avail)&IQ_RING_MASK,std::memory_order_release);
 
