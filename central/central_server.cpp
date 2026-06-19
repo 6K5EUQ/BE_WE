@@ -1799,6 +1799,14 @@ void CentralServer::handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
                 e.lo = ent[i].s;   e.hi = ent[i].e;
                 e.decode_on = ((mmask >> ent[i].idx) & 1) ? 1 : 0;
                 e.hold = ent[i].dem_paused;   // 가시대역 밖 = Holding (스테이션 ch_sync 캐시)
+                // 주파수정렬 표시번호 (HOST freq_sorted_display_num 과 동일 알고리즘 → State창과 일치)
+                float cfi = (ent[i].s + ent[i].e) * 0.5f; int rank = 1;
+                for(int j=0;j<MAX_CHANNELS_RELAY;j++){
+                    if(j==i || !ent[j].active) continue;
+                    float cfj = (ent[j].s + ent[j].e) * 0.5f;
+                    if(cfj < cfi || (cfj==cfi && ent[j].idx < ent[i].idx)) rank++;
+                }
+                e.dnum = (uint8_t)rank;
                 e.cf_mhz = cf_mhz; e.sr_msps = sr_msps;
                 list.push_back(e);
             }

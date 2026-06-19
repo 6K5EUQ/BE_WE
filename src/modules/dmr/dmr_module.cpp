@@ -40,7 +40,7 @@ static bool host_start(FFTViewer& v, int ch){
     if(!w.on.load() && w.thr.joinable()) w.thr.join();
     if(w.on.load()) return true;
     if(!v.channels[ch].filter_active) return false;
-    if(v.channels[ch].mode != Channel::DM_FM) return false;
+    // decode 는 IQ 직접 탭 + 자체 4FSK 판별 → 채널 audio 모드(NONE/AM/FM) 무관하게 동작
     w.stop.store(false);
     w.on.store(true);
     w.thr = std::thread(worker, std::ref(v), ch);

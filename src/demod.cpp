@@ -232,7 +232,7 @@ void FFTViewer::update_dem_by_freq(float new_cf_mhz){
             if(!ch.dem_paused.load()){
                 if(ch.dem_run.load()){
                     ch.dem_paused_mode = ch.mode;
-                    stop_dem(i);
+                    stop_dem(i,false);   // Holding 은 오디오 demod 만 정지 — IQ-탭 디코더 보존
                 }
                 ch.dem_paused.store(true);
             }

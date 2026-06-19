@@ -480,7 +480,7 @@ void run_cli_host(){
         if(mode<0||mode>2) return;   // NONE/AM/FM 외 거부 (구버전 JOIN 보호)
         static const char* mn[]={"NONE","AM","FM"};
         bewe_log_push(0, "[CMD:%s] CH%d mode > %s\n", who, idx, mn[mode]);
-        v.stop_dem(idx);
+        v.stop_dem(idx,false);   // 오디오 모드만 변경 — IQ-탭 디코더 보존 (decode 는 모드 무관)
         auto dm=(Channel::DemodMode)mode;
         v.channels[idx].mode=dm;
         if(dm!=Channel::DM_NONE && v.channels[idx].filter_active)
@@ -772,8 +772,9 @@ void run_cli_host(){
         v.channels[idx].e = e;
         if(v.channels[idx].dem_run.load()){
             Channel::DemodMode md = v.channels[idx].mode;
-            v.stop_dem(idx); v.start_dem(idx, md);
+            v.stop_dem(idx,false); v.start_dem(idx, md);   // 재튜닝 — 디코더 보존
         }
+        bewe_mod_ch_retune(v, idx);   // 디코더 새 band(주파수/대역폭) 로 재시작
         // 리사이즈로 범위 밖/안 전환될 수 있음 → 재평가
         v.update_dem_by_freq(v.header.center_frequency/1e6f);
         srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
@@ -1826,9 +1827,10 @@ void run_cli_host(){
             for(int di=0; di<MAX_CHANNELS; di++){
                 if(v.channels[di].dem_run.load()){
                     auto dm = v.channels[di].mode;
-                    v.stop_dem(di);
+                    v.stop_dem(di,false);   // SR 재시작 — 디코더 보존
                     v.start_dem(di, dm);
                 }
+                bewe_mod_ch_retune(v, di);   // SR 변경 → 디코더 decim/filter 재계산 위해 재시작
             }
         }
 

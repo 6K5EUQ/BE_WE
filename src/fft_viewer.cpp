@@ -12,6 +12,20 @@ std::mutex g_db_list_mtx;
 #include <cstdarg>
 #include <ctime>
 
+// 주파수정렬 표시번호 (CLI/GUI 공용 — module_registry 가 dnum 채울 때 필요).
+// ui.cpp(GUI 전용)에서 이동: CLI 빌드에도 정의 필요.
+int FFTViewer::freq_sorted_display_num(int arr_idx) const {
+    if(arr_idx<0||arr_idx>=MAX_CHANNELS||!channels[arr_idx].filter_active) return 0;
+    float my_cf=(channels[arr_idx].s+channels[arr_idx].e)*0.5f;
+    int rank=1;
+    for(int i=0;i<MAX_CHANNELS;i++){
+        if(!channels[i].filter_active||i==arr_idx) continue;
+        float cf_i=(channels[i].s+channels[i].e)*0.5f;
+        if(cf_i<my_cf||(cf_i==my_cf&&i<arr_idx)) rank++;
+    }
+    return rank;
+}
+
 // FFTViewer::log_push - LOG overlay buffer + console
 void FFTViewer::log_push(int col, const char* fmt, ...){
     if(col < 0 || col > 2) col = 0;

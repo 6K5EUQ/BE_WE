@@ -322,6 +322,7 @@ void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float 
                     Channel::DemodMode md=channels[i].mode;
                     stop_dem(i,false); start_dem(i,md);   // 재튜닝 — 디코더 보존
                 }
+                if(!remote_mode) bewe_mod_ch_retune(*this, i);   // 디코더 새 대역폭/band 로 재시작
                 // JOIN: send new range to HOST
                 if(net_cli && remote_mode)
                     net_cli->cmd_update_ch_range(i, channels[i].s, channels[i].e);
@@ -362,6 +363,7 @@ void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float 
                         Channel::DemodMode md=channels[i].mode;
                         stop_dem(i,false); start_dem(i,md);   // 재튜닝 — 디코더 보존
                     }
+                    if(!remote_mode) bewe_mod_ch_retune(*this, i);   // 디코더 새 band 로 재시작
                     // JOIN: send new range to HOST
                     if(net_cli && remote_mode)
                         net_cli->cmd_update_ch_range(i, channels[i].s, channels[i].e);
@@ -464,18 +466,6 @@ void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float 
 }
 
 // 배열 인덱스 > 주파수 순 표시 번호 (1-based). 비활성 채널은 0 반환.
-int FFTViewer::freq_sorted_display_num(int arr_idx) const {
-    if(arr_idx<0||arr_idx>=MAX_CHANNELS||!channels[arr_idx].filter_active) return 0;
-    float my_cf=(channels[arr_idx].s+channels[arr_idx].e)*0.5f;
-    int rank=1;
-    for(int i=0;i<MAX_CHANNELS;i++){
-        if(!channels[i].filter_active||i==arr_idx) continue;
-        float cf_i=(channels[i].s+channels[i].e)*0.5f;
-        if(cf_i<my_cf||(cf_i==my_cf&&i<arr_idx)) rank++;
-    }
-    return rank;
-}
-
 void FFTViewer::draw_all_channels(ImDrawList* dl, float gx, float gw, float gy, float gh, bool show_label){
     float cf=header.center_frequency/1e6f;
     float ds,de; get_disp(ds,de); float dw=de-ds;

@@ -51,19 +51,22 @@ static void draw_targets(FFTViewer& v){
     }
 
     // 채널 행 통합 (key = station|ch). freq/mode 는 채널 고유, running = decode_on 인 모듈.
-    struct Row{ std::string station; int ch; uint8_t mode; float lo,hi; int running; int hold; float cf_mhz, sr_msps; };
+    struct Row{ std::string station; int ch; uint8_t mode; float lo,hi; int running; int hold; float cf_mhz, sr_msps; int dnum; };
     std::vector<Row> rows;
     for(int mi:dm){
         auto ts = bewe_mod_targets(v, mods[mi].id);
         for(auto& e : ts){
             Row* r=nullptr;
             for(auto& x:rows) if(x.ch==(int)e.ch && x.station==e.station){ r=&x; break; }
-            if(!r){ rows.push_back({e.station,(int)e.ch,e.mode,e.lo,e.hi,-1,(int)e.hold,e.cf_mhz,e.sr_msps}); r=&rows.back(); }
+            if(!r){ rows.push_back({e.station,(int)e.ch,e.mode,e.lo,e.hi,-1,(int)e.hold,e.cf_mhz,e.sr_msps,(int)e.dnum}); r=&rows.back(); }
             if(e.decode_on) r->running = mi;
         }
     }
+    // 기지별 그룹 + 주파수정렬 표시번호(dnum) 순 → State창/스펙트럼 라벨과 동일 순서/번호
     std::sort(rows.begin(),rows.end(),[](const Row&a,const Row&b){
-        if(a.station!=b.station) return a.station<b.station; return a.ch<b.ch; });
+        if(a.station!=b.station) return a.station<b.station;
+        if(a.dnum!=b.dnum) return a.dnum<b.dnum;
+        return a.ch<b.ch; });
 
     // 데이터 컬럼은 고정폭, 남는 폭은 끝의 빈 stretch 컬럼이 흡수 → Center 안 늘어나고 Decode 안 짤림
     ImGuiTableFlags tf = ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInner|
@@ -95,35 +98,47 @@ static void draw_targets(FFTViewer& v){
             Row& r=rows[i];
             // ── 기지 그룹 헤더 (기지 바뀔 때마다) : 기지명 + CF/SR 편집 (어느 기지든 원격 동기화) ──
             if(i==0 || rows[i-1].station != r.station){
+                // ── 기지 그룹 간 간격 (시각 분리) ──
+                if(i>0){ ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0); ImGui::Dummy(ImVec2(0,4)); }
                 ImGui::TableNextRow();
-                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(30,42,55,255));
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(22,44,68,255)); // 기지헤더 밴드
                 ImGui::PushID(("grp#"+r.station).c_str());
                 ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.17f,0.20f,0.25f,1.0f));
                 ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.22f,0.26f,0.32f,1.0f));
                 char gsd[16]; station_disp(r.station.c_str(), gsd, sizeof(gsd));
+                // ── 기지 헤더: [기지명 CF SR] 전체를 한 줄로 묶어 전체폭 중앙정렬 ──
+                //    (컬럼 그리드에 비종속 — 테이블 WorkRect 전체폭에 클립 확장 후 그룹 배치)
                 ImGui::TableSetColumnIndex(0);
+                float rowY = ImGui::GetCursorScreenPos().y, frH = ImGui::GetFrameHeight();
+                ImGui::Dummy(ImVec2(0, frH));                            // 행 높이 확보
+                ImGuiTable* tbl = ImGui::GetCurrentTable();
+                float x0=tbl->WorkRect.Min.x, x1=tbl->WorkRect.Max.x;
+                const float inpCF=92.f, inpSR=72.f, sp=12.f, lp=4.f;
+                ImVec2 nts=ImGui::CalcTextSize(gsd), cfl=ImGui::CalcTextSize("CF"), srl=ImGui::CalcTextSize("SR");
+                float gw = nts.x + sp + cfl.x+lp+inpCF + sp + srl.x+lp+inpSR;
+                float sx = x0 + ((x1-x0)-gw)*0.5f; if(sx<x0+4) sx=x0+4;
+                ImGui::PushClipRect(ImVec2(x0,rowY-2), ImVec2(x1,rowY+frH+2), false);
+                ImGui::SetCursorScreenPos(ImVec2(sx, rowY));
                 ImGui::AlignTextToFramePadding();
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f,0.85f,1.0f,1.f));
-                cell_ctr(gsd);
-                ImGui::PopStyleColor();
-                // CF (MHz) — Center 컬럼 (단위 일치)
-                ImGui::TableSetColumnIndex(2);
-                ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("CF"); ImGui::SameLine(0,4);
-                { float cfv=r.cf_mhz; ImGui::SetNextItemWidth(-1);
+                ImGui::TextColored(ImVec4(0.50f,0.86f,1.0f,1.f), "%s", gsd);   // 기지명
+                ImGui::SameLine(0,sp);
+                ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("CF"); ImGui::SameLine(0,lp);
+                { float cfv=r.cf_mhz; ImGui::SetNextItemWidth(inpCF);
                   ImGui::InputFloat("##scf",&cfv,0,0,"%.4f");
-                  if(ImGui::IsItemDeactivatedAfterEdit() && cfv>0.f)
-                      bewe_mod_tune(v, r.station.c_str(), cfv, 0.f); }
-                // SR (MSPS)
-                ImGui::TableSetColumnIndex(3);
-                ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("SR"); ImGui::SameLine(0,4);
-                { float srv=r.sr_msps; ImGui::SetNextItemWidth(-1);
+                  if(ImGui::IsItemDeactivatedAfterEdit() && cfv>0.f) bewe_mod_tune(v, r.station.c_str(), cfv, 0.f); }
+                ImGui::SameLine(0,sp);
+                ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("SR"); ImGui::SameLine(0,lp);
+                { float srv=r.sr_msps; ImGui::SetNextItemWidth(inpSR);
                   ImGui::InputFloat("##ssr",&srv,0,0,"%.3f");
-                  if(ImGui::IsItemDeactivatedAfterEdit() && srv>0.f)
-                      bewe_mod_tune(v, r.station.c_str(), 0.f, srv); }
+                  if(ImGui::IsItemDeactivatedAfterEdit() && srv>0.f) bewe_mod_tune(v, r.station.c_str(), 0.f, srv); }
+                ImGui::PopClipRect();
                 ImGui::PopStyleColor(2);
                 ImGui::PopID();
             }
             ImGui::TableNextRow();
+            // ── Holding/Active 행 미세 구분 (Active=살짝 청록 / Holding=살짝 호박·흐림) ──
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
+                r.hold ? IM_COL32(48,38,22,55) : IM_COL32(20,42,40,60));
             char rid[64]; snprintf(rid,sizeof(rid),"%s#%d",r.station.c_str(),r.ch);
             ImGui::PushID(rid);                                  // 정렬 순서 무관 안정 ID (편집 중 끊김 방지)
             // 편집 위젯 공용 대비 스타일 (input/combo 프레임 + 팝업)
@@ -133,7 +148,7 @@ static void draw_targets(FFTViewer& v){
             ImGui::PushStyleColor(ImGuiCol_Header,         ImVec4(0.20f,0.42f,0.30f,1.0f));
             ImGui::PushStyleColor(ImGuiCol_HeaderHovered,  ImVec4(0.18f,0.40f,0.55f,1.0f));
             ImGui::TableSetColumnIndex(0);   // 그룹 헤더가 기지명 표시 → 채널행 col0 비움(들여쓰기)
-            ImGui::TableSetColumnIndex(1); { char b[8];  snprintf(b,sizeof(b),"%d",r.ch); cell_ctr(b); }
+            ImGui::TableSetColumnIndex(1); { char b[8];  snprintf(b,sizeof(b),"%d", r.dnum>0?r.dnum:r.ch); cell_ctr(b); }  // State창과 동일 표시번호
             float cf=(r.lo+r.hi)*0.5f, bw=(r.hi>r.lo? r.hi-r.lo : r.lo-r.hi);
             // ── Center(MHz) 편집 → lo/hi 갱신(BW 유지), 전 유저 동기화 ──
             ImGui::TableSetColumnIndex(2);

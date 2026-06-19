@@ -251,6 +251,7 @@ std::vector<MpChEntry> bewe_mod_targets(FFTViewer& v, const char* id){
         e.ch = (uint8_t)i; e.mode = (uint8_t)ch.mode;
         e.decode_on = ((mask>>i)&1) ? 1 : 0;
         e.hold = ch.dem_paused.load() ? 1 : 0;
+        e.dnum = (uint8_t)v.freq_sorted_display_num(i);   // State창/스펙트럼 라벨과 동일 번호
         e.lo = ch.s; e.hi = ch.e;
         e.cf_mhz = cf_mhz; e.sr_msps = sr_msps;
         out.push_back(e);
@@ -290,6 +291,19 @@ void bewe_mod_edit_ch(FFTViewer& v, const char* station, int ch, int mode, float
         return;
     }
     apply_ch_edit_local(v, ch, mode, lo, hi);
+}
+
+// HOST: 채널 geometry/SR 변경 → 그 채널서 도는 디코더만 새 band 로 재시작 (mask 유지).
+// 디코더 워커는 시작 시 ch.s/e/bw/SR 을 고정 캡처하므로, 변경 반영엔 워커 재시작이 필요.
+// audio 모드(NONE/AM/FM) 무관 — 디코더는 IQ 직접 탭. 채널에 디코더 없으면 no-op.
+void bewe_mod_ch_retune(FFTViewer& v, int ch){
+    if(ch<0 || ch>=MAX_CHANNELS) return;
+    for(auto& mm : reg()){
+        if(!mm.target_modes) continue;
+        if(!((bewe_mod_host_mask(mm.id)>>ch)&1)) continue;   // 이 채널서 도는 디코더만
+        if(mm.host_stop)  mm.host_stop(v, ch);               // 옛 band 워커 종료(join)
+        if(mm.host_start) mm.host_start(v, ch);              // 새 geometry/SR 로 재시작, mask 유지
+    }
 }
 
 // 기지 하드웨어 CF/SR 적용 (HOST 로컬). sr 먼저(재초기화) → cf. 0 인 필드는 건너뜀.
