@@ -34,11 +34,8 @@ void worker(FFTViewer& v, int ch_idx){
     uint64_t prev_cf=init_cf;
     float    prev_center=(ch.s+ch.e)/2.0f;   // 채널필터 이동(드래그) 감지용
 
-    // anti-alias LPF (decim 전): 컷오프 ~ fs_out/2 의 0.9배, 단 ≤1.3 MHz (펄스 보존)
-    double cutoff = std::min(fs_out*0.5*0.9, 1.3e6);
-    IIR1 lpi[4], lpq[4];
-    { float cn=(float)(cutoff/(double)msr); if(cn>0.45f)cn=0.45f;
-      for(int k=0;k<4;k++){ lpi[k].set(cn); lpq[k].set(cn); } }
+    // OOK 펄스(0.5 µs) 보존이 최우선 — 추가 IIR 저역통과는 펄스를 뭉개 수율을 떨어뜨린다
+    // (실측: 4단 IIR 적용 시 위치고정 1/3로 감소). decim 시의 boxcar 평균이 anti-alias 역할.
     double cap_i=0, cap_q=0; int cap_cnt=0;
 
     AdsbDecoder dec;
@@ -70,7 +67,6 @@ void worker(FFTViewer& v, int ch_idx){
             size_t keep=(size_t)(msr*0.02);
             rp=(wp-keep)&IQ_RING_MASK;
             my_rp.store(rp,std::memory_order_release);
-            for(int k=0;k<4;k++){ lpi[k].s=lpq[k].s=0; }
             cap_i=cap_q=0; cap_cnt=0;
             lag=(wp-rp)&IQ_RING_MASK;
         }
@@ -82,8 +78,6 @@ void worker(FFTViewer& v, int ch_idx){
             size_t pos=(rp+s)&IQ_RING_MASK;
             float si=v.ring[pos*2]/v.hw.iq_scale, sq=v.ring[pos*2+1]/v.hw.iq_scale;
             float mi,mq; osc.mix(si,sq,mi,mq);
-            mi=lpi[0].p(mi); mi=lpi[1].p(mi); mi=lpi[2].p(mi); mi=lpi[3].p(mi);
-            mq=lpq[0].p(mq); mq=lpq[1].p(mq); mq=lpq[2].p(mq); mq=lpq[3].p(mq);
             cap_i+=mi; cap_q+=mq; cap_cnt++;
             if(cap_cnt<(int)decim) continue;
             float fi=(float)(cap_i/cap_cnt), fq=(float)(cap_q/cap_cnt);
