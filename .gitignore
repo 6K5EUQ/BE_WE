@@ -24,6 +24,7 @@ DataBase/
 assets/tle/starlink_tle.txt
 assets/tle/etc_tle.txt
 assets/tle/SOT_tle.txt
+assets/tle/leo_tle.txt
 
 # Mission persistence (machine-local state)
 missions.json
