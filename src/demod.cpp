@@ -176,10 +176,14 @@ void FFTViewer::start_dem(int ch_idx, Channel::DemodMode mode){
     bewe_log("DEM[%d] start: %s  %.4f-%.4f MHz\n",ch_idx,n[(int)mode],ch.s,ch.e);
 }
 
-void FFTViewer::stop_dem(int ch_idx){
+void FFTViewer::stop_dem(int ch_idx, bool stop_decoders){
     Channel& ch=channels[ch_idx];
-    for(auto& bm : bewe_modules())                       // 모듈 정리 (예: ACARS 워커)
-        if(bm.on_ch_stop) bm.on_ch_stop(*this, ch_idx);
+    // 재튜닝(주파수/대역폭/모드 변경)에 의한 오디오 demod 재시작은 IQ-탭 디코더(ACARS/
+    // AIS/ADS-B 등)를 건드리면 안 됨 — 디코더는 demod 와 독립. stop_decoders=false 면 보존.
+    // 진짜 종료(채널 삭제/전체 stop)에서만 on_ch_stop 으로 디코더 정리.
+    if(stop_decoders)
+        for(auto& bm : bewe_modules())
+            if(bm.on_ch_stop) bm.on_ch_stop(*this, ch_idx);
     if(!ch.dem_run.load()) return;
     ch.dem_stop_req.store(true);
     if(ch.dem_thr.joinable()) ch.dem_thr.join();

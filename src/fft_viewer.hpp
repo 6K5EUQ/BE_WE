@@ -912,7 +912,7 @@ public:
     // ── demod.cpp ─────────────────────────────────────────────────────────
     void dem_worker(int ch_idx);
     void start_dem(int ch_idx, Channel::DemodMode mode);
-    void stop_dem(int ch_idx);
+    void stop_dem(int ch_idx, bool stop_decoders=true);  // stop_decoders=false: 재튜닝(디코더 보존)
 
     void stop_all_dem();
     void update_dem_by_freq(float new_cf_mhz); // 주파수 변경 시 복조 pause/resume

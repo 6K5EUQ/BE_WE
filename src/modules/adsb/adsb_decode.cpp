@@ -32,6 +32,7 @@ void worker(FFTViewer& v, int ch_idx){
 
     Oscillator osc; osc.set_freq((double)off_hz,(double)msr);
     uint64_t prev_cf=init_cf;
+    float    prev_center=(ch.s+ch.e)/2.0f;   // 채널필터 이동(드래그) 감지용
 
     // anti-alias LPF (decim 전): 컷오프 ~ fs_out/2 의 0.9배, 단 ≤1.3 MHz (펄스 보존)
     double cutoff = std::min(fs_out*0.5*0.9, 1.3e6);
@@ -56,9 +57,10 @@ void worker(FFTViewer& v, int ch_idx){
 
     while(!worker_stop_req(ch_idx) && !v.sdr_stream_error.load() && ch.filter_active){
         { uint64_t cur=v.live_cf_hz.load(std::memory_order_acquire);
-          if(cur!=prev_cf){
-              off_hz=(((ch.s+ch.e)/2.0f)-(float)(cur/1e6))*1e6f;
-              osc.set_freq((double)off_hz,(double)msr); prev_cf=cur;
+          float cc=(ch.s+ch.e)/2.0f;                       // SDR 중심 또는 채널 이동 시 재튜닝
+          if(cur!=prev_cf || cc!=prev_center){
+              off_hz=(cc-(float)(cur/1e6))*1e6f;
+              osc.set_freq((double)off_hz,(double)msr); prev_cf=cur; prev_center=cc;
           }
         }
         size_t wp=v.ring_wp.load(std::memory_order_acquire);

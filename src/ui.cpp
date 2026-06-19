@@ -320,7 +320,7 @@ void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float 
                 any_resized = true;
                 if(channels[i].dem_run.load()){
                     Channel::DemodMode md=channels[i].mode;
-                    stop_dem(i); start_dem(i,md);
+                    stop_dem(i,false); start_dem(i,md);   // 재튜닝 — 디코더 보존
                 }
                 // JOIN: send new range to HOST
                 if(net_cli && remote_mode)
@@ -360,7 +360,7 @@ void FFTViewer::handle_channel_interactions(float gx, float gw, float gy, float 
                     any_moved = true;
                     if(channels[i].dem_run.load()){
                         Channel::DemodMode md=channels[i].mode;
-                        stop_dem(i); start_dem(i,md);
+                        stop_dem(i,false); start_dem(i,md);   // 재튜닝 — 디코더 보존
                     }
                     // JOIN: send new range to HOST
                     if(net_cli && remote_mode)
@@ -5763,8 +5763,9 @@ void run_streaming_viewer(){
                         v.net_cli->cmd_set_ch_mode(sci, nm);
                     } else {
                         Channel& ch=v.channels[sci];
-                        if(ch.dem_run.load()&&ch.mode==m){ v.stop_dem(sci); }
-                        else { v.stop_dem(sci); v.start_dem(sci,m); }
+                        // 모드 변경/토글은 오디오 demod 만 — IQ-탭 디코더 보존
+                        if(ch.dem_run.load()&&ch.mode==m){ v.stop_dem(sci,false); }
+                        else { v.stop_dem(sci,false); v.start_dem(sci,m); }
                         // HOST 모드: 채널 sync 브로드캐스트
                         if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels,MAX_CHANNELS);
                     }
