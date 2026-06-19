@@ -1,7 +1,10 @@
 #include "module_api.hpp"
 #include "fft_viewer.hpp"
 #include "net_server.hpp"   // CH_EDIT 적용 시 broadcast_channel_sync
+#include "kst_time.hpp"     // 오늘 누적 디코드수 시드 (저장 JSONL = KST 일자)
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <mutex>
 #include <vector>
@@ -183,13 +186,32 @@ void bewe_mod_stat_bump(const char* id, const char* station, int ch, int64_t t_m
     if(dq.size() > 4096) dq.pop_front();           // 폭주 가드
     g_stat_total[k]++;                              // 누적 (Data 컬럼)
 }
-// ── HOST 디코드 통계: decode 동작 시각(steady ms) + 세션 누적건수 ──
+// ── HOST 디코드 통계: decode 동작 시각(steady ms) + 누적건수 ──
 static int64_t g_host_decstart[MAX_CHANNELS] = {};   // 0=정지, >0=decode 시작 steady-ms
+// 오늘(KST) 저장 JSONL 에서 채널 ch 디코드 건수 — Data 시드(히스토리 포함 총수).
+// store_append 은 emit(=stat_bump) 과 1:1 이라 JSONL 라인수 = 누적 디코드수.
+static long host_today_count(const char* id, int ch){
+    const char* home = getenv("HOME");
+    std::string base = home ? std::string(home) : std::string(".");
+    int64_t now = (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::system_clock::now().time_since_epoch()).count();
+    struct tm tmv{}; KST::to_tm((time_t)(now/1000), tmv);
+    char d[9]; snprintf(d,sizeof(d),"%04d%02d%02d",tmv.tm_year+1900,tmv.tm_mon+1,tmv.tm_mday);
+    std::string path = base + "/BE_WE/modules/" + id + "/" + id + "_" + d + ".jsonl";
+    FILE* f = fopen(path.c_str(),"rb"); if(!f) return 0;
+    long cnt=0; char line[1024];
+    while(fgets(line,sizeof(line),f)){
+        const char* p = strstr(line,"\"ch\":");
+        if(p && atoi(p+5)==ch) cnt++;
+    }
+    fclose(f); return cnt;
+}
 static void host_decstat_start(const char* id, int ch){
     if(ch<0 || ch>=MAX_CHANNELS) return;
     g_host_decstart[ch] = mod_now_ms();
-    std::lock_guard<std::mutex> lk(g_stat_mtx);      // 새 세션 → 카운트 리셋
-    g_stat_total[stat_key(id, g_my_station, ch)] = 0;
+    long seed = host_today_count(id, ch);             // 오늘 누적(히스토리)으로 시드
+    std::lock_guard<std::mutex> lk(g_stat_mtx);
+    g_stat_total[stat_key(id, g_my_station, ch)] = seed;
 }
 static void host_decstat_stop(int ch){
     if(ch<0 || ch>=MAX_CHANNELS) return;
