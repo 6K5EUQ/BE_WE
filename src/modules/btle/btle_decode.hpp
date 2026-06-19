@@ -216,6 +216,41 @@ private:
         return consumed;
     }
 
+    // Apple Continuity (회사ID 0x004C) 페이로드 = [type][len][data]... TLV 열.
+    // 타입코드는 안정적(공개 역공학). NearbyInfo(0x10) 액션니블/플래그는 iOS 버전따라
+    // 의미 유동 → 라벨 단정 않고 raw 표기(라이브 스트림서 상태변화 관측용).
+    static void apple_summary(const uint8_t* p, int n, char* out, size_t cap){
+        out[0]=0; size_t o=0; int i=0;
+        while(i+2<=n){
+            int t=p[i], l=p[i+1]; const uint8_t* d=p+i+2;
+            if(i+2+l>n) break;
+            char tmp[28]; const char* nm=nullptr;
+            switch(t){
+                case 0x02: nm="iBeacon";    break;
+                case 0x05: nm="AirDrop";    break;
+                case 0x06: nm="HomeKit";    break;
+                case 0x07: nm="ProxPair";   break;   // AirPods/proximity pairing
+                case 0x08: nm="HeySiri";    break;
+                case 0x09: nm="AirPlayTgt"; break;
+                case 0x0A: nm="AirPlaySrc"; break;
+                case 0x0B: nm="WatchLink";  break;
+                case 0x0C: nm="Handoff";    break;
+                case 0x0D: nm="TetherTgt";  break;
+                case 0x0E: nm="TetherSrc";  break;
+                case 0x0F: nm="NearbyAct";  break;
+                case 0x10:                            // Nearby Info: a=액션니블 f=데이터플래그
+                    snprintf(tmp,sizeof(tmp),"Nearby/a%X/f%02X",
+                             l>=1?(d[0]&0x0F):0, l>=2?d[1]:0); nm=tmp; break;
+                case 0x12: nm="FindMy";     break;
+                default:   snprintf(tmp,sizeof(tmp),"t%02X",t); nm=tmp; break;
+            }
+            int w=snprintf(out+o,cap-o,"%s%s", o?" ":"", nm);
+            if(w>0) o+=(size_t)w;
+            if(o>=cap-1) break;
+            i += 2+l;
+        }
+    }
+
     // AD 구조 루프 (len/type/value). 이름/플래그/제조사 요약.
     void parse_ad(const uint8_t* p, int n, BtleRecord& m){
         int i=0, nad=0;
@@ -231,8 +266,10 @@ private:
                 } break;
                 case 0xFF: if(vlen>=2){                                // Manufacturer
                     m.company = (uint16_t)(val[0]|(val[1]<<8));
-                    if(m.company==0x004C && vlen>=4 && val[2]==0x02 && val[3]==0x15)
-                        snprintf(m.info,sizeof(m.info),"iBeacon");
+                    if(m.company==0x004C && vlen>2){                   // Apple Continuity
+                        char ap[40]; apple_summary(val+2, vlen-2, ap, sizeof(ap));
+                        if(ap[0]) snprintf(m.info,sizeof(m.info),"Apple: %s", ap);
+                    }
                 } break;
                 default: break;
             }

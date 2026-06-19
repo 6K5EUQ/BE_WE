@@ -1,6 +1,6 @@
-// ── BLE 모듈 GUI: DEMOD 데이터 뷰 (패킷 로그 + 세부창). acars_view.cpp 미러 ──────
-// 1 패킷 = 1 행. MAC 으로 정렬하면 장치별로 묶임. CONNECT_IND 행은 세부창에서
-// 연결 파라미터(AA/Interval/Hop/ChannelMap) 표시.
+// ── BLE 모듈 GUI: master-detail 뷰 (ais_view.cpp 분할 미러) ─────────────────
+// 좌=AdvA(MAC)별 그룹표(누계/최신 RSSI·CFO·info), 클릭 → 우=그 MAC 패킷 라이브
+// (시간순 tail-follow). 하단=포커스 패킷 세부(애플 디코드/신호/CONNECT_IND 파라미터).
 #include "btle_module.hpp"
 #include "../modview.hpp"
 #include "module_api.hpp"
@@ -12,6 +12,8 @@
 #include <vector>
 #include <set>
 #include <string>
+#include <unordered_map>
+#include <algorithm>
 
 namespace btle_mod {
 
@@ -46,20 +48,28 @@ bool match(const BtleRecord& m, const char* f){
         || modview::ci_find(m.station,f)||modview::ci_find(btle_pdu_name(m.pdu_type),f)
         || modview::ci_find(inf,f);
 }
-int col_cmp(int c, const BtleRecord& a, const BtleRecord& b){
+// ── MAC 그룹 (좌측: 동일 AdvA 묶음, 최신값 + 누계) ──────────────────────────
+struct Grp {
+    uint8_t  mac[6];
+    int      at;       // addr_type (최신)
+    int      ch;       // adv_chan (최신)
+    int      cnt;      // 패킷 누계
+    int64_t  last;     // 최근 수신 t_ms
+    char     name[24]; // 최신 비공백 이름
+    char     info[48]; // 최신 info(제조사/애플 디코드)
+    float    rssi;     // 최신
+    float    cfo;      // 최신
+};
+int grp_cmp(int c, const Grp& a, const Grp& b){
     switch(c){
-        case 0:  return a.t_ms<b.t_ms?-1:(a.t_ms>b.t_ms?1:0);
-        case 1:  return strcmp(a.station,b.station);
-        case 2:  return a.adv_chan-b.adv_chan;
-        case 3:  return a.adv_chan-b.adv_chan;             // Freq = 채널 1:1 매핑
-        case 4:  return a.pdu_type-b.pdu_type;
-        case 5:  return memcmp(a.mac,b.mac,6);
-        case 6:  return a.addr_type-b.addr_type;
-        case 7:  return a.rssi<b.rssi?-1:(a.rssi>b.rssi?1:0);
-        case 8:  return a.cfo_hz<b.cfo_hz?-1:(a.cfo_hz>b.cfo_hz?1:0);
-        case 9:  return strcmp(a.name,b.name);
-        case 10: return (int)a.crc_ok-(int)b.crc_ok;
-        default: return strcmp(a.info,b.info);
+        case 0:  return memcmp(a.mac,b.mac,6);                       // Address
+        case 1:  return a.cnt-b.cnt;                                // Cnt
+        case 2:  return strcmp(a.name,b.name);                      // Name
+        case 3:  return a.at-b.at;                                  // AT
+        case 4:  return a.rssi<b.rssi?-1:(a.rssi>b.rssi?1:0);       // RSSI
+        case 5:  return a.cfo<b.cfo?-1:(a.cfo>b.cfo?1:0);           // CFO
+        case 6:  return strcmp(a.info,b.info);                      // Info
+        default: return a.last<b.last?-1:(a.last>b.last?1:0);       // Last
     }
 }
 std::string msg_key(const BtleRecord& m){
@@ -80,10 +90,11 @@ void draw_content(FFTViewer& v, bool just_opened){
 
     static std::set<std::string> sel; static std::string anchor;
     static BtleRecord focus{}; static bool has_focus=false;
-    static int sort_col=-1; static bool sort_asc=true;
+    static uint8_t sel_mac[6]={}; static bool has_sel=false;       // 좌측 선택된 MAC 그룹
+    static int gsort_col=7; static bool gsort_asc=false;           // 그룹 정렬: 기본 Last 내림차순
     static size_t lastn=0; static bool atb=true;
 
-    auto on_clear=[&](){ std::lock_guard<std::mutex> lk(mtx); log.clear(); sel.clear(); anchor.clear(); has_focus=false; };
+    auto on_clear=[&](){ std::lock_guard<std::mutex> lk(mtx); log.clear(); sel.clear(); anchor.clear(); has_focus=false; has_sel=false; };
 
     modview::space_toggle_recv(v, "btle", remote, win_focus, on_clear);
     bool focus_filter = win_focus && !io.WantTextInput &&
@@ -109,65 +120,134 @@ void draw_content(FFTViewer& v, bool just_opened){
     modview::header_bar(v, "btle", filter, sizeof(filter), total, remote, focus_filter, on_clear);
 
     float detail_h = has_focus ? (focus.is_connect ? 150.f : 114.f) : 0.f;
-    float table_h  = H - 30 - detail_h - 16; if(table_h<60) table_h=60;
+    float upper_h  = H - 30 - detail_h - 16; if(upper_h<80) upper_h=80;
 
-    ImGui::SetCursorPosX(x0);
+    // ── 좌(MAC 그룹) | 스플리터 | 우(선택 MAC 패킷 라이브) ──
+    static float split=0.46f;
+    float tw;
+    if(W < 240+220+6) tw=W*0.5f;
+    else { tw=W*split; if(tw<240)tw=240; if(tw>W-220)tw=W-220; }
+    float rightw=W-tw-6; if(rightw<10)rightw=10; if(tw<10)tw=10;
+
     ImGuiTableFlags tf = ImGuiTableFlags_ScrollY|ImGuiTableFlags_ScrollX|ImGuiTableFlags_RowBg|
         ImGuiTableFlags_BordersInnerV|ImGuiTableFlags_Resizable;
-    if(ImGui::BeginTable("##btle_tbl", 12, tf, ImVec2(W, table_h))){
-        ImGui::TableSetupScrollFreeze(2,1);
-        ImGui::TableSetupColumn("Time",    ImGuiTableColumnFlags_WidthFixed, 70);
-        ImGui::TableSetupColumn("Station", ImGuiTableColumnFlags_WidthFixed, 60);
-        ImGui::TableSetupColumn("Ch",      ImGuiTableColumnFlags_WidthFixed, 36);
-        ImGui::TableSetupColumn("Freq",    ImGuiTableColumnFlags_WidthFixed, 80);
-        ImGui::TableSetupColumn("Type",    ImGuiTableColumnFlags_WidthFixed, 130);
-        ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 130);
-        ImGui::TableSetupColumn("AT",      ImGuiTableColumnFlags_WidthFixed, 32);
-        ImGui::TableSetupColumn("RSSI",    ImGuiTableColumnFlags_WidthFixed, 52);
-        ImGui::TableSetupColumn("CFO",     ImGuiTableColumnFlags_WidthFixed, 66);
-        ImGui::TableSetupColumn("Name",    ImGuiTableColumnFlags_WidthFixed, 150);
-        ImGui::TableSetupColumn("CRC",     ImGuiTableColumnFlags_WidthFixed, 44);
-        ImGui::TableSetupColumn("Info",    ImGuiTableColumnFlags_WidthFixed, 240);
-        modview::sortable_headers(12, sort_col, sort_asc, 11);
+
+    // ── 그룹 집계 (MAC별, 캐시: 개수/마지막t/필터/정렬 게이팅) ──
+    static std::vector<Grp> grps;
+    {
+        std::lock_guard<std::mutex> lk(mtx);
+        static size_t c_n=(size_t)-1; static int64_t c_last=-1; static char c_filter[64]={'\xff'};
+        static int c_sc=-99; static bool c_asc=false;
+        size_t n_now=log.size(); int64_t last_t=n_now?log.back().t_ms:0;
+        if(n_now!=c_n||last_t!=c_last||strncmp(c_filter,filter,sizeof(c_filter))||c_sc!=gsort_col||c_asc!=gsort_asc){
+            std::vector<Grp> g; g.reserve(256);
+            std::unordered_map<uint64_t,int> idx; idx.reserve(512);
+            for(size_t i=0;i<n_now;i++){
+                const BtleRecord& m=log[i];
+                if(!match(m,filter)) continue;
+                uint64_t key=0; for(int b=0;b<6;b++) key=(key<<8)|m.mac[b];
+                auto it=idx.find(key); int gi;
+                if(it==idx.end()){ gi=(int)g.size(); idx[key]=gi; Grp ng{}; memcpy(ng.mac,m.mac,6); ng.last=-1; g.push_back(ng); }
+                else gi=it->second;
+                Grp& G=g[gi]; G.cnt++;
+                if(m.t_ms>=G.last){
+                    G.last=m.t_ms; G.ch=m.adv_chan; G.rssi=m.rssi; G.cfo=m.cfo_hz; G.at=m.addr_type;
+                    if(m.name[0]){ strncpy(G.name,m.name,sizeof(G.name)-1); G.name[sizeof(G.name)-1]=0; }
+                    char inf[48]; info_str(m,inf,sizeof(inf)); strncpy(G.info,inf,sizeof(G.info)-1); G.info[sizeof(G.info)-1]=0;
+                } else if(!G.name[0] && m.name[0]){ strncpy(G.name,m.name,sizeof(G.name)-1); G.name[sizeof(G.name)-1]=0; }
+            }
+            std::stable_sort(g.begin(),g.end(),[&](const Grp&a,const Grp&b){ int c=grp_cmp(gsort_col,a,b); return gsort_asc? c<0:c>0; });
+            grps.swap(g);
+            c_n=n_now; c_last=last_t; strncpy(c_filter,filter,sizeof(c_filter)-1); c_filter[sizeof(c_filter)-1]=0; c_sc=gsort_col; c_asc=gsort_asc;
+        }
+    }
+
+    // ── 좌측: MAC 그룹 표 (클릭 → 우측에 그 MAC 패킷 라이브) ──
+    ImGui::SetCursorPosX(x0);
+    if(ImGui::BeginTable("##btle_grp", 8, tf, ImVec2(tw, upper_h))){
+        ImGui::TableSetupScrollFreeze(1,1);
+        ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 132);
+        ImGui::TableSetupColumn("Cnt",     ImGuiTableColumnFlags_WidthFixed, 46);
+        ImGui::TableSetupColumn("Name",    ImGuiTableColumnFlags_WidthFixed, 110);
+        ImGui::TableSetupColumn("AT",      ImGuiTableColumnFlags_WidthFixed, 30);
+        ImGui::TableSetupColumn("RSSI",    ImGuiTableColumnFlags_WidthFixed, 48);
+        ImGui::TableSetupColumn("CFO",     ImGuiTableColumnFlags_WidthFixed, 58);
+        ImGui::TableSetupColumn("Info",    ImGuiTableColumnFlags_WidthFixed, 180);
+        ImGui::TableSetupColumn("Last",    ImGuiTableColumnFlags_WidthFixed, 70);
+        modview::sortable_headers(8, gsort_col, gsort_asc, 6);
+
+        ImGuiListClipper clip; clip.Begin((int)grps.size());
+        while(clip.Step()) for(int r=clip.DisplayStart;r<clip.DisplayEnd;r++){
+            const Grp& G=grps[r];
+            ImGui::TableNextRow();
+            char mc[18]; mac_str(G.mac,mc);
+            bool selrow = has_sel && memcmp(G.mac,sel_mac,6)==0;
+            if(modview::row_col0(r, selrow, mc)){
+                memcpy(sel_mac,G.mac,6); has_sel=true; atb=true;
+                std::lock_guard<std::mutex> lk(mtx);
+                for(auto it=log.rbegin(); it!=log.rend(); ++it)
+                    if(memcmp(it->mac,sel_mac,6)==0){ focus=*it; has_focus=true; break; }
+            }
+            char b[24];
+            ImGui::TableSetColumnIndex(1); snprintf(b,sizeof(b),"%d",G.cnt); modview::cell(b);
+            ImGui::TableSetColumnIndex(2); if(G.name[0]) ImGui::TextUnformatted(G.name);
+            ImGui::TableSetColumnIndex(3); modview::cell(G.at?"R":"P", ImVec4(0.6f,0.6f,0.6f,1.f));
+            ImGui::TableSetColumnIndex(4); if(G.rssi!=0.f){ snprintf(b,sizeof(b),"%.0f",G.rssi); modview::cell(b, rssi_col(G.rssi)); } else modview::cell("-", ImVec4(0.4f,0.4f,0.4f,1.f));
+            ImGui::TableSetColumnIndex(5); snprintf(b,sizeof(b),"%+.1f",G.cfo/1000.f); modview::cell(b, ImVec4(0.72f,0.66f,0.86f,1.f));
+            ImGui::TableSetColumnIndex(6); if(G.info[0]) ImGui::TextUnformatted(G.info);
+            ImGui::TableSetColumnIndex(7); { char ts[12]; hms(G.last,ts); modview::cell(ts, ImVec4(0.62f,0.62f,0.62f,1.f)); }
+        }
+        ImGui::EndTable();
+    }
+
+    // ── 스플리터 ──
+    ImGui::SameLine(0,0);
+    ImGui::InvisibleButton("##btle_split", ImVec2(6, upper_h));
+    if(ImGui::IsItemActive()){ split += io.MouseDelta.x/(W>1?W:1); if(split<0.25f)split=0.25f; if(split>0.75f)split=0.75f; }
+    if(ImGui::IsItemHovered()||ImGui::IsItemActive()){
+        ImVec2 a=ImGui::GetItemRectMin(), b=ImGui::GetItemRectMax();
+        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2((a.x+b.x)*0.5f-1,a.y),ImVec2((a.x+b.x)*0.5f+1,b.y),IM_COL32(120,140,160,200));
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    }
+
+    // ── 우측: 선택 MAC 패킷 라이브 (시간순, tail-follow) ──
+    ImGui::SameLine(0,0);
+    if(ImGui::BeginTable("##btle_pkt", 7, tf, ImVec2(rightw, upper_h))){
+        ImGui::TableSetupScrollFreeze(1,1);
+        ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 70);
+        ImGui::TableSetupColumn("Sta",  ImGuiTableColumnFlags_WidthFixed, 54);
+        ImGui::TableSetupColumn("Freq", ImGuiTableColumnFlags_WidthFixed, 64);
+        ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 124);
+        ImGui::TableSetupColumn("RSSI", ImGuiTableColumnFlags_WidthFixed, 48);
+        ImGui::TableSetupColumn("CFO",  ImGuiTableColumnFlags_WidthFixed, 58);
+        ImGui::TableSetupColumn("Info", ImGuiTableColumnFlags_WidthFixed, 220);
+        ImGui::TableHeadersRow();
 
         std::lock_guard<std::mutex> lk(mtx);
-        static std::vector<int> vis;
-        static size_t c_n=(size_t)-1; static int64_t c_last=-1;
-        static char c_filter[64]={'\xff'}; static int c_sc=-99; static bool c_asc=false;
-        size_t n_now=log.size(); int64_t last_t=n_now?log.back().t_ms:0;
-        if(n_now!=c_n||last_t!=c_last||strncmp(c_filter,filter,sizeof(c_filter))||c_sc!=sort_col||c_asc!=sort_asc){
-            vis.clear(); for(int i=0;i<(int)n_now;i++) if(match(log[i],filter)) vis.push_back(i);
-            modview::sort_vis(vis, sort_col, sort_asc, [&](int c,int a,int b){ return col_cmp(c,log[a],log[b]); });
-            c_n=n_now; c_last=last_t; strncpy(c_filter,filter,sizeof(c_filter)-1); c_filter[sizeof(c_filter)-1]=0; c_sc=sort_col; c_asc=sort_asc;
-        }
+        static std::vector<int> rvis; rvis.clear();
+        if(has_sel) for(int i=0;i<(int)log.size();i++) if(memcmp(log[i].mac,sel_mac,6)==0) rvis.push_back(i);
 
-        ImGuiListClipper clip; clip.Begin((int)vis.size());
-        while(clip.Step()) for(int r=clip.DisplayStart;r<clip.DisplayEnd;r++){
-            const BtleRecord& m = log[vis[r]];
+        ImGuiListClipper rc; rc.Begin((int)rvis.size());
+        while(rc.Step()) for(int r=rc.DisplayStart;r<rc.DisplayEnd;r++){
+            const BtleRecord& m=log[rvis[r]];
             ImGui::TableNextRow();
             char ts[12]; hms(m.t_ms,ts);
             std::string k=msg_key(m);
-            if(modview::row_col0(vis[r], sel.count(k)>0, ts)){
-                modview::apply_click(sel, anchor, k, r, [&](int i){return msg_key(log[vis[i]]);}, (int)vis.size(), io.KeyCtrl, io.KeyShift);
+            if(modview::row_col0(rvis[r], sel.count(k)>0, ts)){
+                modview::apply_click(sel, anchor, k, r, [&](int i){return msg_key(log[rvis[i]]);}, (int)rvis.size(), io.KeyCtrl, io.KeyShift);
                 focus=m; has_focus=!sel.empty();
             }
             char b[24];
             ImGui::TableSetColumnIndex(1); modview::cell(m.station[0]?m.station:"LOCAL", ImVec4(0.85f,0.75f,0.5f,1.f));
-            ImGui::TableSetColumnIndex(2); snprintf(b,sizeof(b),"%d",m.adv_chan); modview::cell(b);
-            ImGui::TableSetColumnIndex(3); snprintf(b,sizeof(b),"%.0f MHz",adv_chan_mhz(m.adv_chan)); modview::cell(b, ImVec4(0.72f,0.72f,0.55f,1.f));
-            ImGui::TableSetColumnIndex(4); modview::cell(btle_pdu_name(m.pdu_type),
+            ImGui::TableSetColumnIndex(2); snprintf(b,sizeof(b),"%.0f",adv_chan_mhz(m.adv_chan)); modview::cell(b, ImVec4(0.72f,0.72f,0.55f,1.f));
+            ImGui::TableSetColumnIndex(3); modview::cell(btle_pdu_name(m.pdu_type),
                 m.is_connect?ImVec4(1.f,0.7f,0.4f,1.f):ImVec4(0.7f,0.8f,0.9f,1.f));
-            ImGui::TableSetColumnIndex(5); { char mc[18]; mac_str(m.mac,mc); modview::cell(mc, ImVec4(0.5f,0.8f,1.f,1.f)); }
-            ImGui::TableSetColumnIndex(6); modview::cell(m.addr_type?"R":"P", ImVec4(0.6f,0.6f,0.6f,1.f));
-            ImGui::TableSetColumnIndex(7); if(m.rssi!=0.f){ snprintf(b,sizeof(b),"%.0f",m.rssi); modview::cell(b, rssi_col(m.rssi)); } else modview::cell("-", ImVec4(0.4f,0.4f,0.4f,1.f));
-            ImGui::TableSetColumnIndex(8); snprintf(b,sizeof(b),"%+.1f",m.cfo_hz/1000.f); modview::cell(b, ImVec4(0.72f,0.66f,0.86f,1.f));
-            ImGui::TableSetColumnIndex(9); if(m.name[0]) ImGui::TextUnformatted(m.name);
-            ImGui::TableSetColumnIndex(10); modview::cell(m.crc_ok?"OK":"FAIL",
-                m.crc_ok?ImVec4(0.4f,0.85f,0.4f,1.f):ImVec4(0.85f,0.5f,0.35f,1.f));
-            ImGui::TableSetColumnIndex(11); { char inf[64]; info_str(m,inf,sizeof(inf)); if(inf[0]) ImGui::TextUnformatted(inf); }
+            ImGui::TableSetColumnIndex(4); if(m.rssi!=0.f){ snprintf(b,sizeof(b),"%.0f",m.rssi); modview::cell(b, rssi_col(m.rssi)); } else modview::cell("-", ImVec4(0.4f,0.4f,0.4f,1.f));
+            ImGui::TableSetColumnIndex(5); snprintf(b,sizeof(b),"%+.1f",m.cfo_hz/1000.f); modview::cell(b, ImVec4(0.72f,0.66f,0.86f,1.f));
+            ImGui::TableSetColumnIndex(6); { char inf[64]; info_str(m,inf,sizeof(inf)); if(inf[0]) ImGui::TextUnformatted(inf); }
         }
-        bool grew = log.size()>lastn; lastn=log.size();
-        modview::tail_follow(atb, grew && sort_col<0);
+        bool grew = rvis.size()>lastn; lastn=rvis.size();
+        modview::tail_follow(atb, grew);
         ImGui::EndTable();
     }
 
