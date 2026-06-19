@@ -251,6 +251,22 @@ private:
         }
     }
 
+    // Microsoft Swift Pair (회사 0x0006): manuf 페이로드 꼬리에 표시이름(UTF-8). 헤더
+    // (시나리오/플래그/RSSI 바이트)는 비출력문자 → 꼬리의 최장 출력가능 ASCII 런을 이름으로.
+    // (대다수 MS CDP 비콘은 이름 없음 → 출력가능 런 없으면 빈값, 잡음 안 만듦.)
+    static void ms_swiftpair_name(const uint8_t* p, int n, char* out, size_t cap){
+        out[0]=0;
+        int start=n;
+        while(start>0 && p[start-1]>=0x20 && p[start-1]<=0x7E) start--;
+        int len=n-start;
+        if(len<3) return;
+        bool alpha=false;
+        for(int i=start;i<n;i++){ int c=p[i]|0x20; if(c>='a'&&c<='z'){ alpha=true; break; } }
+        if(!alpha) return;
+        int c=len<(int)cap-1?len:(int)cap-1;
+        memcpy(out, p+start, c); out[c]=0;
+    }
+
     // AD 구조 루프 (len/type/value). 이름/플래그/제조사 요약.
     void parse_ad(const uint8_t* p, int n, BtleRecord& m){
         int i=0, nad=0;
@@ -269,6 +285,8 @@ private:
                     if(m.company==0x004C && vlen>2){                   // Apple Continuity
                         char ap[40]; apple_summary(val+2, vlen-2, ap, sizeof(ap));
                         if(ap[0]) snprintf(m.info,sizeof(m.info),"Apple: %s", ap);
+                    } else if(m.company==0x0006 && vlen>3 && !m.name[0]){  // MS Swift Pair 이름
+                        ms_swiftpair_name(val+2, vlen-2, m.name, sizeof(m.name));
                     }
                 } break;
                 default: break;

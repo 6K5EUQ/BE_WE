@@ -54,22 +54,25 @@ struct Grp {
     int      at;       // addr_type (최신)
     int      ch;       // adv_chan (최신)
     int      cnt;      // 패킷 누계
-    int64_t  last;     // 최근 수신 t_ms
+    int64_t  first;    // 최초 수신 t_ms (Up — 불변, 정렬키)
+    int64_t  last;     // 최근 수신 t_ms (Down — 갱신)
     char     name[24]; // 최신 비공백 이름
     char     info[48]; // 최신 info(제조사/애플 디코드)
     float    rssi;     // 최신
     float    cfo;      // 최신
 };
+// 컬럼: 0 Up 1 Down 2 Address 3 Cnt 4 AT 5 RSSI 6 CFO 7 Name 8 Info
 int grp_cmp(int c, const Grp& a, const Grp& b){
     switch(c){
-        case 0:  return memcmp(a.mac,b.mac,6);                       // Address
-        case 1:  return a.cnt-b.cnt;                                // Cnt
-        case 2:  return strcmp(a.name,b.name);                      // Name
-        case 3:  return a.at-b.at;                                  // AT
-        case 4:  return a.rssi<b.rssi?-1:(a.rssi>b.rssi?1:0);       // RSSI
-        case 5:  return a.cfo<b.cfo?-1:(a.cfo>b.cfo?1:0);           // CFO
-        case 6:  return strcmp(a.info,b.info);                      // Info
-        default: return a.last<b.last?-1:(a.last>b.last?1:0);       // Last
+        case 0:  return a.first<b.first?-1:(a.first>b.first?1:0);    // Up (최초)
+        case 1:  return a.last<b.last?-1:(a.last>b.last?1:0);        // Down (최근)
+        case 2:  return memcmp(a.mac,b.mac,6);                       // Address
+        case 3:  return a.cnt-b.cnt;                                // Cnt
+        case 4:  return a.at-b.at;                                  // AT
+        case 5:  return a.rssi<b.rssi?-1:(a.rssi>b.rssi?1:0);       // RSSI
+        case 6:  return a.cfo<b.cfo?-1:(a.cfo>b.cfo?1:0);           // CFO
+        case 7:  return strcmp(a.name,b.name);                      // Name
+        default: return strcmp(a.info,b.info);                      // Info
     }
 }
 std::string msg_key(const BtleRecord& m){
@@ -91,7 +94,7 @@ void draw_content(FFTViewer& v, bool just_opened){
     static std::set<std::string> sel; static std::string anchor;
     static BtleRecord focus{}; static bool has_focus=false;
     static uint8_t sel_mac[6]={}; static bool has_sel=false;       // 좌측 선택된 MAC 그룹
-    static int gsort_col=7; static bool gsort_asc=false;           // 그룹 정렬: 기본 Last 내림차순
+    static int gsort_col=0; static bool gsort_asc=true;            // 그룹 정렬: 기본 Up 오름차순(불변→순서고정)
     static size_t lastn=0; static bool atb=true;
 
     auto on_clear=[&](){ std::lock_guard<std::mutex> lk(mtx); log.clear(); sel.clear(); anchor.clear(); has_focus=false; has_sel=false; };
@@ -147,9 +150,10 @@ void draw_content(FFTViewer& v, bool just_opened){
                 if(!match(m,filter)) continue;
                 uint64_t key=0; for(int b=0;b<6;b++) key=(key<<8)|m.mac[b];
                 auto it=idx.find(key); int gi;
-                if(it==idx.end()){ gi=(int)g.size(); idx[key]=gi; Grp ng{}; memcpy(ng.mac,m.mac,6); ng.last=-1; g.push_back(ng); }
+                if(it==idx.end()){ gi=(int)g.size(); idx[key]=gi; Grp ng{}; memcpy(ng.mac,m.mac,6); ng.last=-1; ng.first=m.t_ms; g.push_back(ng); }
                 else gi=it->second;
                 Grp& G=g[gi]; G.cnt++;
+                if(m.t_ms<G.first) G.first=m.t_ms;        // Up = 최초(불변)
                 if(m.t_ms>=G.last){
                     G.last=m.t_ms; G.ch=m.adv_chan; G.rssi=m.rssi; G.cfo=m.cfo_hz; G.at=m.addr_type;
                     if(m.name[0]){ strncpy(G.name,m.name,sizeof(G.name)-1); G.name[sizeof(G.name)-1]=0; }
@@ -164,38 +168,40 @@ void draw_content(FFTViewer& v, bool just_opened){
 
     // ── 좌측: MAC 그룹 표 (클릭 → 우측에 그 MAC 패킷 라이브) ──
     ImGui::SetCursorPosX(x0);
-    if(ImGui::BeginTable("##btle_grp", 8, tf, ImVec2(tw, upper_h))){
-        ImGui::TableSetupScrollFreeze(1,1);
+    if(ImGui::BeginTable("##btle_grp", 9, tf, ImVec2(tw, upper_h))){
+        ImGui::TableSetupScrollFreeze(3,1);
+        ImGui::TableSetupColumn("Up",      ImGuiTableColumnFlags_WidthFixed, 70);
+        ImGui::TableSetupColumn("Down",    ImGuiTableColumnFlags_WidthFixed, 70);
         ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 132);
         ImGui::TableSetupColumn("Cnt",     ImGuiTableColumnFlags_WidthFixed, 46);
-        ImGui::TableSetupColumn("Name",    ImGuiTableColumnFlags_WidthFixed, 110);
         ImGui::TableSetupColumn("AT",      ImGuiTableColumnFlags_WidthFixed, 30);
         ImGui::TableSetupColumn("RSSI",    ImGuiTableColumnFlags_WidthFixed, 48);
         ImGui::TableSetupColumn("CFO",     ImGuiTableColumnFlags_WidthFixed, 58);
-        ImGui::TableSetupColumn("Info",    ImGuiTableColumnFlags_WidthFixed, 180);
-        ImGui::TableSetupColumn("Last",    ImGuiTableColumnFlags_WidthFixed, 70);
-        modview::sortable_headers(8, gsort_col, gsort_asc, 6);
+        ImGui::TableSetupColumn("Name",    ImGuiTableColumnFlags_WidthFixed, 120);
+        ImGui::TableSetupColumn("Info",    ImGuiTableColumnFlags_WidthFixed, 170);
+        modview::sortable_headers(9, gsort_col, gsort_asc, 8);   // Info 좌측정렬
 
         ImGuiListClipper clip; clip.Begin((int)grps.size());
         while(clip.Step()) for(int r=clip.DisplayStart;r<clip.DisplayEnd;r++){
             const Grp& G=grps[r];
             ImGui::TableNextRow();
-            char mc[18]; mac_str(G.mac,mc);
+            char up[12]; hms(G.first,up);
             bool selrow = has_sel && memcmp(G.mac,sel_mac,6)==0;
-            if(modview::row_col0(r, selrow, mc)){
+            if(modview::row_col0(r, selrow, up)){                // col0 = Up time
                 memcpy(sel_mac,G.mac,6); has_sel=true; atb=true;
                 std::lock_guard<std::mutex> lk(mtx);
                 for(auto it=log.rbegin(); it!=log.rend(); ++it)
                     if(memcmp(it->mac,sel_mac,6)==0){ focus=*it; has_focus=true; break; }
             }
             char b[24];
-            ImGui::TableSetColumnIndex(1); snprintf(b,sizeof(b),"%d",G.cnt); modview::cell(b);
-            ImGui::TableSetColumnIndex(2); if(G.name[0]) ImGui::TextUnformatted(G.name);
-            ImGui::TableSetColumnIndex(3); modview::cell(G.at?"R":"P", ImVec4(0.6f,0.6f,0.6f,1.f));
-            ImGui::TableSetColumnIndex(4); if(G.rssi!=0.f){ snprintf(b,sizeof(b),"%.0f",G.rssi); modview::cell(b, rssi_col(G.rssi)); } else modview::cell("-", ImVec4(0.4f,0.4f,0.4f,1.f));
-            ImGui::TableSetColumnIndex(5); snprintf(b,sizeof(b),"%+.1f",G.cfo/1000.f); modview::cell(b, ImVec4(0.72f,0.66f,0.86f,1.f));
-            ImGui::TableSetColumnIndex(6); if(G.info[0]) ImGui::TextUnformatted(G.info);
-            ImGui::TableSetColumnIndex(7); { char ts[12]; hms(G.last,ts); modview::cell(ts, ImVec4(0.62f,0.62f,0.62f,1.f)); }
+            ImGui::TableSetColumnIndex(1); { char dn[12]; hms(G.last,dn); modview::cell(dn, ImVec4(0.62f,0.62f,0.62f,1.f)); }
+            ImGui::TableSetColumnIndex(2); { char mc[18]; mac_str(G.mac,mc); modview::cell(mc, ImVec4(0.5f,0.8f,1.f,1.f)); }
+            ImGui::TableSetColumnIndex(3); snprintf(b,sizeof(b),"%d",G.cnt); modview::cell(b);
+            ImGui::TableSetColumnIndex(4); modview::cell(G.at?"R":"P", ImVec4(0.6f,0.6f,0.6f,1.f));
+            ImGui::TableSetColumnIndex(5); if(G.rssi!=0.f){ snprintf(b,sizeof(b),"%.0f",G.rssi); modview::cell(b, rssi_col(G.rssi)); } else modview::cell("-", ImVec4(0.4f,0.4f,0.4f,1.f));
+            ImGui::TableSetColumnIndex(6); snprintf(b,sizeof(b),"%+.1f",G.cfo/1000.f); modview::cell(b, ImVec4(0.72f,0.66f,0.86f,1.f));
+            ImGui::TableSetColumnIndex(7); if(G.name[0]) ImGui::TextUnformatted(G.name);
+            ImGui::TableSetColumnIndex(8); if(G.info[0]) ImGui::TextUnformatted(G.info);
         }
         ImGui::EndTable();
     }
@@ -215,9 +221,9 @@ void draw_content(FFTViewer& v, bool just_opened){
     if(ImGui::BeginTable("##btle_pkt", 7, tf, ImVec2(rightw, upper_h))){
         ImGui::TableSetupScrollFreeze(1,1);
         ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 70);
-        ImGui::TableSetupColumn("Sta",  ImGuiTableColumnFlags_WidthFixed, 54);
-        ImGui::TableSetupColumn("Freq", ImGuiTableColumnFlags_WidthFixed, 64);
         ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 124);
+        ImGui::TableSetupColumn("Freq", ImGuiTableColumnFlags_WidthFixed, 64);
+        ImGui::TableSetupColumn("Sta",  ImGuiTableColumnFlags_WidthFixed, 54);
         ImGui::TableSetupColumn("RSSI", ImGuiTableColumnFlags_WidthFixed, 48);
         ImGui::TableSetupColumn("CFO",  ImGuiTableColumnFlags_WidthFixed, 58);
         ImGui::TableSetupColumn("Info", ImGuiTableColumnFlags_WidthFixed, 220);
@@ -238,10 +244,10 @@ void draw_content(FFTViewer& v, bool just_opened){
                 focus=m; has_focus=!sel.empty();
             }
             char b[24];
-            ImGui::TableSetColumnIndex(1); modview::cell(m.station[0]?m.station:"LOCAL", ImVec4(0.85f,0.75f,0.5f,1.f));
-            ImGui::TableSetColumnIndex(2); snprintf(b,sizeof(b),"%.0f",adv_chan_mhz(m.adv_chan)); modview::cell(b, ImVec4(0.72f,0.72f,0.55f,1.f));
-            ImGui::TableSetColumnIndex(3); modview::cell(btle_pdu_name(m.pdu_type),
+            ImGui::TableSetColumnIndex(1); modview::cell(btle_pdu_name(m.pdu_type),
                 m.is_connect?ImVec4(1.f,0.7f,0.4f,1.f):ImVec4(0.7f,0.8f,0.9f,1.f));
+            ImGui::TableSetColumnIndex(2); snprintf(b,sizeof(b),"%.0f",adv_chan_mhz(m.adv_chan)); modview::cell(b, ImVec4(0.72f,0.72f,0.55f,1.f));
+            ImGui::TableSetColumnIndex(3); modview::cell(m.station[0]?m.station:"LOCAL", ImVec4(0.85f,0.75f,0.5f,1.f));
             ImGui::TableSetColumnIndex(4); if(m.rssi!=0.f){ snprintf(b,sizeof(b),"%.0f",m.rssi); modview::cell(b, rssi_col(m.rssi)); } else modview::cell("-", ImVec4(0.4f,0.4f,0.4f,1.f));
             ImGui::TableSetColumnIndex(5); snprintf(b,sizeof(b),"%+.1f",m.cfo_hz/1000.f); modview::cell(b, ImVec4(0.72f,0.66f,0.86f,1.f));
             ImGui::TableSetColumnIndex(6); { char inf[64]; info_str(m,inf,sizeof(inf)); if(inf[0]) ImGui::TextUnformatted(inf); }
