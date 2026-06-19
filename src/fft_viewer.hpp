@@ -673,7 +673,7 @@ public:
 
     // 로컬 오디오 출력 선택 (각 PC 독립): 0=L, 1=L+R, 2=R, 3=M(mute)
     // JOIN에서 M이면 cmd_toggle_recv(ch, false) 전송
-    int  local_ch_out[MAX_CHANNELS] = {1,1,1,1,1,1,1,1,1,1}; // 기본: L+R
+    std::array<int,MAX_CHANNELS> local_ch_out = []{ std::array<int,MAX_CHANNELS> a; a.fill(1); return a; }(); // 기본: L+R
     bool ch_created_by_me[MAX_CHANNELS] = {}; // JOIN: 내가 생성한 채널 여부
     bool ch_pending_create[MAX_CHANNELS] = {}; // JOIN: CMD_CREATE_CH 송신 후 HOST 확인 전 (stale sync 무시용)
     // JOIN: 서버에서 수신한 전체 audio_mask (리스너 표시용)

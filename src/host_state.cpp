@@ -61,7 +61,7 @@ void save(const FFTViewer& v, const std::string& station){
         std::string dmods;
         for(const auto& m : bewe_modules()){
             if(!m.target_modes) continue;
-            if(bewe_mod_host_mask(m.id) & (1u<<i)){
+            if(bewe_mod_host_mask(m.id) & (1ull<<i)){
                 if(!dmods.empty()) dmods += ',';
                 dmods += m.id;
             }

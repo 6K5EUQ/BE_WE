@@ -4447,11 +4447,11 @@ void run_streaming_viewer(){
                             });
                             // 릴레이가 재작성한 CHANNEL_SYNC > HOST의 audio_mask 갱신
                             central_cli.set_on_central_ch_sync([&v](const uint8_t* pkt, size_t len){
-                                if(len < 9 + 60*10) return;  // BEWE_HDR + 10 entries
+                                if(len < 9 + sizeof(ChSyncEntry)*MAX_CHANNELS) return;  // BEWE_HDR + MAX_CHANNELS entries
                                 const uint8_t* payload = pkt + 9;
-                                for(int i=0; i<MAX_CHANNELS && i<10; i++){
+                                for(int i=0; i<MAX_CHANNELS; i++){
                                     uint32_t mask;
-                                    memcpy(&mask, payload + i*60 + 12, sizeof(mask));
+                                    memcpy(&mask, payload + i*sizeof(ChSyncEntry) + 12, sizeof(mask));
                                     v.channels[i].audio_mask.store(mask);
                                 }
                             });

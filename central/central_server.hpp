@@ -1,5 +1,6 @@
 #pragma once
 #include "central_proto.hpp"
+#include <array>
 #include <set>
 #include <map>
 #include "../src/net_protocol.hpp"  // PktBandEntry/PktBandPlan/PktBandRemove
@@ -55,7 +56,8 @@ struct JoinEntry {
     // ── per-JOIN 상태 ──────────────────────────────────────────────────
     // 뮤트 테이블: true = 이 JOIN이 해당 채널 오디오를 수신함
     // 초기값 true: JOIN이 명시적으로 뮤트(false)할 때만 끔
-    bool     recv_audio[MAX_CHANNELS_RELAY] = {true,true,true,true,true,true,true,true,true,true};
+    std::array<bool,MAX_CHANNELS_RELAY> recv_audio =
+        []{ std::array<bool,MAX_CHANNELS_RELAY> a; a.fill(true); return a; }();
     // 인증 정보 (릴레이가 관리)
     char     name[32]  = {};
     uint8_t  tier      = 0;

@@ -1,6 +1,10 @@
 #include "net_server.hpp"
 #include "../central/central_proto.hpp"
 #include "module_api.hpp"   // bewe_mod_host_ch_decstat (디코드 통계 → ChSyncEntry)
+
+// CHANNEL_SYNC 와이어 배열은 MAX_CHANNELS 와 정확히 일치해야 함 (오버런/언더런 방지).
+static_assert(sizeof(((PktChannelSync*)0)->ch)/sizeof(ChSyncEntry) == MAX_CHANNELS,
+              "PktChannelSync::ch[] size must equal MAX_CHANNELS");
 #include <cstdio>
 #include <cstring>
 #include <cerrno>

@@ -126,7 +126,7 @@ enum : uint8_t {
     BEWE_MK_TUNE        = 0xFA,  // JOIN→Central→해당 HOST: MpTune (기지 하드웨어 CF/SR 변경; 0=그 필드 유지)
 };
 struct __attribute__((packed)) MpSet      { char station[24]; uint8_t ch; uint8_t on; };
-struct __attribute__((packed)) MpState    { char station[24]; uint32_t mask; };
+struct __attribute__((packed)) MpState    { char station[24]; uint64_t mask; };
 struct __attribute__((packed)) MpChEntry  { char station[24]; uint8_t ch; uint8_t mode; uint8_t decode_on; uint8_t hold; uint8_t dnum; float lo, hi; float cf_mhz, sr_msps; uint32_t dec_count; uint32_t dec_runtime_s; }; // hold:1=Holding; dnum=주파수정렬 표시번호; cf/sr=기지 튜닝; dec_count/runtime=HOST 측정 디코드 통계
 static_assert(sizeof(MpChEntry) == 53, "MpChEntry wire size changed — rebuild HOST+JOIN+Central in lockstep");
 struct __attribute__((packed)) MpChEdit   { char station[24]; uint8_t ch; uint8_t mode; uint8_t _r[2]; float lo, hi; };
@@ -315,7 +315,7 @@ struct __attribute__((packed)) ChSyncEntry {
 };
 
 struct __attribute__((packed)) PktChannelSync {
-    ChSyncEntry ch[10]; // MAX_CHANNELS
+    ChSyncEntry ch[50]; // == MAX_CHANNELS (config.hpp). net_server.cpp 에 동기 static_assert.
 };
 
 // 중앙 릴레이(central_proto.hpp)의 CH_SYNC_ENTRY_SIZE와 반드시 일치해야 함.

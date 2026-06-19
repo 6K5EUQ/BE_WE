@@ -50,7 +50,7 @@ void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t
 // ── HOST 측 framework ──
 void bewe_mod_host_announce(FFTViewer& v);                       // 전 모듈 STATE 브로드캐스트 (conn_open 등)
 void bewe_mod_host_mask_clear(FFTViewer& v, const char* id, int ch); // 워커 자연 종료 → mask 정리+브로드캐스트
-uint32_t bewe_mod_host_mask(const char* id);                     // HOST 자기 mask
+uint64_t bewe_mod_host_mask(const char* id);                     // HOST 자기 mask (ch 0~63)
 // HOST 워커 → 디코드 1건 방출: Central 전송(+로컬 뷰 반영). payload = 모듈 정의 레코드
 void bewe_mod_emit(FFTViewer& v, const char* id, const void* payload, size_t n);
 

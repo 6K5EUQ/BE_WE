@@ -211,7 +211,7 @@ static constexpr int BEWE_AUDIO_HDR_SIZE = 6;
 static constexpr int CH_SYNC_ENTRY_SIZE = 88;
 static constexpr int CH_SYNC_MASK_OFFSET = 12;  // audio_mask offset within ChSyncEntry
 static constexpr int CH_SYNC_OWNER_OFFSET = 28; // owner_name offset within ChSyncEntry
-static constexpr int MAX_CHANNELS_RELAY = 10;
+static constexpr int MAX_CHANNELS_RELAY = 50;  // == MAX_CHANNELS (src/config.hpp)
 
 // ── 스테이션 목록 ─────────────────────────────────────────────────────────
 struct __attribute__((packed)) CentralStation {

@@ -46,9 +46,9 @@ const char* bewe_mod_my_station(){ return g_my_station; }
 
 // ── 모듈별 framework 상태 ──
 struct ModFw {
-    uint32_t host_mask = 0;                  // HOST: 자기 워커 mask
+    uint64_t host_mask = 0;                  // HOST: 자기 워커 mask (ch 0~63 비트)
     std::vector<MpChEntry> targets;          // JOIN: CH_LIST 미러
-    std::map<std::string,uint32_t> masks;    // JOIN: station→mask (STATE 미러)
+    std::map<std::string,uint64_t> masks;    // JOIN: station→mask (STATE 미러)
     // JOIN: 진행 중 낙관적 SET (key={station,ch} → {want_on, ts_ms}). 폴링 CH_LIST 가
     // SET 왕복 전 옛 decode_on 으로 덮어써 버튼 깜빡이는 것 방지. 권위 STATE 도착/만료 시 제거.
     std::map<std::pair<std::string,int>, std::pair<uint8_t,int64_t>> pending;
@@ -104,7 +104,7 @@ static void host_send_state(const char* id){
     bcast(id, BEWE_MK_STATE, &st, sizeof(st));
 }
 
-uint32_t bewe_mod_host_mask(const char* id){
+uint64_t bewe_mod_host_mask(const char* id){
     std::lock_guard<std::mutex> lk(g_fw_mtx);
     return fw(id).host_mask;
 }
@@ -116,7 +116,7 @@ void bewe_mod_host_announce(FFTViewer& v){
 
 void bewe_mod_host_mask_clear(FFTViewer& v, const char* id, int ch){
     (void)v;
-    { std::lock_guard<std::mutex> lk(g_fw_mtx); fw(id).host_mask &= ~(1u<<ch); }
+    { std::lock_guard<std::mutex> lk(g_fw_mtx); fw(id).host_mask &= ~(1ull<<ch); }
     host_send_state(id);
 }
 
@@ -128,8 +128,8 @@ static void host_apply_set(FFTViewer& v, const BeweModule& m, int ch, bool on){
     else  { if(m.host_stop)  m.host_stop(v, ch); }
     {
         std::lock_guard<std::mutex> lk(g_fw_mtx);
-        if(on && ok)   fw(m.id).host_mask |=  (1u<<ch);
-        if(!on)        fw(m.id).host_mask &= ~(1u<<ch);
+        if(on && ok)   fw(m.id).host_mask |=  (1ull<<ch);
+        if(!on)        fw(m.id).host_mask &= ~(1ull<<ch);
     }
     if(on && ok) host_decstat_start(m.id, ch);   // decode 시작: 런타임 시각 + 카운트 리셋
     if(!on)      host_decstat_stop(ch);
@@ -275,7 +275,7 @@ std::vector<MpChEntry> bewe_mod_targets(FFTViewer& v, const char* id){
     }
     // LOCAL / HOST GUI: 로컬 채널에서 직접 구성
     std::vector<MpChEntry> out;
-    uint32_t mask;
+    uint64_t mask;
     { std::lock_guard<std::mutex> lk(g_fw_mtx); mask = fw(id).host_mask; }
     float cf_mhz = (float)(v.header.center_frequency / 1e6);   // 기지 하드웨어 튜닝 (표시/편집용)
     float sr_msps = (float)(v.header.sample_rate / 1e6);
