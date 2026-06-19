@@ -51,14 +51,14 @@ static void draw_targets(FFTViewer& v){
     }
 
     // 채널 행 통합 (key = station|ch). freq/mode 는 채널 고유, running = decode_on 인 모듈.
-    struct Row{ std::string station; int ch; uint8_t mode; float lo,hi; int running; int hold; };
+    struct Row{ std::string station; int ch; uint8_t mode; float lo,hi; int running; int hold; float cf_mhz, sr_msps; };
     std::vector<Row> rows;
     for(int mi:dm){
         auto ts = bewe_mod_targets(v, mods[mi].id);
         for(auto& e : ts){
             Row* r=nullptr;
             for(auto& x:rows) if(x.ch==(int)e.ch && x.station==e.station){ r=&x; break; }
-            if(!r){ rows.push_back({e.station,(int)e.ch,e.mode,e.lo,e.hi,-1,(int)e.hold}); r=&rows.back(); }
+            if(!r){ rows.push_back({e.station,(int)e.ch,e.mode,e.lo,e.hi,-1,(int)e.hold,e.cf_mhz,e.sr_msps}); r=&rows.back(); }
             if(e.decode_on) r->running = mi;
         }
     }
@@ -93,6 +93,36 @@ static void draw_targets(FFTViewer& v){
         }
         for(size_t i=0;i<rows.size();i++){
             Row& r=rows[i];
+            // ── 기지 그룹 헤더 (기지 바뀔 때마다) : 기지명 + CF/SR 편집 (어느 기지든 원격 동기화) ──
+            if(i==0 || rows[i-1].station != r.station){
+                ImGui::TableNextRow();
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(30,42,55,255));
+                ImGui::PushID(("grp#"+r.station).c_str());
+                ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.17f,0.20f,0.25f,1.0f));
+                ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.22f,0.26f,0.32f,1.0f));
+                char gsd[16]; station_disp(r.station.c_str(), gsd, sizeof(gsd));
+                ImGui::TableSetColumnIndex(0);
+                ImGui::AlignTextToFramePadding();
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f,0.85f,1.0f,1.f));
+                cell_ctr(gsd);
+                ImGui::PopStyleColor();
+                // CF (MHz) — Center 컬럼 (단위 일치)
+                ImGui::TableSetColumnIndex(2);
+                ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("CF"); ImGui::SameLine(0,4);
+                { float cfv=r.cf_mhz; ImGui::SetNextItemWidth(-1);
+                  ImGui::InputFloat("##scf",&cfv,0,0,"%.4f");
+                  if(ImGui::IsItemDeactivatedAfterEdit() && cfv>0.f)
+                      bewe_mod_tune(v, r.station.c_str(), cfv, 0.f); }
+                // SR (MSPS)
+                ImGui::TableSetColumnIndex(3);
+                ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("SR"); ImGui::SameLine(0,4);
+                { float srv=r.sr_msps; ImGui::SetNextItemWidth(-1);
+                  ImGui::InputFloat("##ssr",&srv,0,0,"%.3f");
+                  if(ImGui::IsItemDeactivatedAfterEdit() && srv>0.f)
+                      bewe_mod_tune(v, r.station.c_str(), 0.f, srv); }
+                ImGui::PopStyleColor(2);
+                ImGui::PopID();
+            }
             ImGui::TableNextRow();
             char rid[64]; snprintf(rid,sizeof(rid),"%s#%d",r.station.c_str(),r.ch);
             ImGui::PushID(rid);                                  // 정렬 순서 무관 안정 ID (편집 중 끊김 방지)
@@ -102,8 +132,7 @@ static void draw_targets(FFTViewer& v){
             ImGui::PushStyleColor(ImGuiCol_PopupBg,        ImVec4(0.11f,0.13f,0.17f,1.0f));
             ImGui::PushStyleColor(ImGuiCol_Header,         ImVec4(0.20f,0.42f,0.30f,1.0f));
             ImGui::PushStyleColor(ImGuiCol_HeaderHovered,  ImVec4(0.18f,0.40f,0.55f,1.0f));
-            char sd[16]; station_disp(r.station.c_str(), sd, sizeof(sd));
-            ImGui::TableSetColumnIndex(0); cell_ctr(sd);
+            ImGui::TableSetColumnIndex(0);   // 그룹 헤더가 기지명 표시 → 채널행 col0 비움(들여쓰기)
             ImGui::TableSetColumnIndex(1); { char b[8];  snprintf(b,sizeof(b),"%d",r.ch); cell_ctr(b); }
             float cf=(r.lo+r.hi)*0.5f, bw=(r.hi>r.lo? r.hi-r.lo : r.lo-r.hi);
             // ── Center(MHz) 편집 → lo/hi 갱신(BW 유지), 전 유저 동기화 ──
@@ -156,6 +185,9 @@ static void draw_targets(FFTViewer& v){
             bool open = ImGui::BeginCombo("##dec", cur);
             ImGui::PopStyleColor();   // Text — 버튼 라벨만 색, 팝업 항목은 기본색
             if(open){
+                // 항목 간격 + 상/하단 여백 (None 위·마지막 아래 답답함 완화)
+                ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 5));
+                ImGui::Dummy(ImVec2(0, 3));
                 if(ImGui::Selectable("None", r.running<0) && r.running>=0)
                     bewe_mod_set_target(v, mods[r.running].id, r.station.c_str(), r.ch, false);
                 for(int mi:dm){
@@ -166,6 +198,8 @@ static void draw_targets(FFTViewer& v){
                     }
                 }
                 if(dm.empty()) ImGui::TextDisabled("(no decoder installed)");
+                ImGui::Dummy(ImVec2(0, 3));
+                ImGui::PopStyleVar();
                 ImGui::EndCombo();
             }
             ImGui::PopStyleColor(5);  // FrameBg,FrameBgHovered,PopupBg,Header,HeaderHovered

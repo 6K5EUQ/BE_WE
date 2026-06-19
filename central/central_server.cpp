@@ -1786,6 +1786,10 @@ void CentralServer::handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
                 if(it != r->mod_mask.end()) mmask = it->second;
             }
             if(sync.size() < BEWE_HDR_SIZE + sizeof(ChSyncEntry)*MAX_CHANNELS_RELAY) continue;
+            float cf_mhz=0.f, sr_msps=0.f;   // 기지 하드웨어 튜닝 (표시/편집용)
+            { std::lock_guard<std::mutex> slk(r->state_mtx);
+              if(r->has_state){ cf_mhz  = (float)(r->state.center_freq_hz / 1e6);
+                                sr_msps = (float)(r->state.sample_rate_hz / 1e6); } }
             auto* ent = reinterpret_cast<const ChSyncEntry*>(sync.data() + BEWE_HDR_SIZE);
             for(int i=0;i<MAX_CHANNELS_RELAY;i++){
                 if(!ent[i].active) continue;
@@ -1795,6 +1799,7 @@ void CentralServer::handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
                 e.lo = ent[i].s;   e.hi = ent[i].e;
                 e.decode_on = ((mmask >> ent[i].idx) & 1) ? 1 : 0;
                 e.hold = ent[i].dem_paused;   // 가시대역 밖 = Holding (스테이션 ch_sync 캐시)
+                e.cf_mhz = cf_mhz; e.sr_msps = sr_msps;
                 list.push_back(e);
             }
         }
@@ -1818,6 +1823,19 @@ void CentralServer::handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
 
     if(h->kind == BEWE_MK_CH_EDIT && h->data_len >= sizeof(MpChEdit)){
         auto* e = reinterpret_cast<const MpChEdit*>(d);
+        std::string stn(e->station, strnlen(e->station, sizeof(e->station)));
+        std::lock_guard<std::mutex> rlk(rooms_mtx_);
+        for(auto& r : rooms_){
+            if(!r->alive.load() || r->fd < 0) continue;
+            if(r->station_id != stn) continue;
+            enqueue_host_send(r, 0xFFFF, CentralMuxType::DATA, bewe_pkt, (uint32_t)bewe_len);
+            break;
+        }
+        return;
+    }
+
+    if(h->kind == BEWE_MK_TUNE && h->data_len >= sizeof(MpTune)){
+        auto* e = reinterpret_cast<const MpTune*>(d);
         std::string stn(e->station, strnlen(e->station, sizeof(e->station)));
         std::lock_guard<std::mutex> rlk(rooms_mtx_);
         for(auto& r : rooms_){

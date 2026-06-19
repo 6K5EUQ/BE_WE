@@ -111,6 +111,9 @@ struct Channel {
     size_t audio_avail(){
         return ar_wp.load(std::memory_order_acquire)-ar_rp.load(std::memory_order_relaxed);
     }
+    // 외부 디코더(DMR 음성 등)가 오디오를 소유 → demod 워커는 FM/AM 오디오 push 억제.
+    // (4FSK 를 FM 복조하면 잡음 → DMR 디코드 음성으로 대체. 음성 없을 땐 무음=스컬치)
+    std::atomic<bool> ext_audio{false};
 
     // ── Audio recording (demod 스레드 내에서만 접근) ──────────────────────
     std::atomic<bool> audio_rec_on{false};

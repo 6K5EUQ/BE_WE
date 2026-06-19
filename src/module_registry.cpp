@@ -241,6 +241,8 @@ std::vector<MpChEntry> bewe_mod_targets(FFTViewer& v, const char* id){
     std::vector<MpChEntry> out;
     uint32_t mask;
     { std::lock_guard<std::mutex> lk(g_fw_mtx); mask = fw(id).host_mask; }
+    float cf_mhz = (float)(v.header.center_frequency / 1e6);   // 기지 하드웨어 튜닝 (표시/편집용)
+    float sr_msps = (float)(v.header.sample_rate / 1e6);
     for(int i=0;i<MAX_CHANNELS;i++){
         Channel& ch = v.channels[i];
         if(!ch.filter_active) continue;
@@ -250,6 +252,7 @@ std::vector<MpChEntry> bewe_mod_targets(FFTViewer& v, const char* id){
         e.decode_on = ((mask>>i)&1) ? 1 : 0;
         e.hold = ch.dem_paused.load() ? 1 : 0;
         e.lo = ch.s; e.hi = ch.e;
+        e.cf_mhz = cf_mhz; e.sr_msps = sr_msps;
         out.push_back(e);
     }
     return out;
@@ -289,6 +292,22 @@ void bewe_mod_edit_ch(FFTViewer& v, const char* station, int ch, int mode, float
     apply_ch_edit_local(v, ch, mode, lo, hi);
 }
 
+// 기지 하드웨어 CF/SR 적용 (HOST 로컬). sr 먼저(재초기화) → cf. 0 인 필드는 건너뜀.
+static void apply_tune_local(FFTViewer& v, float cf_mhz, float sr_msps){
+    if(sr_msps > 0.f){ v.pending_sr_msps = sr_msps; v.sr_change_req = true; }
+    if(cf_mhz  > 0.f){ v.set_frequency(cf_mhz); }
+}
+// 기지 CF/SR 변경 (어느 기지든). 원격은 Central→해당 HOST, LOCAL/HOST 는 즉시.
+void bewe_mod_tune(FFTViewer& v, const char* station, float cf_mhz, float sr_msps){
+    if(g_send_up && v.remote_mode){
+        MpTune t{}; strncpy(t.station, station?station:"", sizeof(t.station)-1);
+        t.cf_mhz=cf_mhz; t.sr_msps=sr_msps;
+        send_up("*", BEWE_MK_TUNE, &t, sizeof(t));   // mod_id 무관 (기지 op)
+        return;
+    }
+    apply_tune_local(v, cf_mhz, sr_msps);
+}
+
 // ── 수신 라우팅 ─────────────────────────────────────────────────────────────
 void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t len){
     if(len < sizeof(PktModulePipe)) return;
@@ -303,6 +322,14 @@ void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t
         char stn[25]={}; memcpy(stn, e->station, 24);
         if(g_my_station[0] && strncmp(stn, g_my_station, 24)!=0) return;  // 다른 기지 명령
         apply_ch_edit_local(v, e->ch, e->mode, e->lo, e->hi);
+        return;
+    }
+    // TUNE 도 모듈 무관(기지 op) — find_mod 전에 처리
+    if(host_side && h->kind==BEWE_MK_TUNE && n>=sizeof(MpTune)){
+        auto* t=reinterpret_cast<const MpTune*>(d);
+        char stn[25]={}; memcpy(stn, t->station, 24);
+        if(g_my_station[0] && strncmp(stn, g_my_station, 24)!=0) return;  // 다른 기지 명령
+        apply_tune_local(v, t->cf_mhz, t->sr_msps);
         return;
     }
     const BeweModule* m = find_mod(id);

@@ -123,11 +123,13 @@ enum : uint8_t {
     BEWE_MK_HIST_CHUNK  = 0xF7,  // Central→JOIN: 저장 파일 바이트 청크
     BEWE_MK_HIST_DONE   = 0xF8,  // Central→JOIN: 끝
     BEWE_MK_CH_EDIT     = 0xF9,  // JOIN→Central→해당 HOST: MpChEdit (채널 center/bw/mode 변경, 전 유저 동기화)
+    BEWE_MK_TUNE        = 0xFA,  // JOIN→Central→해당 HOST: MpTune (기지 하드웨어 CF/SR 변경; 0=그 필드 유지)
 };
 struct __attribute__((packed)) MpSet      { char station[24]; uint8_t ch; uint8_t on; };
 struct __attribute__((packed)) MpState    { char station[24]; uint32_t mask; };
-struct __attribute__((packed)) MpChEntry  { char station[24]; uint8_t ch; uint8_t mode; uint8_t decode_on; uint8_t hold; float lo, hi; }; // hold: 1=Holding(가시대역 밖)
+struct __attribute__((packed)) MpChEntry  { char station[24]; uint8_t ch; uint8_t mode; uint8_t decode_on; uint8_t hold; float lo, hi; float cf_mhz, sr_msps; }; // hold:1=Holding; cf/sr=기지 하드웨어 튜닝(표시용)
 struct __attribute__((packed)) MpChEdit   { char station[24]; uint8_t ch; uint8_t mode; uint8_t _r[2]; float lo, hi; };
+struct __attribute__((packed)) MpTune     { char station[24]; float cf_mhz; float sr_msps; }; // 0 = 그 필드 변경 안 함
 struct __attribute__((packed)) MpRecv     { uint8_t on; };
 struct __attribute__((packed)) MpHistMeta { uint32_t total_bytes; };
 struct __attribute__((packed)) MpData     { char station[24]; };  // 뒤에 모듈 payload

@@ -4,6 +4,7 @@
 #include "fft_viewer.hpp"
 #include "dmr_module.hpp"
 #include "dmr_decode.hpp"
+#include "dmr_ambe.hpp"
 #include <cmath>
 #include <algorithm>
 #include <chrono>
@@ -45,6 +46,38 @@ void worker(FFTViewer& v, int ch_idx){
     dec.on_record = [&](const DmrRecord& r){
         frames++; DmrRecord m=r; m.ch=ch_idx; host_emit(v, m);
     };
+
+    // ── 음성: AMBE(mbelib) → PCM → 8k→out_sr 리샘플 → 채널 오디오 ring ──
+    // 음성 디코드 동안만 push → 음성 없으면 무음(스컬치). FM 오디오는 ext_audio 로 억제.
+    dmr::DmrAmbeDecoder ambe;
+    const float VOICE_GAIN = 2.2f;
+    const int up = std::max(1, (int)llround((double)out_sr/8000.0));   // 8k→out_sr 정수배
+    float a_prev = 0.f;
+    std::vector<float> nbuf; nbuf.reserve(256);
+    // 한 샘플 출력: 로컬 ring(L/R/pan 재생) + 네트워크(구독 operator) — dem_worker 와 동형
+    auto emit_audio = [&](float out){
+        ch.push_audio(out);
+        if(v.net_srv && (ch.audio_mask.load() & ~0x1u)){
+            nbuf.push_back(out);
+            if(nbuf.size()>=256){ uint32_t mask=(ch.audio_mask.load()>>1);
+                v.net_srv->send_audio(mask,(uint8_t)ch_idx,(int8_t)ch.pan,nbuf.data(),(uint32_t)nbuf.size());
+                nbuf.clear(); }
+        }
+    };
+    dec.on_voice = [&](const uint8_t* fr, int nf, bool nc){
+        if(nc) ambe.reset();
+        for(int f=0; f<nf; f++){
+            short pcm[160]; ambe.decode(fr + f*36, pcm);
+            for(int i=0;i<160;i++){
+                float s = pcm[i] * (VOICE_GAIN/32768.f);
+                if(s>1.f)s=1.f; else if(s<-1.f)s=-1.f;
+                for(int j=1;j<=up;j++){ float al=(float)j/up;     // 선형보간 업샘플
+                    emit_audio(a_prev + (s-a_prev)*al); }
+                a_prev = s;
+            }
+        }
+    };
+    ch.ext_audio.store(true, std::memory_order_relaxed);   // DMR 이 채널 오디오 소유
 
     bewe_log_push(0,"DMR[%d] start: %.4f MHz  BW=%.1f kHz  decim=%u out=%u Hz (%.2f sps)\n",
         ch_idx,(ch.s+ch.e)/2.0f, bw_hz/1000.f, decim, out_sr, (double)out_sr/4800.0);
@@ -103,6 +136,7 @@ void worker(FFTViewer& v, int ch_idx){
             last_diag=t;
         }
     }
+    ch.ext_audio.store(false, std::memory_order_relaxed);   // FM 오디오 복귀
     if(!worker_stop_req(ch_idx)) worker_natural_exit(v, ch_idx);
     bewe_log_push(0,"DMR[%d] stop\n",ch_idx);
 }
