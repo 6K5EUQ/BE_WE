@@ -12,6 +12,8 @@ struct BtleRecord {
     float    freq = 0.f;        // 채널 중심 MHz
     int      ch   = 0;          // 채널필터 인덱스
     bool     crc_ok = false;    // CRC-24 통과
+    float    rssi    = 0.f;     // 패킷 평균전력 dBFS (상대 신호세기, 0=미측정)
+    float    cfo_hz  = 0.f;     // 반송파 주파수오프셋 Hz (송신기 RF 지문; RX LO 공통분 포함)
 
     int      adv_chan  = 37;    // 광고 채널 (37/38/39)
     int      pdu_type  = 0;     // 0=ADV_IND..6=ADV_SCAN_IND (Vol6 PartB 2.3)
@@ -43,6 +45,7 @@ struct BtleRecord {
 // wire 포맷 (framework BEWE_MK_DATA payload; station 은 MpData 봉투가 운반)
 struct __attribute__((packed)) BtleWireMsg {
     int64_t  t_ms; float freq; int32_t ch; uint8_t crc_ok;
+    float    rssi; float cfo_hz;
     int32_t  adv_chan; int32_t pdu_type; int32_t addr_type; uint8_t mac[6];
     char     name[24]; int32_t flags; uint16_t company; int32_t n_ad; char info[48];
     uint8_t  is_connect; uint8_t init_mac[6];
@@ -54,6 +57,7 @@ struct __attribute__((packed)) BtleWireMsg {
 inline void btle_msg_to_wire(const BtleRecord& m, BtleWireMsg& w){
     memset(&w, 0, sizeof(w));
     w.t_ms=m.t_ms; w.freq=m.freq; w.ch=m.ch; w.crc_ok=m.crc_ok?1:0;
+    w.rssi=m.rssi; w.cfo_hz=m.cfo_hz;
     w.adv_chan=m.adv_chan; w.pdu_type=m.pdu_type; w.addr_type=m.addr_type;
     memcpy(w.mac,m.mac,6);
     memcpy(w.name,m.name,sizeof(w.name)); w.flags=m.flags; w.company=m.company;
@@ -66,6 +70,7 @@ inline void btle_msg_to_wire(const BtleRecord& m, BtleWireMsg& w){
 inline void btle_wire_to_msg(const BtleWireMsg& w, BtleRecord& m){
     m = BtleRecord{};
     m.t_ms=w.t_ms; m.freq=w.freq; m.ch=w.ch; m.crc_ok=w.crc_ok!=0;
+    m.rssi=w.rssi; m.cfo_hz=w.cfo_hz;
     m.adv_chan=w.adv_chan; m.pdu_type=w.pdu_type; m.addr_type=w.addr_type;
     memcpy(m.mac,w.mac,6);
     memcpy(m.name,w.name,sizeof(m.name)); m.name[sizeof(m.name)-1]=0;
@@ -107,6 +112,11 @@ inline const char* btle_company_name(uint16_t c){
         case 0x0078: return "Nike";
         case 0x0171: return "Amazon";
         case 0x0499: return "Ruuvi";
+        case 0x0002: return "Intel";
+        case 0x000D: return "TI";
+        case 0x0030: return "STMicro";
+        case 0x0087: return "Garmin";
+        case 0x00D7: return "Qualcomm";
         default:     return "";
     }
 }

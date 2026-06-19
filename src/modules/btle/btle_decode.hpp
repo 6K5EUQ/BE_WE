@@ -42,15 +42,16 @@ public:
         spb = sr/1e6;                       // samples per bit (1 Mbit/s)
         ch  = ch_idx;
         adv_chan = adv_channel;
-        buf.clear(); samp_base=0;
+        buf.clear(); buf_amp.clear(); samp_base=0;
         build_ref();
     }
 
-    // 워커가 FM판별 샘플 묶음을 투입. 내부에서 AA 동기 스캔 + 해독.
-    void process(const float* d, size_t n){
+    // 워커가 FM판별 샘플(d) + 동위치 순시전력(amp=oi²+oq²) 묶음을 투입. AA 동기 스캔 + 해독.
+    void process(const float* d, const float* amp, size_t n){
         dg_samp += (long)n;
         for(size_t i=0;i<n;i++){ float a=std::fabs(d[i]); if(a>dg_maxlev) dg_maxlev=a; }
         buf.insert(buf.end(), d, d+n);
+        buf_amp.insert(buf_amp.end(), amp, amp+n);   // RSSI용 (buf 와 동일 인덱싱)
         // 최장: 40-bit 동기 + (헤더2+페이로드37+CRC3)=42B → 376 bit
         size_t need = (size_t)((SYNC_BITS + (2+37+3)*8 + 2)*spb) + 8;
         if(buf.size() < need) return;
@@ -65,7 +66,9 @@ public:
             }
             j++;
         }
-        if(j>0){ samp_base += (double)j; buf.erase(buf.begin(), buf.begin()+j); }
+        if(j>0){ samp_base += (double)j;
+            buf.erase(buf.begin(), buf.begin()+j);
+            buf_amp.erase(buf_amp.begin(), buf_amp.begin()+j); }
     }
 
 private:
@@ -75,6 +78,7 @@ private:
     double sr=4000000.0, spb=4.0, samp_base=0;
     int    ch=0, adv_chan=37;
     std::vector<float> buf;
+    std::vector<float> buf_amp;   // buf 동위치 순시전력 (RSSI 산출용)
     uint8_t ref_[SYNC_BITS];   // 기대 동기 비트 (프리앰블+AA)
 
     // ── 비트 k 중심의 FM판별 소프트값 (oversampled) ──
@@ -177,8 +181,17 @@ private:
         dg_ok++;
         int consumed = (int)((SYNC_BITS + total*8)*spb);
 
+        // 신호 메트릭: RSSI(패킷구간 평균전력 dBFS) + CFO(반송파 오프셋 Hz = dc×fs/2π).
+        // dc = 동기 40비트 FM판별 평균 = 반송파 오프셋 rad/sample. AA 비트편향+RX LO 공통분
+        // 포함(전 광고패킷 동일) → 절대값보다 기기간 상대차가 송신기 지문.
+        double psum=0; size_t pc=0;
+        for(size_t a=j; a<j+(size_t)consumed && a<buf_amp.size(); a++){ psum+=buf_amp[a]; ++pc; }
+        float rssi = pc ? 10.f*(float)std::log10(psum/(double)pc + 1e-12) : 0.f;
+        float cfo  = (float)(dc * sr / (2.0*3.14159265358979323846));
+
         BtleRecord m{};
         m.crc_ok=true; m.adv_chan=adv_chan; m.pdu_type=pdu_type; m.addr_type=txadd;
+        m.rssi=rssi; m.cfo_hz=cfo;
         const uint8_t* pl = raw+2;
 
         if(pdu_type==0x5){                                    // CONNECT_IND

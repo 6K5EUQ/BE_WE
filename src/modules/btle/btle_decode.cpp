@@ -54,8 +54,9 @@ void worker(FFTViewer& v, int ch_idx){
     bewe_log_push(0,"BTLE[%d] start: %.4f MHz (ch%d)  BW=%.1f kHz  decim=%u fs_out=%.3f MHz (%.2f sps)\n",
         ch_idx,(ch.s+ch.e)/2.0f, adv_chan, bw_hz/1000.f, decim, fs_out/1e6, fs_out/1e6);
 
-    // FM 판별 출력 묶음 (~20 ms 분량)
-    std::vector<float> fm; fm.reserve((size_t)(fs_out*0.05)+64);
+    // FM 판별 출력 묶음 (~20 ms 분량) + 동위치 순시전력(RSSI용)
+    std::vector<float> fm;  fm.reserve((size_t)(fs_out*0.05)+64);
+    std::vector<float> amp; amp.reserve((size_t)(fs_out*0.05)+64);
 
     const size_t MAX_LAG=(size_t)(msr*0.08);
     const size_t BATCH  =std::max<size_t>(4096, msr/50);
@@ -84,7 +85,7 @@ void worker(FFTViewer& v, int ch_idx){
         if(lag==0){ std::this_thread::sleep_for(std::chrono::microseconds(50)); continue; }
 
         size_t avail=std::min(lag,BATCH);
-        fm.clear();
+        fm.clear(); amp.clear();
         for(size_t s=0;s<avail;s++){
             size_t pos=(rp+s)&IQ_RING_MASK;
             float si=v.ring[pos*2]/v.hw.iq_scale, sq=v.ring[pos*2+1]/v.hw.iq_scale;
@@ -99,8 +100,9 @@ void worker(FFTViewer& v, int ch_idx){
             float d = atan2f(oq*prev_i - oi*prev_q, oi*prev_i + oq*prev_q + 1e-20f);
             prev_i=oi; prev_q=oq;
             fm.push_back(d);
+            amp.push_back(oi*oi + oq*oq);              // 순시전력 → 패킷구간 평균=RSSI
         }
-        if(!fm.empty()) dec.process(fm.data(), fm.size());
+        if(!fm.empty()) dec.process(fm.data(), amp.data(), fm.size());
         my_rp.store((rp+avail)&IQ_RING_MASK,std::memory_order_release);
 
         int64_t t=now_ms();

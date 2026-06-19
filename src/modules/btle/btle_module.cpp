@@ -115,11 +115,13 @@ void store_append(const BtleRecord& m){
     char nm[48]; json_escape(m.name,nm,sizeof(nm));
     char inf[64]; json_escape(m.info,inf,sizeof(inf));
     char mc[13]; mac_hex(m.mac,mc); char im[13]; mac_hex(m.init_mac,im);
-    fprintf(f,"{\"t\":%lld,\"ch\":%d,\"f\":%.4f,\"crc\":%d,\"ac\":%d,\"pt\":%d,\"at\":%d,"
+    fprintf(f,"{\"t\":%lld,\"ch\":%d,\"f\":%.4f,\"crc\":%d,\"rssi\":%.1f,\"cfo\":%.0f,"
+              "\"ac\":%d,\"pt\":%d,\"at\":%d,"
               "\"mac\":\"%s\",\"name\":\"%s\",\"fl\":%d,\"co\":%u,\"nad\":%d,\"info\":\"%s\","
               "\"cn\":%d,\"im\":\"%s\",\"aa\":%u,\"ci\":%u,\"iv\":%d,\"to\":%d,\"lt\":%d,"
               "\"hop\":%d,\"sca\":%d,\"cm\":%llu}\n",
-        (long long)m.t_ms,m.ch,m.freq,m.crc_ok?1:0,m.adv_chan,m.pdu_type,m.addr_type,
+        (long long)m.t_ms,m.ch,m.freq,m.crc_ok?1:0,m.rssi,m.cfo_hz,
+        m.adv_chan,m.pdu_type,m.addr_type,
         mc,nm,m.flags,(unsigned)m.company,m.n_ad,inf,
         m.is_connect?1:0,im,m.access_addr,m.crc_init,m.interval,m.timeout,m.latency,
         m.hop,m.sca,(unsigned long long)m.chan_map);
@@ -149,6 +151,7 @@ void store_parse_jsonl(const char* data, size_t n, std::vector<BtleRecord>& out)
         BtleRecord m{};
         m.t_ms=jll(l,"\"t\":"); m.ch=(int)jll(l,"\"ch\":"); m.freq=(float)jf(l,"\"f\":");
         m.crc_ok=jll(l,"\"crc\":")!=0; m.adv_chan=(int)jll(l,"\"ac\":");
+        m.rssi=(float)jf(l,"\"rssi\":"); m.cfo_hz=(float)jf(l,"\"cfo\":");
         m.pdu_type=(int)jll(l,"\"pt\":"); m.addr_type=(int)jll(l,"\"at\":");
         char mc[13]={0}; if(jstr(l,"\"mac\":\"",mc,sizeof(mc))) hex_mac(mc,m.mac);
         jstr(l,"\"name\":\"",m.name,sizeof(m.name));
