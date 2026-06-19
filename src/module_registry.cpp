@@ -248,6 +248,7 @@ std::vector<MpChEntry> bewe_mod_targets(FFTViewer& v, const char* id){
         strncpy(e.station, g_my_station[0]?g_my_station:"LOCAL", sizeof(e.station)-1);
         e.ch = (uint8_t)i; e.mode = (uint8_t)ch.mode;
         e.decode_on = ((mask>>i)&1) ? 1 : 0;
+        e.hold = ch.dem_paused.load() ? 1 : 0;
         e.lo = ch.s; e.hi = ch.e;
         out.push_back(e);
     }

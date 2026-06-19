@@ -126,7 +126,7 @@ enum : uint8_t {
 };
 struct __attribute__((packed)) MpSet      { char station[24]; uint8_t ch; uint8_t on; };
 struct __attribute__((packed)) MpState    { char station[24]; uint32_t mask; };
-struct __attribute__((packed)) MpChEntry  { char station[24]; uint8_t ch; uint8_t mode; uint8_t decode_on; uint8_t _r; float lo, hi; };
+struct __attribute__((packed)) MpChEntry  { char station[24]; uint8_t ch; uint8_t mode; uint8_t decode_on; uint8_t hold; float lo, hi; }; // hold: 1=Holding(가시대역 밖)
 struct __attribute__((packed)) MpChEdit   { char station[24]; uint8_t ch; uint8_t mode; uint8_t _r[2]; float lo, hi; };
 struct __attribute__((packed)) MpRecv     { uint8_t on; };
 struct __attribute__((packed)) MpHistMeta { uint32_t total_bytes; };

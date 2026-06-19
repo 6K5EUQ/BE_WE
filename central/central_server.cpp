@@ -1794,6 +1794,7 @@ void CentralServer::handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
                 e.ch = ent[i].idx; e.mode = ent[i].mode;
                 e.lo = ent[i].s;   e.hi = ent[i].e;
                 e.decode_on = ((mmask >> ent[i].idx) & 1) ? 1 : 0;
+                e.hold = ent[i].dem_paused;   // 가시대역 밖 = Holding (스테이션 ch_sync 캐시)
                 list.push_back(e);
             }
         }

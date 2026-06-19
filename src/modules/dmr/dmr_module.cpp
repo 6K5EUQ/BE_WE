@@ -184,6 +184,7 @@ static void on_data(FFTViewer& v, const char* station, const uint8_t* d, size_t 
     (void)v;
     if(n < sizeof(DmrWireMsg)) return;
     DmrRecord m; dmr_wire_to_msg(*reinterpret_cast<const DmrWireMsg*>(d), m);
+    bewe_mod_stat_bump("dmr", station, m.ch, m.t_ms);   // DEMOD 패널 Rate 갱신 (ais/acars/wifi 동일)
     station_disp(station, m.station, sizeof(m.station));
     append_log(m);
 }

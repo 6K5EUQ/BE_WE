@@ -51,14 +51,14 @@ static void draw_targets(FFTViewer& v){
     }
 
     // 채널 행 통합 (key = station|ch). freq/mode 는 채널 고유, running = decode_on 인 모듈.
-    struct Row{ std::string station; int ch; uint8_t mode; float lo,hi; int running; };
+    struct Row{ std::string station; int ch; uint8_t mode; float lo,hi; int running; int hold; };
     std::vector<Row> rows;
     for(int mi:dm){
         auto ts = bewe_mod_targets(v, mods[mi].id);
         for(auto& e : ts){
             Row* r=nullptr;
             for(auto& x:rows) if(x.ch==(int)e.ch && x.station==e.station){ r=&x; break; }
-            if(!r){ rows.push_back({e.station,(int)e.ch,e.mode,e.lo,e.hi,-1}); r=&rows.back(); }
+            if(!r){ rows.push_back({e.station,(int)e.ch,e.mode,e.lo,e.hi,-1,(int)e.hold}); r=&rows.back(); }
             if(e.decode_on) r->running = mi;
         }
     }
@@ -72,20 +72,21 @@ static void draw_targets(FFTViewer& v){
     ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(6,5));
     int64_t now_ms=(int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
-    if(ImGui::BeginTable("##uni_targets", 9, tf, ImVec2(0, th>120?th:120))){
+    if(ImGui::BeginTable("##uni_targets", 10, tf, ImVec2(0, th>120?th:120))){
         ImGui::TableSetupColumn("Station",      ImGuiTableColumnFlags_WidthFixed, 92);
         ImGui::TableSetupColumn("CH",           ImGuiTableColumnFlags_WidthFixed, 40);
         ImGui::TableSetupColumn("Center (MHz)", ImGuiTableColumnFlags_WidthFixed, 104);
         ImGui::TableSetupColumn("BW (kHz)",     ImGuiTableColumnFlags_WidthFixed, 96);
         ImGui::TableSetupColumn("Mode",         ImGuiTableColumnFlags_WidthFixed, 66);
+        ImGui::TableSetupColumn("Channel",      ImGuiTableColumnFlags_WidthFixed, 72);
         ImGui::TableSetupColumn("State",        ImGuiTableColumnFlags_WidthFixed, 56);
         ImGui::TableSetupColumn("Rate",         ImGuiTableColumnFlags_WidthFixed, 104);
         ImGui::TableSetupColumn("Decode",       ImGuiTableColumnFlags_WidthFixed, 152);
         ImGui::TableSetupColumn("##sp",         ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-        const char* hn[9]={"Station","CH","Center (MHz)","BW (kHz)","Mode","State","Rate","Decode",""};
-        const bool  hc[9]={false,true,true,true,true,true,true,false,false};
-        for(int c=0;c<9;c++){ ImGui::TableSetColumnIndex(c); if(hc[c]) cell_ctr(hn[c]); else ImGui::TextUnformatted(hn[c]); }
+        const char* hn[10]={"Station","CH","Center (MHz)","BW (kHz)","Mode","Channel","State","Rate","Decode",""};
+        const bool  hc[10]={true,true,true,true,true,true,true,true,false,false};
+        for(int c=0;c<10;c++){ ImGui::TableSetColumnIndex(c); if(hc[c]) cell_ctr(hn[c]); else ImGui::TextUnformatted(hn[c]); }
 
         if(rows.empty()){
             ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0); ImGui::TextDisabled("(no channels)");
@@ -102,7 +103,7 @@ static void draw_targets(FFTViewer& v){
             ImGui::PushStyleColor(ImGuiCol_Header,         ImVec4(0.20f,0.42f,0.30f,1.0f));
             ImGui::PushStyleColor(ImGuiCol_HeaderHovered,  ImVec4(0.18f,0.40f,0.55f,1.0f));
             char sd[16]; station_disp(r.station.c_str(), sd, sizeof(sd));
-            ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted(sd);
+            ImGui::TableSetColumnIndex(0); cell_ctr(sd);
             ImGui::TableSetColumnIndex(1); { char b[8];  snprintf(b,sizeof(b),"%d",r.ch); cell_ctr(b); }
             float cf=(r.lo+r.hi)*0.5f, bw=(r.hi>r.lo? r.hi-r.lo : r.lo-r.hi);
             // ── Center(MHz) 편집 → lo/hi 갱신(BW 유지), 전 유저 동기화 ──
@@ -125,12 +126,17 @@ static void draw_targets(FFTViewer& v){
                       if(ImGui::Selectable(mode_name((uint8_t)k),s) && !s)
                           bewe_mod_edit_ch(v, r.station.c_str(), r.ch, k, r.lo, r.hi); }
                   ImGui::EndCombo(); } }
-            // ── State: 행별 동작 표시 (RUN 초록 / idle 회색) ──
+            // ── Channel: SDR 가시대역 안=Active / 밖=Holding. dem_paused 가 소스
+            //    (LOCAL=v.channels, 원격=Central CH_LIST 의 hold 바이트). 어디서 보든 동기화 ──
             ImGui::TableSetColumnIndex(5);
+            if(r.hold){ ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f,0.70f,0.30f,1.f)); cell_ctr("Holding"); ImGui::PopStyleColor(); }
+            else      { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.40f,0.80f,0.95f,1.f)); cell_ctr("Active");  ImGui::PopStyleColor(); }
+            // ── State: 행별 동작 표시 (RUN 초록 / idle 회색) ──
+            ImGui::TableSetColumnIndex(6);
             if(r.running>=0){ ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.35f,0.95f,0.45f,1.f)); cell_ctr("RUN");  ImGui::PopStyleColor(); }
             else            { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f,0.5f,0.56f,1.f));   cell_ctr("idle"); ImGui::PopStyleColor(); }
             // ── Rate: 최근 1분 디코드 건수 + 마지막 수신 경과 (동작 검증) ──
-            ImGui::TableSetColumnIndex(6);
+            ImGui::TableSetColumnIndex(7);
             if(r.running>=0){
                 int cnt; int64_t last;
                 bewe_mod_ch_stat(mods[r.running].id, r.station.c_str(), r.ch, now_ms, cnt, last);
@@ -142,7 +148,7 @@ static void draw_targets(FFTViewer& v){
                 } else { ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(0.6f,0.6f,0.45f,1.f)); cell_ctr("waiting"); ImGui::PopStyleColor(); }
             } else { ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(0.45f,0.45f,0.5f,1.f)); cell_ctr("-"); ImGui::PopStyleColor(); }
             // ── Decode 콤보 ──
-            ImGui::TableSetColumnIndex(7);
+            ImGui::TableSetColumnIndex(8);
             const char* cur = r.running>=0 ? mods[r.running].label : "None";
             ImGui::SetNextItemWidth(-1);
             ImVec4 lblc = r.running>=0 ? ImVec4(0.45f,0.95f,0.55f,1.f) : ImVec4(0.80f,0.80f,0.85f,1.f);
