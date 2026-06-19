@@ -60,6 +60,8 @@ void bewe_mod_emit(FFTViewer& v, const char* id, const void* payload, size_t n);
 void bewe_mod_stat_bump(const char* id, const char* station, int ch, int64_t t_ms);
 void bewe_mod_ch_stat(const char* id, const char* station, int ch, int64_t now_ms,
                       int& cnt60, int64_t& last_ms);
+// HOST: 채널 ch 에서 도는 디코더의 누적건수 + 동작경과(초) — ChSyncEntry/LOCAL 타깃 채움용
+void bewe_mod_host_ch_decstat(int ch, uint32_t& count, uint32_t& runtime_s);
 
 // ── JOIN/뷰어 측 framework (런처·뷰 UI 가 사용) ──
 bool bewe_mod_recv(const char* id);                              // Recv 구독 상태

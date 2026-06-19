@@ -127,8 +127,8 @@ enum : uint8_t {
 };
 struct __attribute__((packed)) MpSet      { char station[24]; uint8_t ch; uint8_t on; };
 struct __attribute__((packed)) MpState    { char station[24]; uint32_t mask; };
-struct __attribute__((packed)) MpChEntry  { char station[24]; uint8_t ch; uint8_t mode; uint8_t decode_on; uint8_t hold; uint8_t dnum; float lo, hi; float cf_mhz, sr_msps; }; // hold:1=Holding; dnum=주파수정렬 표시번호(State창과 일치); cf/sr=기지 하드웨어 튜닝
-static_assert(sizeof(MpChEntry) == 45, "MpChEntry wire size changed — rebuild HOST+JOIN+Central in lockstep");
+struct __attribute__((packed)) MpChEntry  { char station[24]; uint8_t ch; uint8_t mode; uint8_t decode_on; uint8_t hold; uint8_t dnum; float lo, hi; float cf_mhz, sr_msps; uint32_t dec_count; uint32_t dec_runtime_s; }; // hold:1=Holding; dnum=주파수정렬 표시번호; cf/sr=기지 튜닝; dec_count/runtime=HOST 측정 디코드 통계
+static_assert(sizeof(MpChEntry) == 53, "MpChEntry wire size changed — rebuild HOST+JOIN+Central in lockstep");
 struct __attribute__((packed)) MpChEdit   { char station[24]; uint8_t ch; uint8_t mode; uint8_t _r[2]; float lo, hi; };
 struct __attribute__((packed)) MpTune     { char station[24]; float cf_mhz; float sr_msps; }; // 0 = 그 필드 변경 안 함
 struct __attribute__((packed)) MpRecv     { uint8_t on; };
@@ -309,6 +309,9 @@ struct __attribute__((packed)) ChSyncEntry {
     uint8_t  iq_rec_on;       // IQ 녹음 활성 (0/1)
     uint8_t  audio_rec_on;    // 오디오 녹음 활성 (0/1)
     uint8_t  _pad3[2];
+    // ── 디코드 통계 (HOST 측정 → Central → JOIN) ──
+    uint32_t dec_count;       // 현 decode 세션 누적 수신건수
+    uint32_t dec_runtime_s;   // decode 동작 경과 (초)
 };
 
 struct __attribute__((packed)) PktChannelSync {
@@ -317,7 +320,7 @@ struct __attribute__((packed)) PktChannelSync {
 
 // 중앙 릴레이(central_proto.hpp)의 CH_SYNC_ENTRY_SIZE와 반드시 일치해야 함.
 // 이 값이 바뀌면 central도 같이 고쳐야 함.
-static_assert(sizeof(ChSyncEntry) == 80, "ChSyncEntry size must match central/central_proto.hpp CH_SYNC_ENTRY_SIZE");
+static_assert(sizeof(ChSyncEntry) == 88, "ChSyncEntry size must match central/central_proto.hpp CH_SYNC_ENTRY_SIZE");
 
 // ── SCHED_SYNC: 예약 녹음 리스트 전체 스냅샷 (server → all) ───────────────
 static constexpr int MAX_SCHED_ENTRIES = 32;

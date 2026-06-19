@@ -1808,6 +1808,7 @@ void CentralServer::handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
                 }
                 e.dnum = (uint8_t)rank;
                 e.cf_mhz = cf_mhz; e.sr_msps = sr_msps;
+                e.dec_count = ent[i].dec_count; e.dec_runtime_s = ent[i].dec_runtime_s;  // HOST 디코드 통계 릴레이
                 list.push_back(e);
             }
         }

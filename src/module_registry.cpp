@@ -15,6 +15,10 @@ static int64_t mod_now_ms(){
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+// ── HOST 디코드 통계 (decode 켠 시각 기록 + 누적 카운트 리셋; ChSyncEntry 로 송출) ──
+static void host_decstat_start(const char* id, int ch);  // decode on:  start=now, count=0
+static void host_decstat_stop(int ch);                   // decode off: start=0
+
 // ── 모듈 레지스트리 + framework (GUI/CLI 공통, 모듈 무관) ───────────────────
 // Central 컨트롤플레인 구조: 타깃 목록/명령/상태/데이터/구독/히스토리는 전부
 // framework kind (BEWE_MK_*) 로 코어가 처리. 모듈은 데이터 payload 포맷만 소유.
@@ -127,6 +131,8 @@ static void host_apply_set(FFTViewer& v, const BeweModule& m, int ch, bool on){
         if(on && ok)   fw(m.id).host_mask |=  (1u<<ch);
         if(!on)        fw(m.id).host_mask &= ~(1u<<ch);
     }
+    if(on && ok) host_decstat_start(m.id, ch);   // decode 시작: 런타임 시각 + 카운트 리셋
+    if(!on)      host_decstat_stop(ch);
     host_send_state(m.id);
 }
 
@@ -160,6 +166,7 @@ static void apply_ch_edit_local(FFTViewer& v, int ch, int mode, float lo, float 
 // ── 채널별 디코드 레이트 통계 (id|station|ch → 최근 60s 타임스탬프 deque) ──
 static std::mutex g_stat_mtx;
 static std::map<std::string, std::deque<int64_t>> g_stat;
+static std::map<std::string, long> g_stat_total;   // 누적 수신 건수 (트림 안 함 — Data 컬럼)
 static std::string stat_key(const char* id, const char* station, int ch){
     const char* s = (station && station[0]) ? station : "LOCAL";   // 빈 station = LOCAL (타깃표와 일치)
     std::string k = id; k += '|'; k += s; k += '|'; k += std::to_string(ch);
@@ -168,11 +175,40 @@ static std::string stat_key(const char* id, const char* station, int ch){
 void bewe_mod_stat_bump(const char* id, const char* station, int ch, int64_t t_ms){
     if(!id) return;
     std::lock_guard<std::mutex> lk(g_stat_mtx);
-    auto& dq = g_stat[stat_key(id, station, ch)];
+    std::string k = stat_key(id, station, ch);
+    auto& dq = g_stat[k];
     dq.push_back(t_ms);
     int64_t cut = t_ms - 60000;
     while(!dq.empty() && dq.front() < cut) dq.pop_front();
     if(dq.size() > 4096) dq.pop_front();           // 폭주 가드
+    g_stat_total[k]++;                              // 누적 (Data 컬럼)
+}
+// ── HOST 디코드 통계: decode 동작 시각(steady ms) + 세션 누적건수 ──
+static int64_t g_host_decstart[MAX_CHANNELS] = {};   // 0=정지, >0=decode 시작 steady-ms
+static void host_decstat_start(const char* id, int ch){
+    if(ch<0 || ch>=MAX_CHANNELS) return;
+    g_host_decstart[ch] = mod_now_ms();
+    std::lock_guard<std::mutex> lk(g_stat_mtx);      // 새 세션 → 카운트 리셋
+    g_stat_total[stat_key(id, g_my_station, ch)] = 0;
+}
+static void host_decstat_stop(int ch){
+    if(ch<0 || ch>=MAX_CHANNELS) return;
+    g_host_decstart[ch] = 0;
+}
+// HOST: 채널 ch 에서 도는 디코더의 (누적건수, 동작경과초). net_server 가 ChSyncEntry 채울 때 사용.
+void bewe_mod_host_ch_decstat(int ch, uint32_t& count, uint32_t& runtime_s){
+    count = 0; runtime_s = 0;
+    if(ch<0 || ch>=MAX_CHANNELS) return;
+    int64_t st = g_host_decstart[ch];
+    if(st>0){ int64_t r=(mod_now_ms()-st)/1000; runtime_s=(uint32_t)(r>0?r:0); }
+    // 이 채널서 도는 모듈 찾아 누적건수 조회 (한 채널=한 디코더)
+    std::string id;
+    { std::lock_guard<std::mutex> lk(g_fw_mtx);
+      for(auto& kv : g_fw) if((kv.second.host_mask>>ch)&1){ id=kv.first; break; } }
+    if(id.empty()) return;
+    std::lock_guard<std::mutex> lk(g_stat_mtx);
+    auto it = g_stat_total.find(stat_key(id.c_str(), g_my_station, ch));
+    if(it!=g_stat_total.end()) count=(uint32_t)(it->second<0?0:it->second);
 }
 void bewe_mod_ch_stat(const char* id, const char* station, int ch, int64_t now_ms,
                       int& cnt60, int64_t& last_ms){
@@ -254,6 +290,7 @@ std::vector<MpChEntry> bewe_mod_targets(FFTViewer& v, const char* id){
         e.dnum = (uint8_t)v.freq_sorted_display_num(i);   // State창/스펙트럼 라벨과 동일 번호
         e.lo = ch.s; e.hi = ch.e;
         e.cf_mhz = cf_mhz; e.sr_msps = sr_msps;
+        { uint32_t dc=0,dr=0; bewe_mod_host_ch_decstat(i,dc,dr); e.dec_count=dc; e.dec_runtime_s=dr; }  // HOST GUI: 자기 측정 통계
         out.push_back(e);
     }
     return out;

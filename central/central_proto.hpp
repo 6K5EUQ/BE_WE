@@ -207,8 +207,8 @@ static constexpr int BEWE_AUDIO_HDR_SIZE = 6;
 // Layout: idx[1] active[1] s[4] e[4] mode[1] pan[1] audio_mask[4] sq_threshold[4] sq_sig[4]
 //         sq_gate[1] dem_paused[1] _pad2[2] owner_name[32]
 //         iq_rec_secs[4] audio_rec_secs[4] sq_active_secs[4] sq_total_secs[4]
-//         iq_rec_on[1] audio_rec_on[1] _pad3[2]
-static constexpr int CH_SYNC_ENTRY_SIZE = 80;
+//         iq_rec_on[1] audio_rec_on[1] _pad3[2] dec_count[4] dec_runtime_s[4]
+static constexpr int CH_SYNC_ENTRY_SIZE = 88;
 static constexpr int CH_SYNC_MASK_OFFSET = 12;  // audio_mask offset within ChSyncEntry
 static constexpr int CH_SYNC_OWNER_OFFSET = 28; // owner_name offset within ChSyncEntry
 static constexpr int MAX_CHANNELS_RELAY = 10;
