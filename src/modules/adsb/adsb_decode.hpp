@@ -26,6 +26,11 @@ class AdsbDecoder {
 public:
     std::function<void(const AdsbRecord&)> on_record;
 
+    // ── 진단 카운터 (워커가 주기적으로 읽어 로그) — "왜 안 잡히나" 추적용 ──
+    long  dg_pre=0, dg_ok=0, dg_fail=0, dg_samp=0;   // 프리앰블/CRC통과/CRC실패/샘플수
+    float dg_maxmag=0;                                // 최대 진폭 (신호 유무 판단)
+    void  diag_reset(){ dg_pre=dg_ok=dg_fail=dg_samp=0; dg_maxmag=0; }
+
     void reset(double sample_rate, int ch_idx){
         sr  = sample_rate>1.0 ? sample_rate : 2400000.0;
         spb = sr/1e6;                 // samples per µs (= per bit)
@@ -36,6 +41,8 @@ public:
 
     // 워커가 magnitude 샘플 묶음을 투입. 내부에서 프리앰블 스캔 + 해독.
     void process(const float* mag, size_t n){
+        dg_samp += (long)n;
+        for(size_t i=0;i<n;i++) if(mag[i]>dg_maxmag) dg_maxmag=mag[i];
         buf.insert(buf.end(), mag, mag+n);
         size_t need = (size_t)((PRE_US + 112.0)*spb) + 8;     // 8µs 프리앰블 + 최장 프레임
         if(buf.size() < need) return;
@@ -43,8 +50,10 @@ public:
         size_t j = 0;
         while(j <= limit){
             if(preamble_ok(j)){
+                dg_pre++;
                 int adv = decode_at(j);
                 if(adv>0){ j += (size_t)adv; continue; }
+                else dg_fail++;
             }
             j++;
         }
@@ -171,6 +180,7 @@ private:
             // identity(squawk) — 위치/고도 없음, ICAO 존재만
         }
 
+        dg_ok++;
         if(on_record) on_record(m);
         return (int)((PRE_US + nbits)*spb);
     }

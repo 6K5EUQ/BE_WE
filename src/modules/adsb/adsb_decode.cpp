@@ -85,6 +85,12 @@ void worker(FFTViewer& v, int ch_idx){
             mag.push_back(sqrtf(fi*fi+fq*fq));
         }
         if(!mag.empty()) dec.process(mag.data(), mag.size());
+        // 주기 진단 (~3초): 신호 유무·프리앰블·CRC 통계 — "왜 안 잡히나" 추적
+        if(dec.dg_samp >= (long)(fs_out*3.0)){
+            bewe_log_push(0,"ADSB[%d] diag: maxmag=%.0f preamble=%ld crcOK=%ld crcFAIL=%ld\n",
+                ch_idx, dec.dg_maxmag, dec.dg_pre, dec.dg_ok, dec.dg_fail);
+            dec.diag_reset();
+        }
         my_rp.store((rp+avail)&IQ_RING_MASK,std::memory_order_release);
     }
     if(!worker_stop_req(ch_idx)) worker_natural_exit(v, ch_idx);
