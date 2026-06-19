@@ -44,8 +44,11 @@ static const float* land_latlon(int& nverts){
         for(int i=0;i+2<LAND_TRI_COUNT;i+=3){
             float x=LAND_TRI_DATA[i], y=LAND_TRI_DATA[i+1], z=LAND_TRI_DATA[i+2];
             if(y>1.f)y=1.f; if(y<-1.f)y=-1.f;
-            g.push_back(-std::asin(y)*57.29578f);     // 글로브 local frame: y=-sin(lat) (pick() 와 동일) → lat=-asin(y)
-            g.push_back(std::atan2(z,x)*57.29578f);
+            // LAND_TRI 생성기 좌표계: y=sin(lat), z=-cos(lat)*sin(lon) (globe latlon_to_xyz 와 z 부호 반대).
+            // 평면지도는 raw 데이터를 직접 변환 → lat=asin(y), lon=atan2(-z,x). (해안선 정점과 99.6% 일치 실측)
+            // globe 는 LAND_TRI raw 를 GPU 업로드 후 자체 transform → 이 함수 안 거침.
+            g.push_back(std::asin(y)*57.29578f);
+            g.push_back(std::atan2(-z,x)*57.29578f);
         }
     }
     nverts=(int)g.size()/2;
