@@ -92,7 +92,7 @@ static void draw_targets(FFTViewer& v){
         return a.ch<b.ch; });
 
     // 데이터 컬럼은 고정폭, 남는 폭은 끝의 빈 stretch 컬럼이 흡수 → Center 안 늘어나고 Decode 안 짤림
-    ImGuiTableFlags tf = ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInner|
+    ImGuiTableFlags tf = ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInnerV|
                          ImGuiTableFlags_BordersOuter|ImGuiTableFlags_ScrollY;
     float th=ImGui::GetContentRegionAvail().y-8;
     ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(6,5));
