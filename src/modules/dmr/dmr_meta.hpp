@@ -19,6 +19,8 @@ struct DmrRecord {
     uint32_t dst_id = 0;        // 목적 주소 (talkgroup / radio id)
     int      call_type = -1;    // 0=group, 1=individual, -1=n/a
     bool     is_voice = false;  // 음성 활동
+    bool     enc = false;       // 암호화 콜 (PI Header 선행 → AMBE 스크램블)
+    uint64_t rec_id = 0;        // 통화 녹음 식별자(=호스트 WAV 파일명 키, 0=녹음없음)
     char     station[16] = {};  // 복조 기지 표시명 (DGS-2 / LOCAL)
 };
 
@@ -26,8 +28,8 @@ struct DmrRecord {
 struct __attribute__((packed)) DmrWireMsg {
     int64_t  t_ms; float freq; int32_t ch;
     uint8_t  crc_ok; int8_t slot; int8_t color_code; int8_t data_type;
-    int8_t   call_type; uint8_t is_voice; int16_t flco; int16_t csbko;
-    uint32_t src_id; uint32_t dst_id;
+    int8_t   call_type; uint8_t is_voice; uint8_t enc; int16_t flco; int16_t csbko;
+    uint32_t src_id; uint32_t dst_id; uint64_t rec_id;
 };
 
 inline void dmr_msg_to_wire(const DmrRecord& m, DmrWireMsg& w){
@@ -35,16 +37,16 @@ inline void dmr_msg_to_wire(const DmrRecord& m, DmrWireMsg& w){
     w.t_ms=m.t_ms; w.freq=m.freq; w.ch=m.ch;
     w.crc_ok=m.crc_ok?1:0; w.slot=(int8_t)m.slot; w.color_code=(int8_t)m.color_code;
     w.data_type=(int8_t)m.data_type; w.call_type=(int8_t)m.call_type;
-    w.is_voice=m.is_voice?1:0; w.flco=(int16_t)m.flco; w.csbko=(int16_t)m.csbko;
-    w.src_id=m.src_id; w.dst_id=m.dst_id;
+    w.is_voice=m.is_voice?1:0; w.enc=m.enc?1:0; w.flco=(int16_t)m.flco; w.csbko=(int16_t)m.csbko;
+    w.src_id=m.src_id; w.dst_id=m.dst_id; w.rec_id=m.rec_id;
 }
 inline void dmr_wire_to_msg(const DmrWireMsg& w, DmrRecord& m){
     m = DmrRecord{};
     m.t_ms=w.t_ms; m.freq=w.freq; m.ch=w.ch;
     m.crc_ok=w.crc_ok!=0; m.slot=w.slot; m.color_code=w.color_code;
     m.data_type=w.data_type; m.call_type=w.call_type;
-    m.is_voice=w.is_voice!=0; m.flco=w.flco; m.csbko=w.csbko;
-    m.src_id=w.src_id; m.dst_id=w.dst_id;
+    m.is_voice=w.is_voice!=0; m.enc=w.enc!=0; m.flco=w.flco; m.csbko=w.csbko;
+    m.src_id=w.src_id; m.dst_id=w.dst_id; m.rec_id=w.rec_id;
 }
 
 // ── DataType (Slot Type 4비트, ETSI 9.3.6) ──────────────────────────────────

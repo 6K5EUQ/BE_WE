@@ -44,14 +44,15 @@ struct Sess {
     int64_t  up=0, down=0;        // 키온/키오프 t_ms
     int      bursts=0;
     int      flco=-1, csbko=-1, dtype=-1;  // 대표(최신) 타입
-    bool     voice=false;
+    bool     voice=false, enc=false;
+    uint64_t rec_id=0;                     // 통화 녹음 식별자 (Stage2 재생 fetch 키)
 };
 // ── TG 그룹 (A): 세션을 dst(TG/상대) 별로 묶음 ──
 struct Tg {
     uint32_t tg; int ctype;
     int      calls;              // 세션 수
     int64_t  up, down;
-    uint32_t last_src; int cc, slot; bool voice;
+    uint32_t last_src; int cc, slot; bool voice, enc;
 };
 // 컬럼: 0 Up 1 Down 2 TG 3 Calls 4 Src 5 CC 6 Slot
 int tg_cmp(int c, const Tg& a, const Tg& b){
@@ -148,6 +149,8 @@ void draw_content(FFTViewer& v, bool just_opened){
                 if(m.color_code>=0) S.cc=m.color_code;
                 if(m.slot>0) S.slot=m.slot;
                 if(m.call_type>=0) S.ctype=m.call_type;
+                if(m.enc) S.enc=true;
+                if(m.rec_id) S.rec_id=m.rec_id;
                 sess_type_from(S, m);
             }
             std::vector<Tg> tv; tv.reserve(128);
@@ -156,7 +159,7 @@ void draw_content(FFTViewer& v, bool just_opened){
                 auto it=tidx.find(S.tg); int gi;
                 if(it==tidx.end()){ Tg T{}; T.tg=S.tg; T.ctype=S.ctype; T.up=S.up; T.down=-1; gi=(int)tv.size(); tidx[S.tg]=gi; tv.push_back(T); }
                 else gi=it->second;
-                Tg& T=tv[gi]; T.calls++; T.voice = T.voice || S.voice;   // 세션 중 하나라도 음성 → YES
+                Tg& T=tv[gi]; T.calls++; T.voice = T.voice || S.voice; T.enc = T.enc || S.enc;
                 if(S.up<T.up) T.up=S.up;
                 if(S.down>=T.down){ T.down=S.down; T.last_src=S.src; T.cc=S.cc; T.slot=S.slot; T.ctype=S.ctype; }
             }
@@ -198,7 +201,9 @@ void draw_content(FFTViewer& v, bool just_opened){
             ImGui::TableSetColumnIndex(4); if(T.last_src){ snprintf(b,sizeof(b),"%u",T.last_src); modview::cell(b); }
             ImGui::TableSetColumnIndex(5); if(T.cc>=0){ snprintf(b,sizeof(b),"%d",T.cc); modview::cell(b); }
             ImGui::TableSetColumnIndex(6); if(T.slot>0){ snprintf(b,sizeof(b),"%d",T.slot); modview::cell(b); }
-            ImGui::TableSetColumnIndex(7); if(T.voice) modview::cell("YES", ImVec4(0.40f,0.90f,0.50f,1.f));
+            ImGui::TableSetColumnIndex(7);
+            if(T.enc)        modview::cell("ENC", ImVec4(0.95f,0.55f,0.30f,1.f));
+            else if(T.voice) modview::cell("YES", ImVec4(0.40f,0.90f,0.50f,1.f));
         }
         ImGui::EndTable();
     }
@@ -244,7 +249,9 @@ void draw_content(FFTViewer& v, bool just_opened){
             ImGui::TableSetColumnIndex(2); { snprintf(b,sizeof(b),"%.1fs",(S.down-S.up)/1000.0); modview::cell(b); }
             ImGui::TableSetColumnIndex(3); if(S.src){ snprintf(b,sizeof(b),"%u",S.src); modview::cell(b); }
             ImGui::TableSetColumnIndex(4); if(S.slot>0){ snprintf(b,sizeof(b),"%d",S.slot); modview::cell(b); }
-            ImGui::TableSetColumnIndex(5); if(S.voice) modview::cell("YES", ImVec4(0.40f,0.90f,0.50f,1.f));
+            ImGui::TableSetColumnIndex(5);
+            if(S.enc)        modview::cell("ENC", ImVec4(0.95f,0.55f,0.30f,1.f));
+            else if(S.voice) modview::cell("YES", ImVec4(0.40f,0.90f,0.50f,1.f));
             ImGui::TableSetColumnIndex(6); { char ty[24]; sess_type_str(S,ty,sizeof(ty)); if(ty[0]) ImGui::TextUnformatted(ty); }
         }
         bool grew = rvis.size()>lastn; lastn=rvis.size();
@@ -269,6 +276,7 @@ void draw_content(FFTViewer& v, bool just_opened){
         if(focus.slot>0){ char b[16]; snprintf(b,sizeof(b),"%d",focus.slot); modview::kv("Slot:", b, V); }
         { char ty[24]; sess_type_str(focus,ty,sizeof(ty)); modview::kv("Type:", ty, V); }
         modview::kv("Voice:", focus.voice?"YES":"-", focus.voice?ImVec4(0.40f,0.90f,0.50f,1.f):ImVec4(0.6f,0.6f,0.6f,1.f));
+        modview::kv("Enc:", focus.enc?"YES":"-", focus.enc?ImVec4(0.95f,0.55f,0.30f,1.f):ImVec4(0.6f,0.6f,0.6f,1.f));
         if(focus.flco>=0) modview::kv("FLCO:", dmr_flco_name(focus.flco), V);
         modview::detail_end();
     }

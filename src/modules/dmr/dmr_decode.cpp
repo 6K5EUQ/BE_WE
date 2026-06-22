@@ -5,10 +5,13 @@
 #include "dmr_module.hpp"
 #include "dmr_decode.hpp"
 #include "dmr_ambe.hpp"
+#include "bewe_paths.hpp"
 #include <cmath>
 #include <algorithm>
 #include <chrono>
 #include <thread>
+#include <string>
+#include <sys/stat.h>
 
 namespace dmr_mod {
 
@@ -43,8 +46,18 @@ void worker(FFTViewer& v, int ch_idx){
 
     DmrDecoder dec; dec.configure((double)out_sr);
     long frames=0;
+    // ── 통화별 음성 녹음 (8kHz mono int16 WAV; rec_id = 파일명 키 = 음성레코드에 부착) ──
+    FILE*    rec_fp=nullptr; uint64_t rec_frames=0, cur_rec_id=0;
+    uint32_t pend_src=0, pend_dst=0; int pend_slot=0;
     dec.on_record = [&](const DmrRecord& r){
-        frames++; DmrRecord m=r; m.ch=ch_idx; host_emit(v, m);
+        frames++; DmrRecord m=r; m.ch=ch_idx;
+        if(m.is_voice){                                   // 콜 컨텍스트 캡처 + 녹음키 부착
+            if(m.src_id) pend_src=m.src_id;
+            if(m.dst_id) pend_dst=m.dst_id;
+            if(m.slot>0) pend_slot=m.slot;
+            m.rec_id = cur_rec_id;                        // rec_open 전이면 0
+        }
+        host_emit(v, m);
     };
 
     // ── 음성: AMBE(mbelib) → PCM → 8k→out_sr 리샘플 → 채널 오디오 ring ──
@@ -64,10 +77,28 @@ void worker(FFTViewer& v, int ch_idx){
                 nbuf.clear(); }
         }
     };
+    // 녹음 종료(헤더 frames 갱신 후 닫기) / 시작(통화별 새 WAV)
+    auto rec_close = [&](){
+        if(rec_fp){ fseek(rec_fp,0,SEEK_SET); ch.audio_rec_write_wav_hdr(rec_fp,8000,rec_frames); fclose(rec_fp); rec_fp=nullptr; }
+        rec_frames=0; cur_rec_id=0;
+    };
+    auto rec_open = [&](){
+        rec_close();
+        std::string dir = BEWEPaths::data_dir()+"/modules/dmr/rec";
+        mkdir((BEWEPaths::data_dir()+"/modules").c_str(),0755);
+        mkdir((BEWEPaths::data_dir()+"/modules/dmr").c_str(),0755);
+        mkdir(dir.c_str(),0755);
+        cur_rec_id=(uint64_t)now_ms();
+        char fn[192]; snprintf(fn,sizeof(fn),"%s/dmr_%llu_%u_%u_%d.wav", dir.c_str(),
+            (unsigned long long)cur_rec_id, pend_src, pend_dst, pend_slot);
+        rec_fp=fopen(fn,"wb"); rec_frames=0;
+        if(rec_fp) ch.audio_rec_write_wav_hdr(rec_fp,8000,0);   // 자리표시 헤더
+    };
     dec.on_voice = [&](const uint8_t* fr, int nf, bool nc){
-        if(nc) ambe.reset();
+        if(nc){ ambe.reset(); rec_open(); }                    // 새 통화 → 새 WAV
         for(int f=0; f<nf; f++){
             short pcm[160]; ambe.decode(fr + f*36, pcm);
+            if(rec_fp){ fwrite(pcm,sizeof(short),160,rec_fp); rec_frames+=160; }   // 8kHz mono int16 녹음
             for(int i=0;i<160;i++){
                 float s = pcm[i] * (VOICE_GAIN/32768.f);
                 if(s>1.f)s=1.f; else if(s<-1.f)s=-1.f;
@@ -114,7 +145,7 @@ void worker(FFTViewer& v, int ch_idx){
         //    닫힘 = 신호 없음 → 복조기에 노이즈 안 넣음(가짜 voice-sync 방지).
         //    닫힘 edge 에서 예약 음성(B–F) 폐기 + AMBE 리셋 → 잔향/클릭 차단.
         bool gate = ch.sq_gate.load(std::memory_order_relaxed);
-        if(gate_prev && !gate){ dec.clear_voice(); ambe.reset(); a_prev=0.f; }
+        if(gate_prev && !gate){ dec.clear_voice(); ambe.reset(); a_prev=0.f; rec_close(); }  // 통화 끝 → WAV 닫기
         gate_prev = gate;
 
         size_t avail=std::min(lag,BATCH);
@@ -144,6 +175,7 @@ void worker(FFTViewer& v, int ch_idx){
             last_diag=t;
         }
     }
+    rec_close();                                            // 종료 시 녹음 마무리
     ch.ext_audio.store(false, std::memory_order_relaxed);   // FM 오디오 복귀
     if(!worker_stop_req(ch_idx)) worker_natural_exit(v, ch_idx);
     bewe_log_push(0,"DMR[%d] stop\n",ch_idx);

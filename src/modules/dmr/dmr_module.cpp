@@ -116,9 +116,10 @@ void store_append(const DmrRecord& m){
     if(!f) return;
     fprintf(f,
         "{\"t\":%lld,\"ch\":%d,\"f\":%.4f,\"crc\":%d,\"sl\":%d,\"cc\":%d,"
-        "\"dt\":%d,\"flco\":%d,\"csbko\":%d,\"src\":%u,\"dst\":%u,\"ct\":%d,\"v\":%d}\n",
+        "\"dt\":%d,\"flco\":%d,\"csbko\":%d,\"src\":%u,\"dst\":%u,\"ct\":%d,\"v\":%d,\"e\":%d,\"rid\":%llu}\n",
         (long long)m.t_ms, m.ch, m.freq, m.crc_ok?1:0, m.slot, m.color_code,
-        m.data_type, m.flco, m.csbko, m.src_id, m.dst_id, m.call_type, m.is_voice?1:0);
+        m.data_type, m.flco, m.csbko, m.src_id, m.dst_id, m.call_type, m.is_voice?1:0, m.enc?1:0,
+        (unsigned long long)m.rec_id);
     fclose(f);
 }
 bool store_read_today(std::string& out){
@@ -151,6 +152,8 @@ void store_parse_jsonl(const char* data, size_t n, std::vector<DmrRecord>& out){
         if(jget_ll(l,"\"dst\":",t)) m.dst_id=(uint32_t)t;
         if(jget_ll(l,"\"ct\":",t)) m.call_type=(int)t;
         if(jget_ll(l,"\"v\":",t)) m.is_voice=t!=0;
+        if(jget_ll(l,"\"e\":",t)) m.enc=t!=0;
+        if(jget_ll(l,"\"rid\":",t)) m.rec_id=(uint64_t)t;
         out.push_back(m);
     }
 }
