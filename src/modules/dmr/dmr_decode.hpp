@@ -28,10 +28,11 @@ public:
         lastSyncSmp_=-1e18; lastVoiceSmp_=-1e18;
         polVote_[0]=polVote_[1]=0; polLock_=-1;
         voicePend_.clear();
+        curSrc_=curDst_=0; curSlot_=0; curCC_=curFlco_=curCall_=-1; lastVoiceEmit_=-1e18;
     }
     // 스컬치 닫힘 시: 예약된 음성 슈퍼프레임(B–F) 폐기 → 잔향 음성 차단.
     //   polLock_/omega_ 는 유지(동일 RF 경로 재키업 시 빠른 재획득).
-    void clear_voice(){ voicePend_.clear(); lastVoiceSmp_=-1e18; }
+    void clear_voice(){ voicePend_.clear(); lastVoiceSmp_=-1e18; curDst_=0; }   // 콜 종료 → 음성 활동귀속 중단
 
     void feed(float s){
         buf_.push_back(s);
@@ -77,6 +78,9 @@ private:
     double omega_=10.0, omegaNom_=10.0, strobe_=0, lastSyncSmp_=-1e18, lastVoiceSmp_=-1e18;
     int polVote_[2]={0,0}, polLock_=-1;
     uint64_t base_=0; bool inited_=false;
+    // 현재 음성통화 컨텍스트 (직전 Voice LC Hdr 에서 물려받아 음성버스트 활동레코드에 부착)
+    uint32_t curSrc_=0, curDst_=0; int curSlot_=0, curCC_=-1, curFlco_=-1, curCall_=-1;
+    double   lastVoiceEmit_=-1e18;
     std::vector<float> buf_;
     std::deque<float> symv_; std::deque<double> syms_;
     std::deque<double> pend_;
@@ -192,6 +196,10 @@ private:
                     m.flco=(int)dmr::bits_to_uint(p96+2,6); m.call_type=dmr_flco_calltype(m.flco);
                     m.dst_id=dmr::bits_to_uint(p96+24,24); m.src_id=dmr::bits_to_uint(p96+48,24);
                     m.crc_ok=false; m.is_voice=true; emit=(m.flco==0x00||m.flco==0x03);
+                    if(emit){                        // 현재콜 컨텍스트 기억(음성버스트 활동레코드용)
+                        curSrc_=m.src_id; curDst_=m.dst_id; curSlot_=m.slot;
+                        curCC_=m.color_code; curFlco_=m.flco; curCall_=m.call_type; lastVoiceEmit_=S0;
+                    }
                 }
             }
             if(emit && on_record) on_record(m);
@@ -206,6 +214,15 @@ private:
             for(int k=0;k<36;k++) fr[72+k]    = (uint8_t)dibitAt(96+k,pol);
             on_voice(fr, 3, new_call);
             lastVoiceSmp_ = S0;
+            // ── 음성 활동을 메타에 흘림 (스로틀 ~360ms; src/dst 는 직전 Voice LC Hdr 에서 물려받음).
+            //    이게 있어야 세션이 콜 전체 span → Dur/빈도 실측 (헤더만으론 Dur=0). ──
+            if(on_record && curDst_ && (new_call || S0 - lastVoiceEmit_ > 6.0*VBURST*ol)){
+                DmrRecord vm{};
+                vm.slot=m.slot>0?m.slot:curSlot_; vm.color_code=curCC_;
+                vm.src_id=curSrc_; vm.dst_id=curDst_; vm.flco=curFlco_; vm.call_type=curCall_;
+                vm.is_voice=true; vm.crc_ok=false;
+                on_record(vm); lastVoiceEmit_=S0;
+            }
             // 슈퍼프레임 B–F 예약 (A 의 레벨/극성 물려줌; B–F 는 EMB 라 sync 없음)
             for(int n=1;n<=5;n++) voicePend_.push_back({S0+n*VBURST*ol, sdc, slvl, ol, pol});
         }
