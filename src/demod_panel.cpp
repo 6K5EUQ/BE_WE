@@ -60,6 +60,8 @@ struct RunAnchor{ uint32_t last=0xFFFFFFFFu; int64_t anchor=0; };
 
 static void draw_targets(FFTViewer& v){
     static std::map<std::string,RunAnchor> s_run;   // station#ch → Run Time anchor
+    static std::string s_edit_sta;                  // CF/SR 인라인 편집 중인 기지 (빈값=없음)
+    static bool        s_edit_focus=false;          // 편집 진입 시 첫 입력 포커스
     auto& mods = bewe_modules();
     // 복조 가능한(설치+채널타깃형) 모듈 인덱스
     std::vector<int> dm;
@@ -92,10 +94,12 @@ static void draw_targets(FFTViewer& v){
         return a.ch<b.ch; });
 
     // 데이터 컬럼은 고정폭, 남는 폭은 끝의 빈 stretch 컬럼이 흡수 → Center 안 늘어나고 Decode 안 짤림
-    ImGuiTableFlags tf = ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInnerV|
+    // 세로 구분선 없음. 가로 inner 선(채널 행마다 구분) = TableBorderLight 회색.
+    ImGuiTableFlags tf = ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInnerH|
                          ImGuiTableFlags_BordersOuter|ImGuiTableFlags_ScrollY;
     float th=ImGui::GetContentRegionAvail().y-8;
     ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(6,5));
+    ImGui::PushStyleColor(ImGuiCol_TableBorderLight, ImVec4(0.38f,0.38f,0.41f,1.0f));  // 채널 구분 회색 가로선
     int64_t now_ms=(int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
     if(ImGui::BeginTable("##uni_targets", 10, tf, ImVec2(0, th>120?th:120))){
@@ -124,36 +128,60 @@ static void draw_targets(FFTViewer& v){
                 // ── 기지 그룹 간 간격 (시각 분리) ──
                 if(i>0){ ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0); ImGui::Dummy(ImVec2(0,4)); }
                 ImGui::TableNextRow();
-                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(22,44,68,255)); // 기지헤더 밴드
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(0,0,0,0)); // 밴드는 둥근 rect 로 직접
                 ImGui::PushID(("grp#"+r.station).c_str());
                 ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.17f,0.20f,0.25f,1.0f));
                 ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.22f,0.26f,0.32f,1.0f));
                 char gsd[16]; station_disp(r.station.c_str(), gsd, sizeof(gsd));
-                // ── 기지 헤더: [기지명 CF SR] 전체를 한 줄로 묶어 전체폭 중앙정렬 ──
-                //    (컬럼 그리드에 비종속 — 테이블 WorkRect 전체폭에 클립 확장 후 그룹 배치)
+                // ── 기지 헤더(옵션 B): 좌=기지명+액센트바, 우=CF·SR 읽기전용 텍스트(클릭→인라인 편집) ──
                 ImGui::TableSetColumnIndex(0);
                 float rowY = ImGui::GetCursorScreenPos().y, frH = ImGui::GetFrameHeight();
-                ImGui::Dummy(ImVec2(0, frH));                            // 행 높이 확보
+                float bandH = frH + 10.f;                                // 큰 글씨 + 여백용 밴드 높이
+                ImGui::Dummy(ImVec2(0, bandH));
                 ImGuiTable* tbl = ImGui::GetCurrentTable();
                 float x0=tbl->WorkRect.Min.x, x1=tbl->WorkRect.Max.x;
-                const float inpCF=92.f, inpSR=72.f, sp=12.f, lp=4.f;
-                ImVec2 nts=ImGui::CalcTextSize(gsd), cfl=ImGui::CalcTextSize("CF"), srl=ImGui::CalcTextSize("SR");
-                float gw = nts.x + sp + cfl.x+lp+inpCF + sp + srl.x+lp+inpSR;
-                float sx = x0 + ((x1-x0)-gw)*0.5f; if(sx<x0+4) sx=x0+4;
-                ImGui::PushClipRect(ImVec2(x0,rowY-2), ImVec2(x1,rowY+frH+2), false);
-                ImGui::SetCursorScreenPos(ImVec2(sx, rowY));
-                ImGui::AlignTextToFramePadding();
-                ImGui::TextColored(ImVec4(0.50f,0.86f,1.0f,1.f), "%s", gsd);   // 기지명
-                ImGui::SameLine(0,sp);
-                ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("CF"); ImGui::SameLine(0,lp);
-                { float cfv=r.cf_mhz; ImGui::SetNextItemWidth(inpCF);
-                  ImGui::InputFloat("##scf",&cfv,0,0,"%.4f");
-                  if(ImGui::IsItemDeactivatedAfterEdit() && cfv>0.f) bewe_mod_tune(v, r.station.c_str(), cfv, 0.f); }
-                ImGui::SameLine(0,sp);
-                ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("SR"); ImGui::SameLine(0,lp);
-                { float srv=r.sr_msps; ImGui::SetNextItemWidth(inpSR);
-                  ImGui::InputFloat("##ssr",&srv,0,0,"%.3f");
-                  if(ImGui::IsItemDeactivatedAfterEdit() && srv>0.f) bewe_mod_tune(v, r.station.c_str(), 0.f, srv); }
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                ImGui::PushClipRect(ImVec2(x0,rowY-1), ImVec2(x1,rowY+bandH+1), false);
+                // ── 둥근 밴드 배경 (가시성) ──
+                dl->AddRectFilled(ImVec2(x0+4,rowY+2), ImVec2(x1-4,rowY+bandH-2), IM_COL32(30,52,80,255), 7.f);
+                dl->AddRect      (ImVec2(x0+4,rowY+2), ImVec2(x1-4,rowY+bandH-2), IM_COL32(72,132,188,150), 7.f, 0, 1.2f);
+                // ── 중앙 기지명 (크고 두껍게 = faux-bold) ──
+                ImFont* fnt=ImGui::GetFont(); float nameSz=ImGui::GetFontSize()*1.35f;
+                float nameW=fnt->CalcTextSizeA(nameSz, FLT_MAX, 0.f, gsd).x;
+                float cx=(x0+x1)*0.5f, nameL=cx-nameW*0.5f, nameR=cx+nameW*0.5f;
+                float nameY=rowY+(bandH-nameSz)*0.5f; ImU32 nameCol=IM_COL32(160,214,255,255);
+                dl->AddText(fnt,nameSz,ImVec2(nameL,nameY),    nameCol,gsd);
+                dl->AddText(fnt,nameSz,ImVec2(nameL+0.7f,nameY),nameCol,gsd);   // faux-bold
+                const float gap=18.f; float inputY=rowY+(bandH-frH)*0.5f;
+                if(s_edit_sta == r.station){            // ── 편집: 주파수(좌)·샘플레이트(우) 입력 ──
+                    const float inpCF=88.f, inpSR=78.f;
+                    bool active=false;
+                    ImGui::SetCursorScreenPos(ImVec2(nameL-gap-inpCF, inputY));
+                    { float cfv=r.cf_mhz; ImGui::SetNextItemWidth(inpCF);
+                      if(s_edit_focus){ ImGui::SetKeyboardFocusHere(); s_edit_focus=false; }
+                      ImGui::InputFloat("##scf",&cfv,0,0,"%.4f"); active|=ImGui::IsItemActive();
+                      if(ImGui::IsItemDeactivatedAfterEdit() && cfv>0.f) bewe_mod_tune(v, r.station.c_str(), cfv, 0.f); }
+                    ImGui::SetCursorScreenPos(ImVec2(nameR+gap, inputY));
+                    { float srv=r.sr_msps; ImGui::SetNextItemWidth(inpSR);
+                      ImGui::InputFloat("##ssr",&srv,0,0,"%.3f"); active|=ImGui::IsItemActive();
+                      if(ImGui::IsItemDeactivatedAfterEdit() && srv>0.f) bewe_mod_tune(v, r.station.c_str(), 0.f, srv); }
+                    if(!active && ImGui::IsMouseClicked(0)) s_edit_sta.clear();   // 입력 밖 클릭 → 종료
+                } else {                                // ── 읽기: 주파수(좌)·샘플레이트(우), 툴팁 없음 ──
+                    char cf[24]; snprintf(cf,sizeof(cf),"%.4f MHz", r.cf_mhz);
+                    char sr[24]; snprintf(sr,sizeof(sr),"%.3f Msps", r.sr_msps);
+                    ImVec2 cfs=ImGui::CalcTextSize(cf), srs=ImGui::CalcTextSize(sr);
+                    float cfX=nameL-gap-cfs.x, srX=nameR+gap, ty=rowY+(bandH-cfs.y)*0.5f;
+                    ImGui::SetCursorScreenPos(ImVec2(cfX-4, rowY));
+                    ImGui::InvisibleButton("##e_cf", ImVec2(cfs.x+8, bandH));
+                    bool hcf=ImGui::IsItemHovered(); if(ImGui::IsItemClicked()){ s_edit_sta=r.station; s_edit_focus=true; }
+                    if(hcf) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                    dl->AddText(ImVec2(cfX,ty), hcf?IM_COL32(200,222,242,255):IM_COL32(140,156,172,255), cf);
+                    ImGui::SetCursorScreenPos(ImVec2(srX-4, rowY));
+                    ImGui::InvisibleButton("##e_sr", ImVec2(srs.x+8, bandH));
+                    bool hsr=ImGui::IsItemHovered(); if(ImGui::IsItemClicked()){ s_edit_sta=r.station; s_edit_focus=true; }
+                    if(hsr) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                    dl->AddText(ImVec2(srX,ty), hsr?IM_COL32(200,222,242,255):IM_COL32(140,156,172,255), sr);
+                }
                 ImGui::PopClipRect();
                 ImGui::PopStyleColor(2);
                 ImGui::PopID();
@@ -252,6 +280,7 @@ static void draw_targets(FFTViewer& v){
         }
         ImGui::EndTable();
     }
+    ImGui::PopStyleColor();   // TableBorderLight
     ImGui::PopStyleVar();
 }
 
