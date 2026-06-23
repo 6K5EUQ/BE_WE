@@ -278,6 +278,9 @@ void draw_content(FFTViewer& v, bool just_opened){
         if(focus.company!=0xFFFF){ const char* cn=btle_company_name(focus.company);
             char b[40]; if(cn[0]) snprintf(b,sizeof(b),"%s (0x%04X)",cn,focus.company); else snprintf(b,sizeof(b),"0x%04X",focus.company);
             modview::kv("Company:", b, ImVec4(0.62f,0.7f,0.62f,1.f)); }
+        if(focus.appearance>=0){ const char* an=btle_appearance_name(focus.appearance);
+            char b[40]; if(an[0]) snprintf(b,sizeof(b),"%s (0x%04X)",an,focus.appearance); else snprintf(b,sizeof(b),"0x%04X",focus.appearance);
+            modview::kv("Appear:", b, ImVec4(0.7f,0.66f,0.55f,1.f)); }
         if(focus.info[0]) modview::kv("Info:", focus.info, V);
         if(focus.is_connect){
             ImGui::Separator();

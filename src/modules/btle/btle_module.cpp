@@ -117,12 +117,12 @@ void store_append(const BtleRecord& m){
     char mc[13]; mac_hex(m.mac,mc); char im[13]; mac_hex(m.init_mac,im);
     fprintf(f,"{\"t\":%lld,\"ch\":%d,\"f\":%.4f,\"crc\":%d,\"rssi\":%.1f,\"cfo\":%.0f,"
               "\"ac\":%d,\"pt\":%d,\"at\":%d,"
-              "\"mac\":\"%s\",\"name\":\"%s\",\"fl\":%d,\"co\":%u,\"nad\":%d,\"info\":\"%s\","
+              "\"mac\":\"%s\",\"name\":\"%s\",\"fl\":%d,\"co\":%u,\"ap\":%d,\"nad\":%d,\"info\":\"%s\","
               "\"cn\":%d,\"im\":\"%s\",\"aa\":%u,\"ci\":%u,\"iv\":%d,\"to\":%d,\"lt\":%d,"
               "\"hop\":%d,\"sca\":%d,\"cm\":%llu}\n",
         (long long)m.t_ms,m.ch,m.freq,m.crc_ok?1:0,m.rssi,m.cfo_hz,
         m.adv_chan,m.pdu_type,m.addr_type,
-        mc,nm,m.flags,(unsigned)m.company,m.n_ad,inf,
+        mc,nm,m.flags,(unsigned)m.company,m.appearance,m.n_ad,inf,
         m.is_connect?1:0,im,m.access_addr,m.crc_init,m.interval,m.timeout,m.latency,
         m.hop,m.sca,(unsigned long long)m.chan_map);
     fclose(f);
@@ -156,6 +156,7 @@ void store_parse_jsonl(const char* data, size_t n, std::vector<BtleRecord>& out)
         char mc[13]={0}; if(jstr(l,"\"mac\":\"",mc,sizeof(mc))) hex_mac(mc,m.mac);
         jstr(l,"\"name\":\"",m.name,sizeof(m.name));
         m.flags=(int)jll(l,"\"fl\":"); m.company=(uint16_t)jll(l,"\"co\":");
+        m.appearance = strstr(l,"\"ap\":") ? (int)jll(l,"\"ap\":") : -1;   // 구파일 키없음→-1
         m.n_ad=(int)jll(l,"\"nad\":"); jstr(l,"\"info\":\"",m.info,sizeof(m.info));
         m.is_connect=jll(l,"\"cn\":")!=0;
         char im[13]={0}; if(jstr(l,"\"im\":\"",im,sizeof(im))) hex_mac(im,m.init_mac);

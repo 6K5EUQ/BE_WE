@@ -229,7 +229,14 @@ private:
                 case 0x02: nm="iBeacon";    break;
                 case 0x05: nm="AirDrop";    break;
                 case 0x06: nm="HomeKit";    break;
-                case 0x07: nm="ProxPair";   break;   // AirPods/proximity pairing
+                case 0x07: {                          // ProxPair: AirPods/Beats/Pencil 페어링
+                    // d[0]=프리픽스(0x01 가변), d[1..2]=모델코드(BE). 모델 알면 기기명, 아니면 코드.
+                    if(l>=3){ uint16_t mc=((uint16_t)d[1]<<8)|d[2];
+                        const char* mn=btle_apple_model(mc);
+                        if(mn[0]) nm=mn;
+                        else { snprintf(tmp,sizeof(tmp),"ProxPair/%04X",mc); nm=tmp; } }
+                    else nm="ProxPair";
+                } break;
                 case 0x08: nm="HeySiri";    break;
                 case 0x09: nm="AirPlayTgt"; break;
                 case 0x0A: nm="AirPlaySrc"; break;
@@ -267,9 +274,10 @@ private:
         memcpy(out, p+start, c); out[c]=0;
     }
 
-    // AD 구조 루프 (len/type/value). 이름/플래그/제조사 요약.
+    // AD 구조 루프 (len/type/value). 이름/플래그/제조사/Appearance/서비스UUID 요약.
     void parse_ad(const uint8_t* p, int n, BtleRecord& m){
         int i=0, nad=0;
+        const char* uuid_hint=nullptr;        // 첫 인식된 서비스UUID 힌트
         while(i<n){
             int adlen=p[i]; if(adlen==0) break; if(i+1+adlen>n) break;
             int type=p[i+1]; const uint8_t* val=p+i+2; int vlen=adlen-1;
@@ -280,6 +288,16 @@ private:
                     int c = vlen<(int)sizeof(m.name)-1 ? vlen : (int)sizeof(m.name)-1;
                     memcpy(m.name, val, c); m.name[c]=0;
                 } break;
+                case 0x19: if(vlen>=2) m.appearance=(int)(val[0]|(val[1]<<8)); break;  // GAP Appearance
+                case 0x02: case 0x03:                                  // 16-bit Service UUID 목록
+                    for(int o=0;o+2<=vlen && !uuid_hint;o+=2){
+                        const char* h=btle_uuid_hint((uint16_t)(val[o]|(val[o+1]<<8)));
+                        if(h[0]) uuid_hint=h;
+                    } break;
+                case 0x16: if(vlen>=2 && !uuid_hint){                  // Service Data (16-bit UUID)
+                        const char* h=btle_uuid_hint((uint16_t)(val[0]|(val[1]<<8)));
+                        if(h[0]) uuid_hint=h;
+                    } break;
                 case 0xFF: if(vlen>=2){                                // Manufacturer
                     m.company = (uint16_t)(val[0]|(val[1]<<8));
                     if(m.company==0x004C && vlen>2){                   // Apple Continuity
@@ -294,10 +312,19 @@ private:
             i += 1+adlen;
         }
         m.n_ad=nad;
-        if(!m.info[0] && m.company!=0xFFFF){
-            const char* cn=btle_company_name(m.company);
-            if(cn[0]) snprintf(m.info,sizeof(m.info),"%s",cn);
-            else      snprintf(m.info,sizeof(m.info),"0x%04X",m.company);
+        // info 요약: 제조사 디코드 > 회사명 > UUID힌트 > Appearance. 여유분에 카테고리 덧붙임.
+        if(!m.info[0]){
+            char cat[24]={0};
+            if(uuid_hint) snprintf(cat,sizeof(cat),"%s",uuid_hint);
+            else { const char* ap=btle_appearance_name(m.appearance);
+                   if(ap[0]) snprintf(cat,sizeof(cat),"%s",ap); }
+            if(m.company!=0xFFFF){
+                const char* cn=btle_company_name(m.company);
+                if(cn[0] && cat[0])      snprintf(m.info,sizeof(m.info),"%s %s",cn,cat);
+                else if(cn[0])           snprintf(m.info,sizeof(m.info),"%s",cn);
+                else if(cat[0])          snprintf(m.info,sizeof(m.info),"0x%04X %s",m.company,cat);
+                else                     snprintf(m.info,sizeof(m.info),"0x%04X",m.company);
+            } else if(cat[0]) snprintf(m.info,sizeof(m.info),"%s",cat);
         }
     }
 };
