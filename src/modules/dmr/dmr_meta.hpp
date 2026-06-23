@@ -22,6 +22,7 @@ struct DmrRecord {
     bool     enc = false;       // 암호화 콜 (PI Header 선행 → AMBE 스크램블)
     uint64_t rec_id = 0;        // 통화 녹음 식별자(=호스트 WAV 파일명 키, 0=녹음없음)
     char     station[16] = {};  // 복조 기지 표시명 (DGS-2 / LOCAL)
+    char     station_id[24] = {};  // 복조 기지 full id (WAV 페치 라우팅용; JOIN 전용, wire 무)
 };
 
 // wire 포맷 (BEWE_MK_DATA payload; station 은 MpData 봉투가 운반)

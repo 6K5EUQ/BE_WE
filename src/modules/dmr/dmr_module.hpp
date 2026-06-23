@@ -32,6 +32,10 @@ void store_append(const DmrRecord& m);          // ~/BE_WE/modules/dmr/dmr_YYYYM
 bool store_read_today(std::string& out);
 void store_parse_jsonl(const char* data, size_t n, std::vector<DmrRecord>& out);
 
+// 온디맨드 녹음 WAV 페치 (dmr_module.cpp) — 뷰에서 폴링/정리
+int  dmr_rec_state(uint64_t rec_id, std::string& path);   // 0=대기, 2=ready(path), 3=파일없음
+void dmr_rec_cleanup();                                   // bewe 종료 시 임시파일 제거
+
 #ifndef BEWE_HEADLESS
 void draw_content(FFTViewer& v, bool just_opened);
 void local_load_today(FFTViewer& v);

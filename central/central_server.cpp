@@ -1753,6 +1753,10 @@ void CentralServer::handle_host_module_pipe(std::shared_ptr<HostRoom> room,
         broadcast_module_pkt_all(bewe_pkt, bewe_len, mod);       // 데이터는 구독자만
         return;
     }
+    if(h->kind == BEWE_MK_REC_DATA){                              // 녹음 WAV 청크 → 구독 JOIN (저장 안 함)
+        broadcast_module_pkt_all(bewe_pkt, bewe_len, mod);
+        return;
+    }
 }
 
 void CentralServer::handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
@@ -1847,6 +1851,19 @@ void CentralServer::handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
     if(h->kind == BEWE_MK_TUNE && h->data_len >= sizeof(MpTune)){
         auto* e = reinterpret_cast<const MpTune*>(d);
         std::string stn(e->station, strnlen(e->station, sizeof(e->station)));
+        std::lock_guard<std::mutex> rlk(rooms_mtx_);
+        for(auto& r : rooms_){
+            if(!r->alive.load() || r->fd < 0) continue;
+            if(r->station_id != stn) continue;
+            enqueue_host_send(r, 0xFFFF, CentralMuxType::DATA, bewe_pkt, (uint32_t)bewe_len);
+            break;
+        }
+        return;
+    }
+
+    if(h->kind == BEWE_MK_REC_REQ && h->data_len >= sizeof(MpRecReq)){   // 녹음 WAV 요청 → 그 기지 HOST
+        auto* rq = reinterpret_cast<const MpRecReq*>(d);
+        std::string stn(rq->station, strnlen(rq->station, sizeof(rq->station)));
         std::lock_guard<std::mutex> rlk(rooms_mtx_);
         for(auto& r : rooms_){
             if(!r->alive.load() || r->fd < 0) continue;

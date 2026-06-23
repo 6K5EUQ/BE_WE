@@ -167,6 +167,22 @@ void bewe_mod_want_clear_ch(int ch){
     for(auto& kv : g_fw) kv.second.want_mask &= ~(1ull<<ch);
 }
 
+// ── 온디맨드 녹음(WAV) 페치 ──────────────────────────────────────────────────
+// JOIN: 그 기지 HOST 에 rec_id WAV 요청 (Central 이 SET 처럼 라우팅).
+void bewe_mod_rec_request(const char* id, const char* station, int ch, uint64_t rec_id){
+    MpRecReq r{}; strncpy(r.station, station, sizeof(r.station)-1);
+    r.ch=(uint8_t)ch; r.rec_id=rec_id;
+    send_up(id, BEWE_MK_REC_REQ, &r, sizeof(r));
+}
+// HOST: WAV 바이트 청크 회신 (Central 이 구독 JOIN 으로 팬아웃).
+void bewe_mod_rec_send(const char* id, uint64_t rec_id, uint32_t total, uint32_t off, const void* b, uint32_t n){
+    std::vector<uint8_t> buf(sizeof(MpRecData)+n);
+    auto* h=reinterpret_cast<MpRecData*>(buf.data());
+    h->rec_id=rec_id; h->total=total; h->offset=off; h->n=n;
+    if(n) memcpy(buf.data()+sizeof(MpRecData), b, n);
+    bcast(id, BEWE_MK_REC_DATA, buf.data(), buf.size());
+}
+
 // ── CH_EDIT 로컬 적용 (HOST): geometry/mode 변경 + 디코더/오디오데모드 재시작 + 동기화 ──
 // 동작 중 디코더 정지 → s/e/mode 변경 → 오디오 데모드 재시작 → CHANNEL_SYNC 브로드캐스트
 // (Central 캐시 → 전 JOIN 의 다음 CH_LIST 폴링에 새 geometry 반영) → 디코더 새 band 재시작.
@@ -443,12 +459,25 @@ void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t
             char stn[25]={}; memcpy(stn, st->station, 24);
             if(g_my_station[0] && strncmp(stn, g_my_station, 24)!=0) return; // 다른 기지 명령
             host_apply_set(v, *m, st->ch, st->on!=0);
+        } else if(h->kind == BEWE_MK_REC_REQ && n >= sizeof(MpRecReq)){     // 녹음 WAV 요청
+            auto* r = reinterpret_cast<const MpRecReq*>(d);
+            char stn[25]={}; memcpy(stn, r->station, 24);
+            if(g_my_station[0] && strncmp(stn, g_my_station, 24)!=0) return;
+            if(m->on_rec_req) m->on_rec_req(v, r->ch, r->rec_id);
         }
         return;
     }
 
     // JOIN/뷰어 측
     switch(h->kind){
+    case BEWE_MK_REC_DATA: {                          // 녹음 WAV 청크 회신
+        if(n < sizeof(MpRecData)) break;
+        auto* r = reinterpret_cast<const MpRecData*>(d);
+        if(sizeof(MpRecData)+r->n > n) break;
+        if(m->on_rec_data) m->on_rec_data(v, r->rec_id, r->total, r->offset,
+                                          d+sizeof(MpRecData), r->n);
+        break;
+    }
     case BEWE_MK_CH_LIST: {
         std::lock_guard<std::mutex> lk(g_fw_mtx);
         ModFw& f = fw(id);

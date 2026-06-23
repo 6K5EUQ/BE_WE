@@ -124,6 +124,8 @@ enum : uint8_t {
     BEWE_MK_HIST_DONE   = 0xF8,  // Central→JOIN: 끝
     BEWE_MK_CH_EDIT     = 0xF9,  // JOIN→Central→해당 HOST: MpChEdit (채널 center/bw/mode 변경, 전 유저 동기화)
     BEWE_MK_TUNE        = 0xFA,  // JOIN→Central→해당 HOST: MpTune (기지 하드웨어 CF/SR 변경; 0=그 필드 유지)
+    BEWE_MK_REC_REQ     = 0xFB,  // JOIN→Central→해당 HOST: MpRecReq (통화 녹음 WAV 온디맨드 요청)
+    BEWE_MK_REC_DATA    = 0xFC,  // HOST→Central→구독 JOIN: MpRecData + 바이트 청크 (WAV 회신)
 };
 struct __attribute__((packed)) MpSet      { char station[24]; uint8_t ch; uint8_t on; };
 struct __attribute__((packed)) MpState    { char station[24]; uint64_t mask; };
@@ -136,6 +138,8 @@ struct __attribute__((packed)) MpRecv     { uint8_t on; };
 // raw_bytes==0 → 비압축(구버전 호환 경로). >0 → zlib(deflate) 압축본.
 struct __attribute__((packed)) MpHistMeta { uint32_t total_bytes; uint32_t raw_bytes; };
 struct __attribute__((packed)) MpData     { char station[24]; };  // 뒤에 모듈 payload
+struct __attribute__((packed)) MpRecReq   { char station[24]; uint8_t ch; uint8_t _r[3]; uint64_t rec_id; };  // WAV 요청
+struct __attribute__((packed)) MpRecData  { uint64_t rec_id; uint32_t total; uint32_t offset; uint32_t n; };  // 뒤에 n 바이트(WAV 청크); total=0 → 파일없음
 // Central 저장 파일 (.dat) 레코드: u32 len + (MpData+payload) 반복
 
 // ── AUTH_REQ ──────────────────────────────────────────────────────────────

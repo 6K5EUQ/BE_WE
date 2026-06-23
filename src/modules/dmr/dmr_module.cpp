@@ -10,6 +10,10 @@
 #include <cstring>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <dirent.h>
+#include <map>
+#include <algorithm>
+#include <string>
 
 namespace dmr_mod {
 
@@ -189,6 +193,7 @@ static void on_data(FFTViewer& v, const char* station, const uint8_t* d, size_t 
     DmrRecord m; dmr_wire_to_msg(*reinterpret_cast<const DmrWireMsg*>(d), m);
     bewe_mod_stat_bump("dmr", station, m.ch, m.t_ms);   // DEMOD 패널 Rate 갱신 (ais/acars/wifi 동일)
     station_disp(station, m.station, sizeof(m.station));
+    strncpy(m.station_id, station, sizeof(m.station_id)-1);   // raw id (WAV 페치 라우팅)
     append_log(m);
 }
 
@@ -206,6 +211,70 @@ void local_load_today(FFTViewer& v){
 }
 #endif
 
+// ── 온디맨드 통화 녹음(WAV) 페치 ───────────────────────────────────────────
+static std::string rec_dir(){     return BEWEPaths::data_dir() + "/modules/dmr/rec"; }
+static std::string rec_tmp_dir(){ return BEWEPaths::data_dir() + "/tmp/dmr_rec"; }
+
+// HOST: rec_id 에 해당하는 WAV(dmr_<recid>_*.wav) 찾아 청크로 회신. 없으면 total=0.
+static void rec_on_req(FFTViewer& v, int ch, uint64_t rec_id){
+    (void)v; (void)ch;
+    char pref[48]; int pl=snprintf(pref,sizeof(pref),"dmr_%llu_",(unsigned long long)rec_id);
+    std::string path;
+    if(DIR* dp=opendir(rec_dir().c_str())){
+        struct dirent* e;
+        while((e=readdir(dp))){ if(strncmp(e->d_name,pref,(size_t)pl)==0){ path=rec_dir()+"/"+e->d_name; break; } }
+        closedir(dp);
+    }
+    FILE* f = path.empty()?nullptr:fopen(path.c_str(),"rb");
+    if(!f){ bewe_mod_rec_send("dmr", rec_id, 0, 0, nullptr, 0); return; }   // 파일없음
+    fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET);
+    if(sz<=0){ fclose(f); bewe_mod_rec_send("dmr",rec_id,0,0,nullptr,0); return; }
+    std::vector<uint8_t> buf((size_t)sz); size_t rd=fread(buf.data(),1,(size_t)sz,f); fclose(f);
+    uint32_t total=(uint32_t)rd; const uint32_t CH=8000;
+    for(uint32_t off=0; off<total; off+=CH){
+        uint32_t nn=std::min(CH, total-off);
+        bewe_mod_rec_send("dmr", rec_id, total, off, buf.data()+off, nn);
+    }
+}
+
+// JOIN: 청크 누적 → 완성 시 임시 WAV 저장 → ready. (net 스레드)
+static std::mutex g_rec_mtx;
+static std::map<uint64_t,std::vector<uint8_t>> g_rec_acc;
+static std::map<uint64_t,uint32_t> g_rec_got;
+static std::map<uint64_t,std::string> g_rec_ready;   // rec_id → temp path ("" = 파일없음)
+static std::vector<std::string> g_rec_tmp_files;
+
+static void rec_on_data(FFTViewer& v, uint64_t rec_id, uint32_t total, uint32_t off, const uint8_t* b, uint32_t n){
+    (void)v;
+    std::lock_guard<std::mutex> lk(g_rec_mtx);
+    if(total==0){ g_rec_ready[rec_id]=""; return; }      // 파일없음
+    auto& acc=g_rec_acc[rec_id];
+    if(acc.size()!=total){ acc.assign(total,0); g_rec_got[rec_id]=0; }
+    if((uint64_t)off+n<=total){ memcpy(acc.data()+off,b,n); g_rec_got[rec_id]+=n; }
+    if(g_rec_got[rec_id]>=total){
+        mkdir((BEWEPaths::data_dir()+"/tmp").c_str(),0755); mkdir(rec_tmp_dir().c_str(),0755);
+        char fn[176]; snprintf(fn,sizeof(fn),"%s/dmr_%llu.wav", rec_tmp_dir().c_str(),(unsigned long long)rec_id);
+        FILE* f=fopen(fn,"wb");
+        if(f){ fwrite(acc.data(),1,acc.size(),f); fclose(f); g_rec_ready[rec_id]=fn; g_rec_tmp_files.push_back(fn); }
+        g_rec_acc.erase(rec_id); g_rec_got.erase(rec_id);
+    }
+}
+
+// 뷰 폴링: 0=대기/없음, 2=ready(path), 3=파일없음
+int dmr_rec_state(uint64_t rec_id, std::string& path){
+    std::lock_guard<std::mutex> lk(g_rec_mtx);
+    auto it=g_rec_ready.find(rec_id);
+    if(it==g_rec_ready.end()) return 0;
+    if(it->second.empty()) return 3;
+    path=it->second; return 2;
+}
+// bewe 종료 시 임시 WAV 전부 제거 (atexit 등록).
+void dmr_rec_cleanup(){
+    std::lock_guard<std::mutex> lk(g_rec_mtx);
+    for(auto& p : g_rec_tmp_files) ::remove(p.c_str());
+    g_rec_tmp_files.clear(); g_rec_ready.clear(); g_rec_acc.clear(); g_rec_got.clear();
+}
+
 // ── 모듈 등록 (static-init) ────────────────────────────────────────────────
 static bool s_registered = [](){
     BeweModule m{};
@@ -220,6 +289,8 @@ static bool s_registered = [](){
     m.host_stop  = &host_stop;
     m.on_ch_stop = &on_ch_stop;
     m.on_data    = &on_data;
+    m.on_rec_req  = &rec_on_req;    // HOST: WAV 요청 수신
+    m.on_rec_data = &rec_on_data;   // JOIN: WAV 청크 수신
     bewe_register_module(m);
     return true;
 }();

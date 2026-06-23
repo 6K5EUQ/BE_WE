@@ -13,6 +13,7 @@
 #include <ctime>
 #include <unordered_map>
 #include <algorithm>
+#include <memory>
 
 namespace dmr_mod {
 
@@ -45,7 +46,8 @@ struct Sess {
     int      bursts=0;
     int      flco=-1, csbko=-1, dtype=-1;  // 대표(최신) 타입
     bool     voice=false, enc=false;
-    uint64_t rec_id=0;                     // 통화 녹음 식별자 (Stage2 재생 fetch 키)
+    uint64_t rec_id=0;                     // 통화 녹음 식별자 (WAV 페치 키)
+    char     station[24]={}; int ch=0;     // 녹음 기지 full id + 채널 (페치 라우팅용)
 };
 // ── TG 그룹 (A): 세션을 dst(TG/상대) 별로 묶음 ──
 struct Tg {
@@ -99,6 +101,9 @@ void draw_content(FFTViewer& v, bool just_opened){
     static Sess focus{}; static bool has_focus=false;
     static uint32_t sel_tg=0; static bool has_sel=false;          // 선택된 TG 그룹
     static int gsort_col=0; static bool gsort_asc=true;           // 기본 Up 오름차순(불변→순서 고정)
+    static uint64_t rec_play_pending=0;                           // 페치 후 자동재생 대기 rec_id
+    static bool rec_atexit=false;
+    if(!rec_atexit){ atexit(dmr_rec_cleanup); rec_atexit=true; }  // bewe 종료 시 임시 WAV 제거
     static bool atb=true; static size_t lastn=0;
 
     auto on_clear=[&](){ std::lock_guard<std::mutex> lk(mtx); log.clear(); sel.clear(); anchor.clear(); has_focus=false; has_sel=false; };
@@ -143,9 +148,11 @@ void draw_content(FFTViewer& v, bool just_opened){
                 if(si<0){
                     Sess S; S.tg=m.dst_id; S.src=m.src_id; S.slot=m.slot;
                     S.cc=m.color_code; S.ctype=m.call_type; S.up=S.down=m.t_ms;
+                    S.ch=m.ch; strncpy(S.station, m.station_id, sizeof(S.station)-1);
                     si=(int)sv.size(); sv.push_back(S); open[key]=si;
                 }
                 Sess& S=sv[si]; S.down=m.t_ms; S.bursts++;
+                if(m.station_id[0]) strncpy(S.station, m.station_id, sizeof(S.station)-1);
                 if(m.color_code>=0) S.cc=m.color_code;
                 if(m.slot>0) S.slot=m.slot;
                 if(m.call_type>=0) S.ctype=m.call_type;
@@ -220,7 +227,7 @@ void draw_content(FFTViewer& v, bool just_opened){
 
     // ── 우측: 선택 TG 의 통화 세션 (시간순 라이브, tail-follow) ──
     ImGui::SameLine(0,0);
-    if(ImGui::BeginTable("##dmr_sess", 7, tf, ImVec2(rightw, upper_h))){
+    if(ImGui::BeginTable("##dmr_sess", 8, tf, ImVec2(rightw, upper_h))){
         ImGui::TableSetupScrollFreeze(1,1);
         ImGui::TableSetupColumn("Up",    ImGuiTableColumnFlags_WidthFixed, 70);
         ImGui::TableSetupColumn("Down",  ImGuiTableColumnFlags_WidthFixed, 70);
@@ -229,6 +236,7 @@ void draw_content(FFTViewer& v, bool just_opened){
         ImGui::TableSetupColumn("Slot",  ImGuiTableColumnFlags_WidthFixed, 40);
         ImGui::TableSetupColumn("Voice", ImGuiTableColumnFlags_WidthFixed, 48);
         ImGui::TableSetupColumn("Type",  ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("File",  ImGuiTableColumnFlags_WidthFixed, 44);
         ImGui::TableHeadersRow();
 
         static std::vector<int> rvis; rvis.clear();
@@ -253,10 +261,34 @@ void draw_content(FFTViewer& v, bool just_opened){
             if(S.enc)        modview::cell("ENC", ImVec4(0.95f,0.55f,0.30f,1.f));
             else if(S.voice) modview::cell("YES", ImVec4(0.40f,0.90f,0.50f,1.f));
             ImGui::TableSetColumnIndex(6); { char ty[24]; sess_type_str(S,ty,sizeof(ty)); if(ty[0]) ImGui::TextUnformatted(ty); }
+            ImGui::TableSetColumnIndex(7);
+            if(S.rec_id){                                  // 녹음 있음 → 재생 버튼
+                std::string rp; int rst = dmr_rec_state(S.rec_id, rp);
+                ImGui::PushID((int)(S.rec_id & 0x7fffffffu));
+                if(rst==3) modview::cell("-", ImVec4(0.4f,0.4f,0.4f,1.f));   // 호스트에 파일없음
+                else if(ImGui::SmallButton((rec_play_pending==S.rec_id && rst!=2)?"..":">")){
+                    if(rst==2 && !rp.empty()){                               // 이미 받아둠 → 즉시 재생
+                        if(!v.audio_player) v.audio_player=std::make_unique<AudioPlayback>();
+                        v.audio_player->start(rp, AUDIO_SR);
+                    } else {                                                 // 호스트에 요청 → 도착 시 자동재생
+                        bewe_mod_rec_request("dmr", S.station, S.ch, S.rec_id);
+                        rec_play_pending = S.rec_id;
+                    }
+                }
+                ImGui::PopID();
+            }
         }
         bool grew = rvis.size()>lastn; lastn=rvis.size();
         modview::tail_follow(atb, grew);
         ImGui::EndTable();
+    }
+
+    // ── 페치한 WAV 도착 시 자동재생 ──
+    if(rec_play_pending){
+        std::string pp; int s=dmr_rec_state(rec_play_pending, pp);
+        if(s==2){ if(!pp.empty()){ if(!v.audio_player) v.audio_player=std::make_unique<AudioPlayback>();
+                                   v.audio_player->start(pp, AUDIO_SR); } rec_play_pending=0; }
+        else if(s==3) rec_play_pending=0;   // 파일없음 → 포기
     }
 
     // ── 세부: 포커스 통화 세션 ──
