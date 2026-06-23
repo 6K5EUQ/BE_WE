@@ -1514,6 +1514,15 @@ void run_cli_host(){
             }
         }
 
+        // ── 복조 의도 재조정 (1s): 필터 깜빡임/SDR 끊김으로 죽은 복조 자동 재시작 ──
+        {
+            static auto rec_last = clk::now();
+            if(std::chrono::duration<float>(clk::now()-rec_last).count() >= 1.0f){
+                rec_last = clk::now();
+                bewe_mod_reconcile(v);
+            }
+        }
+
         // ── Persist host state on change (재시작 복원용 — 변경 즉시 저장) ──
         {
             uint64_t fp = HostState::fingerprint(v);

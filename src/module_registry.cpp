@@ -50,6 +50,8 @@ const char* bewe_mod_my_station(){ return g_my_station; }
 // ── 모듈별 framework 상태 ──
 struct ModFw {
     uint64_t host_mask = 0;                  // HOST: 자기 워커 mask (ch 0~63 비트)
+    uint64_t want_mask = 0;                  // HOST: 사용자가 켠 복조 의도 — 필터 깜빡임/SDR에러로
+                                             //   워커가 죽어 host_mask 가 비어도 유지 → reconcile 자동 재장전
     std::vector<MpChEntry> targets;          // JOIN: CH_LIST 미러
     std::map<std::string,uint64_t> masks;    // JOIN: station→mask (STATE 미러)
     // JOIN: 진행 중 낙관적 SET (key={station,ch} → {want_on, ts_ms}). 폴링 CH_LIST 가
@@ -131,12 +133,36 @@ static void host_apply_set(FFTViewer& v, const BeweModule& m, int ch, bool on){
     else  { if(m.host_stop)  m.host_stop(v, ch); }
     {
         std::lock_guard<std::mutex> lk(g_fw_mtx);
-        if(on && ok)   fw(m.id).host_mask |=  (1ull<<ch);
-        if(!on)        fw(m.id).host_mask &= ~(1ull<<ch);
+        if(on){ fw(m.id).want_mask |= (1ull<<ch); if(ok) fw(m.id).host_mask |= (1ull<<ch); }  // 의도는 시작성공 무관
+        else  { fw(m.id).want_mask &= ~(1ull<<ch); fw(m.id).host_mask &= ~(1ull<<ch); }
     }
     if(on && ok) host_decstat_start(m.id, ch);   // decode 시작: 런타임 시각 + 카운트 리셋
     if(!on)      host_decstat_stop(ch);
     host_send_state(m.id);
+}
+
+// ── 복조 의도(want) ↔ 실제동작(host_mask) 재조정 ─────────────────────────────
+// 필터 깜빡임/SDR 스트림에러로 워커가 죽어 host_mask 가 비어도, 사용자가 켠 want 가 남으면
+// 채널이 다시 active 가 됐을 때 자동 재시작. HOST 주기 호출(cli_host/ui). SDR 에러 중엔 보류.
+void bewe_mod_reconcile(FFTViewer& v){
+    if(v.sdr_stream_error.load()) return;
+    for(auto& m : reg()){
+        if(!m.target_modes) continue;
+        uint64_t need;
+        { std::lock_guard<std::mutex> lk(g_fw_mtx); need = fw(m.id).want_mask & ~fw(m.id).host_mask; }
+        if(!need) continue;
+        for(int ch=0; ch<MAX_CHANNELS; ch++){
+            if(!((need>>ch)&1)) continue;
+            if(!v.channels[ch].filter_active) continue;   // 채널 아직 비활성 → 다음 틱 대기
+            host_apply_set(v, m, ch, true);               // 재장전(start+mask+stat+state)
+        }
+    }
+}
+// 채널 진짜 삭제/정지(stop_dem stop_decoders) 시 그 ch 의 모든 모듈 want 해제 — 깜빡임과 구분.
+void bewe_mod_want_clear_ch(int ch){
+    if(ch<0 || ch>=MAX_CHANNELS) return;
+    std::lock_guard<std::mutex> lk(g_fw_mtx);
+    for(auto& kv : g_fw) kv.second.want_mask &= ~(1ull<<ch);
 }
 
 // ── CH_EDIT 로컬 적용 (HOST): geometry/mode 변경 + 디코더/오디오데모드 재시작 + 동기화 ──

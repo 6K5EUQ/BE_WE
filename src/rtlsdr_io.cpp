@@ -60,7 +60,7 @@ bool rtl_usb_reset(){
 }
 
 // RTL-SDR V4 고정 파라미터
-static constexpr uint32_t RTL_SAMPLE_RATE = 3200000;  // 3.2 MSPS
+static constexpr uint32_t RTL_SAMPLE_RATE = 2560000;  // 2.56 MSPS (3.2M 은 USB/Pi 에서 샘플드롭 잦음)
 static constexpr int      RTL_BUF_COUNT   = 32;       // async 버퍼 수
 static constexpr int      RTL_BUF_LEN     = 16384;    // 버퍼당 바이트 (8192 IQ샘플)
 

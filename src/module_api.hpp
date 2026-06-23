@@ -51,6 +51,8 @@ void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t
 void bewe_mod_host_announce(FFTViewer& v);                       // 전 모듈 STATE 브로드캐스트 (conn_open 등)
 void bewe_mod_host_mask_clear(FFTViewer& v, const char* id, int ch); // 워커 자연 종료 → mask 정리+브로드캐스트
 uint64_t bewe_mod_host_mask(const char* id);                     // HOST 자기 mask (ch 0~63)
+void bewe_mod_reconcile(FFTViewer& v);                           // want↔host_mask 재조정 (HOST 주기 호출)
+void bewe_mod_want_clear_ch(int ch);                             // 채널 진짜 삭제 시 그 ch want 해제
 // HOST 워커 → 디코드 1건 방출: Central 전송(+로컬 뷰 반영). payload = 모듈 정의 레코드
 void bewe_mod_emit(FFTViewer& v, const char* id, const void* payload, size_t n);
 
