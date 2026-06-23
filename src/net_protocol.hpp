@@ -132,7 +132,9 @@ static_assert(sizeof(MpChEntry) == 53, "MpChEntry wire size changed — rebuild 
 struct __attribute__((packed)) MpChEdit   { char station[24]; uint8_t ch; uint8_t mode; uint8_t _r[2]; float lo, hi; };
 struct __attribute__((packed)) MpTune     { char station[24]; float cf_mhz; float sr_msps; }; // 0 = 그 필드 변경 안 함
 struct __attribute__((packed)) MpRecv     { uint8_t on; };
-struct __attribute__((packed)) MpHistMeta { uint32_t total_bytes; };
+// total_bytes = CHUNK 으로 운반될 (압축된) 바이트 수. raw_bytes = 압축해제 후 원본 크기.
+// raw_bytes==0 → 비압축(구버전 호환 경로). >0 → zlib(deflate) 압축본.
+struct __attribute__((packed)) MpHistMeta { uint32_t total_bytes; uint32_t raw_bytes; };
 struct __attribute__((packed)) MpData     { char station[24]; };  // 뒤에 모듈 payload
 // Central 저장 파일 (.dat) 레코드: u32 len + (MpData+payload) 반복
 

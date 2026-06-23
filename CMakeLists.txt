@@ -24,6 +24,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/modules/dmr)
 endif()
 
 find_package(PkgConfig REQUIRED)
+find_package(ZLIB REQUIRED)              # 모듈 히스토리 스트림 압축
 pkg_check_modules(BLADERF REQUIRED libbladeRF)
 pkg_check_modules(FFTW    REQUIRED fftw3f)
 pkg_check_modules(ALSA    REQUIRED alsa)
@@ -97,6 +98,7 @@ if(CLI)
         ${VOLK_LIBRARIES}
         ${IIO_LIBRARIES}
         ${AD9361_LIBRARIES}
+        ZLIB::ZLIB
         pthread
         m
     )
@@ -192,6 +194,7 @@ else()
         ${VOLK_LIBRARIES}
         ${IIO_LIBRARIES}
         ${AD9361_LIBRARIES}
+        ZLIB::ZLIB
         pthread
         m
     )

@@ -7,6 +7,7 @@
 #include <cstring>
 #include <cerrno>
 #include <algorithm>
+#include <zlib.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -1871,13 +1872,23 @@ void CentralServer::handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
                 while((n=fread(buf,1,sizeof(buf),f))>0) body.append(buf,n);
                 fclose(f);
             }
-            MpHistMeta meta{ (uint32_t)body.size() };
+            // zlib 압축 (반복 레코드라 5~10× 흔함). 실패/팽창 시 비압축 폴백(raw_bytes=0).
+            std::string wire = body; uint32_t raw_bytes = 0;
+            if(!body.empty()){
+                uLongf bound = compressBound((uLong)body.size());
+                std::string z; z.resize(bound);
+                if(compress2((Bytef*)z.data(), &bound, (const Bytef*)body.data(),
+                             (uLong)body.size(), Z_BEST_SPEED) == Z_OK && bound < body.size()){
+                    z.resize(bound); wire.swap(z); raw_bytes = (uint32_t)body.size();
+                }
+            }
+            MpHistMeta meta{ (uint32_t)wire.size(), raw_bytes };
             auto mp = make_mp(BEWE_MK_HIST_META, &meta, sizeof(meta));
             je->enqueue_ctrl(mp.data(), mp.size());
             constexpr size_t CHUNK = 8192;
-            for(size_t off=0; off<body.size(); off+=CHUNK){
-                size_t len = std::min(CHUNK, body.size()-off);
-                auto cp = make_mp(BEWE_MK_HIST_CHUNK, body.data()+off, len);
+            for(size_t off=0; off<wire.size(); off+=CHUNK){
+                size_t len = std::min(CHUNK, wire.size()-off);
+                auto cp = make_mp(BEWE_MK_HIST_CHUNK, wire.data()+off, len);
                 je->enqueue_ctrl(cp.data(), cp.size());
             }
             auto dp = make_mp(BEWE_MK_HIST_DONE, nullptr, 0);

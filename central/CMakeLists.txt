@@ -11,5 +11,6 @@ add_executable(bewe_central
     info_parse.cpp
 )
 target_include_directories(bewe_central PRIVATE . ${CMAKE_SOURCE_DIR}/../src)
-target_link_libraries(bewe_central PRIVATE pthread)
+find_package(ZLIB REQUIRED)
+target_link_libraries(bewe_central PRIVATE pthread ZLIB::ZLIB)
 target_compile_options(bewe_central PRIVATE -O2)

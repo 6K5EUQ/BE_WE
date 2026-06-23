@@ -11,6 +11,9 @@
 #include <cstdlib>
 #include <ctime>
 #include <thread>
+#include <mutex>
+#include <unordered_map>
+#include <utility>
 #include <sys/stat.h>
 
 namespace btle_mod {
@@ -168,12 +171,41 @@ void store_parse_jsonl(const char* data, size_t n, std::vector<BtleRecord>& out)
     }
 }
 
-// ── HOST: 워커 → 스탬프 + 아카이브 + framework emit ────────────────────────
+// ── 중복 비콘 억제 (HOST): 같은 MAC 이 동일 내용(type/name/info/company/appearance)을
+//    DEDUP_MS 내 재방송하면 저장·전송 생략. BLE 비콘은 초당 수회 동일패킷 → 90%+ 가 중복.
+//    내용이 바뀌면(이름 등장/모델 갱신) 즉시 통과. CONNECT_IND 는 항상 통과(희소·중요).
+static constexpr int64_t DEDUP_MS = 30000;
+static std::mutex                       g_dedup_mtx;
+static std::unordered_map<uint64_t,std::pair<int64_t,uint64_t>> g_dedup;  // MAC → (last_t, hash)
+static uint64_t btle_content_hash(const BtleRecord& m){
+    uint64_t h=1469598103934665603ULL;                 // FNV-1a
+    auto mix=[&](const void* p,size_t n){ const uint8_t* b=(const uint8_t*)p;
+        for(size_t i=0;i<n;i++){ h^=b[i]; h*=1099511628211ULL; } };
+    mix(&m.pdu_type,sizeof(m.pdu_type)); mix(&m.company,sizeof(m.company));
+    mix(&m.appearance,sizeof(m.appearance)); mix(&m.flags,sizeof(m.flags));
+    mix(m.name,sizeof(m.name)); mix(m.info,sizeof(m.info));
+    return h;
+}
+static bool btle_is_dup(const BtleRecord& m){
+    if(m.is_connect) return false;                     // 연결요청 항상 보존
+    uint64_t mac=0; for(int b=0;b<6;b++) mac=(mac<<8)|m.mac[b];
+    uint64_t hsh=btle_content_hash(m);
+    std::lock_guard<std::mutex> lk(g_dedup_mtx);
+    auto it=g_dedup.find(mac);
+    if(it!=g_dedup.end() && it->second.second==hsh && m.t_ms-it->second.first < DEDUP_MS)
+        return true;
+    g_dedup[mac] = {m.t_ms, hsh};
+    if(g_dedup.size()>20000) g_dedup.clear();           // 폭주 가드 (단순 비우기)
+    return false;
+}
+
+// ── HOST: 워커 → 스탬프 + 중복억제 + 아카이브 + framework emit ──────────────
 void host_emit(FFTViewer& v, BtleRecord m){
     if(m.ch>=0 && m.ch<MAX_CHANNELS && v.channels[m.ch].filter_active)
         m.freq = (v.channels[m.ch].s + v.channels[m.ch].e)/2.0f;
     m.t_ms = (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
                  std::chrono::system_clock::now().time_since_epoch()).count();
+    if(btle_is_dup(m)) return;                          // 중복 비콘 → 저장·전송 생략
     store_append(m);
     BtleWireMsg w; btle_msg_to_wire(m, w);
     bewe_mod_emit(v, "btle", &w, sizeof(w));

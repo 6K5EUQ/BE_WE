@@ -8,6 +8,7 @@
 #include <map>
 #include <mutex>
 #include <vector>
+#include <zlib.h>
 #include <chrono>
 #include <utility>
 #include <deque>
@@ -62,6 +63,7 @@ struct ModFw {
     bool hist_started = false;               // META 수신 후에만 CHUNK 수락 (잔여 스트림 차단)
     std::string hist_buf;
     uint32_t hist_total = 0;
+    uint32_t hist_raw = 0;                    // META.raw_bytes (>0 → hist_buf 는 zlib 압축본)
     std::vector<std::vector<uint8_t>> live_pending;  // hist 전송 중 도착한 라이브 레코드 (MpData+payload)
 };
 static std::mutex g_fw_mtx;
@@ -505,6 +507,7 @@ void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t
         ModFw& f = fw(id);
         if(!f.hist_loading) break;   // 구독 안 한 상태의 잔여 스트림 무시
         f.hist_total = reinterpret_cast<const MpHistMeta*>(d)->total_bytes;
+        f.hist_raw   = reinterpret_cast<const MpHistMeta*>(d)->raw_bytes;
         f.hist_buf.clear(); f.hist_started = true;
         break;
     }
@@ -517,13 +520,23 @@ void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t
     case BEWE_MK_HIST_DONE: {
         std::string buf;
         std::vector<std::vector<uint8_t>> pending;
+        uint32_t raw = 0;
         {
             std::lock_guard<std::mutex> lk(g_fw_mtx);
             ModFw& f = fw(id);
             if(!f.hist_loading || !f.hist_started) break;   // META 없이 온 잔여 DONE 무시
             buf.swap(f.hist_buf);
             pending.swap(f.live_pending);
-            f.hist_loading = false; f.hist_started = false;
+            raw = f.hist_raw;
+            f.hist_loading = false; f.hist_started = false; f.hist_raw = 0;
+        }
+        // raw>0 → buf 는 zlib 압축본. 풀어서 레코드 스트림 복원. 실패 시 빈 히스토리.
+        if(raw > 0 && !buf.empty()){
+            std::string out; out.resize(raw);
+            uLongf dlen = raw;
+            if(uncompress((Bytef*)out.data(), &dlen, (const Bytef*)buf.data(),
+                          (uLong)buf.size()) == Z_OK && dlen == raw) buf.swap(out);
+            else buf.clear();
         }
         // 레코드 스트림: u32 len + (MpData + module payload) 반복
         auto dispatch = [&](const uint8_t* rec, size_t rl){
