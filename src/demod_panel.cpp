@@ -198,7 +198,22 @@ static void draw_targets(FFTViewer& v){
             ImGui::PushStyleColor(ImGuiCol_PopupBg,        ImVec4(0.11f,0.13f,0.17f,1.0f));
             ImGui::PushStyleColor(ImGuiCol_Header,         ImVec4(0.20f,0.42f,0.30f,1.0f));
             ImGui::PushStyleColor(ImGuiCol_HeaderHovered,  ImVec4(0.18f,0.40f,0.55f,1.0f));
-            ImGui::TableSetColumnIndex(0); { char b[8]; snprintf(b,sizeof(b),"%d", r.dnum>0?r.dnum:r.ch); cell_ctr(b); }  // CH = State창 표시번호
+            // ── CH 셀: 우클릭 → 컨텍스트 메뉴 (Add / Remove Channel). 어느 기지든 동기화 ──
+            ImGui::TableSetColumnIndex(0);
+            { char b[8]; snprintf(b,sizeof(b),"%d", r.dnum>0?r.dnum:r.ch);
+              float aw=ImGui::GetContentRegionAvail().x, tw=ImGui::CalcTextSize(b).x;
+              ImGui::Selectable(b, false, ImGuiSelectableFlags_None, ImVec2(aw, 0));   // 행 우클릭 타깃
+              (void)tw;
+              if(ImGui::BeginPopupContextItem("##chmenu")){
+                  if(ImGui::MenuItem("Add Channel"))
+                      bewe_mod_add_ch(v, r.station.c_str(), 0/*NONE*/, 100.f-0.005f, 100.f+0.005f);  // 100MHz/10kHz/NONE
+                  ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f,0.35f,0.30f,1.f));   // 빨강
+                  bool rm=ImGui::MenuItem("Remove Channel");
+                  ImGui::PopStyleColor();
+                  if(rm) bewe_mod_del_ch(v, r.station.c_str(), r.ch);
+                  ImGui::EndPopup();
+              }
+            }
             float cf=(r.lo+r.hi)*0.5f, bw=(r.hi>r.lo? r.hi-r.lo : r.lo-r.hi);
             // ── Center(MHz) 편집 → lo/hi 갱신(BW 유지), 전 유저 동기화 ──
             ImGui::TableSetColumnIndex(1);

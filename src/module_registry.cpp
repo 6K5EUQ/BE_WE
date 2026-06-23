@@ -2,6 +2,7 @@
 #include "fft_viewer.hpp"
 #include "net_server.hpp"   // CH_EDIT 적용 시 broadcast_channel_sync
 #include "kst_time.hpp"     // 오늘 누적 디코드수 시드 (저장 JSONL = KST 일자)
+#include "login.hpp"        // CH_ADD owner = login_get_id()
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -210,6 +211,44 @@ static void apply_ch_edit_local(FFTViewer& v, int ch, int mode, float lo, float 
     for(auto* mm : wasrun) host_apply_set(v, *mm, ch, true);    // 새 band 로 재시작
 }
 
+// 새 채널 생성 (LOCAL/HOST) — 빈 슬롯 선택 후 lo/hi/mode 적용. on_create_ch 미러.
+static void apply_ch_add_local(FFTViewer& v, int mode, float lo, float hi){
+    if(lo>hi){ float t=lo; lo=hi; hi=t; }
+    if(hi-lo < 0.001f) hi = lo + 0.001f;                       // 최소 폭 1 kHz 가드
+    int slot=-1;
+    for(int i=0;i<MAX_CHANNELS;i++) if(!v.channels[i].filter_active){ slot=i; break; }
+    if(slot<0) return;                                          // 빈 슬롯 없음
+    v.stop_dem(slot);
+    v.channels[slot].reset_slot();
+    v.channels[slot].s=lo; v.channels[slot].e=hi;
+    v.channels[slot].filter_active=true;
+    strncpy(v.channels[slot].owner, login_get_id(), 31);
+    v.channels[slot].audio_mask.store(0xFFFFFFFFu & ~0x1u);
+    v.local_ch_out[slot] = 3;
+    v.update_dem_by_freq(v.header.center_frequency/1e6f);
+    if(mode>=1 && mode<=2){                                     // AM/FM 만 디코더 기동
+        auto dm=(Channel::DemodMode)mode;
+        v.channels[slot].mode = dm;
+        if(v.channels[slot].filter_active) v.start_dem(slot, dm);
+    }
+    if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+}
+
+// 채널 삭제 (LOCAL/HOST) — on_delete_ch 미러.
+static void apply_ch_del_local(FFTViewer& v, int ch){
+    if(ch<0 || ch>=MAX_CHANNELS) return;
+    if(!v.channels[ch].filter_active) return;
+    if(v.channels[ch].audio_rec_on.load()) v.stop_audio_rec(ch);
+    std::vector<const BeweModule*> wasrun;
+    for(auto& mm : reg())
+        if(mm.target_modes && ((bewe_mod_host_mask(mm.id)>>ch)&1)) wasrun.push_back(&mm);
+    for(auto* mm : wasrun) host_apply_set(v, *mm, ch, false);   // 디코더 정지 (mask off)
+    v.stop_dem(ch);
+    v.channels[ch].reset_slot();
+    v.local_ch_out[ch] = 1;
+    if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
+}
+
 // ── 채널별 디코드 레이트 통계 (id|station|ch → 최근 60s 타임스탬프 deque) ──
 static std::mutex g_stat_mtx;
 static std::map<std::string, std::deque<int64_t>> g_stat;
@@ -396,6 +435,28 @@ void bewe_mod_edit_ch(FFTViewer& v, const char* station, int ch, int mode, float
     apply_ch_edit_local(v, ch, mode, lo, hi);
 }
 
+// 채널 생성 (어느 기지든). 원격은 Central→해당 HOST 가 빈 슬롯 선택, LOCAL/HOST 는 즉시.
+void bewe_mod_add_ch(FFTViewer& v, const char* station, int mode, float lo, float hi){
+    if(g_send_up && v.remote_mode){
+        MpChEdit e{}; strncpy(e.station, station?station:"", sizeof(e.station)-1);
+        e.ch=0; e.mode=(uint8_t)(mode&0xFF); e.lo=lo; e.hi=hi;   // ch 무시 (HOST 가 빈 슬롯 결정)
+        send_up("*", BEWE_MK_CH_ADD, &e, sizeof(e));
+        return;
+    }
+    apply_ch_add_local(v, mode, lo, hi);
+}
+
+// 채널 삭제 (어느 기지든). 원격은 Central→해당 HOST, LOCAL/HOST 는 즉시.
+void bewe_mod_del_ch(FFTViewer& v, const char* station, int ch){
+    if(g_send_up && v.remote_mode){
+        MpChEdit e{}; strncpy(e.station, station?station:"", sizeof(e.station)-1);
+        e.ch=(uint8_t)ch; e.mode=0; e.lo=0; e.hi=0;
+        send_up("*", BEWE_MK_CH_DEL, &e, sizeof(e));
+        return;
+    }
+    apply_ch_del_local(v, ch);
+}
+
 // HOST: 채널 geometry/SR 변경 → 그 채널서 도는 디코더만 새 band 로 재시작 (mask 유지).
 // 디코더 워커는 시작 시 ch.s/e/bw/SR 을 고정 캡처하므로, 변경 반영엔 워커 재시작이 필요.
 // audio 모드(NONE/AM/FM) 무관 — 디코더는 IQ 직접 탭. 채널에 디코더 없으면 no-op.
@@ -439,6 +500,21 @@ void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t
         char stn[25]={}; memcpy(stn, e->station, 24);
         if(g_my_station[0] && strncmp(stn, g_my_station, 24)!=0) return;  // 다른 기지 명령
         apply_ch_edit_local(v, e->ch, e->mode, e->lo, e->hi);
+        return;
+    }
+    // CH_ADD / CH_DEL 도 모듈 무관(채널 op) — find_mod 전에 처리
+    if(host_side && h->kind==BEWE_MK_CH_ADD && n>=sizeof(MpChEdit)){
+        auto* e=reinterpret_cast<const MpChEdit*>(d);
+        char stn[25]={}; memcpy(stn, e->station, 24);
+        if(g_my_station[0] && strncmp(stn, g_my_station, 24)!=0) return;  // 다른 기지 명령
+        apply_ch_add_local(v, e->mode, e->lo, e->hi);
+        return;
+    }
+    if(host_side && h->kind==BEWE_MK_CH_DEL && n>=sizeof(MpChEdit)){
+        auto* e=reinterpret_cast<const MpChEdit*>(d);
+        char stn[25]={}; memcpy(stn, e->station, 24);
+        if(g_my_station[0] && strncmp(stn, g_my_station, 24)!=0) return;  // 다른 기지 명령
+        apply_ch_del_local(v, e->ch);
         return;
     }
     // TUNE 도 모듈 무관(기지 op) — find_mod 전에 처리

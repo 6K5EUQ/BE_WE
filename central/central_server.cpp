@@ -1848,6 +1848,19 @@ void CentralServer::handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
         return;
     }
 
+    if((h->kind == BEWE_MK_CH_ADD || h->kind == BEWE_MK_CH_DEL) && h->data_len >= sizeof(MpChEdit)){
+        auto* e = reinterpret_cast<const MpChEdit*>(d);
+        std::string stn(e->station, strnlen(e->station, sizeof(e->station)));
+        std::lock_guard<std::mutex> rlk(rooms_mtx_);
+        for(auto& r : rooms_){
+            if(!r->alive.load() || r->fd < 0) continue;
+            if(r->station_id != stn) continue;
+            enqueue_host_send(r, 0xFFFF, CentralMuxType::DATA, bewe_pkt, (uint32_t)bewe_len);
+            break;
+        }
+        return;
+    }
+
     if(h->kind == BEWE_MK_TUNE && h->data_len >= sizeof(MpTune)){
         auto* e = reinterpret_cast<const MpTune*>(d);
         std::string stn(e->station, strnlen(e->station, sizeof(e->station)));

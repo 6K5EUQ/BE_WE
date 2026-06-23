@@ -80,6 +80,10 @@ void bewe_mod_set_target(FFTViewer& v, const char* id, const char* station, int 
 // 채널필터 geometry/mode 변경 (어느 기지든): center/bw → lo/hi, mode=0/1/2. 원격은 Central
 // 경유 해당 HOST 적용 + CHANNEL_SYNC 로 전 유저 동기화. LOCAL/HOST 는 즉시 적용.
 void bewe_mod_edit_ch(FFTViewer& v, const char* station, int ch, int mode, float lo, float hi);
+// 채널 생성/삭제 (어느 기지든). 원격은 Central 경유 해당 HOST 적용 + CHANNEL_SYNC 동기화.
+// add: HOST 가 빈 슬롯 선택; lo/hi/mode 는 새 채널 초기값. del: ch 로 지정.
+void bewe_mod_add_ch(FFTViewer& v, const char* station, int mode, float lo, float hi);
+void bewe_mod_del_ch(FFTViewer& v, const char* station, int ch);
 // HOST: 채널 geometry/SR 변경 시 그 채널서 도는 디코더를 새 band 로 재시작 (mask 유지).
 // 디코더는 채널 audio 모드 무관(IQ 직접 탭). 채널 없으면 no-op.
 void bewe_mod_ch_retune(FFTViewer& v, int ch);

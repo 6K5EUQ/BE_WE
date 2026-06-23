@@ -126,6 +126,8 @@ enum : uint8_t {
     BEWE_MK_TUNE        = 0xFA,  // JOIN→Central→해당 HOST: MpTune (기지 하드웨어 CF/SR 변경; 0=그 필드 유지)
     BEWE_MK_REC_REQ     = 0xFB,  // JOIN→Central→해당 HOST: MpRecReq (통화 녹음 WAV 온디맨드 요청)
     BEWE_MK_REC_DATA    = 0xFC,  // HOST→Central→구독 JOIN: MpRecData + 바이트 청크 (WAV 회신)
+    BEWE_MK_CH_ADD      = 0xFD,  // JOIN→Central→해당 HOST: MpChEdit (새 채널 생성 — HOST 가 빈 슬롯 선택; ch 무시, lo/hi/mode 사용)
+    BEWE_MK_CH_DEL      = 0xFE,  // JOIN→Central→해당 HOST: MpChEdit (채널 삭제 — ch 로 지정)
 };
 struct __attribute__((packed)) MpSet      { char station[24]; uint8_t ch; uint8_t on; };
 struct __attribute__((packed)) MpState    { char station[24]; uint64_t mask; };
