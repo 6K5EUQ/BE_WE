@@ -18,7 +18,7 @@
 #include <chrono>
 
 static const char* mode_name(uint8_t m){
-    static const char* n[] = {"NONE","AM","FM"};
+    static const char* n[] = {"-","AM","FM"};
     return (m < 3) ? n[m] : "?";
 }
 // station_id "DGS-2_DGS-2" → 표시명 "DGS-2"
@@ -201,18 +201,27 @@ static void draw_targets(FFTViewer& v){
             // ── CH 셀: 우클릭 → 컨텍스트 메뉴 (Add / Remove Channel). 어느 기지든 동기화 ──
             ImGui::TableSetColumnIndex(0);
             { char b[8]; snprintf(b,sizeof(b),"%d", r.dnum>0?r.dnum:r.ch);
-              float aw=ImGui::GetContentRegionAvail().x, tw=ImGui::CalcTextSize(b).x;
-              ImGui::Selectable(b, false, ImGuiSelectableFlags_None, ImVec2(aw, 0));   // 행 우클릭 타깃
-              (void)tw;
+              float aw=ImGui::GetContentRegionAvail().x;
+              ImVec2 cp=ImGui::GetCursorPos();
+              ImGui::Selectable("##chsel", false, ImGuiSelectableFlags_None, ImVec2(aw, 0));  // 빈 우클릭 타깃
+              ImGui::SetCursorPos(cp); cell_ctr(b);   // 그 위 중앙정렬 텍스트 (non-interactive)
+              // ── 컨텍스트 메뉴 (Mission DB 우클릭 팝업과 동일 스타일: 폭고정·여백·separator·빨강 Delete) ──
+              ImGui::SetNextWindowSize(ImVec2(150.f, 0.f));
+              ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
+              ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.f,6.f));
+              ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f,0.12f,0.18f,1.f));
               if(ImGui::BeginPopupContextItem("##chmenu")){
-                  if(ImGui::MenuItem("Add Channel"))
+                  if(ImGui::Selectable("Add Channel"))
                       bewe_mod_add_ch(v, r.station.c_str(), 0/*NONE*/, 100.f-0.005f, 100.f+0.005f);  // 100MHz/10kHz/NONE
-                  ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f,0.35f,0.30f,1.f));   // 빨강
-                  bool rm=ImGui::MenuItem("Remove Channel");
+                  ImGui::Separator();
+                  ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255,80,80,255));   // 빨강
+                  bool rm=ImGui::Selectable("Remove Channel");
                   ImGui::PopStyleColor();
                   if(rm) bewe_mod_del_ch(v, r.station.c_str(), r.ch);
                   ImGui::EndPopup();
               }
+              ImGui::PopStyleColor();
+              ImGui::PopStyleVar(2);
             }
             float cf=(r.lo+r.hi)*0.5f, bw=(r.hi>r.lo? r.hi-r.lo : r.lo-r.hi);
             // ── Center(MHz) 편집 → lo/hi 갱신(BW 유지), 전 유저 동기화 ──
@@ -266,7 +275,7 @@ static void draw_targets(FFTViewer& v){
             }
             // ── Decode 콤보 ──
             ImGui::TableSetColumnIndex(8);
-            const char* cur = r.running>=0 ? mods[r.running].label : "None";
+            const char* cur = r.running>=0 ? mods[r.running].label : "-";
             ImGui::SetNextItemWidth(-1);
             ImVec4 lblc = r.running>=0 ? ImVec4(0.45f,0.95f,0.55f,1.f) : ImVec4(0.80f,0.80f,0.85f,1.f);
             ImGui::PushStyleColor(ImGuiCol_Text, lblc);
@@ -276,7 +285,7 @@ static void draw_targets(FFTViewer& v){
                 // 항목 간격 + 상/하단 여백 (None 위·마지막 아래 답답함 완화)
                 ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 5));
                 ImGui::Dummy(ImVec2(0, 3));
-                if(ImGui::Selectable("None", r.running<0) && r.running>=0)
+                if(ImGui::Selectable("-", r.running<0) && r.running>=0)
                     bewe_mod_set_target(v, mods[r.running].id, r.station.c_str(), r.ch, false);
                 for(int mi:dm){
                     bool is_cur=(mi==r.running);
