@@ -66,6 +66,9 @@ void FFTViewer::update_channel_squelch(){
     int hf = fft_size / 2;
     int fi = (total_ffts > 0 ? total_ffts - 1 : 0) % MAX_FFTS_MEMORY;
     const float* rowp = fft_data.data() + fi * fft_size;
+    // 같은 FFT 행이면 채널별 peak 재스캔 생략 (행 갱신은 ~1.5-37Hz, 호출은 ~50Hz)
+    bool same_row = (total_ffts == sq_last_total_ffts);
+    sq_last_total_ffts = total_ffts;
     auto freq_to_bin = [&](float rel_mhz) -> int {
         int bin = (rel_mhz >= 0)
             ? (int)((rel_mhz / nyq_mhz) * hf)
@@ -79,15 +82,24 @@ void FFTViewer::update_channel_squelch(){
         float e_mhz = std::max(ch.s, ch.e) - cf_mhz;
         int bin_s = freq_to_bin(s_mhz);
         int bin_e = freq_to_bin(e_mhz);
-        float peak_db = -120.0f;
-        if(bin_s <= bin_e){
-            for(int b = bin_s; b <= bin_e; b++)
-                if(rowp[b] > peak_db) peak_db = rowp[b];
+        // 행·대역 둘 다 그대로면 캐시 재사용 (계산결과 동일 → 게이트/시간 동작 불변)
+        float peak_db;
+        if(same_row && ch.sq_calibrated.load(std::memory_order_relaxed)
+           && ch.sq_scan_s == ch.s && ch.sq_scan_e == ch.e){
+            peak_db = ch.sq_cached_peak;
         } else {
-            for(int b = bin_s; b < fft_size; b++)
-                if(rowp[b] > peak_db) peak_db = rowp[b];
-            for(int b = 0; b <= bin_e; b++)
-                if(rowp[b] > peak_db) peak_db = rowp[b];
+            peak_db = -120.0f;
+            if(bin_s <= bin_e){
+                for(int b = bin_s; b <= bin_e; b++)
+                    if(rowp[b] > peak_db) peak_db = rowp[b];
+            } else {
+                for(int b = bin_s; b < fft_size; b++)
+                    if(rowp[b] > peak_db) peak_db = rowp[b];
+                for(int b = 0; b <= bin_e; b++)
+                    if(rowp[b] > peak_db) peak_db = rowp[b];
+            }
+            ch.sq_cached_peak = peak_db;
+            ch.sq_scan_s = ch.s; ch.sq_scan_e = ch.e;
         }
         float prev = ch.sq_sig.load(std::memory_order_relaxed);
         float sig = 0.3f * peak_db + 0.7f * prev;

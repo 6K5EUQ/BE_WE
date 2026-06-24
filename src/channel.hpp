@@ -244,6 +244,9 @@ struct Channel {
     std::atomic<float> sq_sig{-120.0f}, sq_nf{0.0f};
     std::atomic<bool>  sq_gate{false};
     std::atomic<bool>  sq_calibrated{false};
+    // new-row guard: 같은 FFT 행을 여러 프레임 재스캔하지 않도록 peak 캐시 (UI 스레드 전용)
+    float sq_cached_peak = -120.0f;
+    float sq_scan_s = 0, sq_scan_e = 0;  // 캐시가 유효한 대역 (s/e 변하면 무효)
     // 캘리브레이션 (UI 스레드 전용)
     int   sq_calib_cnt = 0;
     float sq_calib_buf[60] = {};  // ~1초 (GUI 60fps) / ~1.2초 (CLI 50Hz)
@@ -292,6 +295,7 @@ struct Channel {
         sq_nf.store(0.0f);
         sq_gate.store(false);
         sq_calibrated.store(false);
+        sq_cached_peak=-120.0f; sq_scan_s=0; sq_scan_e=0;
         sq_calib_cnt=0;
         memset(sq_calib_buf, 0, sizeof(sq_calib_buf));
         sq_gate_hold=0;

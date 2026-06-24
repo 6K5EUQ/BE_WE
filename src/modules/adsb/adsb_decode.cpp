@@ -22,6 +22,7 @@ static constexpr double ADSB_TARGET_SR = 2400000.0;   // 목표 출력 레이트
 void worker(FFTViewer& v, int ch_idx){
     Channel& ch=v.channels[ch_idx];
     uint32_t msr=v.header.sample_rate;
+    const float inv_scale=1.0f/v.hw.iq_scale;  // ÷ → ×
     uint64_t init_cf=v.live_cf_hz.load(std::memory_order_acquire);
     // 1090 ES 고정: 채널 중심이 곧 목표 주파수. center - SDR중심 = 오프셋.
     float off_hz=(((ch.s+ch.e)/2.0f)-(float)(init_cf/1e6f))*1e6f;
@@ -70,13 +71,13 @@ void worker(FFTViewer& v, int ch_idx){
             cap_i=cap_q=0; cap_cnt=0;
             lag=(wp-rp)&IQ_RING_MASK;
         }
-        if(lag==0){ std::this_thread::sleep_for(std::chrono::microseconds(50)); continue; }
+        if(lag==0){ std::this_thread::sleep_for(std::chrono::microseconds(1000)); continue; }
 
         size_t avail=std::min(lag,BATCH);
         mag.clear();
         for(size_t s=0;s<avail;s++){
             size_t pos=(rp+s)&IQ_RING_MASK;
-            float si=v.ring[pos*2]/v.hw.iq_scale, sq=v.ring[pos*2+1]/v.hw.iq_scale;
+            float si=v.ring[pos*2]*inv_scale, sq=v.ring[pos*2+1]*inv_scale;
             float mi,mq; osc.mix(si,sq,mi,mq);
             cap_i+=mi; cap_q+=mq; cap_cnt++;
             if(cap_cnt<(int)decim) continue;

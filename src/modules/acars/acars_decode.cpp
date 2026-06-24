@@ -19,6 +19,7 @@ void worker_natural_exit(FFTViewer& v, int ch);
 void worker(FFTViewer& v, int ch_idx){
     Channel& ch=v.channels[ch_idx];
     uint32_t msr=v.header.sample_rate;
+    const float inv_scale=1.0f/v.hw.iq_scale;  // ÷ → ×
     uint64_t init_cf=v.live_cf_hz.load(std::memory_order_acquire);
     float off_hz=(((ch.s+ch.e)/2.0f)-(float)(init_cf/1e6f))*1e6f;
     float bw_hz=fabsf(ch.e-ch.s)*1e6f;
@@ -69,12 +70,12 @@ void worker(FFTViewer& v, int ch_idx){
             am_dc=0; cap_i=cap_q=0; cap_cnt=0;
             lag=(wp-rp)&IQ_RING_MASK;
         }
-        if(lag==0){ std::this_thread::sleep_for(std::chrono::microseconds(50)); continue; }
+        if(lag==0){ std::this_thread::sleep_for(std::chrono::microseconds(1000)); continue; }
 
         size_t avail=std::min(lag,BATCH);
         for(size_t s=0;s<avail;s++){
             size_t pos=(rp+s)&IQ_RING_MASK;
-            float si=v.ring[pos*2]/v.hw.iq_scale, sq=v.ring[pos*2+1]/v.hw.iq_scale;
+            float si=v.ring[pos*2]*inv_scale, sq=v.ring[pos*2+1]*inv_scale;
             float mi,mq; osc.mix(si,sq,mi,mq);
             float mi_aa=mi, mq_aa=mq;
             mi_aa=lpi[0].p(mi_aa); mi_aa=lpi[1].p(mi_aa); mi_aa=lpi[2].p(mi_aa); mi_aa=lpi[3].p(mi_aa);

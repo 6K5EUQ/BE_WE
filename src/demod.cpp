@@ -63,6 +63,7 @@ void FFTViewer::dem_worker(int ch_idx){
 
     const size_t MAX_LAG=(size_t)(msr*0.08);
     const size_t BATCH  =(size_t)cap_decim*actual_asr/50;
+    const float  inv_scale=1.0f/hw.iq_scale;  // ÷ → × (per-worker, msr/HW 고정과 동일 안전성)
 
     while(!ch.dem_stop_req.load(std::memory_order_relaxed) && !sdr_stream_error.load()){
         // center frequency 변경 감지 → 오실레이터 재설정
@@ -88,12 +89,12 @@ void FFTViewer::dem_worker(int ch_idx){
             rs_pos=0.0; rs_prev=0.0f;
             lag=(wp-rp)&IQ_RING_MASK;
         }
-        if(lag==0){ std::this_thread::sleep_for(std::chrono::microseconds(50)); continue; }
+        if(lag==0){ std::this_thread::sleep_for(std::chrono::microseconds(1000)); continue; }
 
         size_t avail=std::min(lag,BATCH);
         for(size_t s=0;s<avail;s++){
             size_t pos=(rp+s)&IQ_RING_MASK;
-            float si=ring[pos*2]/hw.iq_scale, sq=ring[pos*2+1]/hw.iq_scale;
+            float si=ring[pos*2]*inv_scale, sq=ring[pos*2+1]*inv_scale;
             float mi,mq; osc.mix(si,sq,mi,mq);
             // 4-stage LPF cascade (anti-alias BEFORE decimation)
             float mi_aa=mi, mq_aa=mq;

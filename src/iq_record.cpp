@@ -257,6 +257,7 @@ void FFTViewer::rec_worker(){
         return (int16_t)(std::max(-1.0f,std::min(1.0f,v))*32767.0f);
     };
 
+    const float inv_scale=1.0f/hw.iq_scale;  // ÷ → ×
     while(!rec_stop.load(std::memory_order_relaxed) && !sdr_stream_error.load()){
         size_t wp=ring_wp.load(std::memory_order_acquire);
         size_t rp=rec_rp.load(std::memory_order_relaxed);
@@ -264,7 +265,7 @@ void FFTViewer::rec_worker(){
         size_t avail=std::min((wp-rp)&IQ_RING_MASK,(size_t)65536);
         for(size_t s=0;s<avail;s++){
             size_t pos=(rp+s)&IQ_RING_MASK;
-            float si=ring[pos*2]/hw.iq_scale, sq=ring[pos*2+1]/hw.iq_scale;
+            float si=ring[pos*2]*inv_scale, sq=ring[pos*2+1]*inv_scale;
             float mi,mq; osc.mix(si,sq,mi,mq);
             ai+=mi; aq+=mq; cnt++;
             if(cnt>=(int)decim){
@@ -395,6 +396,7 @@ void FFTViewer::start_audio_rec(int ch_idx){
 
     FILE* fp=fopen(fn,"wb");
     if(!fp){ bewe_log("Audio REC: cannot open %s\n",fn); return; }
+    setvbuf(fp, nullptr, _IOFBF, 1<<16);  // 64KB stdio 버퍼 → 샘플당 write() syscall 제거
     ch.audio_rec_frames=0;
     ch.audio_rec_write_wav_hdr(fp,asr,0);
     ch.audio_rec_fp=fp;
@@ -509,6 +511,7 @@ void FFTViewer::iq_only_worker(int ch_idx){
     for(int k=0; k<4; k++){ lpi[k].set(cn); lpq[k].set(cn); }
 
     double acc_i=0, acc_q=0; int acc_cnt=0;
+    const float inv_scale=1.0f/hw.iq_scale;  // ÷ → ×
     const size_t MAX_LAG = (size_t)(msr * 0.08);
     const size_t BATCH   = std::max((size_t)4096, (size_t)decim * 256);
 
@@ -531,13 +534,13 @@ void FFTViewer::iq_only_worker(int ch_idx){
             acc_i=acc_q=0; acc_cnt=0;
             lag = (wp - rp) & IQ_RING_MASK;
         }
-        if(lag == 0){ std::this_thread::sleep_for(std::chrono::microseconds(50)); continue; }
+        if(lag == 0){ std::this_thread::sleep_for(std::chrono::microseconds(1000)); continue; }
 
         size_t avail = std::min(lag, BATCH);
         for(size_t s=0; s<avail; s++){
             size_t pos = (rp + s) & IQ_RING_MASK;
-            float si = ring[pos*2]   / hw.iq_scale;
-            float sq = ring[pos*2+1] / hw.iq_scale;
+            float si = ring[pos*2]   * inv_scale;
+            float sq = ring[pos*2+1] * inv_scale;
             float mi, mq; osc.mix(si, sq, mi, mq);
             // 4-stage LPF cascade
             mi = lpi[0].p(mi); mi = lpi[1].p(mi); mi = lpi[2].p(mi); mi = lpi[3].p(mi);
@@ -624,6 +627,7 @@ void FFTViewer::start_iq_rec(int ch_idx){
 
     FILE* fp=fopen(fn,"wb");
     if(!fp){ bewe_log("IQ REC: cannot open %s\n",fn); return; }
+    setvbuf(fp, nullptr, _IOFBF, 1<<16);  // 64KB stdio 버퍼 → 샘플당 write() syscall 제거
     ch.iq_rec_frames=0;
     ch.iq_rec_cf_hz=(uint64_t)(cf_mhz*1e6);
     ch.iq_rec_start_time=(int64_t)t;
@@ -744,6 +748,7 @@ void FFTViewer::start_join_audio_rec(int ch_idx){
 
     FILE* fp=fopen(fn,"wb");
     if(!fp){ bewe_log("JOIN Audio REC: cannot open %s\n",fn); return; }
+    setvbuf(fp, nullptr, _IOFBF, 1<<16);  // 64KB stdio 버퍼 → 샘플당 write() syscall 제거
     ch.audio_rec_frames=0;
     ch.audio_rec_write_wav_hdr(fp,asr,0);
     ch.audio_rec_fp=fp;

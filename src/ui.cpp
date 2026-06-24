@@ -122,6 +122,9 @@ void FFTViewer::update_channel_squelch(){
     // 최신 FFT 행 읽기 (float dB 값 직접)
     int fi = (total_ffts > 0 ? total_ffts - 1 : 0) % MAX_FFTS_MEMORY;
     const float* rowp = fft_data.data() + fi * fft_size;
+    // 같은 FFT 행이면 채널별 peak 재스캔 생략 (행 갱신은 ~1.5-37Hz, 호출은 ~60Hz)
+    bool same_row = (total_ffts == sq_last_total_ffts);
+    sq_last_total_ffts = total_ffts;
 
     auto freq_to_bin = [&](float rel_mhz) -> int {
         int bin = (rel_mhz >= 0)
@@ -141,19 +144,28 @@ void FFTViewer::update_channel_squelch(){
         int bin_e = freq_to_bin(e_mhz);
 
         // 채널 대역 내 피크 파워 (float dB 직접)
-        float peak_db = -120.0f;
-        if(bin_s <= bin_e){
-            for(int b = bin_s; b <= bin_e; b++){
-                if(rowp[b] > peak_db) peak_db = rowp[b];
-            }
+        // 행·대역 둘 다 그대로면 캐시 재사용 (계산결과 동일 → 게이트/시간 동작 불변)
+        float peak_db;
+        if(same_row && ch.sq_calibrated.load(std::memory_order_relaxed)
+           && ch.sq_scan_s == ch.s && ch.sq_scan_e == ch.e){
+            peak_db = ch.sq_cached_peak;
         } else {
-            // DC 경계를 넘는 경우
-            for(int b = bin_s; b < fft_size; b++){
-                if(rowp[b] > peak_db) peak_db = rowp[b];
+            peak_db = -120.0f;
+            if(bin_s <= bin_e){
+                for(int b = bin_s; b <= bin_e; b++){
+                    if(rowp[b] > peak_db) peak_db = rowp[b];
+                }
+            } else {
+                // DC 경계를 넘는 경우
+                for(int b = bin_s; b < fft_size; b++){
+                    if(rowp[b] > peak_db) peak_db = rowp[b];
+                }
+                for(int b = 0; b <= bin_e; b++){
+                    if(rowp[b] > peak_db) peak_db = rowp[b];
+                }
             }
-            for(int b = 0; b <= bin_e; b++){
-                if(rowp[b] > peak_db) peak_db = rowp[b];
-            }
+            ch.sq_cached_peak = peak_db;
+            ch.sq_scan_s = ch.s; ch.sq_scan_e = ch.e;
         }
 
         // IIR 스무딩 (UI 프레임 기반, ~60fps)

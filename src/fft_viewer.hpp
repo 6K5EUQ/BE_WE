@@ -907,6 +907,7 @@ public:
     float gain_db = 0.0f;
 
     // ── 채널 스컬치 (UI 스레드, FFT 기반) ──────────────────────────────────
+    int  sq_last_total_ffts = -1;   // new-row guard: 같은 FFT 행 재스캔 방지
     void update_channel_squelch();
 
     // ── demod.cpp ─────────────────────────────────────────────────────────
