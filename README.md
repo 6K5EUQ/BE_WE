@@ -169,19 +169,6 @@ A single analyst's discovery becomes a permanent enterprise asset.
 
 ---
 
-## Operational Scenario — GPS Jamming Response
-
-From the moment North Korea activates a GPS jammer to JCS notification — BEWE closes the loop in under two minutes.
-
-| Time | THREAT | BEWE |
-|---|---|---|
-| **T + 0s** | GPS jammer activated. 1575 MHz high-power jamming transmitted | Three nodes detect simultaneously. Anomaly alert on L1 band · IQ buffered |
-| **T + 15s** | Footprint expands. Navigation degradation across 200 km radius | TDOA triangulation. Source coordinates auto-computed · CEP <500 m |
-| **T + 30s** | Aircraft anomaly reported. ATC begins receiving nav-fault reports | Signal analysis complete. Modulation parameters · auto-correlated against ESM DB |
-| **T + 2min** | Jamming continues. Hours-long sustained operation possible | JCS notification packaged. Coordinates · evidentiary IQ · analysis report delivered |
-
----
-
 ## Data Retention
 
 | Tier | Retention | Notes |
