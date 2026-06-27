@@ -160,6 +160,7 @@ void draw_content(FFTViewer& v, bool just_opened){
                 if(m.rec_id) S.rec_id=m.rec_id;
                 sess_type_from(S, m);
             }
+            for(auto& S : sv) if(S.down<=S.up) S.voice=false;  // 0초(단일 버스트) 통화는 실제 음성 없음 → voice 미인식
             std::vector<Tg> tv; tv.reserve(128);
             std::unordered_map<uint32_t,int> tidx; tidx.reserve(256);
             for(auto& S : sv){
@@ -236,7 +237,7 @@ void draw_content(FFTViewer& v, bool just_opened){
         ImGui::TableSetupColumn("Slot",  ImGuiTableColumnFlags_WidthFixed, 40);
         ImGui::TableSetupColumn("Voice", ImGuiTableColumnFlags_WidthFixed, 48);
         ImGui::TableSetupColumn("Type",  ImGuiTableColumnFlags_WidthFixed, 130);
-        ImGui::TableSetupColumn("File",  ImGuiTableColumnFlags_WidthFixed, 44);
+        ImGui::TableSetupColumn("Audio", ImGuiTableColumnFlags_WidthFixed, 150);
         ImGui::TableHeadersRow();
 
         static std::vector<int> rvis; rvis.clear();
@@ -262,18 +263,40 @@ void draw_content(FFTViewer& v, bool just_opened){
             else if(S.voice) modview::cell("YES", ImVec4(0.40f,0.90f,0.50f,1.f));
             ImGui::TableSetColumnIndex(6); { char ty[24]; sess_type_str(S,ty,sizeof(ty)); if(ty[0]) ImGui::TextUnformatted(ty); }
             ImGui::TableSetColumnIndex(7);
-            if(S.rec_id){                                  // 녹음 있음 → 재생 버튼
+            if(S.rec_id){                                  // 녹음 있음 → 인라인 재생기
                 std::string rp; int rst = dmr_rec_state(S.rec_id, rp);
+                bool playing = rst==2 && !rp.empty() && v.audio_player &&
+                               v.audio_player->active() && v.audio_player->path()==rp;
                 ImGui::PushID((int)(S.rec_id & 0x7fffffffu));
-                if(rst==3) modview::cell("-", ImVec4(0.4f,0.4f,0.4f,1.f));   // 호스트에 파일없음
-                else if(ImGui::SmallButton((rec_play_pending==S.rec_id && rst!=2)?"..":">")){
-                    if(rst==2 && !rp.empty()){                               // 이미 받아둠 → 즉시 재생
-                        if(!v.audio_player) v.audio_player=std::make_unique<AudioPlayback>();
-                        v.audio_player->start(rp, AUDIO_SR);
-                    } else {                                                 // 호스트에 요청 → 도착 시 자동재생
-                        bewe_mod_rec_request("dmr", S.station, S.ch, S.rec_id);
-                        rec_play_pending = S.rec_id;
+                if(rst==3){
+                    modview::cell("no file", ImVec4(0.45f,0.45f,0.45f,1.f));   // 호스트에 파일없음
+                } else if(playing){                                           // 재생중 → 정지 + 진행바(실제 길이)
+                    ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(28,72,42,150));
+                    ImGui::PushStyleColor(ImGuiCol_Button,        (ImVec4)ImColor(40,150,70));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, (ImVec4)ImColor(52,180,86));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  (ImVec4)ImColor(64,200,96));
+                    if(ImGui::SmallButton("Stop")) v.audio_player->stop();
+                    ImGui::PopStyleColor(3);
+                    ImGui::SameLine(0,4);
+                    float pos=v.audio_player->position_sec(), tot=v.audio_player->total_sec();
+                    char ov[24]; snprintf(ov,sizeof(ov),"%.1f/%.1fs", pos, tot);
+                    ImGui::ProgressBar(tot>0?pos/tot:0.f, ImVec2(-1, ImGui::GetTextLineHeight()+2), ov);
+                } else if(rec_play_pending==S.rec_id && rst!=2){              // 페치 중
+                    modview::cell("loading", ImVec4(0.72f,0.68f,0.40f,1.f));
+                } else {                                                      // 재생 버튼
+                    ImGui::PushStyleColor(ImGuiCol_Button,        (ImVec4)ImColor(45,95,150));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, (ImVec4)ImColor(58,120,185));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  (ImVec4)ImColor(70,140,210));
+                    if(ImGui::SmallButton("Play")){
+                        if(rst==2 && !rp.empty()){                            // 이미 받아둠 → 즉시 재생
+                            if(!v.audio_player) v.audio_player=std::make_unique<AudioPlayback>();
+                            v.audio_player->start(rp, AUDIO_SR);
+                        } else {                                              // 호스트에 요청 → 도착 시 자동재생
+                            bewe_mod_rec_request("dmr", S.station, S.ch, S.rec_id);
+                            rec_play_pending = S.rec_id;
+                        }
                     }
+                    ImGui::PopStyleColor(3);
                 }
                 ImGui::PopID();
             }
