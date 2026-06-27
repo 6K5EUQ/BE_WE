@@ -235,7 +235,7 @@ void draw_content(FFTViewer& v, bool just_opened){
         ImGui::TableSetupColumn("Src",   ImGuiTableColumnFlags_WidthFixed, 90);
         ImGui::TableSetupColumn("Slot",  ImGuiTableColumnFlags_WidthFixed, 40);
         ImGui::TableSetupColumn("Voice", ImGuiTableColumnFlags_WidthFixed, 48);
-        ImGui::TableSetupColumn("Type",  ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Type",  ImGuiTableColumnFlags_WidthFixed, 130);
         ImGui::TableSetupColumn("File",  ImGuiTableColumnFlags_WidthFixed, 44);
         ImGui::TableHeadersRow();
 
