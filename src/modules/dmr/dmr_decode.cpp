@@ -2,6 +2,7 @@
 //    정합필터 → DmrDecoder(심볼동기/sync/Slot Type Golay/BPTC/CSBK·LC). AIS 와 동형.
 //    결과는 host_emit() → 로그+일단위 저장+전 JOIN 브로드캐스트.
 #include "fft_viewer.hpp"
+#include "module_api.hpp"
 #include "dmr_module.hpp"
 #include "dmr_decode.hpp"
 #include "dmr_ambe.hpp"
@@ -120,8 +121,20 @@ void worker(FFTViewer& v, int ch_idx){
     my_rp.store(v.ring_wp.load());
     int64_t last_diag=now_ms();
     bool gate_prev=false;   // 스컬치 게이트 이전상태 (AM/FM 과 동일 sq_gate 사용)
+    bool hold_prev=false;   // Holding 이전상태 (전환 edge 에서만 runtime freeze/resume)
 
     while(!worker_stop_req(ch_idx) && !v.sdr_stream_error.load() && ch.filter_active){
+        // ── Holding(CF 범위 밖): 복조 불가 → 무거운 DDC 루프 건너뛰고 연산 정지.
+        //    runtime 누적도 freeze. read-ptr 만 wp 로 당겨 복귀 시 lag 폭주/스테일 방지.
+        bool hold = ch.dem_paused.load(std::memory_order_relaxed);
+        if(hold != hold_prev){ bewe_mod_host_ch_hold(ch_idx, hold); hold_prev=hold; }
+        if(hold){
+            my_rp.store(v.ring_wp.load(std::memory_order_acquire), std::memory_order_release);
+            if(gate_prev){ dec.clear_voice(); ambe.reset(); a_prev=0.f; rec_close(); gate_prev=false; }
+            dec.reset();
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
+        }
         { uint64_t cur=v.live_cf_hz.load(std::memory_order_acquire);
           if(cur!=prev_cf){
               off_hz=(((ch.s+ch.e)/2.0f)-(float)(cur/1e6f))*1e6f;

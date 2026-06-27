@@ -249,10 +249,12 @@ static void draw_targets(FFTViewer& v){
             ImGui::TableSetColumnIndex(4);
             if(r.hold){ ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f,0.70f,0.30f,1.f)); cell_ctr("Holding"); ImGui::PopStyleColor(); }
             else      { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.40f,0.80f,0.95f,1.f)); cell_ctr("Active");  ImGui::PopStyleColor(); }
-            // ── State: 행별 동작 표시 (RUN 초록 / idle 회색) ──
+            // ── State: 행별 동작 표시. RUN 초록 = 실제 복조 중(Active+decode). Holding/미할당 = idle 회색.
+            //    Holding 은 CF 범위 밖이라 복조 정지 → decode_on 이어도 RUN 아님 ──
+            bool run_live = (r.running>=0 && !r.hold);
             ImGui::TableSetColumnIndex(5);
-            if(r.running>=0){ ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.35f,0.95f,0.45f,1.f)); cell_ctr("RUN");  ImGui::PopStyleColor(); }
-            else            { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f,0.5f,0.56f,1.f));   cell_ctr("idle"); ImGui::PopStyleColor(); }
+            if(run_live){ ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.35f,0.95f,0.45f,1.f)); cell_ctr("RUN");  ImGui::PopStyleColor(); }
+            else        { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f,0.5f,0.56f,1.f));   cell_ctr("idle"); ImGui::PopStyleColor(); }
             // ── Data: 누적 수신 메시지 (###,###msg) — HOST 측정값 (Central 경유, 전 뷰어 동일) ──
             ImGui::TableSetColumnIndex(6);
             if(r.running>=0){
@@ -262,14 +264,19 @@ static void draw_targets(FFTViewer& v){
                     ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(0.55f,0.85f,0.6f,1.f)); cell_ctr(b); ImGui::PopStyleColor();
                 } else { ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(0.6f,0.6f,0.45f,1.f)); cell_ctr("waiting"); ImGui::PopStyleColor(); }
             } else { ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(0.45f,0.45f,0.5f,1.f)); cell_ctr("-"); ImGui::PopStyleColor(); }
-            // ── Run Time: HOST 측정 decode 경과 (HH:MM:SS) + 폴링 사이 로컬 보간 ──
+            // ── Run Time: HOST 측정 decode 경과 (HH:MM:SS). Active=폴링 사이 로컬 보간,
+            //    Holding=HOST freeze 값 그대로(보간 정지 → 화면도 멈춤) ──
             ImGui::TableSetColumnIndex(7);
             { std::string rk2 = r.station + "#" + std::to_string(r.ch);
-              if(r.running>=0){
+              if(run_live){
                   RunAnchor& ra = s_run[rk2];
                   if(ra.last != r.druns){ ra.last = r.druns; ra.anchor = now_ms - (int64_t)r.druns*1000; }
                   char b[16]; fmt_hms((now_ms-ra.anchor)/1000, b, sizeof(b));
                   ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(0.70f,0.80f,0.92f,1.f)); cell_ctr(b); ImGui::PopStyleColor();
+              } else if(r.running>=0 && r.hold){
+                  s_run.erase(rk2);                                  // 보간 정지 → freeze 값만
+                  char b[16]; fmt_hms((int64_t)r.druns, b, sizeof(b));
+                  ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(0.55f,0.60f,0.68f,1.f)); cell_ctr(b); ImGui::PopStyleColor();
               } else { s_run.erase(rk2);
                   ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(0.45f,0.45f,0.5f,1.f)); cell_ctr("-"); ImGui::PopStyleColor(); }
             }

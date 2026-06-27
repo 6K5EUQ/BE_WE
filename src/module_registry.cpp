@@ -258,9 +258,11 @@ static std::string stat_key(const char* id, const char* station, int ch){
     std::string k = id; k += '|'; k += s; k += '|'; k += std::to_string(ch);
     return k;
 }
+static void stat_rollover_locked();                // 아래 정의 (KST 자정 통계 리셋)
 void bewe_mod_stat_bump(const char* id, const char* station, int ch, int64_t t_ms){
     if(!id) return;
     std::lock_guard<std::mutex> lk(g_stat_mtx);
+    stat_rollover_locked();                        // KST 자정 넘으면 통계 0
     std::string k = stat_key(id, station, ch);
     auto& dq = g_stat[k];
     dq.push_back(t_ms);
@@ -270,7 +272,29 @@ void bewe_mod_stat_bump(const char* id, const char* station, int ch, int64_t t_m
     g_stat_total[k]++;                              // 누적 (Data 컬럼)
 }
 // ── HOST 디코드 통계: decode 동작 시각(steady ms) + 누적건수 ──
-static int64_t g_host_decstart[MAX_CHANNELS] = {};   // 0=정지, >0=decode 시작 steady-ms
+// runtime = active(Active=가시대역 안) 구간만 누적. Holding(범위밖) 중엔 freeze.
+//   g_host_decstart>0: 현재 active 구간 시작 steady-ms. accum: 직전 구간들 합(ms).
+static int64_t g_host_decstart[MAX_CHANNELS] = {};   // 0=정지/Holding, >0=현 active 구간 시작 steady-ms
+static int64_t g_host_decaccum[MAX_CHANNELS] = {};   // 동결된 누적 active 시간(ms)
+// KST 자정 리셋: 날짜(yyyymmdd) 바뀌면 msg/runtime 0 으로. -1=미초기화.
+static int      g_stat_day = -1;
+static int kst_day_now(){
+    int64_t now = (int64_t)std::chrono::duration_cast<std::chrono::seconds>(
+                      std::chrono::system_clock::now().time_since_epoch()).count();
+    struct tm tmv{}; KST::to_tm((time_t)now, tmv);
+    return (tmv.tm_year+1900)*10000 + (tmv.tm_mon+1)*100 + tmv.tm_mday;
+}
+// 자정 경계 감지 → count(g_stat_total) + runtime(accum/start) 전 채널 0. g_stat_mtx 잡고 호출.
+static void stat_rollover_locked(){
+    int d = kst_day_now();
+    if(g_stat_day == d) return;
+    g_stat_day = d;
+    g_stat_total.clear();
+    for(int i=0;i<MAX_CHANNELS;i++){
+        g_host_decaccum[i] = 0;
+        if(g_host_decstart[i] > 0) g_host_decstart[i] = mod_now_ms();   // active 채널은 지금부터 재시작
+    }
+}
 // 오늘(KST) 저장 JSONL 에서 채널 ch 디코드 건수 — Data 시드(히스토리 포함 총수).
 // store_append 은 emit(=stat_bump) 과 1:1 이라 JSONL 라인수 = 누적 디코드수.
 static long host_today_count(const char* id, int ch){
@@ -292,6 +316,7 @@ static long host_today_count(const char* id, int ch){
 static void host_decstat_start(const char* id, int ch){
     if(ch<0 || ch>=MAX_CHANNELS) return;
     g_host_decstart[ch] = mod_now_ms();
+    g_host_decaccum[ch] = 0;                          // 새 decode 세션 → runtime 0 부터
     long seed = host_today_count(id, ch);             // 오늘 누적(히스토리)으로 시드
     std::lock_guard<std::mutex> lk(g_stat_mtx);
     g_stat_total[stat_key(id, g_my_station, ch)] = seed;
@@ -299,13 +324,28 @@ static void host_decstat_start(const char* id, int ch){
 static void host_decstat_stop(int ch){
     if(ch<0 || ch>=MAX_CHANNELS) return;
     g_host_decstart[ch] = 0;
+    g_host_decaccum[ch] = 0;
+}
+// HOST: Holding 진입(true)/이탈(false) 시 runtime 누적 freeze/resume. dmr_decode 워커가 전환 edge 에서 호출.
+//   Holding 진입: 흐르던 active 구간을 accum 에 적립 후 start=0(정지). 이탈: start 재설정(이어서 누적).
+void bewe_mod_host_ch_hold(int ch, bool holding){
+    if(ch<0 || ch>=MAX_CHANNELS) return;
+    if(holding){
+        int64_t st = g_host_decstart[ch];
+        if(st>0){ g_host_decaccum[ch] += mod_now_ms()-st; g_host_decstart[ch] = 0; }
+    } else {
+        if(g_host_decstart[ch]==0) g_host_decstart[ch] = mod_now_ms();
+    }
 }
 // HOST: 채널 ch 에서 도는 디코더의 (누적건수, 동작경과초). net_server 가 ChSyncEntry 채울 때 사용.
+//   runtime = accum + (active 면 현 구간). Holding 중엔 start=0 이라 freeze.
 void bewe_mod_host_ch_decstat(int ch, uint32_t& count, uint32_t& runtime_s){
     count = 0; runtime_s = 0;
     if(ch<0 || ch>=MAX_CHANNELS) return;
+    { std::lock_guard<std::mutex> lk(g_stat_mtx); stat_rollover_locked(); }   // 폴링도 자정 인지
     int64_t st = g_host_decstart[ch];
-    if(st>0){ int64_t r=(mod_now_ms()-st)/1000; runtime_s=(uint32_t)(r>0?r:0); }
+    int64_t ms = g_host_decaccum[ch] + (st>0 ? mod_now_ms()-st : 0);
+    if(ms>0) runtime_s = (uint32_t)(ms/1000);
     // 이 채널서 도는 모듈 찾아 누적건수 조회 (한 채널=한 디코더)
     std::string id;
     { std::lock_guard<std::mutex> lk(g_fw_mtx);
