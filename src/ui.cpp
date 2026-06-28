@@ -5901,8 +5901,13 @@ void run_streaming_viewer(){
             if(v.mission_modal_open != prev_mission){ v.mission_modal_open ? push_ov(6) : pop_ov(6); prev_mission=v.mission_modal_open; }
             if(v.demod_panel_open != prev_demod){ v.demod_panel_open ? push_ov(7) : pop_ov(7); prev_demod=v.demod_panel_open; }
         }
+        // STATUS(우측패널) 격리: 전체영역 오버레이(SA/LOG/HIST/LIB/MSN/DEMOD) 열려있으면
+        // STATUS 토글·드래그·렌더 전부 차단. 내부 상태/백그라운드는 유지, 입력·표시만 막음.
+        // 오버레이 닫으면 저장된 right_panel_ratio로 다시 정상 동작.
+        bool fs_overlay_active = v.eid_panel_open || v.log_panel_open || v.lwf_modal_open
+                              || v.sig_lib_panel_open || v.mission_modal_open || v.demod_panel_open;
         // S키: 메인 STATUS 패널 토글. 다른 오버레이 활성 시엔 그쪽이 S 키 소비.
-        if(main_kbd_active
+        if(main_kbd_active && !fs_overlay_active
            && ImGui::IsKeyPressed(ImGuiKey_S, false) && !ImGui::GetIO().WantTextInput){
             if(v.right_panel_ratio > 0.01f){
                 right_panel_saved_ratio = v.right_panel_ratio;
@@ -6413,9 +6418,9 @@ void run_streaming_viewer(){
             bool vdiv_hov = (mpos2.x >= vdiv_x && mpos2.x <= vdiv_x + vdiv_w &&
                              mpos2.y >= content_y && mpos2.y <= content_y + content_h);
             static bool vdiv_dragging = false;
-            if(vdiv_hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+            if(vdiv_hov && !fs_overlay_active && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                 vdiv_dragging = true;
-            if(!ImGui::IsMouseDown(ImGuiMouseButton_Left))
+            if(!ImGui::IsMouseDown(ImGuiMouseButton_Left) || fs_overlay_active)
                 vdiv_dragging = false;
             if(vdiv_dragging){
                 v.right_panel_ratio -= io.MouseDelta.x / disp_w;
@@ -6432,9 +6437,10 @@ void run_streaming_viewer(){
         }
 
         // ── 우측 패널 ─────────────────────────────────────────────────────
+        // 전체영역 오버레이 활성 시엔 STATUS 렌더·입력 격리 (상태 right_panel_ratio는 유지).
         static bool prev_right_visible_outer = false;
         if(!right_visible) prev_right_visible_outer = false;
-        if(right_visible){
+        if(right_visible && !fs_overlay_active){
             float rpx  = vdiv_x + vdiv_w;
             float rp_w = disp_w - rpx;
             const float SUBBAR_H = TOPBAR_H * 0.5f;
