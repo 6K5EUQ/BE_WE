@@ -60,7 +60,7 @@ void info_str(const AisRecord& m, char* o, size_t n){
     else o[0]=0;
 }
 // MMSI별 최신 head + 항적 꼬리 (지도용)
-struct AisTrack { AisRecord head; std::deque<std::array<float,2>> trail; };
+struct AisTrack { AisRecord head; std::deque<std::array<float,2>> trail; int ship_type=0; char name[24]={0}; };
 // 선종(ITU shiptype)별 마커 색 — 화물/유조/여객/어선 등 한눈 구분
 ImU32 type_color(int t){
     if(t>=60&&t<=69) return IM_COL32(120,200,255,255);  // passenger 파랑
@@ -132,8 +132,10 @@ void draw_content(FFTViewer& v, bool just_opened){
             int start=(int)n-1; while(start>=0 && log[start].t_ms>track_wm) start--; start++;
             for(int j=start;j<(int)n;j++){
                 const AisRecord& m=log[j];
-                if(!m.has_pos) continue;
                 AisTrack& t=tracks[m.mmsi];
+                if(m.ship_type>0) t.ship_type=m.ship_type;     // sticky: static msg(5/24)에서만 옴
+                if(m.name[0] && !t.name[0]) { strncpy(t.name,m.name,sizeof(t.name)-1); }
+                if(!m.has_pos) continue;                       // head/trail은 위치 msg만
                 if(t.head.t_ms==0 || m.t_ms>=t.head.t_ms) t.head=m;
                 float la=(float)m.lat, lo=(float)m.lon;
                 if(t.trail.empty()) t.trail.push_back({la,lo});
@@ -159,9 +161,16 @@ void draw_content(FFTViewer& v, bool just_opened){
         mpt.lat=m.lat; mpt.lon=m.lon; mpt.id=m.mmsi;
         mpt.heading = (m.cog>=0.f)? m.cog : (m.heading!=511? (float)m.heading : -1.f);
         mpt.selected = (has_focus && focus.mmsi==m.mmsi);
-        mpt.color = mpt.selected? IM_COL32(255,210,80,255) : type_color(m.ship_type);
-        mpt.label = m.name[0]? m.name : nullptr;
+        int st = kv.second.ship_type>0? kv.second.ship_type : m.ship_type;
+        mpt.color = mpt.selected? IM_COL32(255,210,80,255) : type_color(st);
+        mpt.label = m.name[0]? m.name : (kv.second.name[0]? kv.second.name : nullptr);
         trailbuf.emplace_back();
+        if(has_focus && focus.mmsi==m.mmsi){
+            // 선택된 배: 캐시(12점/5m 게이팅) 무시, log 전체 점을 시간순으로 모두 연결
+            std::lock_guard<std::mutex> lk(mtx);
+            for(const AisRecord& r : log)
+                if(r.mmsi==m.mmsi && r.has_pos){ trailbuf.back().push_back((float)r.lat); trailbuf.back().push_back((float)r.lon); }
+        } else
         for(auto& pr : kv.second.trail){ trailbuf.back().push_back(pr[0]); trailbuf.back().push_back(pr[1]); }
         char b1[80], b2[64];
         snprintf(b1,sizeof(b1),"MMSI %u  %s", m.mmsi, ais_mid_country(m.mmsi));
