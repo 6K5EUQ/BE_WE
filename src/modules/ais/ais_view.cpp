@@ -24,7 +24,7 @@ void hms(int64_t ms, char* o){
     time_t t=(time_t)(ms/1000); struct tm tv; KST::to_tm(t,tv);
     strftime(o,12,"%H:%M:%S",&tv);
 }
-// 0 Time 1 Station 2 MMSI 3 Type 4 Name 5 Lat 6 Lon 7 SOG 8 COG 9 Info
+// 0 Time 1 MMSI 2 Type 3 Name 4 Lat 5 Lon 6 SOG 7 COG 8 Info
 bool match(const AisRecord& m, const char* f){
     if(!f||!f[0]) return true;
     char ts[12]; hms(m.t_ms,ts);
@@ -37,14 +37,13 @@ bool match(const AisRecord& m, const char* f){
 int col_cmp(int c, const AisRecord& a, const AisRecord& b){
     switch(c){
         case 0:  return a.t_ms<b.t_ms?-1:(a.t_ms>b.t_ms?1:0);
-        case 1:  return strcmp(a.station,b.station);
-        case 2:  return a.mmsi<b.mmsi?-1:(a.mmsi>b.mmsi?1:0);
-        case 3:  return a.msg_type-b.msg_type;
-        case 4:  return strcmp(a.name,b.name);
-        case 5:  return a.lat<b.lat?-1:(a.lat>b.lat?1:0);
-        case 6:  return a.lon<b.lon?-1:(a.lon>b.lon?1:0);
-        case 7:  return a.sog<b.sog?-1:(a.sog>b.sog?1:0);
-        case 8:  return a.cog<b.cog?-1:(a.cog>b.cog?1:0);
+        case 1:  return a.mmsi<b.mmsi?-1:(a.mmsi>b.mmsi?1:0);
+        case 2:  return a.msg_type-b.msg_type;
+        case 3:  return strcmp(a.name,b.name);
+        case 4:  return a.lat<b.lat?-1:(a.lat>b.lat?1:0);
+        case 5:  return a.lon<b.lon?-1:(a.lon>b.lon?1:0);
+        case 6:  return a.sog<b.sog?-1:(a.sog>b.sog?1:0);
+        case 7:  return a.cog<b.cog?-1:(a.cog>b.cog?1:0);
         default: return a.nav_status-b.nav_status;
     }
 }
@@ -189,10 +188,9 @@ void draw_content(FFTViewer& v, bool just_opened){
     ImGui::SetCursorPosX(x0);
     ImGuiTableFlags tf = ImGuiTableFlags_ScrollY|ImGuiTableFlags_ScrollX|ImGuiTableFlags_RowBg|
         ImGuiTableFlags_BordersInnerV|ImGuiTableFlags_Resizable;
-    if(ImGui::BeginTable("##ais_tbl", 10, tf, ImVec2(tw, upper_h))){
+    if(ImGui::BeginTable("##ais_tbl", 9, tf, ImVec2(tw, upper_h))){
         ImGui::TableSetupScrollFreeze(2,1);
         ImGui::TableSetupColumn("Time",   ImGuiTableColumnFlags_WidthFixed, 70);
-        ImGui::TableSetupColumn("Station",ImGuiTableColumnFlags_WidthFixed, 60);
         ImGui::TableSetupColumn("MMSI",   ImGuiTableColumnFlags_WidthFixed, 82);
         ImGui::TableSetupColumn("Type",   ImGuiTableColumnFlags_WidthFixed, 40);
         ImGui::TableSetupColumn("Name",   ImGuiTableColumnFlags_WidthFixed, 130);
@@ -201,7 +199,7 @@ void draw_content(FFTViewer& v, bool just_opened){
         ImGui::TableSetupColumn("SOG",    ImGuiTableColumnFlags_WidthFixed, 48);
         ImGui::TableSetupColumn("COG",    ImGuiTableColumnFlags_WidthFixed, 48);
         ImGui::TableSetupColumn("Info",   ImGuiTableColumnFlags_WidthFixed, 220);
-        modview::sortable_headers(10, sort_col, sort_asc, 9);
+        modview::sortable_headers(9, sort_col, sort_asc, 8);
 
         std::lock_guard<std::mutex> lk(mtx);
         // vis 캐시 (개수/마지막t/필터/정렬 시그니처 게이팅)
@@ -225,17 +223,16 @@ void draw_content(FFTViewer& v, bool just_opened){
                 modview::apply_click(sel, anchor, k, r, [&](int i){return msg_key(log[vis[i]]);}, (int)vis.size(), io.KeyCtrl, io.KeyShift);
                 focus=m; has_focus=!sel.empty();
             }
-            ImGui::TableSetColumnIndex(1); modview::cell(m.station[0]?m.station:"LOCAL", ImVec4(0.85f,0.75f,0.5f,1.f));
             char b[24];
-            ImGui::TableSetColumnIndex(2); snprintf(b,sizeof(b),"%u",m.mmsi); modview::cell(b);
-            ImGui::TableSetColumnIndex(3); snprintf(b,sizeof(b),"%d",m.msg_type); modview::cell(b);
-            ImGui::TableSetColumnIndex(4);
+            ImGui::TableSetColumnIndex(1); snprintf(b,sizeof(b),"%u",m.mmsi); modview::cell(b);
+            ImGui::TableSetColumnIndex(2); snprintf(b,sizeof(b),"%d",m.msg_type); modview::cell(b);
+            ImGui::TableSetColumnIndex(3);
             if(m.name[0]) modview::cell(m.name); else { const char* cc=ais_mid_country(m.mmsi); if(cc[0]) modview::cell(cc, ImVec4(0.6f,0.6f,0.6f,1.f)); }
-            ImGui::TableSetColumnIndex(5); if(m.has_pos){ snprintf(b,sizeof(b),"%.5f",m.lat); modview::cell(b); }
-            ImGui::TableSetColumnIndex(6); if(m.has_pos){ snprintf(b,sizeof(b),"%.5f",m.lon); modview::cell(b); }
-            ImGui::TableSetColumnIndex(7); if(m.sog>=0){ snprintf(b,sizeof(b),"%.1f",m.sog); modview::cell(b); }
-            ImGui::TableSetColumnIndex(8); if(m.cog>=0){ snprintf(b,sizeof(b),"%.0f",m.cog); modview::cell(b); }
-            ImGui::TableSetColumnIndex(9); { char inf[64]; info_str(m,inf,sizeof(inf)); if(inf[0]) ImGui::TextUnformatted(inf); }
+            ImGui::TableSetColumnIndex(4); if(m.has_pos){ snprintf(b,sizeof(b),"%.5f",m.lat); modview::cell(b); }
+            ImGui::TableSetColumnIndex(5); if(m.has_pos){ snprintf(b,sizeof(b),"%.5f",m.lon); modview::cell(b); }
+            ImGui::TableSetColumnIndex(6); if(m.sog>=0){ snprintf(b,sizeof(b),"%.1f",m.sog); modview::cell(b); }
+            ImGui::TableSetColumnIndex(7); if(m.cog>=0){ snprintf(b,sizeof(b),"%.0f",m.cog); modview::cell(b); }
+            ImGui::TableSetColumnIndex(8); { char inf[64]; info_str(m,inf,sizeof(inf)); if(inf[0]) ImGui::TextUnformatted(inf); }
         }
         bool grew = log.size()>lastn; lastn=log.size();
         modview::tail_follow(atb, grew && sort_col<0);

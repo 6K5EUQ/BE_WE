@@ -27,8 +27,12 @@ struct MapPoint {
 struct MapView {
     double lat0=-80, lat1=80, lon0=-180, lon1=180;  // 현재 가시 창 (deg)
     bool   initialized = false;                     // false = 첫 비어있지않은 프레임에 auto-fit
-    bool   show_grid   = true;
-    bool   show_land   = true;                       // 육지 채움 (LAND_TRI_DATA 재활용)
+    bool   show_grid      = true;
+    bool   show_land      = true;    // 육지 채움
+    bool   show_coast     = true;    // 해안선
+    bool   show_trails    = true;    // 항적 꼬리
+    bool   show_labels    = true;    // 마커 이름 라벨
+    int    kr_mode        = 1;       // 지도 소스: 0=SIMPLE(world 110m) 1=HALF(GSHHG 큰섬) 2=FULL(GSHHG 전체) 3=OSM
 };
 
 struct MapResult {
