@@ -530,11 +530,12 @@ void FFTViewer::draw_all_channels(ImDrawList* dl, float gx, float gw, float gy, 
         }
 
         dl->AddRectFilled(ImVec2(c0,gy),ImVec2(c1,gy+gh),fill);
+        ImU32 dash_col=(bord&0x00FFFFFF)|((ImU32)70<<24);  // 점선만 연하게(알파70) — 협대역 신호 가림 방지
         auto dash=[&](float x){
             if(x<gx-1||x>gx+gw+1) return;
             for(float y=gy;y<gy+gh;y+=10){
                 float ye=std::min(y+5.0f,gy+gh);
-                dl->AddLine(ImVec2(x,y),ImVec2(x,ye),bord,1.5f);
+                dl->AddLine(ImVec2(x,y),ImVec2(x,ye),dash_col,1.5f);
             }
         };
         dash(x0); dash(x1);
@@ -543,7 +544,7 @@ void FFTViewer::draw_all_channels(ImDrawList* dl, float gx, float gw, float gy, 
             dl->AddLine(ImVec2(std::min(gx+gw,x1),gy),ImVec2(std::min(gx+gw,x1),gy+gh),bord,2.0f);
         }
         if(!show_label) continue;
-        char lb[16]; snprintf(lb,sizeof(lb),"[%d]",freq_sorted_display_num(i));
+        char lb[16]; snprintf(lb,sizeof(lb),"%d",freq_sorted_display_num(i));
         ImVec2 ts=ImGui::CalcTextSize(lb);
         float cx=std::max(gx,std::min(gx+gw-ts.x,(c0+c1)/2-ts.x/2));
         float ly=gy+4;
