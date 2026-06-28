@@ -627,18 +627,6 @@ void NetServer::broadcast_channel_sync(const Channel* chs, int n){
         sync.ch[i].audio_rec_on   = chs[i].audio_rec_on.load() ? 1 : 0;
         { uint32_t dc=0,dr=0; bewe_mod_host_ch_decstat(i,dc,dr); sync.ch[i].dec_count=dc; sync.ch[i].dec_runtime_s=dr; }  // 디코드 통계
     }
-    // DEBUG: 비정상 대역폭 채널 감지 시 전체 스냅샷 로그
-    for(int i=0; i<n && i<MAX_CHANNELS; i++){
-        if(chs[i].filter_active){
-            float bw = fabsf(chs[i].e - chs[i].s);
-            if(bw > 1.0f){
-                bewe_log_push(0, "[CHSYNC-DBG] ch%d HUGE bw=%.4f s=%.4f e=%.4f (src ch[i])\n",
-                              i, bw, chs[i].s, chs[i].e);
-                bewe_log_push(0, "[CHSYNC-DBG] ch%d serialized s=%.4f e=%.4f\n",
-                              i, sync.ch[i].s, sync.ch[i].e);
-            }
-        }
-    }
     auto pkt = make_packet(PacketType::CHANNEL_SYNC, &sync, sizeof(sync));
     if(cb.on_relay_broadcast)
         cb.on_relay_broadcast(pkt.data(), pkt.size(), false);
