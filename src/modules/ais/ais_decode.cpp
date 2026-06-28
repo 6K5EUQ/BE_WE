@@ -4,6 +4,7 @@
 #include "fft_viewer.hpp"
 #include "ais_module.hpp"
 #include "ais_decode.hpp"
+#include "module_api.hpp"
 #include <cmath>
 #include <algorithm>
 #include <chrono>
@@ -73,7 +74,22 @@ void worker(FFTViewer& v, int ch_idx){
     my_rp.store(v.ring_wp.load());
     int64_t last_diag=now_ms(); long diag_bits=0;
 
+    bool hold_prev=false;
     while(!worker_stop_req(ch_idx) && !v.sdr_stream_error.load() && ch.filter_active){
+        // 가시대역 밖(Holding) → 복조 불가 → DDC 정지(연산/배터리 절약). 진입 edge 에서 상태 리셋
+        // (HDLC framing/FIR/DPLL 잔류 → 복귀 시 false frame 방지) + runtime 누적 freeze.
+        bool hold = ch.dem_paused.load(std::memory_order_relaxed);
+        if(hold!=hold_prev){
+            bewe_mod_host_ch_hold(ch_idx, hold);
+            if(hold){ for(int k=0;k<4;k++){ lpi[k].s=lpq[k].s=0; } dec_i=dec_q=0; dec_cnt=0; prev_i=prev_q=0;
+                      std::fill(fir,fir+36,0.f); fir_pos=0; pll=0; prev_zc=0; lastbit=0; dec.reset_all(); }
+            hold_prev=hold;
+        }
+        if(hold){
+            my_rp.store(v.ring_wp.load(std::memory_order_acquire), std::memory_order_release);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
+        }
         { uint64_t cur=v.live_cf_hz.load(std::memory_order_acquire);
           if(cur!=prev_cf){
               off_hz=(((ch.s+ch.e)/2.0f)-(float)(cur/1e6f))*1e6f;

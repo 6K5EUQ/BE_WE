@@ -5,6 +5,7 @@
 #include "fft_viewer.hpp"
 #include "adsb_module.hpp"
 #include "adsb_decode.hpp"
+#include "module_api.hpp"
 #include <cmath>
 #include <algorithm>
 #include <chrono>
@@ -53,7 +54,21 @@ void worker(FFTViewer& v, int ch_idx){
     std::atomic<size_t>& my_rp = worker_rp(ch_idx);
     my_rp.store(v.ring_wp.load());
 
+    bool hold_prev=false;
     while(!worker_stop_req(ch_idx) && !v.sdr_stream_error.load() && ch.filter_active){
+        // 가시대역 밖(Holding) → 복조 불가 → DDC 정지(연산/배터리 절약). 진입 edge 에서 디코더 리셋:
+        // dec.reset() 안 하면 복귀 시 stale CPR(짝/홀 타임스탬프)·roster 로 항공기 좌표 수천 km 오류.
+        bool hold = ch.dem_paused.load(std::memory_order_relaxed);
+        if(hold!=hold_prev){
+            bewe_mod_host_ch_hold(ch_idx, hold);
+            if(hold){ cap_i=cap_q=0; cap_cnt=0; dec.reset(fs_out, ch_idx); }
+            hold_prev=hold;
+        }
+        if(hold){
+            my_rp.store(v.ring_wp.load(std::memory_order_acquire), std::memory_order_release);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
+        }
         { uint64_t cur=v.live_cf_hz.load(std::memory_order_acquire);
           float cc=(ch.s+ch.e)/2.0f;                       // SDR 중심 또는 채널 이동 시 재튜닝
           if(cur!=prev_cf || cc!=prev_center){

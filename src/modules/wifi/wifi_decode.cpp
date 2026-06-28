@@ -4,6 +4,7 @@
 #include "fft_viewer.hpp"
 #include "wifi_module.hpp"
 #include "wifi_decode.hpp"
+#include "module_api.hpp"
 #include "wifi_ofdm.hpp"
 #include "wifi_dsss.hpp"
 #include <functional>
@@ -77,7 +78,22 @@ void worker(FFTViewer& v, int ch_idx){
     std::vector<std::complex<float>> wbuf; size_t wcap=(size_t)(out_sr/8); wbuf.reserve(wcap+4096);
     std::unordered_map<std::string,int64_t> seen;   // BSSID → 마지막 emit (dedup, 10s)
 
+    bool hold_prev=false;
     while(!worker_stop_req(ch_idx) && !v.sdr_stream_error.load() && ch.filter_active){
+        // 가시대역 밖(Holding) → 복조 불가 → DDC 정지(연산/배터리 절약). 진입 edge 에서 상태 리셋
+        // (OFDM 누적 wbuf/디코더 잔류 → 복귀 시 가짜 preamble 방지) + runtime 누적 freeze.
+        bool hold = ch.dem_paused.load(std::memory_order_relaxed);
+        if(hold!=hold_prev){
+            bewe_mod_host_ch_hold(ch_idx, hold);
+            if(hold){ for(int k=0;k<3;k++){ lpi[k].s=lpq[k].s=0; } dec_i=dec_q=0; dec_cnt=0;
+                      wbuf.clear(); dec.reset(out_sr); }
+            hold_prev=hold;
+        }
+        if(hold){
+            my_rp.store(v.ring_wp.load(std::memory_order_acquire), std::memory_order_release);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
+        }
         { uint64_t cur=v.live_cf_hz.load(std::memory_order_acquire);
           if(cur!=prev_cf){
               off_hz=(((ch.s+ch.e)/2.0f)-(float)(cur/1e6f))*1e6f;
