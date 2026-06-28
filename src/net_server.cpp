@@ -601,8 +601,10 @@ void NetServer::broadcast_audio_all(uint8_t ch_idx, int8_t pan,
 
 // ── Broadcast channel sync ────────────────────────────────────────────────
 void NetServer::broadcast_channel_sync(const Channel* chs, int n){
-    if(client_count()==0) return;   // 구독 JOIN 0 → 50채널 직렬화+decstat 조회 생략. 신규 접속은
-                                    // 메인루프의 10Hz 주기 sync(client_count>0 게이트)가 곧 전체상태 전달.
+    // 주의: 무구독(JOIN 0)이라도 early-return 금지. 이 함수는 Central 로도 relay 되어
+    // 타 기지 demod 통합목록(cached_ch_sync 기반 CH_LIST)을 채운다. JOIN 0 기지가 여기서
+    // 빠지면 그 기지 채널이 다른 기지 목록에서 사라짐. 배터리(decstat 500/s)는 메인루프의
+    // 10Hz 주기 호출이 client_count>0 게이트로 이미 막음 — 여긴 채널 op 시점에만 호출됨.
     PktChannelSync sync{};
     for(int i=0; i<n && i<MAX_CHANNELS; i++){
         sync.ch[i].idx        = (uint8_t)i;
