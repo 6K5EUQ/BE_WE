@@ -1330,6 +1330,10 @@ void run_cli_host(){
                         central_cli.enqueue_relay_broadcast(bp_pkt.data(), bp_pkt.size(), true);
                     // 설치된 모듈 상태 push (예: ACARS 채널 디코드 on/off)
                     bewe_mod_host_announce(v);
+                    // 채널 sync 재push — Central cached_ch_sync 를 채워 타 기지 demod 통합목록(CH_LIST)에
+                    // 이 기지 채널이 뜨게 함. boot 시 broadcast_channel_sync(line ~1489)는 relay 연결 전이라
+                    // Central 캐시에 안 들어갈 수 있음. conn_open 시점(연결 확립)에 다시 보내야 빈 기지가 안 생김.
+                    if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
                     // LIVE_START는 JOIN이 STREAM 버튼으로 명시 요청(LWF_LIVE_REQ)할 때만 unicast.
                     // mission_sync는 on_auth 200ms 스레드에서 AUTH_ACK 이후에 전송 (pre-auth 전송 시 JOIN이 skip함)
                 });
@@ -1392,6 +1396,9 @@ void run_cli_host(){
                                 // 재연결 직후 모듈 디코드 상태 재방송 (Central 의 새 빈 mod_mask 즉시 복구
                                 // → JOIN 들이 stale decode_on=0 안 보게). JOIN CONN_OPEN 만 의존하지 않음.
                                 bewe_mod_host_announce(v);
+                                // 채널 sync 도 재방송 — Central 의 새 cached_ch_sync 를 채워 타 기지
+                                // demod 통합목록(CH_LIST)에서 이 기지가 사라지지 않게.
+                                if(v.net_srv) v.net_srv->broadcast_channel_sync(v.channels, MAX_CHANNELS);
                                 // 재연결 직후 미션이 ACTIVE면 Central에 상태 재동기화 + HIST 재개
                                 if(v.mission_state == Mission::State::ACTIVE){
                                     bewe_log_push(0,"[CLI] re-broadcasting mission_sync after auto-reconnect\n");
