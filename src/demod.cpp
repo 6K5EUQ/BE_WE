@@ -65,6 +65,7 @@ void FFTViewer::dem_worker(int ch_idx){
     const size_t BATCH  =(size_t)cap_decim*actual_asr/50;
     const float  inv_scale=1.0f/hw.iq_scale;  // ÷ → × (per-worker, msr/HW 고정과 동일 안전성)
 
+    bool idle_skip=false;   // 무신호(squelch 닫힘) 스킵 상태 — 복귀 시 DSP 리셋 트리거
     while(!ch.dem_stop_req.load(std::memory_order_relaxed) && !sdr_stream_error.load()){
         // center frequency 변경 감지 → 오실레이터 재설정
         { uint64_t cur_cf=live_cf_hz.load(std::memory_order_acquire);
@@ -90,6 +91,24 @@ void FFTViewer::dem_worker(int ch_idx){
             lag=(wp-rp)&IQ_RING_MASK;
         }
         if(lag==0){ std::this_thread::sleep_for(std::chrono::microseconds(1000)); continue; }
+
+        // 무신호(squelch 닫힘) + 녹음 비활성 → 무거운 per-sample DSP(혼합/8단 IIR/복조/리샘플) 스킵.
+        // 녹음 중이면 silence-tail/force_all 보존 위해 full 처리 유지. squelch 는 FFT 스레드가 독립
+        // 계산하므로 신호 복귀를 놓치지 않음 (복귀는 ~20ms 내 감지, 첫 attack 만 미세 클립).
+        if(!ch.sq_gate.load(std::memory_order_relaxed)
+           && !ch.audio_rec_on.load(std::memory_order_relaxed)
+           && !ch.iq_rec_on.load(std::memory_order_relaxed)){
+            idle_skip=true;
+            ch.dem_rp.store(wp,std::memory_order_release);   // 무신호 버퍼 폐기
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            continue;
+        }
+        if(idle_skip){   // idle→active 복귀: DSP 상태 리셋 (스컬치 열림 클릭/transient 방지)
+            for(int k=0;k<4;k++){ lpi[k].s=lpq[k].s=0; }
+            alf.s=0; deemph.s=0; prev_i=prev_q=0; am_dc=0; agc_rms=0.01f;
+            cap_i=cap_q=0; cap_cnt=0; aac=0; acnt=0; rs_pos=0.0; rs_prev=0.0f;
+            idle_skip=false;
+        }
 
         size_t avail=std::min(lag,BATCH);
         for(size_t s=0;s<avail;s++){

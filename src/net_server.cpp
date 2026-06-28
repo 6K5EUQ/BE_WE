@@ -601,6 +601,8 @@ void NetServer::broadcast_audio_all(uint8_t ch_idx, int8_t pan,
 
 // ── Broadcast channel sync ────────────────────────────────────────────────
 void NetServer::broadcast_channel_sync(const Channel* chs, int n){
+    if(client_count()==0) return;   // 구독 JOIN 0 → 50채널 직렬화+decstat 조회 생략. 신규 접속은
+                                    // 메인루프의 10Hz 주기 sync(client_count>0 게이트)가 곧 전체상태 전달.
     PktChannelSync sync{};
     for(int i=0; i<n && i<MAX_CHANNELS; i++){
         sync.ch[i].idx        = (uint8_t)i;

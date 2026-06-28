@@ -10,6 +10,11 @@
 
 // ── Mix worker ─────────────────────────────────────────────────────────────
 void FFTViewer::mix_worker(){
+#ifdef BEWE_HEADLESS
+    // Headless HOST: 로컬 스피커 없음 → 로컬 ALSA 믹스 불필요 (네트워크 오디오는 dem_worker/
+    // 디코더가 직접 send_audio). 채널 오디오 ring 은 overwrite 방식이라 비우지 않아도 안전.
+    return;
+#else
     AlsaOut alsa; alsa.open(AUDIO_SR);
     static constexpr int PERIOD=256;
     std::vector<int16_t> sbuf(PERIOD*2,0);
@@ -77,4 +82,5 @@ void FFTViewer::mix_worker(){
     }
     alsa.close();
     bewe_log_push(0,"Mix worker exited\n");
+#endif
 }

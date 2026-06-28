@@ -367,7 +367,12 @@ void worker_loop(){
             continue;
         }
 
-        // Open file lazily once TM is on.
+        // Open file lazily once TM is on. mission IDLE 이면 hist 디렉토리 자체가 없어
+        // open_new_file 이 매번 실패 → 500ms 마다 헛 재시도 + 로그. IDLE 이면 통째로 스킵.
+        if(!g_fp && g_v->active_hist_dir().empty()){
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            continue;
+        }
         if(!g_fp){
             uint64_t cf  = g_v->live_cf_hz.load(std::memory_order_relaxed);
             uint64_t sr  = (uint64_t)g_v->header.sample_rate;
