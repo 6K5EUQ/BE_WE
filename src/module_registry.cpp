@@ -6,6 +6,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <array>
 #include <map>
 #include <mutex>
 #include <vector>
@@ -313,6 +314,35 @@ static long host_today_count(const char* id, int ch){
     }
     fclose(f); return cnt;
 }
+// 오늘 jsonl 을 1회 파싱해 전 채널 카운트 배열로 캐시 (30초 TTL, 모듈 id 별).
+//  decstat 폴링이 채널마다 파일을 재파싱하지 않도록 — 파일 1회 read 로 ch0~ 전부.
+static long host_today_count_cached(const char* id, int ch){
+    if(ch<0 || ch>=MAX_CHANNELS) return 0;
+    static std::mutex m;
+    static std::map<std::string, std::pair<int64_t,std::array<long,MAX_CHANNELS>>> cache;
+    std::lock_guard<std::mutex> lk(m);
+    int64_t now = mod_now_ms();
+    auto& e = cache[id];
+    if(now - e.first >= 30000 || e.first==0){
+        e.first = now; e.second.fill(0);
+        const char* home = getenv("HOME");
+        std::string base = home ? std::string(home) : std::string(".");
+        int64_t s = (int64_t)std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count();
+        struct tm tmv{}; KST::to_tm((time_t)s, tmv);
+        char d[9]; snprintf(d,sizeof(d),"%04d%02d%02d",tmv.tm_year+1900,tmv.tm_mon+1,tmv.tm_mday);
+        std::string path = base + "/BE_WE/modules/" + id + "/" + id + "_" + d + ".jsonl";
+        FILE* f = fopen(path.c_str(),"rb");
+        if(f){ char line[1024];
+            while(fgets(line,sizeof(line),f)){
+                const char* p = strstr(line,"\"ch\":");
+                if(p){ int c=atoi(p+5); if(c>=0 && c<MAX_CHANNELS) e.second[c]++; }
+            }
+            fclose(f);
+        }
+    }
+    return e.second[ch];
+}
 static void host_decstat_start(const char* id, int ch){
     if(ch<0 || ch>=MAX_CHANNELS) return;
     g_host_decstart[ch] = mod_now_ms();
@@ -351,9 +381,16 @@ void bewe_mod_host_ch_decstat(int ch, uint32_t& count, uint32_t& runtime_s){
     { std::lock_guard<std::mutex> lk(g_fw_mtx);
       for(auto& kv : g_fw) if((kv.second.host_mask>>ch)&1){ id=kv.first; break; } }
     if(id.empty()) return;
-    std::lock_guard<std::mutex> lk(g_stat_mtx);
-    auto it = g_stat_total.find(stat_key(id.c_str(), g_my_station, ch));
-    if(it!=g_stat_total.end()) count=(uint32_t)(it->second<0?0:it->second);
+    // 라이브 누적(stat_total: 켠 뒤 emit) 과 오늘 저장본(jsonl 총수=DMR 뷰 누적) 중 큰 값.
+    //  → reconcile 재장전/자정 직후처럼 stat_total 이 비어도 화면 Data 가 뷰와 일치.
+    //  jsonl 은 채널별 30초 캐시 (폴링마다 파일 파싱 방지).
+    long live = 0;
+    { std::lock_guard<std::mutex> lk(g_stat_mtx);
+      auto it = g_stat_total.find(stat_key(id.c_str(), g_my_station, ch));
+      if(it!=g_stat_total.end() && it->second>0) live = it->second; }
+    long today = host_today_count_cached(id.c_str(), ch);
+    long c = live>today ? live : today;
+    count = (uint32_t)(c<0?0:c);
 }
 void bewe_mod_ch_stat(const char* id, const char* station, int ch, int64_t now_ms,
                       int& cnt60, int64_t& last_ms){
