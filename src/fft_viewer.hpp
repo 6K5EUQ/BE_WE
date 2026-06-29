@@ -35,6 +35,8 @@
 #include <deque>
 #include <condition_variable>
 #include <memory>
+#include <unordered_map>
+#include <utility>
 #include <sys/types.h>
 
 // ── Global log helper (ui.cpp에서 정의, 모든 .cpp에서 사용 가능) ─────────
@@ -664,6 +666,10 @@ public:
     };
     std::vector<DiscoveredStation> discovered_stations;
     std::mutex                     discovered_stations_mtx;
+    // 기지 좌표 캐시 (name → lat/lon). 로그인/globe 에서 본 host 좌표를 만료 없이 보관 →
+    // JOIN 이 room 진입 후(discovered 가 stale 로 비어도) AIS/지도 마커에 계속 활용.
+    std::unordered_map<std::string, std::pair<float,float>> station_geo_cache;
+    std::mutex                     station_geo_cache_mtx;
 
     // Station identity (set during HOST mode placement on globe)
     std::string station_name;

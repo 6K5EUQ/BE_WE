@@ -61,6 +61,31 @@ void info_str(const AisRecord& m, char* o, size_t n){
 }
 // MMSI별 최신 head + 항적 꼬리 (지도용)
 struct AisTrack { AisRecord head; std::deque<std::array<float,2>> trail; int ship_type=0; char name[24]={0}; };
+// ── MMSI 그룹 (표: 동일 MMSI 묶음, 최신값 + Up/Down/Cnt) ──
+struct AisGrp {
+    uint32_t mmsi;
+    int      cnt;          // 수신 누계
+    int64_t  first;        // Up — 최초 수신(불변)
+    int64_t  last;         // Down — 최근 수신(갱신)
+    AisRecord latest;      // last 시점의 최신 레코드 (Type/Lat/Lon/SOG/COG/Info)
+    char     name[21]={};  // 최신 비공백 선박명
+};
+// 컬럼: 0 Up 1 Down 2 MMSI 3 Type 4 Name 5 Lat 6 Lon 7 SOG 8 COG 9 Cnt 10 Info
+int grp_cmp(int c, const AisGrp& a, const AisGrp& b){
+    switch(c){
+        case 0:  return a.first<b.first?-1:(a.first>b.first?1:0);
+        case 1:  return a.last<b.last?-1:(a.last>b.last?1:0);
+        case 2:  return a.mmsi<b.mmsi?-1:(a.mmsi>b.mmsi?1:0);
+        case 3:  return a.latest.msg_type-b.latest.msg_type;
+        case 4:  return strcmp(a.name,b.name);
+        case 5:  return a.latest.lat<b.latest.lat?-1:(a.latest.lat>b.latest.lat?1:0);
+        case 6:  return a.latest.lon<b.latest.lon?-1:(a.latest.lon>b.latest.lon?1:0);
+        case 7:  return a.latest.sog<b.latest.sog?-1:(a.latest.sog>b.latest.sog?1:0);
+        case 8:  return a.latest.cog<b.latest.cog?-1:(a.latest.cog>b.latest.cog?1:0);
+        case 9:  return a.cnt-b.cnt;
+        default: return a.latest.nav_status-b.latest.nav_status;
+    }
+}
 // 선종(ITU shiptype)별 마커 색 — 화물/유조/여객/어선 등 한눈 구분
 ImU32 type_color(int t){
     if(t>=60&&t<=69) return IM_COL32(120,200,255,255);  // passenger 파랑
@@ -142,7 +167,7 @@ void draw_content(FFTViewer& v, bool just_opened){
                 else { auto& bk=t.trail.back();
                        float dla=la-bk[0], dlo=(lo-bk[1])*cosf(la*(float)M_PI/180.f);
                        if(dla*dla+dlo*dlo > 4.5e-5f*4.5e-5f) t.trail.push_back({la,lo}); }
-                while(t.trail.size()>12) t.trail.pop_front();
+                while(t.trail.size()>10) t.trail.pop_front();
             }
             int64_t cutoff=last-30LL*60*1000;                     // 30분 지난 트랙 제거
             for(auto it=tracks.begin(); it!=tracks.end();)
@@ -187,19 +212,62 @@ void draw_content(FFTViewer& v, bool just_opened){
         pts[i].tip_l2  = tip2[i].empty()? nullptr : tip2[i].c_str();
     }
 
-    // ── 좌(표) | 스플리터 | 우(지도) ──
-    static float split=0.58f;
-    float tw;
-    if(W < 200+220+6) tw=W*0.5f;                          // 너무 좁으면 반반
-    else { tw=W*split; if(tw<200)tw=200; if(tw>W-226)tw=W-226; }
-    float mapw=W-tw-6; if(mapw<10)mapw=10; if(tw<10)tw=10;
+    // ── MMSI 그룹 집계 (표: 동일 MMSI 묶음, Up/Down/Cnt + 최신값. 캐시 게이팅) ──
+    static std::vector<AisGrp> grps;
+    static std::set<std::string> rx_stations;   // 실제 AIS 복조한 기지 이름들 ("" = LOCAL)
+    static float info_w = 60.f;   // Info 컬럼 동적폭
+    {
+        std::lock_guard<std::mutex> lk(mtx);
+        static size_t c_n=(size_t)-1; static int64_t c_last=-1;
+        static char c_filter[64]={'\xff'}; static int c_sc=-99; static bool c_asc=false;
+        size_t n_now=log.size(); int64_t last_t=n_now?log.back().t_ms:0;
+        if(n_now!=c_n||last_t!=c_last||strncmp(c_filter,filter,sizeof(c_filter))||c_sc!=sort_col||c_asc!=sort_asc){
+            std::vector<AisGrp> g; g.reserve(256);
+            std::unordered_map<uint32_t,int> idx; idx.reserve(512);
+            rx_stations.clear();
+            for(size_t i=0;i<n_now;i++){
+                const AisRecord& m=log[i];
+                if(!match(m,filter)) continue;
+                rx_stations.insert(m.station);   // 복조한 기지 수집 (빈문자=LOCAL)
+                auto it=idx.find(m.mmsi); int gi;
+                if(it==idx.end()){ gi=(int)g.size(); idx[m.mmsi]=gi;
+                    AisGrp ng{}; ng.mmsi=m.mmsi; ng.first=m.t_ms; ng.last=-1; g.push_back(ng); }
+                else gi=it->second;
+                AisGrp& G=g[gi]; G.cnt++;
+                if(m.t_ms<G.first) G.first=m.t_ms;          // Up = 최초(불변)
+                if(m.t_ms>=G.last){ G.last=m.t_ms; G.latest=m; }   // Down = 최근 + 최신 레코드
+                if(m.name[0] && !G.name[0]){ strncpy(G.name,m.name,sizeof(G.name)-1); G.name[sizeof(G.name)-1]=0; }
+            }
+            std::stable_sort(g.begin(),g.end(),[&](const AisGrp&a,const AisGrp&b){ int c=grp_cmp(sort_col<0?0:sort_col,a,b); return (sort_col<0?true:sort_asc)? c<0:c>0; });
+            grps.swap(g);
+            c_n=n_now; c_last=last_t; strncpy(c_filter,filter,sizeof(c_filter)-1); c_filter[sizeof(c_filter)-1]=0; c_sc=sort_col; c_asc=sort_asc;
+            // Info 최대 데이터폭 재계산
+            float mw=ImGui::CalcTextSize("Info").x;
+            for(const AisGrp& G : grps){ char inf[64]; info_str(G.latest,inf,sizeof(inf));
+                if(inf[0]){ float w=ImGui::CalcTextSize(inf).x; if(w>mw) mw=w; } }
+            info_w = mw + 12.f;
+        }
+    }
+
+    // ── 좌(표) | 우(지도) ──  (지도 크게보기 v.big 면 표 숨기고 지도 전폭)
+    static modview_map::MapView mv;
+    static uint32_t sel_mmsi=0;   // 표에서 선택된 MMSI 그룹 (0=없음)
+    float tw, mapw;
+    if(mv.big){ tw=0.f; mapw=W; }
+    else {
+        const float FIXED_COLS = 70+70+82+40+130+78+84+48+48+46;  // Up Down MMSI Type Name Lat Lon SOG COG Cnt
+        tw = FIXED_COLS + info_w + 26.f;
+        float maxtw = W-50; if(tw>maxtw) tw=maxtw; if(tw<200) tw=200;
+        mapw=W-tw; if(mapw<10)mapw=10;
+    }
 
     ImGui::SetCursorPosX(x0);
     ImGuiTableFlags tf = ImGuiTableFlags_ScrollY|ImGuiTableFlags_ScrollX|ImGuiTableFlags_RowBg|
         ImGuiTableFlags_BordersInnerV|ImGuiTableFlags_Resizable;
-    if(ImGui::BeginTable("##ais_tbl", 9, tf, ImVec2(tw, upper_h))){
-        ImGui::TableSetupScrollFreeze(2,1);
-        ImGui::TableSetupColumn("Time",   ImGuiTableColumnFlags_WidthFixed, 70);
+    if(!mv.big && ImGui::BeginTable("##ais_tbl", 11, tf, ImVec2(tw, upper_h))){
+        ImGui::TableSetupScrollFreeze(3,1);
+        ImGui::TableSetupColumn("Up",     ImGuiTableColumnFlags_WidthFixed, 70);
+        ImGui::TableSetupColumn("Down",   ImGuiTableColumnFlags_WidthFixed, 70);
         ImGui::TableSetupColumn("MMSI",   ImGuiTableColumnFlags_WidthFixed, 82);
         ImGui::TableSetupColumn("Type",   ImGuiTableColumnFlags_WidthFixed, 40);
         ImGui::TableSetupColumn("Name",   ImGuiTableColumnFlags_WidthFixed, 130);
@@ -207,67 +275,76 @@ void draw_content(FFTViewer& v, bool just_opened){
         ImGui::TableSetupColumn("Lon",    ImGuiTableColumnFlags_WidthFixed, 84);
         ImGui::TableSetupColumn("SOG",    ImGuiTableColumnFlags_WidthFixed, 48);
         ImGui::TableSetupColumn("COG",    ImGuiTableColumnFlags_WidthFixed, 48);
-        ImGui::TableSetupColumn("Info",   ImGuiTableColumnFlags_WidthFixed, 220);
-        modview::sortable_headers(9, sort_col, sort_asc, 8);
+        ImGui::TableSetupColumn("Cnt",    ImGuiTableColumnFlags_WidthFixed, 46);
+        ImGui::TableSetupColumn("Info",   ImGuiTableColumnFlags_WidthFixed, info_w);
+        modview::sortable_headers(11, sort_col, sort_asc, 0);   // 기본 Up 정렬
 
-        std::lock_guard<std::mutex> lk(mtx);
-        // vis 캐시 (개수/마지막t/필터/정렬 시그니처 게이팅)
-        static std::vector<int> vis;
-        static size_t c_n=(size_t)-1; static int64_t c_last=-1;
-        static char c_filter[64]={'\xff'}; static int c_sc=-99; static bool c_asc=false;
-        size_t n_now=log.size(); int64_t last_t=n_now?log.back().t_ms:0;
-        if(n_now!=c_n||last_t!=c_last||strncmp(c_filter,filter,sizeof(c_filter))||c_sc!=sort_col||c_asc!=sort_asc){
-            vis.clear(); for(int i=0;i<(int)n_now;i++) if(match(log[i],filter)) vis.push_back(i);
-            modview::sort_vis(vis, sort_col, sort_asc, [&](int c,int a,int b){ return col_cmp(c,log[a],log[b]); });
-            c_n=n_now; c_last=last_t; strncpy(c_filter,filter,sizeof(c_filter)-1); c_filter[sizeof(c_filter)-1]=0; c_sc=sort_col; c_asc=sort_asc;
-        }
-
-        ImGuiListClipper clip; clip.Begin((int)vis.size());
+        ImGuiListClipper clip; clip.Begin((int)grps.size());
         while(clip.Step()) for(int r=clip.DisplayStart;r<clip.DisplayEnd;r++){
-            const AisRecord& m = log[vis[r]];
+            const AisGrp& G=grps[r];
+            const AisRecord& m=G.latest;
             ImGui::TableNextRow();
-            char ts[12]; hms(m.t_ms,ts);
-            std::string k=msg_key(m);
-            if(modview::row_col0(vis[r], sel.count(k)>0, ts)){
-                modview::apply_click(sel, anchor, k, r, [&](int i){return msg_key(log[vis[i]]);}, (int)vis.size(), io.KeyCtrl, io.KeyShift);
-                focus=m; has_focus=!sel.empty();
+            char up[12]; hms(G.first,up);
+            bool selrow = (sel_mmsi==G.mmsi);
+            if(modview::row_col0(r, selrow, up)){               // col0 = Up time
+                sel_mmsi=G.mmsi; map_pin=G.mmsi; snprintf(filter,sizeof(filter),"%u",G.mmsi);
+                focus=m; has_focus=true;
             }
             char b[24];
-            ImGui::TableSetColumnIndex(1); snprintf(b,sizeof(b),"%u",m.mmsi); modview::cell(b);
-            ImGui::TableSetColumnIndex(2); snprintf(b,sizeof(b),"%d",m.msg_type); modview::cell(b);
-            ImGui::TableSetColumnIndex(3);
-            if(m.name[0]) modview::cell(m.name); else { const char* cc=ais_mid_country(m.mmsi); if(cc[0]) modview::cell(cc, ImVec4(0.6f,0.6f,0.6f,1.f)); }
-            ImGui::TableSetColumnIndex(4); if(m.has_pos){ snprintf(b,sizeof(b),"%.5f",m.lat); modview::cell(b); }
-            ImGui::TableSetColumnIndex(5); if(m.has_pos){ snprintf(b,sizeof(b),"%.5f",m.lon); modview::cell(b); }
-            ImGui::TableSetColumnIndex(6); if(m.sog>=0){ snprintf(b,sizeof(b),"%.1f",m.sog); modview::cell(b); }
-            ImGui::TableSetColumnIndex(7); if(m.cog>=0){ snprintf(b,sizeof(b),"%.0f",m.cog); modview::cell(b); }
-            ImGui::TableSetColumnIndex(8); { char inf[64]; info_str(m,inf,sizeof(inf)); if(inf[0]) ImGui::TextUnformatted(inf); }
+            ImGui::TableSetColumnIndex(1); { char dn[12]; hms(G.last,dn); modview::cell(dn, ImVec4(0.62f,0.62f,0.62f,1.f)); }
+            ImGui::TableSetColumnIndex(2); snprintf(b,sizeof(b),"%u",G.mmsi); modview::cell(b);
+            ImGui::TableSetColumnIndex(3); snprintf(b,sizeof(b),"%d",m.msg_type); modview::cell(b);
+            ImGui::TableSetColumnIndex(4);
+            if(G.name[0]) modview::cell(G.name); else { const char* cc=ais_mid_country(G.mmsi); if(cc[0]) modview::cell(cc, ImVec4(0.6f,0.6f,0.6f,1.f)); }
+            ImGui::TableSetColumnIndex(5); if(m.has_pos){ snprintf(b,sizeof(b),"%.5f",m.lat); modview::cell(b); }
+            ImGui::TableSetColumnIndex(6); if(m.has_pos){ snprintf(b,sizeof(b),"%.5f",m.lon); modview::cell(b); }
+            ImGui::TableSetColumnIndex(7); if(m.sog>=0){ snprintf(b,sizeof(b),"%.1f",m.sog); modview::cell(b); }
+            ImGui::TableSetColumnIndex(8); if(m.cog>=0){ snprintf(b,sizeof(b),"%.0f",m.cog); modview::cell(b); }
+            ImGui::TableSetColumnIndex(9); snprintf(b,sizeof(b),"%d",G.cnt); modview::cell(b);
+            ImGui::TableSetColumnIndex(10); { char inf[64]; info_str(m,inf,sizeof(inf)); if(inf[0]) ImGui::TextUnformatted(inf); }
         }
-        bool grew = log.size()>lastn; lastn=log.size();
-        modview::tail_follow(atb, grew && sort_col<0);
         ImGui::EndTable();
     }
 
-    // ── 스플리터 ──
-    ImGui::SameLine(0,0);
-    ImGui::InvisibleButton("##ais_split", ImVec2(6, upper_h));
-    if(ImGui::IsItemActive()){ split += io.MouseDelta.x/(W>1?W:1); if(split<0.2f)split=0.2f; if(split>0.8f)split=0.8f; }
-    if(ImGui::IsItemHovered()||ImGui::IsItemActive()){
-        ImVec2 a=ImGui::GetItemRectMin(), b=ImGui::GetItemRectMax();
-        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2((a.x+b.x)*0.5f-1,a.y),ImVec2((a.x+b.x)*0.5f+1,b.y),IM_COL32(120,140,160,200));
-        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    // ── 수신소(기지) 마커: 지구본과 동일하게 discovered_stations 전부 + 내 위치(HOST) 오버레이 ──
+    static std::vector<modview_map::MapStation> stns;
+    static std::vector<std::string> stn_names;   // 라벨 문자열 수명 보관
+    stns.clear(); stn_names.clear();
+    {
+        // 한국 운용 전제 좌표 정규화 — 부호반전/음수 lon 보정 (서경으로 저장된 값 방어)
+        auto norm=[](float& la, float& lo){
+            if(lo<0.f) lo=-lo;       // 서경(-128) → 동경(128)
+            if(la<0.f) la=-la;
+        };
+        // AIS 를 실제 복조한 기지(rx_stations)만, station_geo_cache(로그인때 받아 보관)서 좌표 조회.
+        std::lock_guard<std::mutex> ck(v.station_geo_cache_mtx);
+        for(const std::string& sn : rx_stations){
+            std::string key = (sn.empty()||sn=="LOCAL") ? v.station_name : sn;
+            float la=0.f, lo=0.f; bool got=false;
+            auto it=v.station_geo_cache.find(key);
+            if(it!=v.station_geo_cache.end()){ la=it->second.first; lo=it->second.second; got=true; }
+            else if((sn.empty()||sn=="LOCAL") && (v.station_lat!=0.f||v.station_lon!=0.f)){
+                la=v.station_lat; lo=v.station_lon; got=true;   // 내 위치 폴백
+            }
+            if(!got || (la==0.f&&lo==0.f)) continue;
+            norm(la,lo);
+            stn_names.push_back(key.empty()? sn : key);
+            stns.push_back({la, lo, nullptr});
+        }
+        for(size_t i=0;i<stns.size();i++) stns[i].name=stn_names[i].c_str();
     }
-    // ── 지도 (우측) ──
-    ImGui::SameLine(0,0);
-    static modview_map::MapView mv;
-    auto mres = modview_map::draw_map("##ais_map", mv, pts, ImVec2(mapw, upper_h), just_opened);
+
+    // ── 지도 (표 폭 고정이라 스플리터 없이 바로 붙임) ──
+    if(!mv.big) ImGui::SameLine(0,0);
+    else        ImGui::SetCursorPosX(x0);
+    auto mres = modview_map::draw_map("##ais_map", mv, pts, ImVec2(mapw, upper_h), just_opened, &stns);
     if(mres.clicked_id){
         uint32_t id=(uint32_t)mres.clicked_id;
-        if(map_pin==id){ map_pin=0; filter[0]=0; }                    // 같은 배 재클릭 → 목록 필터 해제
-        else { map_pin=id; snprintf(filter,sizeof(filter),"%u",id); } // 그 MMSI 만 목록에 표시
+        if(map_pin==id){ map_pin=0; sel_mmsi=0; filter[0]=0; }         // 같은 배 재클릭 → 해제
+        else { map_pin=id; sel_mmsi=id; snprintf(filter,sizeof(filter),"%u",id); }  // 그 MMSI 선택
         std::lock_guard<std::mutex> lk(mtx);
         for(const AisRecord& m : log) if(m.mmsi==id && m.has_pos) focus=m;
-        std::string fk=msg_key(focus); sel.clear(); sel.insert(fk); anchor=fk; has_focus=true;
+        has_focus=true;
     }
 
     // ── 세부 패널 (전체 폭 하단) ──

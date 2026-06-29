@@ -2378,6 +2378,11 @@ void run_streaming_viewer(){
             [&](const std::vector<CentralClient::Station>& stations){
                 std::lock_guard<std::mutex> lk(v.discovered_stations_mtx);
                 double now = glfwGetTime();
+                // 좌표 있는 기지는 만료없는 캐시에 머지 (JOIN 이 room 진입 후에도 활용)
+                { std::lock_guard<std::mutex> ck(v.station_geo_cache_mtx);
+                  for(auto& rs : stations)
+                      if((rs.lat!=0.f||rs.lon!=0.f) && !rs.name.empty())
+                          v.station_geo_cache[rs.name]={rs.lat,rs.lon}; }
                 for(auto& rs : stations){
                     bool found = false;
                     for(auto& s : v.discovered_stations){
@@ -3111,7 +3116,10 @@ void run_streaming_viewer(){
         glfwSwapBuffers(win);
     }
 
-    central_cli.stop_polling();
+    // JOIN 자식은 polling 유지 — 그래야 station_geo_cache 가 채워져 AIS/지도에 기지 마커가 뜸.
+    // (자식은 globe 루프를 건너뛰므로 여기서 멈추면 LIST_RESP 받기 전 즉사 → cache=0)
+    if(!(g_session_args.mode_set && g_session_args.mode == "join"))
+        central_cli.stop_polling();
     globe.destroy();
 
     if(glfwWindowShouldClose(win)){

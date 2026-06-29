@@ -32,7 +32,14 @@ struct MapView {
     bool   show_coast     = true;    // 해안선
     bool   show_trails    = true;    // 항적 꼬리
     bool   show_labels    = true;    // 마커 이름 라벨
-    int    kr_mode        = 1;       // 지도 소스: 0=SIMPLE(world 110m) 1=HALF(GSHHG 큰섬) 2=FULL(GSHHG 전체) 3=OSM
+    int    kr_mode        = 3;       // 지도 소스: 0=SIMPLE(world 110m) 1=HALF(GSHHG 큰섬) 2=FULL(GSHHG 전체) 3=OSM(기본)
+    bool   big            = false;   // 크게보기: 지도가 패널 전폭 차지 (호출자가 읽어 표 숨김). 좌상단 버튼으로 토글
+};
+
+// 수신소(기지) 마커 — 실제 복조한 기지 위치+이름 오버레이용.
+struct MapStation {
+    double      lat=0.0, lon=0.0;
+    const char* name=nullptr;   // 호출자 소유 (프레임 동안 유효)
 };
 
 struct MapResult {
@@ -42,7 +49,9 @@ struct MapResult {
 
 // 현재 윈도우/자식 안에 캔버스를 예약하고 지도를 그린다. size.x/y<=0 이면 남은 영역 사용.
 // pts 는 읽기전용 (호출자가 매 프레임 캐시에서 싸게 재구성). do_fit=true 면 이번 프레임 fit.
+// stations: 수신소 마커(이름표 포함). 없으면 nullptr.
 MapResult draw_map(const char* id, MapView& view, const std::vector<MapPoint>& pts,
-                   ImVec2 size = ImVec2(0,0), bool do_fit = false);
+                   ImVec2 size = ImVec2(0,0), bool do_fit = false,
+                   const std::vector<MapStation>* stations = nullptr);
 
 } // namespace modview_map

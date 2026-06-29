@@ -12,7 +12,7 @@
 namespace modview_map {
 
 // 지도 표시 한계 — 한국 bbox. 카메라(줌아웃/팬)를 이 영역에 가둠. 데이터도 이 밖은 안 그림.
-static const double MAP_LON0=124.0, MAP_LON1=132.0, MAP_LAT0=33.0, MAP_LAT1=39.0;
+static const double MAP_LON0=123.0, MAP_LON1=132.0, MAP_LAT0=32.0, MAP_LAT1=39.0;
 
 // 현재 카메라(v.lat/lon)를 MAP bbox 안으로 클램프. 줌아웃이 bbox 보다 커지면 bbox 에 맞춰 멈춤.
 static void clamp_to_bbox(MapView& v, float W, float H){
@@ -75,7 +75,7 @@ static const float* land_latlon(int& nverts){
 }
 
 MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
-                   ImVec2 size, bool do_fit){
+                   ImVec2 size, bool do_fit, const std::vector<MapStation>* stations){
     MapResult r{};
     ImGuiIO& io = ImGui::GetIO();
     ImVec2 p0 = ImGui::GetCursorScreenPos();
@@ -88,8 +88,9 @@ MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
     bool hovered = ImGui::IsItemHovered();
     ImVec2 p1 = ImVec2(p0.x+W, p0.y+H);
 
+    // 최초 1회만 auto-fit. 탭 재진입(do_fit) 시엔 카메라(줌/위치) 유지 — 초기화 안 함.
     if(!v.initialized && !pts.empty()){ fit_to_points(v, pts, W, H); v.initialized=true; }
-    if(do_fit){ fit_to_points(v, pts, W, H); }
+    else if(do_fit && !v.initialized){ fit_to_points(v, pts, W, H); }
     clamp_to_bbox(v, W, H);   // 카메라를 한국 bbox 안으로 제한 (줌아웃/팬 한계)
 
     // ── 커서고정 휠줌 ──
@@ -128,7 +129,7 @@ MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
     dl->AddRectFilled(p0, p1, IM_COL32(14,22,34,255));     // 바다 배경
 
     // 한국 GSHHG bbox — kr_mode>0 일 때 이 영역은 world(110m) 대신 KR 고해상만 그림(이중선 방지).
-    const float KRX0=124.f,KRX1=132.f,KRY0=33.f,KRY1=39.f;
+    const float KRX0=123.f,KRX1=132.f,KRY0=32.f,KRY1=39.f;
     auto in_kr=[&](float la,float lo){ return lo>=KRX0&&lo<=KRX1&&la>=KRY0&&la<=KRY1; };
     bool kr_active = v.kr_mode>0 && v.lon1>=KRX0 && v.lon0<=KRX1 && v.lat1>=KRY0 && v.lat0<=KRY1;
     // 소스별 coast/tri 포인터 선택. 1=HALF 2=FULL 3=OSM (0=SIMPLE 은 kr_active=false).
@@ -248,10 +249,12 @@ MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
         if(v.show_trails && pt.trail && pt.trail_n>1){
             ImU32 base = pt.color & 0x00FFFFFFu;
             ImVec2 tp = LL2PX(pt.trail[0], pt.trail[1]);
+            if(pt.selected) dl->AddCircleFilled(tp, 1.25f, base|0xC0000000u, 8);  // GPS 기록점
             for(int k=1;k<pt.trail_n;k++){
                 ImVec2 tc=LL2PX(pt.trail[k*2], pt.trail[k*2+1]);
                 int a = 40 + (int)(140.0*k/(pt.trail_n-1));
                 dl->AddLine(tp, tc, base|((ImU32)a<<24), pt.selected?2.0f:1.2f);
+                if(pt.selected) dl->AddCircleFilled(tc, 1.25f, base|0xC0000000u, 8);  // 각 기록 위치에 점
                 tp=tc;
             }
         }
@@ -275,6 +278,26 @@ MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
         if(v.show_labels && pt.label && (pt.selected || true))
             dl->AddText(ImVec2(s.x+8,s.y-6), pt.selected ? IM_COL32(255,240,200,255) : IM_COL32(200,220,255,180), pt.label);
         if(hovered){ float dx=s.x-mp.x, dy=s.y-mp.y, d=dx*dx+dy*dy; if(d<bestd){ bestd=d; best=(int)i; } }
+    }
+
+    // ── 수신소(기지) 마커 + 이름 — 실제 복조한 기지 위치 오버레이 ──
+    if(stations){
+        for(const MapStation& st : *stations){
+            ImVec2 s=LL2PX(st.lat, st.lon);
+            if(s.x<p0.x||s.x>p1.x||s.y<p0.y||s.y>p1.y) continue;
+            ImU32 sc=IM_COL32(255,90,90,255);
+            // 다이아몬드 마커 (선박과 구분)
+            float r2=5.f;
+            dl->AddTriangleFilled(ImVec2(s.x,s.y-r2),ImVec2(s.x-r2,s.y),ImVec2(s.x+r2,s.y), sc);
+            dl->AddTriangleFilled(ImVec2(s.x,s.y+r2),ImVec2(s.x-r2,s.y),ImVec2(s.x+r2,s.y), sc);
+            dl->AddQuad(ImVec2(s.x,s.y-r2),ImVec2(s.x+r2,s.y),ImVec2(s.x,s.y+r2),ImVec2(s.x-r2,s.y), IM_COL32(255,255,255,230), 1.2f);
+            if(st.name && st.name[0]){
+                ImVec2 ts=ImGui::CalcTextSize(st.name);
+                float lx=s.x+8, ly=s.y-7;
+                dl->AddRectFilled(ImVec2(lx-2,ly-1),ImVec2(lx+ts.x+2,ly+ts.y+1),IM_COL32(0,0,0,170),2.f);
+                dl->AddText(ImVec2(lx,ly), IM_COL32(255,180,180,255), st.name);
+            }
+        }
     }
 
     // ── 스케일 바 (우하단; 거리 감각) ──
@@ -331,6 +354,37 @@ MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
             dl->AddText(ImVec2(b0.x+(BW-ts.x)*0.5f, b0.y+(BH-ts.y)*0.5f), tc, names[i]);
             if(bhov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) v.kr_mode=i;
         }
+    }
+
+    // ── 크게보기/작게하기 토글 (좌측 상단, 아이콘). 호출자가 v.big 읽어 표 숨기고 지도 전폭. ──
+    {
+        const float SZ=20.f, MX=6.f, MY=6.f;
+        ImVec2 b0(p0.x+MX, p0.y+MY), b1(p0.x+MX+SZ, p0.y+MY+SZ);
+        bool bhov = hovered && io.MousePos.x>=b0.x && io.MousePos.x<=b1.x
+                            && io.MousePos.y>=b0.y && io.MousePos.y<=b1.y;
+        ImU32 bg = bhov?IM_COL32(45,60,80,235):IM_COL32(18,30,46,210);
+        dl->AddRectFilled(b0,b1,bg,3.f);
+        dl->AddRect(b0,b1,IM_COL32(90,130,170,200),3.f,0,1.f);
+        // 확대/축소 화살표 아이콘 (직접 그림 — 폰트 글리프 의존 없음)
+        ImU32 ic=IM_COL32(210,225,245,240); float cx=(b0.x+b1.x)*0.5f, cy=(b0.y+b1.y)*0.5f; float a=5.f;
+        if(!v.big){
+            // 바깥쪽 4방향 화살촉 (확대)
+            ImVec2 c[4]={{b0.x+3,b0.y+3},{b1.x-3,b0.y+3},{b1.x-3,b1.y-3},{b0.x+3,b1.y-3}};
+            int dx[4]={1,-1,-1,1}, dy[4]={1,1,-1,-1};
+            for(int k=0;k<4;k++){
+                dl->AddLine(c[k], ImVec2(c[k].x+dx[k]*a, c[k].y), ic, 1.6f);
+                dl->AddLine(c[k], ImVec2(c[k].x, c[k].y+dy[k]*a), ic, 1.6f);
+            }
+        } else {
+            // 안쪽 4방향 화살촉 (축소)
+            ImVec2 c[4]={{cx-a-1,cy-a-1},{cx+a+1,cy-a-1},{cx+a+1,cy+a+1},{cx-a-1,cy+a+1}};
+            int dx[4]={1,-1,-1,1}, dy[4]={1,1,-1,-1};
+            for(int k=0;k<4;k++){
+                dl->AddLine(c[k], ImVec2(c[k].x+dx[k]*a, c[k].y), ic, 1.6f);
+                dl->AddLine(c[k], ImVec2(c[k].x, c[k].y+dy[k]*a), ic, 1.6f);
+            }
+        }
+        if(bhov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) v.big=!v.big;
     }
 
     dl->PopClipRect();
