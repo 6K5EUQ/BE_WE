@@ -295,6 +295,19 @@ MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
         }
     }
 
+    // ── 마우스 좌표 (좌하단; hover 시 실시간 lat/lon) ──
+    if(hovered){
+        double mlon=v.lon0+(double)(io.MousePos.x-p0.x)/W*(v.lon1-v.lon0);
+        double mlat=v.lat1-(double)(io.MousePos.y-p0.y)/H*(v.lat1-v.lat0);
+        char cl[40];
+        snprintf(cl,sizeof(cl),"%.5f%c  %.5f%c",
+                 std::fabs(mlat), mlat>=0?'N':'S', std::fabs(mlon), mlon>=0?'E':'W');
+        ImVec2 ts=ImGui::CalcTextSize(cl);
+        float tx=p0.x+6, ty=p1.y-ts.y-5;
+        dl->AddRectFilled(ImVec2(tx-3,ty-2),ImVec2(tx+ts.x+3,ty+ts.y+2),IM_COL32(0,0,0,150),3.f);
+        dl->AddText(ImVec2(tx,ty),IM_COL32(235,235,245,235),cl);
+    }
+
     // ── 지도 소스 선택 (우측 상단 세로 버튼: SIMPLE / HALF / FULL / OSM) ──
     // 라디오 선택. kr_mode: 0=SIMPLE 1=HALF 2=FULL 3=OSM. LAYERS 토글 패널은 제거됨
     // (LAND/COAST/GRID/TRAILS/LABELS 는 항상 켜짐 — MapView 기본값 true 고정).
