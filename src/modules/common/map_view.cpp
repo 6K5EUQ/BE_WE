@@ -1,10 +1,8 @@
 // ── 공용 2D 지도 위젯 구현 (GUI 전용, *_view.cpp → CLI 빌드 제외, 1회 컴파일) ─
-// 순수 ImGui ImDrawList. 등거리원통 투영 + Natural Earth 110m 해안선 폴리라인 +
+// 순수 ImGui ImDrawList. 등거리원통 투영 + OSM 한국 육지/해안선 +
 // 위경도 격자 + 항적 꼬리 + 침로 마커 + 커서고정 휠줌 + 드래그 팬 + auto-fit.
 #include "modview_map.hpp"
-#include "../../world_map_data.hpp"   // static const WORLD_MAP_DATA[] — 이 TU 에서만 include
-#include "../../korea_map_data.hpp"   // GSHHG 한국: KR_COAST_DATA / KR_LAND_TRI_FULL / KR_LAND_TRI_HALF
-#include "../../korea_osm_data.hpp"   // OSM 한국(별도 소스, 제거 시 이 헤더 + kr_mode==3 분기만 삭제)
+#include "../../korea_osm_data.hpp"   // OSM 한국 해안선 (KR_OSM_COAST) — 육지/해안선 유일 소스
 #include <cmath>
 #include <cstdio>
 #include <algorithm>
@@ -54,24 +52,37 @@ static void fit_to_points(MapView& v, const std::vector<MapPoint>& pts, float W,
     normalize(v,W,H);
 }
 
-// LAND_TRI_DATA(단위구 XYZ, 9 floats/삼각형) → lat,lon 정점 배열로 1회 변환 후 캐시.
-static const float* land_latlon(int& nverts){
-    static std::vector<float> g; static bool done=false;
+// 육지 채움용 엣지 — 해안선(KR_OSM_COAST) 닫힌 링만 모아 lat 오름차순 정렬 (1회 캐시).
+// 화면 scanline even-odd 로 "해안선이 둘러싼 영역"을 그대로 채우는 paint-bucket 용.
+struct FillEdge { float latlo, lathi, lonlo, slope; };  // lonlo=latlo 에서의 lon, slope=dlon/dlat
+static const std::vector<FillEdge>& fill_edges(){
+    static std::vector<FillEdge> E; static bool done=false;
     if(!done){
         done=true;
-        g.reserve(LAND_TRI_COUNT/3*2);
-        for(int i=0;i+2<LAND_TRI_COUNT;i+=3){
-            float x=LAND_TRI_DATA[i], y=LAND_TRI_DATA[i+1], z=LAND_TRI_DATA[i+2];
-            if(y>1.f)y=1.f; if(y<-1.f)y=-1.f;
-            // LAND_TRI 생성기 좌표계: y=sin(lat), z=-cos(lat)*sin(lon) (globe latlon_to_xyz 와 z 부호 반대).
-            // 평면지도는 raw 데이터를 직접 변환 → lat=asin(y), lon=atan2(-z,x). (해안선 정점과 99.6% 일치 실측)
-            // globe 는 LAND_TRI raw 를 GPU 업로드 후 자체 transform → 이 함수 안 거침.
-            g.push_back(std::asin(y)*57.29578f);
-            g.push_back(std::atan2(-z,x)*57.29578f);
+        std::vector<float> rla, rlo;   // 현재 링 (lat,lon)
+        auto flush=[&](){
+            size_t n=rla.size();
+            if(n>=3 && std::fabs(rla.front()-rla.back())<0.002f
+                    && std::fabs(rlo.front()-rlo.back())<0.002f){   // 닫힌 링만
+                for(size_t i=0;i<n;i++){
+                    float la1=rla[i], lo1=rlo[i];
+                    float la2=rla[(i+1)%n], lo2=rlo[(i+1)%n];
+                    if(la1==la2) continue;
+                    if(la1>la2){ std::swap(la1,la2); std::swap(lo1,lo2); }
+                    E.push_back({la1,la2,lo1,(lo2-lo1)/(la2-la1)});
+                }
+            }
+            rla.clear(); rlo.clear();
+        };
+        for(int i=0;i+1<KR_OSM_COAST_COUNT;i+=2){
+            float lat=KR_OSM_COAST[i], lon=KR_OSM_COAST[i+1];
+            if(std::isnan(lat)){ flush(); continue; }
+            rla.push_back(lat); rlo.push_back(lon);
         }
+        flush();
+        std::sort(E.begin(),E.end(),[](const FillEdge&a,const FillEdge&b){ return a.latlo<b.latlo; });
     }
-    nverts=(int)g.size()/2;
-    return g.data();
+    return E;
 }
 
 MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
@@ -129,20 +140,12 @@ MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
     dl->PushClipRect(p0, p1, true);
     dl->AddRectFilled(p0, p1, IM_COL32(14,22,34,255));     // 바다 배경
 
-    // 한국 GSHHG bbox — kr_mode>0 일 때 이 영역은 world(110m) 대신 KR 고해상만 그림(이중선 방지).
+    // 한국 bbox — OSM 데이터는 이 영역만 커버. 카메라가 겹칠 때만 그림.
     const float KRX0=123.f,KRX1=132.f,KRY0=32.f,KRY1=39.f;
-    auto in_kr=[&](float la,float lo){ return lo>=KRX0&&lo<=KRX1&&la>=KRY0&&la<=KRY1; };
-    bool kr_active = v.kr_mode>0 && v.lon1>=KRX0 && v.lon0<=KRX1 && v.lat1>=KRY0 && v.lat0<=KRY1;
-    // 소스별 coast/tri 포인터 선택. 1=HALF 2=FULL 3=OSM (0=SIMPLE 은 kr_active=false).
-    const float* KR_COAST = KR_COAST_DATA; int KR_COAST_N = KR_COAST_COUNT;
-    const float* KR_TRI   = KR_LAND_TRI_HALF; int KR_TRI_N = KR_LAND_TRI_HALF_COUNT;
-    if(v.kr_mode==2){ KR_TRI=KR_LAND_TRI_FULL; KR_TRI_N=KR_LAND_TRI_FULL_COUNT; }
-    else if(v.kr_mode==3){ KR_COAST=KR_OSM_COAST; KR_COAST_N=KR_OSM_COAST_COUNT;
-                           KR_TRI=KR_OSM_TRI;     KR_TRI_N=KR_OSM_TRI_COUNT; }
-    // 모든 모드: 한국 bbox 만 표시 (그 밖은 클리핑해 빈 바다). OSM 은 추가로 world 통째 skip.
-    bool kr_only = true;
-    if(kr_only){
-        // KR bbox 를 화면 픽셀로 → 그 밖 영역에 바다색 덮어 world/데이터 가림
+    bool kr_active = v.lon1>=KRX0 && v.lon0<=KRX1 && v.lat1>=KRY0 && v.lat0<=KRY1;
+    // KR bbox 밖은 클리핑해 빈 바다로. bbox 안만 OSM 육지/해안선 표시.
+    {
+        // KR bbox 를 화면 픽셀로 → 그 밖 영역에 바다색 덮음
         ImVec2 c0=LL2PX(KRY1,KRX0), c1=LL2PX(KRY0,KRX1);   // (lat1,lon0)=좌상, (lat0,lon1)=우하
         float bx0=std::max(p0.x,std::min(c0.x,c1.x)), bx1=std::min(p1.x,std::max(c0.x,c1.x));
         float by0=std::max(p0.y,std::min(c0.y,c1.y)), by1=std::min(p1.y,std::max(c0.y,c1.y));
@@ -154,61 +157,53 @@ MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
         dl->PushClipRect(ImVec2(bx0,by0),ImVec2(bx1,by1),true);          // KR bbox 로 클립
     }
 
-    // ── 육지 채움 (LAND_TRI_DATA 재활용; lat/lon 1회 캐시, antimeridian/화면밖 컬링) ──
-    bool world_off = (v.kr_mode==3);   // OSM 모드는 한국 자체 데이터라 world 통째 skip
-    if(v.show_land && !world_off){
-        int lv; const float* L=land_latlon(lv);
-        ImU32 lc=IM_COL32(34,46,40,255);
-        for(int t=0;t+2<lv;t+=3){
-            float lo0=L[t*2+1], lo1=L[(t+1)*2+1], lo2=L[(t+2)*2+1];
-            float la0=L[t*2],   la1=L[(t+1)*2],   la2=L[(t+2)*2];
-            float lomin=std::min(lo0,std::min(lo1,lo2)), lomax=std::max(lo0,std::max(lo1,lo2));
-            if(lomax-lomin>180.f) continue;                          // 자오선 가로질러 = 가짜 삼각형
-            float lamin=std::min(la0,std::min(la1,la2)), lamax=std::max(la0,std::max(la1,la2));
-            if(lomax<(float)v.lon0||lomin>(float)v.lon1||lamax<(float)v.lat0||lamin>(float)v.lat1) continue;
-            // KR bbox 와 겹치는 world 삼각형은 skip (KR 고해상이 대신 채움)
-            if(kr_active && lomax>=KRX0&&lomin<=KRX1&&lamax>=KRY0&&lamin<=KRY1) continue;
-            dl->AddTriangleFilled(LL2PX(la0,lo0),LL2PX(la1,lo1),LL2PX(la2,lo2), lc);
-        }
-    }
-
-    // ── 한국 GSHHG 고해상 채움 오버레이 (kr_active 시; world 위에 덧그림) ──
+    // ── OSM 한국 육지 채움 (해안선이 둘러싼 영역을 화면 픽셀행 even-odd scanline 으로 채움) ──
+    // paint-bucket: 흰 해안선과 동일 데이터(닫힌 링)를 화면 1px 행마다 채워 줌 무관 픽셀 단위 매끈.
+    // 카메라(bbox)/크기 변경 시만 재계산 → v._fill 막대(p0 상대 px) 캐시, 정지 프레임은 재방출만.
     if(v.show_land && kr_active){
-        ImU32 lc=IM_COL32(34,46,40,255);
-        for(int t=0;t+5<KR_TRI_N;t+=6){
-            float la0=KR_TRI[t],   lo0=KR_TRI[t+1];
-            float la1=KR_TRI[t+2], lo1=KR_TRI[t+3];
-            float la2=KR_TRI[t+4], lo2=KR_TRI[t+5];
-            float lomin=std::min(lo0,std::min(lo1,lo2)), lomax=std::max(lo0,std::max(lo1,lo2));
-            float lamin=std::min(la0,std::min(la1,la2)), lamax=std::max(la0,std::max(la1,la2));
-            if(lomax<(float)v.lon0||lomin>(float)v.lon1||lamax<(float)v.lat0||lamin>(float)v.lat1) continue;
-            dl->AddTriangleFilled(LL2PX(la0,lo0),LL2PX(la1,lo1),LL2PX(la2,lo2), lc);
-        }
-    }
-
-    // ── 해안선 (WORLD_MAP_DATA 1패스, NAN 끊김, 화면밖 컬링; 점당 trig 없음) ──
-    if(v.show_coast && !world_off){
-        bool have=false; ImVec2 prev; float prevlon=0;
-        for(int i=0;i+1<WORLD_MAP_DATA_COUNT;i+=2){
-            float lat=WORLD_MAP_DATA[i], lon=WORLD_MAP_DATA[i+1];
-            if(std::isnan(lat)){ have=false; continue; }
-            // KR bbox 안 점은 world 해안선 건너뜀 (KR 고해상이 대신; 이중선 방지)
-            if(kr_active && in_kr(lat,lon)){ have=false; continue; }
-            ImVec2 cur=LL2PX(lat,lon);
-            if(have && std::fabs(lon-prevlon)<=180.f){
-                bool out=(prev.x<p0.x&&cur.x<p0.x)||(prev.x>p1.x&&cur.x>p1.x)||
-                         (prev.y<p0.y&&cur.y<p0.y)||(prev.y>p1.y&&cur.y>p1.y);
-                if(!out) dl->AddLine(prev,cur, IM_COL32(120,150,175,255), 1.2f);
+        bool changed = v.lat0!=v._fl_lat0 || v.lat1!=v._fl_lat1
+                    || v.lon0!=v._fl_lon0 || v.lon1!=v._fl_lon1
+                    || W!=v._fl_W || H!=v._fl_H;
+        if(changed){
+            v._fl_lat0=v.lat0; v._fl_lat1=v.lat1; v._fl_lon0=v.lon0; v._fl_lon1=v.lon1; v._fl_W=W; v._fl_H=H;
+            v._fill.clear();
+            const std::vector<FillEdge>& E = fill_edges();
+            double latspan=v.lat1-v.lat0, lonspan=v.lon1-v.lon0;
+            size_t NE=E.size(), ei=0;
+            static std::vector<const FillEdge*> active; active.clear();
+            static std::vector<float> xs;
+            int Hi=(int)H;
+            for(int yy=Hi-1; yy>=0; --yy){                       // 아래(저위도)→위 = lat 오름차순 sweep
+                double latc = v.lat1 - ((yy+0.5)/(double)Hi)*latspan;
+                while(ei<NE && E[ei].latlo<=latc){ active.push_back(&E[ei]); ++ei; }   // 새 엣지 활성화
+                for(size_t a=0;a<active.size();){                 // 만료 엣지 제거 (swap-pop)
+                    if(active[a]->lathi < latc){ active[a]=active.back(); active.pop_back(); }
+                    else ++a;
+                }
+                xs.clear();
+                for(const FillEdge* e : active)
+                    if(e->latlo<=latc && latc<e->lathi)
+                        xs.push_back(e->lonlo + (float)(latc-e->latlo)*e->slope);   // 교차 lon
+                if(xs.size()<2) continue;
+                std::sort(xs.begin(), xs.end());
+                for(size_t k=0;k+1<xs.size();k+=2){               // even-odd: 쌍 사이 채움
+                    float dx0=(float)((xs[k]  -v.lon0)/lonspan*W);
+                    float dx1=(float)((xs[k+1]-v.lon0)/lonspan*W);
+                    v._fill.push_back(dx0); v._fill.push_back((float)yy); v._fill.push_back(dx1);
+                }
             }
-            prev=cur; prevlon=lon; have=true;
         }
+        ImU32 lc=IM_COL32(34,46,40,255);
+        for(size_t i=0;i+2<v._fill.size();i+=3)
+            dl->AddRectFilled(ImVec2(p0.x+v._fill[i],   p0.y+v._fill[i+1]),
+                              ImVec2(p0.x+v._fill[i+2], p0.y+v._fill[i+1]+1.0f), lc);
     }
 
-    // ── 한국 GSHHG 해안선 오버레이 (world 위에 더 정밀하게 덧그림) ──
+    // ── OSM 한국 해안선 (KR_OSM_COAST: interleaved lat,lon, NAN 끊김, 화면밖 컬링) ──
     if(v.show_coast && kr_active){
         bool have=false; ImVec2 prev;
-        for(int i=0;i+1<KR_COAST_N;i+=2){
-            float lat=KR_COAST[i], lon=KR_COAST[i+1];
+        for(int i=0;i+1<KR_OSM_COAST_COUNT;i+=2){
+            float lat=KR_OSM_COAST[i], lon=KR_OSM_COAST[i+1];
             if(std::isnan(lat)){ have=false; continue; }
             ImVec2 cur=LL2PX(lat,lon);
             if(have){
@@ -219,7 +214,7 @@ MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
             prev=cur; have=true;
         }
     }
-    if(kr_only) dl->PopClipRect();   // KR bbox 클립 해제 (격자/마커는 전체 캔버스에)
+    dl->PopClipRect();   // KR bbox 클립 해제 (격자/마커는 전체 캔버스에)
 
     // ── 위경도 격자 ──
     if(v.show_grid){
@@ -361,31 +356,6 @@ MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
         float tx=p0.x+6, ty=p1.y-ts.y-5;
         dl->AddRectFilled(ImVec2(tx-3,ty-2),ImVec2(tx+ts.x+3,ty+ts.y+2),IM_COL32(0,0,0,150),3.f);
         dl->AddText(ImVec2(tx,ty),IM_COL32(235,235,245,235),cl);
-    }
-
-    // ── 지도 소스 선택 (우측 상단 세로 버튼: SIMPLE / HALF / FULL / OSM) ──
-    // 라디오 선택. kr_mode: 0=SIMPLE 1=HALF 2=FULL 3=OSM. LAYERS 토글 패널은 제거됨
-    // (LAND/COAST/GRID/TRAILS/LABELS 는 항상 켜짐 — MapView 기본값 true 고정).
-    {
-        const char* names[4] = {"SIMPLE","HALF","FULL","OSM"};
-        const int N=4;
-        const float BW=58.f, BH=18.f, PAD=4.f, MX=6.f, MY=6.f;
-        float bx = p1.x - BW - MX;
-        for(int i=0;i<N;i++){
-            float by = p0.y + MY + i*(BH+PAD);
-            ImVec2 b0(bx,by), b1(bx+BW,by+BH);
-            bool sel = (v.kr_mode==i);
-            bool bhov = hovered && io.MousePos.x>=b0.x && io.MousePos.x<=b1.x
-                                && io.MousePos.y>=b0.y && io.MousePos.y<=b1.y;
-            ImU32 bg = sel ? (bhov?IM_COL32(40,110,160,235):IM_COL32(30,90,140,225))
-                           :(bhov?IM_COL32(45,60,80,210):IM_COL32(18,30,46,200));
-            dl->AddRectFilled(b0,b1,bg,3.f);
-            if(sel) dl->AddRect(b0,b1,IM_COL32(120,200,255,255),3.f,0,1.5f);
-            ImU32 tc = sel ? IM_COL32(220,240,255,255) : IM_COL32(150,165,185,210);
-            ImVec2 ts=ImGui::CalcTextSize(names[i]);
-            dl->AddText(ImVec2(b0.x+(BW-ts.x)*0.5f, b0.y+(BH-ts.y)*0.5f), tc, names[i]);
-            if(bhov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) v.kr_mode=i;
-        }
     }
 
     // ── 크게보기/작게하기 토글 (좌측 상단, 아이콘). 호출자가 v.big 읽어 표 숨기고 지도 전폭. ──

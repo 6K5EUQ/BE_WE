@@ -1,9 +1,9 @@
 #pragma once
 // ── 해독 모듈 공용 경량 2D 지도 위젯 (GUI 전용) ─────────────────────────────
 // 위치형 해독 모듈(AIS/ADS-B 등)이 좌표+항적을 ImGui ImDrawList 만으로 등거리원통도법
-// 2D 지도에 그린다. OpenGL/타일/네트워크 없음. 해안선은 src/world_map_data.hpp 재사용
+// 2D 지도에 그린다. OpenGL/타일/네트워크 없음. 육지/해안선은 src/korea_osm_data.hpp(OSM) 사용
 // (구현부 map_view.cpp 에서 1회 include). 모듈은 MapPoint 리스트만 만들어 draw_map 호출.
-//   - *_view.cpp 에서만 include (GUI 빌드 전용). world_map_data.hpp 는 절대 직접 include 금지.
+//   - *_view.cpp 에서만 include (GUI 빌드 전용).
 #include <imgui.h>
 #include <cstdint>
 #include <vector>
@@ -32,8 +32,12 @@ struct MapView {
     bool   show_coast     = true;    // 해안선
     bool   show_trails    = true;    // 항적 꼬리
     bool   show_labels    = true;    // 마커 이름 라벨
-    int    kr_mode        = 3;       // 지도 소스: 0=SIMPLE(world 110m) 1=HALF(GSHHG 큰섬) 2=FULL(GSHHG 전체) 3=OSM(기본)
     bool   big            = false;   // 크게보기: 지도가 패널 전폭 차지 (호출자가 읽어 표 숨김). 좌상단 버튼으로 토글
+
+    // 육지 채움 캐시 (해안선 닫힌 링 even-odd 화면-scanline; 카메라/크기 변경 시만 재계산) — 내부 전용
+    double _fl_lat0=1, _fl_lat1=0, _fl_lon0=0, _fl_lon1=0;  // 마지막 계산 시점 카메라
+    float  _fl_W=0, _fl_H=0;
+    std::vector<float> _fill;   // (dx0, yy, dx1) 막대, p0 상대 픽셀 (1px 높이)
 };
 
 // 수신소(기지) 마커 — 실제 복조한 기지 위치+이름 오버레이용.
