@@ -167,7 +167,7 @@ void draw_content(FFTViewer& v, bool just_opened){
                 else { auto& bk=t.trail.back();
                        float dla=la-bk[0], dlo=(lo-bk[1])*cosf(la*(float)M_PI/180.f);
                        if(dla*dla+dlo*dlo > 4.5e-5f*4.5e-5f) t.trail.push_back({la,lo}); }
-                while(t.trail.size()>10) t.trail.pop_front();
+                while(t.trail.size()>500) t.trail.pop_front();   // 개수 무방 — 사실상 30분 트랙수명이 한계 (안전상한 500)
             }
             int64_t cutoff=last-30LL*60*1000;                     // 30분 지난 트랙 제거
             for(auto it=tracks.begin(); it!=tracks.end();)
@@ -252,6 +252,7 @@ void draw_content(FFTViewer& v, bool just_opened){
     // ── 좌(표) | 우(지도) ──  (지도 크게보기 v.big 면 표 숨기고 지도 전폭)
     static modview_map::MapView mv;
     static uint32_t sel_mmsi=0;   // 표에서 선택된 MMSI 그룹 (0=없음)
+    static std::string sel_station;   // 클릭된 수신소 이름 (그 기지 수신선박에 점선; 빈=없음)
     static float split_tw=-1.f;   // 사용자가 스플리터로 정한 표 폭(px). <0 = 미설정(컬럼합 자동)
     float tw, mapw;
     if(mv.big){ tw=0.f; mapw=W; }
@@ -281,7 +282,7 @@ void draw_content(FFTViewer& v, bool just_opened){
         ImGui::TableSetupColumn("COG",    ImGuiTableColumnFlags_WidthFixed, 48);
         ImGui::TableSetupColumn("Cnt",    ImGuiTableColumnFlags_WidthFixed, 46);
         ImGui::TableSetupColumn("Info",   ImGuiTableColumnFlags_WidthStretch);  // 남는 폭 흡수 → Info 뒤 빈 칸 없음
-        modview::sortable_headers(11, sort_col, sort_asc, 0);   // 기본 Up 정렬
+        modview::sortable_headers(11, sort_col, sort_asc, 10);  // Info(10)만 좌측정렬, 나머지(Up 포함) 중앙
 
         ImGuiListClipper clip; clip.Begin((int)grps.size());
         while(clip.Step()) for(int r=clip.DisplayStart;r<clip.DisplayEnd;r++){
@@ -333,9 +334,33 @@ void draw_content(FFTViewer& v, bool just_opened){
             if(!got || (la==0.f&&lo==0.f)) continue;
             norm(la,lo);
             stn_names.push_back(key.empty()? sn : key);
-            stns.push_back({la, lo, nullptr});
+            modview_map::MapStation ms; ms.lat=la; ms.lon=lo;
+            ms.selected = (!sel_station.empty() && (key==sel_station || sn==sel_station));
+            stns.push_back(ms);
         }
         for(size_t i=0;i<stns.size();i++) stns[i].name=stn_names[i].c_str();
+    }
+
+    // 선택 기지가 수신한 선박 점선 (기지좌표 → 각 선박 head)
+    static std::vector<modview_map::MapLink> links;
+    links.clear();
+    if(!sel_station.empty()){
+        // 선택 기지 좌표
+        double slat=0,slon=0; bool sgot=false;
+        for(size_t i=0;i<stns.size();i++) if(stns[i].selected){ slat=stns[i].lat; slon=stns[i].lon; sgot=true; break; }
+        if(sgot){
+            std::lock_guard<std::mutex> lk(mtx);
+            std::set<uint32_t> rxmmsi;   // 그 기지가 수신한 MMSI
+            for(const AisRecord& m : log){
+                std::string st = (m.station[0] && strcmp(m.station,"LOCAL")) ? m.station : v.station_name;
+                if(st==sel_station) rxmmsi.insert(m.mmsi);
+            }
+            for(const auto& mp : pts)
+                if(rxmmsi.count((uint32_t)mp.id)){
+                    double la=mp.lat, lo=mp.lon; if(lo<0)lo=-lo; if(la<0)la=-la;
+                    links.push_back({slat,slon, la,lo});
+                }
+        }
     }
 
     // ── 스플리터 (표↔지도 크기 조절; 크게보기 아닐 때만) ──
@@ -354,7 +379,12 @@ void draw_content(FFTViewer& v, bool just_opened){
     } else {
         ImGui::SetCursorPosX(x0);
     }
-    auto mres = modview_map::draw_map("##ais_map", mv, pts, ImVec2(mapw, upper_h), just_opened, &stns);
+    auto mres = modview_map::draw_map("##ais_map", mv, pts, ImVec2(mapw, upper_h), just_opened, &stns, &links);
+    if(mres.clicked_station>=0 && mres.clicked_station<(int)stn_names.size()){
+        // 기지 아이콘 클릭 → 그 기지 수신선박 점선 토글
+        const std::string& cs = stn_names[mres.clicked_station];
+        sel_station = (sel_station==cs) ? std::string() : cs;
+    }
     if(mres.clicked_id){
         uint32_t id=(uint32_t)mres.clicked_id;
         if(map_pin==id){ map_pin=0; sel_mmsi=0; filter[0]=0; }         // 같은 배 재클릭 → 해제

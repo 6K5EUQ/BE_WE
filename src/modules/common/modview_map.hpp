@@ -40,18 +40,24 @@ struct MapView {
 struct MapStation {
     double      lat=0.0, lon=0.0;
     const char* name=nullptr;   // 호출자 소유 (프레임 동안 유효)
+    bool        selected=false; // 선택됨(클릭) — 강조 표시
 };
 
+// 기지→선박 점선 (선택 기지가 수신한 선박 연결). 호출자가 좌표쌍으로 빌드.
+struct MapLink { double lat0,lon0, lat1,lon1; };
+
 struct MapResult {
-    uint64_t clicked_id = 0;   // 이번 프레임 클릭된 마커 id (없으면 0)
+    uint64_t clicked_id = 0;       // 이번 프레임 클릭된 선박 마커 id (없으면 0)
     uint64_t hovered_id = 0;
+    int      clicked_station = -1; // 이번 프레임 클릭된 수신소 인덱스 (없으면 -1)
 };
 
 // 현재 윈도우/자식 안에 캔버스를 예약하고 지도를 그린다. size.x/y<=0 이면 남은 영역 사용.
 // pts 는 읽기전용 (호출자가 매 프레임 캐시에서 싸게 재구성). do_fit=true 면 이번 프레임 fit.
-// stations: 수신소 마커(이름표 포함). 없으면 nullptr.
+// stations: 수신소 마커. links: 기지→선박 점선(선택 기지 수신선박). 없으면 nullptr.
 MapResult draw_map(const char* id, MapView& view, const std::vector<MapPoint>& pts,
                    ImVec2 size = ImVec2(0,0), bool do_fit = false,
-                   const std::vector<MapStation>* stations = nullptr);
+                   const std::vector<MapStation>* stations = nullptr,
+                   const std::vector<MapLink>* links = nullptr);
 
 } // namespace modview_map

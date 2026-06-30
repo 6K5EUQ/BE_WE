@@ -75,7 +75,8 @@ static const float* land_latlon(int& nverts){
 }
 
 MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
-                   ImVec2 size, bool do_fit, const std::vector<MapStation>* stations){
+                   ImVec2 size, bool do_fit, const std::vector<MapStation>* stations,
+                   const std::vector<MapLink>* links){
     MapResult r{};
     ImGuiIO& io = ImGui::GetIO();
     ImVec2 p0 = ImGui::GetCursorScreenPos();
@@ -280,12 +281,35 @@ MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
         if(hovered){ float dx=s.x-mp.x, dy=s.y-mp.y, d=dx*dx+dy*dy; if(d<bestd){ bestd=d; best=(int)i; } }
     }
 
+    // ── 기지→선박 점선 (선택 기지가 수신한 선박 연결; 마커 아래에 깔림) ──
+    if(links){
+        for(const MapLink& ln : *links){
+            ImVec2 a=LL2PX(ln.lat0,ln.lon0), b=LL2PX(ln.lat1,ln.lon1);
+            bool out=(a.x<p0.x&&b.x<p0.x)||(a.x>p1.x&&b.x>p1.x)||(a.y<p0.y&&b.y<p0.y)||(a.y>p1.y&&b.y>p1.y);
+            if(out) continue;
+            // 점선: 짧은 선분 반복
+            float dx=b.x-a.x, dy=b.y-a.y, len=std::sqrt(dx*dx+dy*dy);
+            if(len<1.f) continue;
+            float ux=dx/len, uy=dy/len; const float dash=6.f, gap=5.f;
+            for(float t=0; t<len; t+=dash+gap){
+                float t2=std::min(t+dash,len);
+                dl->AddLine(ImVec2(a.x+ux*t,a.y+uy*t), ImVec2(a.x+ux*t2,a.y+uy*t2), IM_COL32(255,120,120,140), 1.0f);
+            }
+        }
+    }
+
     // ── 수신소(기지) 마커 + 이름 — 실제 복조한 기지 위치 오버레이 ──
+    int st_hit=-1;
     if(stations){
+        int si=-1;
         for(const MapStation& st : *stations){
+            ++si;
             ImVec2 s=LL2PX(st.lat, st.lon);
             if(s.x<p0.x||s.x>p1.x||s.y<p0.y||s.y>p1.y) continue;
-            ImU32 sc=IM_COL32(255,90,90,255);
+            // 클릭 감지 (마커 ~12px 반경)
+            if(hovered){ float dx=io.MousePos.x-s.x, dy=io.MousePos.y-s.y;
+                if(dx*dx+dy*dy<=144.f && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) st_hit=si; }
+            ImU32 sc = st.selected ? IM_COL32(255,200,80,255) : IM_COL32(255,90,90,255);
             // 안테나(수신소) 아이콘: 마스트 + 베이스 + 송신 호(전파)
             float mh=8.f;                                   // 마스트 높이
             ImVec2 top(s.x, s.y-mh), base(s.x, s.y);
@@ -306,6 +330,7 @@ MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
             }
         }
     }
+    r.clicked_station = st_hit;
 
     // ── 스케일 바 (우하단; 거리 감각) ──
     {
