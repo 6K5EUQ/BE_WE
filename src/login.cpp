@@ -127,6 +127,7 @@ bool draw_login_screen(int win_w, int win_h){
     }
 
     int ti=tier-1;
+    if(tier==1) ti=2;   // Tier 1 배경은 Tier 3 와 동일 이미지 사용
     if(!bg_tried[ti]){
         bg_tried[ti]=true;
         if(!load_png(BG_PATHS[ti],bg_tex[ti],bg_w[ti],bg_h[ti]))
