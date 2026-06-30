@@ -156,8 +156,10 @@ void draw_content(FFTViewer& v, bool just_opened){
     cur_view = nav_stack[nav_pos];
 
     float detail_h = has_focus ? 132.f : 0.f;
-    float upper_h = H - 30 - detail_h - 16; if(upper_h<80) upper_h=80;  // 표 높이 (세부패널 위)
-    float map_h   = H - 30 - 16;            if(map_h<80) map_h=80;      // 지도 높이 (세부패널 무시, 더 길게)
+    // 세부패널 바닥 = y0 + (30+upper_h+2) + detail_h = y0 + H - 4 (upper_h=H-36-detail_h 일 때 하단 4px)
+    // 지도 바닥도 동일하게 y0+H-4 가 되도록 map_h = H-30-4 로 맞춤 (숫자만 같으면 안 맞아서 실측 기준)
+    float upper_h = H - 36 - detail_h; if(upper_h<80) upper_h=80;  // 표 높이 (세부패널 위)
+    float map_h   = H - 30 - 4;        if(map_h<80) map_h=80;      // 지도 높이 (바닥을 세부패널과 평행)
 
     // ── MMSI별 최신위치 + 항적 캐시 (signature 게이팅, 증분; FIFO/clear 안전) ──
     static std::unordered_map<uint32_t, AisTrack> tracks;
@@ -311,7 +313,7 @@ void draw_content(FFTViewer& v, bool just_opened){
                 nav_go(G.mmsi);                                 // 그 선박 전체 이력 화면으로
             }
             char b[24];
-            ImGui::TableSetColumnIndex(1); { char dn[12]; hms(G.last,dn); modview::cell(dn, ImVec4(0.62f,0.62f,0.62f,1.f)); }
+            ImGui::TableSetColumnIndex(1); { char dn[12]; hms(G.last,dn); modview::cell(dn); }
             ImGui::TableSetColumnIndex(2); snprintf(b,sizeof(b),"%u",G.mmsi); modview::cell(b);
             ImGui::TableSetColumnIndex(3); snprintf(b,sizeof(b),"%d",m.msg_type); modview::cell(b);
             ImGui::TableSetColumnIndex(4);

@@ -7733,7 +7733,7 @@ void run_streaming_viewer(){
                         }
 
                         // WAITING/ARMED 는 정렬 순서대로 [1] [2] [3]…, 그 외는 상태 아이콘
-                        char num_lbl[8];
+                        char num_lbl[16];
                         const char* icon;
                         if(e.status == FFTViewer::SchedEntry::WAITING
                         || e.status == FFTViewer::SchedEntry::ARMED){
