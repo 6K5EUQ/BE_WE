@@ -103,7 +103,7 @@ void draw_content(FFTViewer& v, bool just_opened){
     if(just_opened && !remote) local_load_today(v);
 
     ImVec2 avail = ImGui::GetContentRegionAvail();
-    float W=avail.x, H=avail.y, x0=ImGui::GetCursorPosX();
+    float W=avail.x, H=avail.y, x0=ImGui::GetCursorPosX(), y0=ImGui::GetCursorPosY();
     bool win_focus = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
     static std::set<std::string> sel; static std::string anchor;
@@ -140,10 +140,24 @@ void draw_content(FFTViewer& v, bool just_opened){
     }
 
     int total; { std::lock_guard<std::mutex> lk(mtx); total=(int)log.size(); }
-    modview::header_bar(v, "ais", filter, sizeof(filter), total, remote, focus_filter, on_clear);
+    // ── 뷰 네비게이션: 그룹목록 ↔ 선박이력. nav_stack[0]=0(목록), >0=해당 MMSI 이력 ──
+    static std::vector<uint32_t> nav_stack(1, 0u);   // 히스토리 (0=그룹목록)
+    static int nav_pos = 0;                          // 현재 위치
+    uint32_t cur_view = nav_stack[nav_pos];          // 0=목록, else=MMSI 이력
+    auto nav_go = [&](uint32_t mmsi){                // 새 화면 이동 (앞쪽 히스토리 버림)
+        if(nav_stack[nav_pos]==mmsi) return;
+        nav_stack.resize(nav_pos+1); nav_stack.push_back(mmsi); nav_pos=(int)nav_stack.size()-1;
+    };
+    bool nav_back=false, nav_fwd=false;
+    modview::header_bar(v, "ais", filter, sizeof(filter), total, remote, focus_filter, on_clear,
+                        true, nav_pos>0, nav_pos<(int)nav_stack.size()-1, &nav_back, &nav_fwd);
+    if(nav_back && nav_pos>0) nav_pos--;
+    if(nav_fwd  && nav_pos<(int)nav_stack.size()-1) nav_pos++;
+    cur_view = nav_stack[nav_pos];
 
     float detail_h = has_focus ? 132.f : 0.f;
-    float upper_h = H - 30 - detail_h - 16; if(upper_h<80) upper_h=80;
+    float upper_h = H - 30 - detail_h - 16; if(upper_h<80) upper_h=80;  // 표 높이 (세부패널 위)
+    float map_h   = H - 30 - 16;            if(map_h<80) map_h=80;      // 지도 높이 (세부패널 무시, 더 길게)
 
     // ── MMSI별 최신위치 + 항적 캐시 (signature 게이팅, 증분; FIFO/clear 안전) ──
     static std::unordered_map<uint32_t, AisTrack> tracks;
@@ -269,7 +283,7 @@ void draw_content(FFTViewer& v, bool just_opened){
     ImGui::SetCursorPosX(x0);
     ImGuiTableFlags tf = ImGuiTableFlags_ScrollY|ImGuiTableFlags_ScrollX|ImGuiTableFlags_RowBg|
         ImGuiTableFlags_BordersInnerV|ImGuiTableFlags_Resizable;
-    if(!mv.big && ImGui::BeginTable("##ais_tbl", 11, tf, ImVec2(tw, upper_h))){
+    if(!mv.big && cur_view==0 && ImGui::BeginTable("##ais_tbl", 11, tf, ImVec2(tw, upper_h))){
         ImGui::TableSetupScrollFreeze(3,1);
         ImGui::TableSetupColumn("Up",     ImGuiTableColumnFlags_WidthFixed, 70);
         ImGui::TableSetupColumn("Down",   ImGuiTableColumnFlags_WidthFixed, 70);
@@ -292,8 +306,9 @@ void draw_content(FFTViewer& v, bool just_opened){
             char up[12]; hms(G.first,up);
             bool selrow = (sel_mmsi==G.mmsi);
             if(modview::row_col0(r, selrow, up)){               // col0 = Up time
-                sel_mmsi=G.mmsi; map_pin=G.mmsi; snprintf(filter,sizeof(filter),"%u",G.mmsi);
+                sel_mmsi=G.mmsi; map_pin=G.mmsi;                // 지도 핀(필터링 안 함)
                 focus=m; has_focus=true;
+                nav_go(G.mmsi);                                 // 그 선박 전체 이력 화면으로
             }
             char b[24];
             ImGui::TableSetColumnIndex(1); { char dn[12]; hms(G.last,dn); modview::cell(dn, ImVec4(0.62f,0.62f,0.62f,1.f)); }
@@ -308,6 +323,43 @@ void draw_content(FFTViewer& v, bool just_opened){
             ImGui::TableSetColumnIndex(9); snprintf(b,sizeof(b),"%d",G.cnt); modview::cell(b);
             ImGui::TableSetColumnIndex(10); { char inf[64]; info_str(m,inf,sizeof(inf)); if(inf[0]) ImGui::TextUnformatted(inf); }
         }
+        ImGui::EndTable();
+    }
+    // ── 선박 이력 뷰: 선택 MMSI 의 Up~Down 사이 모든 메시지 (시간순) ──
+    else if(!mv.big && cur_view!=0 && ImGui::BeginTable("##ais_hist", 9, tf, ImVec2(tw, upper_h))){
+        ImGui::TableSetupScrollFreeze(1,1);
+        ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 70);
+        ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 40);
+        ImGui::TableSetupColumn("Lat",  ImGuiTableColumnFlags_WidthFixed, 78);
+        ImGui::TableSetupColumn("Lon",  ImGuiTableColumnFlags_WidthFixed, 84);
+        ImGui::TableSetupColumn("SOG",  ImGuiTableColumnFlags_WidthFixed, 48);
+        ImGui::TableSetupColumn("COG",  ImGuiTableColumnFlags_WidthFixed, 48);
+        ImGui::TableSetupColumn("HDG",  ImGuiTableColumnFlags_WidthFixed, 44);
+        ImGui::TableSetupColumn("Sta",  ImGuiTableColumnFlags_WidthFixed, 60);
+        ImGui::TableSetupColumn("Info", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableHeadersRow();
+
+        std::lock_guard<std::mutex> lk(mtx);
+        static std::vector<int> hvis; hvis.clear();
+        for(int i=0;i<(int)log.size();i++) if(log[i].mmsi==cur_view) hvis.push_back(i);
+
+        ImGuiListClipper hc; hc.Begin((int)hvis.size());
+        while(hc.Step()) for(int r=hc.DisplayStart;r<hc.DisplayEnd;r++){
+            const AisRecord& m=log[hvis[r]];
+            ImGui::TableNextRow();
+            char ts[12]; hms(m.t_ms,ts);
+            ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted(ts);
+            char b[24];
+            ImGui::TableSetColumnIndex(1); snprintf(b,sizeof(b),"%d",m.msg_type); modview::cell(b);
+            ImGui::TableSetColumnIndex(2); if(m.has_pos){ snprintf(b,sizeof(b),"%.5f",m.lat); modview::cell(b); }
+            ImGui::TableSetColumnIndex(3); if(m.has_pos){ snprintf(b,sizeof(b),"%.5f",m.lon); modview::cell(b); }
+            ImGui::TableSetColumnIndex(4); if(m.sog>=0){ snprintf(b,sizeof(b),"%.1f",m.sog); modview::cell(b); }
+            ImGui::TableSetColumnIndex(5); if(m.cog>=0){ snprintf(b,sizeof(b),"%.0f",m.cog); modview::cell(b); }
+            ImGui::TableSetColumnIndex(6); if(m.heading!=511){ snprintf(b,sizeof(b),"%d",m.heading); modview::cell(b); }
+            ImGui::TableSetColumnIndex(7); modview::cell(m.station[0]?m.station:"LOCAL", ImVec4(0.85f,0.75f,0.5f,1.f));
+            ImGui::TableSetColumnIndex(8); { char inf[64]; info_str(m,inf,sizeof(inf)); if(inf[0]) ImGui::TextUnformatted(inf); }
+        }
+        modview::tail_follow(atb, false);
         ImGui::EndTable();
     }
 
@@ -366,7 +418,7 @@ void draw_content(FFTViewer& v, bool just_opened){
     // ── 스플리터 (표↔지도 크기 조절; 크게보기 아닐 때만) ──
     if(!mv.big){
         ImGui::SameLine(0,0);
-        ImGui::InvisibleButton("##ais_split", ImVec2(6, upper_h));
+        ImGui::InvisibleButton("##ais_split", ImVec2(6, map_h));
         bool sphov=ImGui::IsItemHovered(), spact=ImGui::IsItemActive();
         if(spact){ float ntw=(split_tw>0.f?split_tw:tw)+io.MouseDelta.x;
                    if(ntw<200)ntw=200; if(ntw>W-50)ntw=W-50; split_tw=ntw; }
@@ -379,7 +431,7 @@ void draw_content(FFTViewer& v, bool just_opened){
     } else {
         ImGui::SetCursorPosX(x0);
     }
-    auto mres = modview_map::draw_map("##ais_map", mv, pts, ImVec2(mapw, upper_h), just_opened, &stns, &links);
+    auto mres = modview_map::draw_map("##ais_map", mv, pts, ImVec2(mapw, map_h), just_opened, &stns, &links);
     if(mres.clicked_station>=0 && mres.clicked_station<(int)stn_names.size()){
         // 기지 아이콘 클릭 → 그 기지 수신선박 점선 토글
         const std::string& cs = stn_names[mres.clicked_station];
@@ -394,9 +446,10 @@ void draw_content(FFTViewer& v, bool just_opened){
         has_focus=true;
     }
 
-    // ── 세부 패널 (전체 폭 하단) ──
+    // ── 세부 패널 (표 폭까지만, 표 바로 밑 — 지도는 안 가려 더 길게) ──
     if(has_focus){
-        modview::detail_begin("ais", x0, W, detail_h);
+        ImGui::SetCursorPos(ImVec2(x0, y0+30.f+upper_h+2.f));
+        modview::detail_begin("ais", x0, tw, detail_h);
         char tsd[12]; hms(focus.t_ms,tsd);
         ImVec4 V(0.85f,0.85f,0.9f,1.f);
         ImGui::Text("Time:"); ImGui::SameLine(); ImGui::TextColored(V,"%s",tsd);

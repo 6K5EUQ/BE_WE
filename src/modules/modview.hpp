@@ -98,7 +98,9 @@ inline bool row_col0(int uid, bool selected, const char* col0_text){
 // on_clear: Clear 누름 OR Recv 켤 때 호출 (로그+선택 비우기). focus_filter: Ctrl+F/Tab.
 inline void header_bar(FFTViewer& v, const char* id, char* filter, size_t cap,
                        int count, bool remote, bool focus_filter,
-                       const std::function<void()>& on_clear){
+                       const std::function<void()>& on_clear,
+                       bool nav_show=false, bool can_back=false, bool can_fwd=false,
+                       bool* nav_back=nullptr, bool* nav_fwd=nullptr){
     float W = ImGui::GetContentRegionAvail().x;
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.10f,0.12f,0.16f,1.f));
     char cid[40]; snprintf(cid,sizeof(cid),"##%s_hdr",id);
@@ -111,6 +113,17 @@ inline void header_bar(FFTViewer& v, const char* id, char* filter, size_t cap,
     char fid[40]; snprintf(fid,sizeof(fid),"##%s_flt",id);
     ImGui::InputText(fid, filter, cap);                       // 힌트 없음
     ImGui::SameLine(0,16); ImGui::SetCursorPosY(tcy); ImGui::Text("%d msg", count);
+    // 뒤로/앞으로 네비 버튼 (msg 우측). 비활성이면 회색 비클릭.
+    if(nav_show){
+        ImGui::SameLine(0,16); ImGui::SetCursorPosY(fy);
+        ImGui::BeginDisabled(!can_back);
+        if(ImGui::Button("<##nav_back") && nav_back) *nav_back=true;
+        ImGui::EndDisabled();
+        ImGui::SameLine(0,4); ImGui::SetCursorPosY(fy);
+        ImGui::BeginDisabled(!can_fwd);
+        if(ImGui::Button(">##nav_fwd") && nav_fwd) *nav_fwd=true;
+        ImGui::EndDisabled();
+    }
     if(bewe_mod_hist_loading(id)){ ImGui::SameLine(0,12); ImGui::SetCursorPosY(tcy); ImGui::TextDisabled("loading..."); }
     float cwb=ImGui::CalcTextSize("Clear").x   +ImGui::GetStyle().FramePadding.x*2;
     float rwb=ImGui::CalcTextSize("Recv OFF").x+ImGui::GetStyle().FramePadding.x*2;  // 넓은쪽 기준 고정폭
