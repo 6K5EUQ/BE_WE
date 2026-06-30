@@ -286,16 +286,23 @@ MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
             ImVec2 s=LL2PX(st.lat, st.lon);
             if(s.x<p0.x||s.x>p1.x||s.y<p0.y||s.y>p1.y) continue;
             ImU32 sc=IM_COL32(255,90,90,255);
-            // 다이아몬드 마커 (선박과 구분)
-            float r2=5.f;
-            dl->AddTriangleFilled(ImVec2(s.x,s.y-r2),ImVec2(s.x-r2,s.y),ImVec2(s.x+r2,s.y), sc);
-            dl->AddTriangleFilled(ImVec2(s.x,s.y+r2),ImVec2(s.x-r2,s.y),ImVec2(s.x+r2,s.y), sc);
-            dl->AddQuad(ImVec2(s.x,s.y-r2),ImVec2(s.x+r2,s.y),ImVec2(s.x,s.y+r2),ImVec2(s.x-r2,s.y), IM_COL32(255,255,255,230), 1.2f);
+            // 안테나(수신소) 아이콘: 마스트 + 베이스 + 송신 호(전파)
+            float mh=8.f;                                   // 마스트 높이
+            ImVec2 top(s.x, s.y-mh), base(s.x, s.y);
+            dl->AddLine(top, base, sc, 1.6f);               // 마스트
+            dl->AddLine(ImVec2(s.x-4,s.y),ImVec2(s.x+4,s.y), sc, 1.6f);  // 베이스
+            dl->AddCircleFilled(top, 1.8f, sc, 8);          // 안테나 팁
+            for(int rr=2;rr<=3;rr++){                        // 송신 전파 호(좌우)
+                float rad=rr*2.4f;
+                dl->PathArcTo(top, rad, -2.10f, -1.04f, 8); dl->PathStroke(sc, 0, 1.2f);  // 우측 호
+                dl->PathArcTo(top, rad, -2.10f+3.1416f, -1.04f+3.1416f, 8); dl->PathStroke(sc, 0, 1.2f);  // 좌측 호
+            }
             if(st.name && st.name[0]){
+                // 안테나 밑 중앙 — 투명 배경, 그림자만 살짝(가독성)
                 ImVec2 ts=ImGui::CalcTextSize(st.name);
-                float lx=s.x+8, ly=s.y-7;
-                dl->AddRectFilled(ImVec2(lx-2,ly-1),ImVec2(lx+ts.x+2,ly+ts.y+1),IM_COL32(0,0,0,170),2.f);
-                dl->AddText(ImVec2(lx,ly), IM_COL32(255,180,180,255), st.name);
+                ImVec2 lp(s.x-ts.x*0.5f, s.y+3.f);
+                dl->AddText(ImVec2(lp.x+1,lp.y+1), IM_COL32(0,0,0,150), st.name);  // 그림자
+                dl->AddText(lp, IM_COL32(255,190,190,255), st.name);
             }
         }
     }
@@ -362,11 +369,9 @@ MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
         ImVec2 b0(p0.x+MX, p0.y+MY), b1(p0.x+MX+SZ, p0.y+MY+SZ);
         bool bhov = hovered && io.MousePos.x>=b0.x && io.MousePos.x<=b1.x
                             && io.MousePos.y>=b0.y && io.MousePos.y<=b1.y;
-        ImU32 bg = bhov?IM_COL32(45,60,80,235):IM_COL32(18,30,46,210);
-        dl->AddRectFilled(b0,b1,bg,3.f);
-        dl->AddRect(b0,b1,IM_COL32(90,130,170,200),3.f,0,1.f);
-        // 확대/축소 화살표 아이콘 (직접 그림 — 폰트 글리프 의존 없음)
-        ImU32 ic=IM_COL32(210,225,245,240); float cx=(b0.x+b1.x)*0.5f, cy=(b0.y+b1.y)*0.5f; float a=5.f;
+        // 배경/테두리 없음 — 아이콘만 (hover 시 살짝 밝게)
+        ImU32 ic= bhov?IM_COL32(255,255,255,255):IM_COL32(210,225,245,235);
+        float cx=(b0.x+b1.x)*0.5f, cy=(b0.y+b1.y)*0.5f; float a=5.f;
         if(!v.big){
             // 바깥쪽 4방향 화살촉 (확대)
             ImVec2 c[4]={{b0.x+3,b0.y+3},{b1.x-3,b0.y+3},{b1.x-3,b1.y-3},{b0.x+3,b1.y-3}};

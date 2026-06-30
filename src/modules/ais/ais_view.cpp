@@ -241,24 +241,28 @@ void draw_content(FFTViewer& v, bool just_opened){
             std::stable_sort(g.begin(),g.end(),[&](const AisGrp&a,const AisGrp&b){ int c=grp_cmp(sort_col<0?0:sort_col,a,b); return (sort_col<0?true:sort_asc)? c<0:c>0; });
             grps.swap(g);
             c_n=n_now; c_last=last_t; strncpy(c_filter,filter,sizeof(c_filter)-1); c_filter[sizeof(c_filter)-1]=0; c_sc=sort_col; c_asc=sort_asc;
-            // Info 최대 데이터폭 재계산
-            float mw=ImGui::CalcTextSize("Info").x;
+            // Info 폭 = 실제 데이터 최대 길이에 맞춤 (헤더 글자폭 무시)
+            float mw=8.f;
             for(const AisGrp& G : grps){ char inf[64]; info_str(G.latest,inf,sizeof(inf));
                 if(inf[0]){ float w=ImGui::CalcTextSize(inf).x; if(w>mw) mw=w; } }
-            info_w = mw + 12.f;
+            info_w = mw + 10.f;
         }
     }
 
     // ── 좌(표) | 우(지도) ──  (지도 크게보기 v.big 면 표 숨기고 지도 전폭)
     static modview_map::MapView mv;
     static uint32_t sel_mmsi=0;   // 표에서 선택된 MMSI 그룹 (0=없음)
+    static float split_tw=-1.f;   // 사용자가 스플리터로 정한 표 폭(px). <0 = 미설정(컬럼합 자동)
     float tw, mapw;
     if(mv.big){ tw=0.f; mapw=W; }
     else {
         const float FIXED_COLS = 70+70+82+40+130+78+84+48+48+46;  // Up Down MMSI Type Name Lat Lon SOG COG Cnt
-        tw = FIXED_COLS + info_w + 26.f;
+        // 11컬럼 cell padding(~8px each) + inner border + 세로스크롤바(~14). 이만큼만 더해
+        // Info 셀 뒤 빈 여백 없이 마지막 Info 가 데이터폭에서 끝나게.
+        float auto_tw = FIXED_COLS + info_w + 11*8.f + 14.f;
+        tw = (split_tw>0.f) ? split_tw : auto_tw;       // 드래그로 조절했으면 그 값
         float maxtw = W-50; if(tw>maxtw) tw=maxtw; if(tw<200) tw=200;
-        mapw=W-tw; if(mapw<10)mapw=10;
+        mapw=W-tw-6; if(mapw<10)mapw=10;                // 6px = 스플리터
     }
 
     ImGui::SetCursorPosX(x0);
@@ -276,7 +280,7 @@ void draw_content(FFTViewer& v, bool just_opened){
         ImGui::TableSetupColumn("SOG",    ImGuiTableColumnFlags_WidthFixed, 48);
         ImGui::TableSetupColumn("COG",    ImGuiTableColumnFlags_WidthFixed, 48);
         ImGui::TableSetupColumn("Cnt",    ImGuiTableColumnFlags_WidthFixed, 46);
-        ImGui::TableSetupColumn("Info",   ImGuiTableColumnFlags_WidthFixed, info_w);
+        ImGui::TableSetupColumn("Info",   ImGuiTableColumnFlags_WidthStretch);  // 남는 폭 흡수 → Info 뒤 빈 칸 없음
         modview::sortable_headers(11, sort_col, sort_asc, 0);   // 기본 Up 정렬
 
         ImGuiListClipper clip; clip.Begin((int)grps.size());
@@ -334,9 +338,22 @@ void draw_content(FFTViewer& v, bool just_opened){
         for(size_t i=0;i<stns.size();i++) stns[i].name=stn_names[i].c_str();
     }
 
-    // ── 지도 (표 폭 고정이라 스플리터 없이 바로 붙임) ──
-    if(!mv.big) ImGui::SameLine(0,0);
-    else        ImGui::SetCursorPosX(x0);
+    // ── 스플리터 (표↔지도 크기 조절; 크게보기 아닐 때만) ──
+    if(!mv.big){
+        ImGui::SameLine(0,0);
+        ImGui::InvisibleButton("##ais_split", ImVec2(6, upper_h));
+        bool sphov=ImGui::IsItemHovered(), spact=ImGui::IsItemActive();
+        if(spact){ float ntw=(split_tw>0.f?split_tw:tw)+io.MouseDelta.x;
+                   if(ntw<200)ntw=200; if(ntw>W-50)ntw=W-50; split_tw=ntw; }
+        if(sphov||spact){
+            ImVec2 a=ImGui::GetItemRectMin(), b=ImGui::GetItemRectMax();
+            ImGui::GetWindowDrawList()->AddRectFilled(ImVec2((a.x+b.x)*0.5f-1,a.y),ImVec2((a.x+b.x)*0.5f+1,b.y),IM_COL32(120,140,160,200));
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        }
+        ImGui::SameLine(0,0);
+    } else {
+        ImGui::SetCursorPosX(x0);
+    }
     auto mres = modview_map::draw_map("##ais_map", mv, pts, ImVec2(mapw, upper_h), just_opened, &stns);
     if(mres.clicked_id){
         uint32_t id=(uint32_t)mres.clicked_id;
