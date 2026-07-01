@@ -4,7 +4,7 @@
 
 // ── BEWE version (창 제목 및 About 표시용) ──────────────────────────────────
 // SemVer: vMAJOR.MINOR.PATCH — 자세한 정책은 CLAUDE.md 참조
-#define BEWE_VERSION "v10.15.7"
+#define BEWE_VERSION "v10.15.8"
 
 #ifdef BEWE_HEADLESS
   typedef uint32_t ImU32;

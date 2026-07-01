@@ -111,6 +111,8 @@ void draw_content(FFTViewer& v, bool just_opened){
     static int sort_col=-1; static bool sort_asc=true;
     static bool atb=true; static size_t lastn=0;
     static uint32_t map_pin=0;                 // 지도에서 핀(필터)된 MMSI (0=없음)
+    static uint32_t sel_mmsi=0;                // 표/지도에서 선택된 MMSI (0=없음) — 강조+full꼬리 공통
+    static std::string sel_station;            // 클릭된 수신소 이름 (그 기지 수신선박 점선; 빈=없음)
     // 필터 박스를 수동으로 바꾸면 핀 해제 (지도 토글 일관성)
     if(map_pin){ char ms[16]; snprintf(ms,sizeof(ms),"%u",map_pin); if(strcmp(filter,ms)!=0) map_pin=0; }
 
@@ -178,20 +180,23 @@ void draw_content(FFTViewer& v, bool just_opened){
                 if(m.name[0] && !t.name[0]) { strncpy(t.name,m.name,sizeof(t.name)-1); }
                 if(!m.has_pos) continue;                       // head/trail은 위치 msg만
                 if(t.head.t_ms==0 || m.t_ms>=t.head.t_ms) t.head=m;
-                float la=(float)m.lat, lo=(float)m.lon, tt=(float)(m.t_ms/1000);
+                // tt = 분 단위 상대시간 (float 정밀도 확보; 절대 epoch/1000 은 float 로 초단위 구분 불가)
+                float la=(float)m.lat, lo=(float)m.lon, tt=(float)(m.t_ms/60000.0);
                 if(t.trail.empty()) t.trail.push_back({la,lo,tt});
                 else { auto& bk=t.trail.back();
                        float dla=la-bk[0], dlo=(lo-bk[1])*cosf(la*(float)M_PI/180.f);
                        if(dla*dla+dlo*dlo > 4.5e-5f*4.5e-5f) t.trail.push_back({la,lo,tt}); }
-                // 비선택 배 꼬리는 최근 10분치만 (선택 배는 log 전체 별도 경로)
-                float cut10=(float)(last/1000)-600.f;
-                while(!t.trail.empty() && t.trail.front()[2]<cut10) t.trail.pop_front();
                 while(t.trail.size()>800) t.trail.pop_front();   // 안전상한
             }
-            int64_t cutoff=last-30LL*60*1000;                     // 30분 지난 트랙 제거
-            for(auto it=tracks.begin(); it!=tracks.end();)
-                if(it->second.head.t_ms<cutoff) it=tracks.erase(it); else ++it;
             track_wm=last;
+        }
+        // 꼬리 10분 창: 현재시각(최신 데이터 기준) - 10분 이전 점은 매 프레임 제거 (새 패킷 없어도 계속 줄어듦).
+        // 트랙 자체는 삭제 안 함 (30분 제거 폐지) — 조용한 배도 유지되다 10분 지나면 꼬리만 빔.
+        float now_min = (float)((n?log.back().t_ms:last)/60000.0);
+        float cut10 = now_min - 10.f;
+        for(auto& kv : tracks){
+            auto& tr=kv.second.trail;
+            while(!tr.empty() && tr.front()[2]<cut10) tr.pop_front();
         }
     }
     // ── 표시용 MapPoint 빌드 (락 밖, 안정 버퍼) ──
@@ -204,13 +209,13 @@ void draw_content(FFTViewer& v, bool just_opened){
         modview_map::MapPoint mpt;
         mpt.lat=m.lat; mpt.lon=m.lon; mpt.id=m.mmsi;
         mpt.heading = (m.cog>=0.f)? m.cog : (m.heading!=511? (float)m.heading : -1.f);
-        mpt.selected = (has_focus && focus.mmsi==m.mmsi);
+        mpt.selected = (sel_mmsi==m.mmsi);   // 표/지도 클릭 공통 — 선택 배 강조+full꼬리
         int st = kv.second.ship_type>0? kv.second.ship_type : m.ship_type;
         mpt.color = mpt.selected? IM_COL32(255,210,80,255) : type_color(st);
         mpt.label = m.name[0]? m.name : (kv.second.name[0]? kv.second.name : nullptr);
         trailbuf.emplace_back();
-        if(has_focus && focus.mmsi==m.mmsi){
-            // 선택된 배: 캐시(12점/5m 게이팅) 무시, log 전체 점을 시간순으로 모두 연결
+        if(sel_mmsi==m.mmsi){
+            // 선택된 배(표/지도 공통): 캐시 무시, log 전체 점을 시간순으로 모두 연결 = full 꼬리
             std::lock_guard<std::mutex> lk(mtx);
             for(const AisRecord& r : log)
                 if(r.mmsi==m.mmsi && r.has_pos){ trailbuf.back().push_back((float)r.lat); trailbuf.back().push_back((float)r.lon); }
@@ -270,8 +275,6 @@ void draw_content(FFTViewer& v, bool just_opened){
 
     // ── 좌(표) | 우(지도) ──  (지도 크게보기 v.big 면 표 숨기고 지도 전폭)
     static modview_map::MapView mv;
-    static uint32_t sel_mmsi=0;   // 표에서 선택된 MMSI 그룹 (0=없음)
-    static std::string sel_station;   // 클릭된 수신소 이름 (그 기지 수신선박에 점선; 빈=없음)
     static float split_tw=-1.f;   // 사용자가 스플리터로 정한 표 폭(px). <0 = 미설정(컬럼합 자동)
     float tw, mapw;
     if(mv.big){ tw=0.f; mapw=W; }
@@ -441,11 +444,15 @@ void draw_content(FFTViewer& v, bool just_opened){
     }
     if(mres.clicked_id){
         uint32_t id=(uint32_t)mres.clicked_id;
-        sel_mmsi=id; map_pin=id;                        // 지도 핀(필터링 안 함)
-        { std::lock_guard<std::mutex> lk(mtx);
-          for(const AisRecord& m : log) if(m.mmsi==id && m.has_pos) focus=m; }
-        has_focus=true;
-        nav_go(id);                                     // 표 행 클릭과 동일 — 그 선박 전체 이력 화면으로
+        if(sel_mmsi==id){                               // 활성 배 재클릭 → 비활성 (목록 복귀)
+            sel_mmsi=0; map_pin=0; has_focus=false; nav_go(0);
+        } else {
+            sel_mmsi=id; map_pin=id;
+            { std::lock_guard<std::mutex> lk(mtx);
+              for(const AisRecord& m : log) if(m.mmsi==id && m.has_pos) focus=m; }
+            has_focus=true;
+            nav_go(id);                                 // 표 행 클릭과 동일 — 그 선박 전체 이력 화면으로
+        }
     }
 
     // ── 세부 패널 (표 폭까지만, 표 바로 밑 — 지도는 안 가려 더 길게) ──
