@@ -26,6 +26,11 @@ struct AisRecord {
     // ── 메타 ──
     char     station[16] = {};    // 복조 기지 표시명 (DGS-2 / LOCAL)
     uint32_t rx_cnt = 0;          // >0 = Central 요약이 실어보낸 그 MMSI 실제 누계 수신수 (표 Cnt 권위값). 0=미상(레코드수로 집계)
+    // ── Type 5 정적/항해 확장 (정적 msg 에서만 옴) ──
+    uint32_t imo = 0;             // IMO 선박식별번호 (0 = n/a)
+    char     dest[21] = {};       // 목적지 (UN/LOCODE 등 자유문자)
+    float    draught = -1.f;      // 최대 현재 흘수 m (-1 = n/a)
+    uint8_t  eta_mon = 0, eta_day = 0, eta_hour = 24, eta_min = 60;  // ETA (mon 0 = n/a)
 };
 
 // wire 포맷 (framework BEWE_MK_DATA payload; station 은 MpData 봉투가 운반)
@@ -37,6 +42,8 @@ struct __attribute__((packed)) AisWireMsg {
     float    sog; float cog; int32_t heading; int32_t nav_status;
     char     name[21]; char callsign[8]; int32_t ship_type;
     uint32_t rx_cnt;
+    uint32_t imo; char dest[21]; float draught;
+    uint8_t  eta_mon, eta_day, eta_hour, eta_min;
 };
 
 inline void ais_msg_to_wire(const AisRecord& m, AisWireMsg& w){
@@ -47,6 +54,8 @@ inline void ais_msg_to_wire(const AisRecord& m, AisWireMsg& w){
     w.sog=m.sog; w.cog=m.cog; w.heading=m.heading; w.nav_status=m.nav_status;
     memcpy(w.name,m.name,sizeof(w.name)); memcpy(w.callsign,m.callsign,sizeof(w.callsign));
     w.ship_type=m.ship_type; w.rx_cnt=m.rx_cnt;
+    w.imo=m.imo; memcpy(w.dest,m.dest,sizeof(w.dest)); w.draught=m.draught;
+    w.eta_mon=m.eta_mon; w.eta_day=m.eta_day; w.eta_hour=m.eta_hour; w.eta_min=m.eta_min;
 }
 inline void ais_wire_to_msg(const AisWireMsg& w, AisRecord& m){
     m = AisRecord{};
@@ -57,6 +66,8 @@ inline void ais_wire_to_msg(const AisWireMsg& w, AisRecord& m){
     memcpy(m.name,w.name,sizeof(m.name)); m.name[sizeof(m.name)-1]=0;
     memcpy(m.callsign,w.callsign,sizeof(m.callsign)); m.callsign[sizeof(m.callsign)-1]=0;
     m.ship_type=w.ship_type; m.rx_cnt=w.rx_cnt;
+    m.imo=w.imo; memcpy(m.dest,w.dest,sizeof(m.dest)); m.dest[sizeof(m.dest)-1]=0; m.draught=w.draught;
+    m.eta_mon=w.eta_mon; m.eta_day=w.eta_day; m.eta_hour=w.eta_hour; m.eta_min=w.eta_min;
 }
 
 // ── AIS 6-bit ASCII → 8-bit ASCII (ITU-R M.1371 Table 47) ──────────────────

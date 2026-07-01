@@ -467,15 +467,23 @@ void draw_content(FFTViewer& v, bool just_opened){
     // 선택 배 focus 를 최신 수신 레코드로 매 프레임 갱신 (GPS 등 계속 업데이트)
     if(has_focus && sel_mmsi){
         std::lock_guard<std::mutex> lk(mtx);
-        for(auto it=log.rbegin(); it!=log.rend(); ++it)
-            if(it->mmsi==sel_mmsi){
-                AisRecord nm=*it;
-                // 정적 필드(이름/호출부호/선종)는 비면 기존 focus 값 유지 (위치msg엔 없음)
-                if(!nm.name[0] && focus.name[0]) strncpy(nm.name,focus.name,sizeof(nm.name)-1);
-                if(!nm.callsign[0] && focus.callsign[0]) strncpy(nm.callsign,focus.callsign,sizeof(nm.callsign)-1);
-                if(nm.ship_type<=0 && focus.ship_type>0) nm.ship_type=focus.ship_type;
-                focus=nm; break;
-            }
+        AisRecord nm{}; bool got=false;
+        // 최신 레코드 = 동적(위치/속도) 베이스. 정적(이름/호출/선종/IMO/목적지/ETA/흘수)은
+        // 그 필드를 가진 가장 최근 레코드에서 채움 (정적은 Type5/19/24 에만 있어 위치msg엔 없음).
+        for(auto it=log.rbegin(); it!=log.rend(); ++it){
+            if(it->mmsi!=sel_mmsi) continue;
+            const AisRecord& r=*it;
+            if(!got){ nm=r; got=true; }
+            if(!nm.name[0]&&r.name[0]) strncpy(nm.name,r.name,sizeof(nm.name)-1);
+            if(!nm.callsign[0]&&r.callsign[0]) strncpy(nm.callsign,r.callsign,sizeof(nm.callsign)-1);
+            if(nm.ship_type<=0&&r.ship_type>0) nm.ship_type=r.ship_type;
+            if(!nm.imo&&r.imo) nm.imo=r.imo;
+            if(!nm.dest[0]&&r.dest[0]) strncpy(nm.dest,r.dest,sizeof(nm.dest)-1);
+            if(nm.draught<0&&r.draught>=0) nm.draught=r.draught;
+            if(!nm.eta_mon&&r.eta_mon){ nm.eta_mon=r.eta_mon; nm.eta_day=r.eta_day; nm.eta_hour=r.eta_hour; nm.eta_min=r.eta_min; }
+            if(nm.name[0]&&nm.imo&&nm.dest[0]&&nm.draught>=0&&nm.eta_mon) break;   // 다 채우면 조기 종료
+        }
+        if(got) focus=nm;
     }
     // ── 선택 선박 정보: 일반 모드=하단 세부패널 / 전체화면=우상단 카드 (flightradar 스타일) ──
     auto draw_detail_body=[&](){
@@ -488,6 +496,7 @@ void draw_content(FFTViewer& v, bool just_opened){
         if(focus.callsign[0]) row("Call", focus.callsign, V);
         row("Country", ais_mid_country(focus.mmsi), ImVec4(0.6f,0.6f,0.6f,1.f));
         if(focus.ship_type>0) row("Ship", ais_shiptype(focus.ship_type), ImVec4(0.62f,0.7f,0.62f,1.f));
+        if(focus.imo){ char s[16]; snprintf(s,sizeof(s),"%u",focus.imo); row("IMO", s, V); }
         ImGui::Separator();
         if(focus.has_pos){ char p[40]; snprintf(p,sizeof(p),"%.5f",focus.lat); row("Lat", p, V);
                            snprintf(p,sizeof(p),"%.5f",focus.lon); row("Lon", p, V); }
@@ -495,6 +504,9 @@ void draw_content(FFTViewer& v, bool just_opened){
         if(focus.cog>=0){ char s[16]; snprintf(s,sizeof(s),"%.1f°",focus.cog); row("COG", s, V); }
         if(focus.heading!=511){ char s[16]; snprintf(s,sizeof(s),"%d°",focus.heading); row("HDG", s, V); }
         if(focus.nav_status>=0) row("Status", ais_navstatus(focus.nav_status), V);
+        if(focus.dest[0]) row("Dest", focus.dest, ImVec4(0.82f,0.76f,0.55f,1.f));
+        if(focus.draught>=0){ char s[16]; snprintf(s,sizeof(s),"%.1f m",focus.draught); row("Draught", s, V); }
+        if(focus.eta_mon){ char s[24]; snprintf(s,sizeof(s),"%02d-%02d %02d:%02d",focus.eta_mon,focus.eta_day,focus.eta_hour,focus.eta_min); row("ETA", s, V); }
     };
     if(has_focus && mv.big){
         // 전체화면: 지도 우상단 박스 카드. 상단은 헤더바(30) 아래 + 여백, 우측 여백 동일.

@@ -110,12 +110,14 @@ void store_append(const AisRecord& m){
     mkdir((BEWEPaths::data_dir()+"/modules").c_str(),0755);
     mkdir(store_dir().c_str(),0755);
     FILE* f=fopen(store_path(m.t_ms).c_str(),"ab"); if(!f) return;
-    char nm[64], cs[24]; json_escape(m.name,nm,sizeof(nm)); json_escape(m.callsign,cs,sizeof(cs));
+    char nm[64], cs[24], dt[64]; json_escape(m.name,nm,sizeof(nm)); json_escape(m.callsign,cs,sizeof(cs)); json_escape(m.dest,dt,sizeof(dt));
     fprintf(f,"{\"t\":%lld,\"ch\":%d,\"f\":%.4f,\"crc\":%d,\"ty\":%d,\"mmsi\":%u,"
               "\"hp\":%d,\"lat\":%.6f,\"lon\":%.6f,\"sog\":%.1f,\"cog\":%.1f,"
-              "\"hdg\":%d,\"ns\":%d,\"nm\":\"%s\",\"cs\":\"%s\",\"st\":%d}\n",
+              "\"hdg\":%d,\"ns\":%d,\"nm\":\"%s\",\"cs\":\"%s\",\"st\":%d,"
+              "\"imo\":%u,\"dst\":\"%s\",\"dr\":%.1f,\"em\":%d,\"ed\":%d,\"eh\":%d,\"ei\":%d}\n",
         (long long)m.t_ms,m.ch,m.freq,m.crc_ok?1:0,m.msg_type,m.mmsi,
-        m.has_pos?1:0,m.lat,m.lon,m.sog,m.cog,m.heading,m.nav_status,nm,cs,m.ship_type);
+        m.has_pos?1:0,m.lat,m.lon,m.sog,m.cog,m.heading,m.nav_status,nm,cs,m.ship_type,
+        m.imo,dt,m.draught,m.eta_mon,m.eta_day,m.eta_hour,m.eta_min);
     fclose(f);
 }
 bool store_read_today(std::string& out){
@@ -147,6 +149,10 @@ void store_parse_jsonl(const char* data, size_t n, std::vector<AisRecord>& out){
         m.heading=(int)jll(l,"\"hdg\":"); m.nav_status=(int)jll(l,"\"ns\":");
         jstr(l,"\"nm\":\"",m.name,sizeof(m.name)); jstr(l,"\"cs\":\"",m.callsign,sizeof(m.callsign));
         m.ship_type=(int)jll(l,"\"st\":");
+        m.imo=(uint32_t)jll(l,"\"imo\":"); jstr(l,"\"dst\":\"",m.dest,sizeof(m.dest));
+        if(strstr(l,"\"dr\":")) m.draught=(float)jf(l,"\"dr\":");    // 없으면 기본 -1(n/a) 유지
+        m.eta_mon=(uint8_t)jll(l,"\"em\":"); m.eta_day=(uint8_t)jll(l,"\"ed\":");
+        m.eta_hour=(uint8_t)jll(l,"\"eh\":"); m.eta_min=(uint8_t)jll(l,"\"ei\":");
         out.push_back(m);
     }
 }

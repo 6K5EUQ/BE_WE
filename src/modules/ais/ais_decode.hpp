@@ -158,9 +158,16 @@ private:
             break;
         case 5:                                                    // 정적/항해 데이터
             if(bits<420) break;
+            m.imo=(uint32_t)henten(40,30);                         // IMO 번호 (0=n/a)
             sixstr(70,7,m.callsign);
             sixstr(112,20,m.name);
             m.ship_type=(int)henten(232,8);
+            m.eta_mon =(uint8_t)henten(274,4);                     // ETA 월(0=n/a)/일/시(24=n/a)/분(60=n/a)
+            m.eta_day =(uint8_t)henten(278,5);
+            m.eta_hour=(uint8_t)henten(283,5);
+            m.eta_min =(uint8_t)henten(288,6);
+            { unsigned long d=henten(294,8); if(d) m.draught=(float)d/10.f; }  // 흘수 0.1m 단위
+            sixstr(302,20,m.dest);                                 // 목적지
             break;
         case 18:                                                   // Class B 위치
             if(bits<144) break;
