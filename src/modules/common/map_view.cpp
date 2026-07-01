@@ -103,6 +103,9 @@ MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
     // 최초 1회만 auto-fit. 탭 재진입(do_fit) 시엔 카메라(줌/위치) 유지 — 초기화 안 함.
     if(!v.initialized && !pts.empty()){ fit_to_points(v, pts, W, H); v.initialized=true; }
     else if(do_fit && !v.initialized){ fit_to_points(v, pts, W, H); }
+    // 캔버스 크기(전체화면 토글 등)가 바뀌면 종횡비 재보정 — 안 하면 첫 프레임 지도 비율 깨짐.
+    else if(v.initialized && v._fl_W>0 && (std::fabs(v._fl_W-W)>0.5f || std::fabs(v._fl_H-H)>0.5f))
+        normalize(v, W, H);
     clamp_to_bbox(v, W, H);   // 카메라를 한국 bbox 안으로 제한 (줌아웃/팬 한계)
 
     // ── 커서고정 휠줌 ──
@@ -403,10 +406,18 @@ MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
         const MapPoint& pt=pts[best];
         r.hovered_id=pt.id;
         if(pt.tip_l1||pt.tip_l2){
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10,8));  // 툴팁 여백 (글씨 벽에 안 끼게)
             ImGui::BeginTooltip();
-            if(pt.tip_l1) ImGui::TextUnformatted(pt.tip_l1);
+            float bodyw = pt.tip_l2 ? ImGui::CalcTextSize(pt.tip_l2).x : 0.f;  // 본문 최대폭
+            if(pt.tip_l1){
+                float tw1=ImGui::CalcTextSize(pt.tip_l1).x;
+                if(tw1<bodyw) ImGui::SetCursorPosX(ImGui::GetCursorPosX()+(bodyw-tw1)*0.5f);  // MMSI 중앙
+                ImGui::TextUnformatted(pt.tip_l1);
+                ImGui::Separator();   // MMSI ↔ 값 구분선
+            }
             if(pt.tip_l2) ImGui::TextUnformatted(pt.tip_l2);
             ImGui::EndTooltip();
+            ImGui::PopStyleVar();
         }
         ImVec2 dr=ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
         if(!panned && pt.id && ImGui::IsMouseReleased(ImGuiMouseButton_Left)

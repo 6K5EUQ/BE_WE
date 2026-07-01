@@ -71,7 +71,7 @@ struct AisGrp {
     AisRecord latest;      // last 시점의 최신 레코드 (Type/Lat/Lon/SOG/COG/Info)
     char     name[21]={};  // 최신 비공백 선박명
 };
-// 컬럼: 0 Up 1 Down 2 MMSI 3 Type 4 Name 5 Lat 6 Lon 7 SOG 8 COG 9 Cnt 10 Info
+// 컬럼: 0 Up 1 Down 2 MMSI 3 Type 4 Name 5 Country 6 Lat 7 Lon 8 SOG 9 COG 10 Cnt 11 Info
 int grp_cmp(int c, const AisGrp& a, const AisGrp& b){
     switch(c){
         case 0:  return a.first<b.first?-1:(a.first>b.first?1:0);
@@ -79,11 +79,12 @@ int grp_cmp(int c, const AisGrp& a, const AisGrp& b){
         case 2:  return a.mmsi<b.mmsi?-1:(a.mmsi>b.mmsi?1:0);
         case 3:  return a.latest.msg_type-b.latest.msg_type;
         case 4:  return strcmp(a.name,b.name);
-        case 5:  return a.latest.lat<b.latest.lat?-1:(a.latest.lat>b.latest.lat?1:0);
-        case 6:  return a.latest.lon<b.latest.lon?-1:(a.latest.lon>b.latest.lon?1:0);
-        case 7:  return a.latest.sog<b.latest.sog?-1:(a.latest.sog>b.latest.sog?1:0);
-        case 8:  return a.latest.cog<b.latest.cog?-1:(a.latest.cog>b.latest.cog?1:0);
-        case 9:  return a.cnt-b.cnt;
+        case 5:  return strcmp(ais_mid_country(a.mmsi),ais_mid_country(b.mmsi));
+        case 6:  return a.latest.lat<b.latest.lat?-1:(a.latest.lat>b.latest.lat?1:0);
+        case 7:  return a.latest.lon<b.latest.lon?-1:(a.latest.lon>b.latest.lon?1:0);
+        case 8:  return a.latest.sog<b.latest.sog?-1:(a.latest.sog>b.latest.sog?1:0);
+        case 9:  return a.latest.cog<b.latest.cog?-1:(a.latest.cog>b.latest.cog?1:0);
+        case 10: return a.cnt-b.cnt;
         default: return a.latest.nav_status-b.latest.nav_status;
     }
 }
@@ -161,11 +162,9 @@ void draw_content(FFTViewer& v, bool just_opened){
     if(nav_fwd  && nav_pos<(int)nav_stack.size()-1) nav_pos++;
     cur_view = nav_stack[nav_pos];
 
-    float detail_h = has_focus ? 132.f : 0.f;
-    // 세부패널 바닥 = y0 + (30+upper_h+2) + detail_h = y0 + H - 4 (upper_h=H-36-detail_h 일 때 하단 4px)
-    // 지도 바닥도 동일하게 y0+H-4 가 되도록 map_h = H-30-4 로 맞춤 (숫자만 같으면 안 맞아서 실측 기준)
-    float upper_h = H - 36 - detail_h; if(upper_h<80) upper_h=80;  // 표 높이 (세부패널 위)
-    float map_h   = H - 30 - 4;        if(map_h<80) map_h=80;      // 지도 높이 (바닥을 세부패널과 평행)
+    // 세부패널 제거 — 표/지도 모두 헤더바(30) 아래 전체 높이 사용
+    float upper_h = H - 36; if(upper_h<80) upper_h=80;   // 표 높이
+    float map_h   = H - 34; if(map_h<80) map_h=80;       // 지도 높이
 
     // ── MMSI별 최신위치 + 항적 캐시 (signature 게이팅, 증분; FIFO/clear 안전) ──
     static std::unordered_map<uint32_t, AisTrack> tracks;
@@ -225,11 +224,13 @@ void draw_content(FFTViewer& v, bool just_opened){
                 if(r.mmsi==m.mmsi && r.has_pos){ trailbuf.back().push_back((float)r.lat); trailbuf.back().push_back((float)r.lon); }
         } else
         for(auto& pr : kv.second.trail){ trailbuf.back().push_back(pr[0]); trailbuf.back().push_back(pr[1]); }
-        char b1[80], b2[64];
-        snprintf(b1,sizeof(b1),"MMSI %u  %s", m.mmsi, ais_mid_country(m.mmsi));
-        if(m.sog>=0&&m.cog>=0) snprintf(b2,sizeof(b2),"SOG %.1f kt  COG %.0f",m.sog,m.cog);
-        else if(m.sog>=0) snprintf(b2,sizeof(b2),"SOG %.1f kt",m.sog);
-        else if(m.name[0]) snprintf(b2,sizeof(b2),"%s",m.name); else b2[0]=0;
+        char b1[32], b2[96];
+        snprintf(b1,sizeof(b1),"%u", m.mmsi);                       // MMSI
+        char sog[16],cog[16],hdg[16];
+        if(m.sog>=0) snprintf(sog,sizeof(sog),"%.1f kt",m.sog); else snprintf(sog,sizeof(sog),"-");
+        if(m.cog>=0) snprintf(cog,sizeof(cog),"%.1f°",m.cog);  else snprintf(cog,sizeof(cog),"-");
+        if(m.heading!=511) snprintf(hdg,sizeof(hdg),"%d°",m.heading); else snprintf(hdg,sizeof(hdg),"-");
+        snprintf(b2,sizeof(b2),"SOG : %s\nCOG : %s\nHDG : %s", sog,cog,hdg);
         tip1.emplace_back(b1); tip2.emplace_back(b2);
         pts.push_back(mpt);
     }
@@ -297,20 +298,21 @@ void draw_content(FFTViewer& v, bool just_opened){
     ImGui::SetCursorPosX(x0);
     ImGuiTableFlags tf = ImGuiTableFlags_ScrollY|ImGuiTableFlags_ScrollX|ImGuiTableFlags_RowBg|
         ImGuiTableFlags_BordersInnerV|ImGuiTableFlags_Resizable;
-    if(!mv.big && cur_view==0 && ImGui::BeginTable("##ais_tbl", 11, tf, ImVec2(tw, upper_h))){
+    if(!mv.big && cur_view==0 && ImGui::BeginTable("##ais_tbl", 12, tf, ImVec2(tw, upper_h))){
         ImGui::TableSetupScrollFreeze(3,1);
-        ImGui::TableSetupColumn("Up",     ImGuiTableColumnFlags_WidthFixed, 70);
-        ImGui::TableSetupColumn("Down",   ImGuiTableColumnFlags_WidthFixed, 70);
-        ImGui::TableSetupColumn("MMSI",   ImGuiTableColumnFlags_WidthFixed, 82);
-        ImGui::TableSetupColumn("Type",   ImGuiTableColumnFlags_WidthFixed, 40);
-        ImGui::TableSetupColumn("Name",   ImGuiTableColumnFlags_WidthFixed, 130);
-        ImGui::TableSetupColumn("Lat",    ImGuiTableColumnFlags_WidthFixed, 78);
-        ImGui::TableSetupColumn("Lon",    ImGuiTableColumnFlags_WidthFixed, 84);
-        ImGui::TableSetupColumn("SOG",    ImGuiTableColumnFlags_WidthFixed, 48);
-        ImGui::TableSetupColumn("COG",    ImGuiTableColumnFlags_WidthFixed, 48);
-        ImGui::TableSetupColumn("Cnt",    ImGuiTableColumnFlags_WidthFixed, 46);
-        ImGui::TableSetupColumn("Info",   ImGuiTableColumnFlags_WidthStretch);  // 남는 폭 흡수 → Info 뒤 빈 칸 없음
-        modview::sortable_headers(11, sort_col, sort_asc, 10);  // Info(10)만 좌측정렬, 나머지(Up 포함) 중앙
+        ImGui::TableSetupColumn("Up",      ImGuiTableColumnFlags_WidthFixed, 70);
+        ImGui::TableSetupColumn("Down",    ImGuiTableColumnFlags_WidthFixed, 70);
+        ImGui::TableSetupColumn("MMSI",    ImGuiTableColumnFlags_WidthFixed, 82);
+        ImGui::TableSetupColumn("Type",    ImGuiTableColumnFlags_WidthFixed, 40);
+        ImGui::TableSetupColumn("Name",    ImGuiTableColumnFlags_WidthFixed, 130);
+        ImGui::TableSetupColumn("Country", ImGuiTableColumnFlags_WidthFixed, 64);
+        ImGui::TableSetupColumn("Lat",     ImGuiTableColumnFlags_WidthFixed, 78);
+        ImGui::TableSetupColumn("Lon",     ImGuiTableColumnFlags_WidthFixed, 84);
+        ImGui::TableSetupColumn("SOG",     ImGuiTableColumnFlags_WidthFixed, 48);
+        ImGui::TableSetupColumn("COG",     ImGuiTableColumnFlags_WidthFixed, 48);
+        ImGui::TableSetupColumn("Cnt",     ImGuiTableColumnFlags_WidthFixed, 46);
+        ImGui::TableSetupColumn("Info",    ImGuiTableColumnFlags_WidthStretch);  // 남는 폭 흡수 → Info 뒤 빈 칸 없음
+        modview::sortable_headers(12, sort_col, sort_asc, 11);  // Info(11)만 좌측, 나머지 중앙
 
         ImGuiListClipper clip; clip.Begin((int)grps.size());
         while(clip.Step()) for(int r=clip.DisplayStart;r<clip.DisplayEnd;r++){
@@ -330,12 +332,13 @@ void draw_content(FFTViewer& v, bool just_opened){
             ImGui::TableSetColumnIndex(3); snprintf(b,sizeof(b),"%d",m.msg_type); modview::cell(b);
             ImGui::TableSetColumnIndex(4);
             if(G.name[0]) modview::cell(G.name); else { const char* cc=ais_mid_country(G.mmsi); if(cc[0]) modview::cell(cc, ImVec4(0.6f,0.6f,0.6f,1.f)); }
-            ImGui::TableSetColumnIndex(5); if(m.has_pos){ snprintf(b,sizeof(b),"%.5f",m.lat); modview::cell(b); }
-            ImGui::TableSetColumnIndex(6); if(m.has_pos){ snprintf(b,sizeof(b),"%.5f",m.lon); modview::cell(b); }
-            ImGui::TableSetColumnIndex(7); if(m.sog>=0){ snprintf(b,sizeof(b),"%.1f",m.sog); modview::cell(b); }
-            ImGui::TableSetColumnIndex(8); if(m.cog>=0){ snprintf(b,sizeof(b),"%.0f",m.cog); modview::cell(b); }
-            ImGui::TableSetColumnIndex(9); snprintf(b,sizeof(b),"%d",G.cnt); modview::cell(b);
-            ImGui::TableSetColumnIndex(10); { char inf[64]; info_str(m,inf,sizeof(inf)); if(inf[0]) ImGui::TextUnformatted(inf); }
+            ImGui::TableSetColumnIndex(5); { const char* cc=ais_mid_country(G.mmsi); if(cc[0]) modview::cell(cc, ImVec4(0.6f,0.6f,0.6f,1.f)); }
+            ImGui::TableSetColumnIndex(6); if(m.has_pos){ snprintf(b,sizeof(b),"%.5f",m.lat); modview::cell(b); }
+            ImGui::TableSetColumnIndex(7); if(m.has_pos){ snprintf(b,sizeof(b),"%.5f",m.lon); modview::cell(b); }
+            ImGui::TableSetColumnIndex(8); if(m.sog>=0){ snprintf(b,sizeof(b),"%.1f",m.sog); modview::cell(b); }
+            ImGui::TableSetColumnIndex(9); if(m.cog>=0){ snprintf(b,sizeof(b),"%.0f",m.cog); modview::cell(b); }
+            ImGui::TableSetColumnIndex(10); snprintf(b,sizeof(b),"%d",G.cnt); modview::cell(b);
+            ImGui::TableSetColumnIndex(11); { char inf[64]; info_str(m,inf,sizeof(inf)); if(inf[0]) ImGui::TextUnformatted(inf); }
         }
         ImGui::EndTable();
     }
@@ -461,29 +464,51 @@ void draw_content(FFTViewer& v, bool just_opened){
         }
     }
 
-    // ── 세부 패널 (표 폭까지만, 표 바로 밑 — 지도는 안 가려 더 길게) ──
-    if(has_focus){
-        ImGui::SetCursorPos(ImVec2(x0, y0+30.f+upper_h+2.f));
-        modview::detail_begin("ais", x0, tw, detail_h);
-        char tsd[12]; hms(focus.t_ms,tsd);
-        ImVec4 V(0.85f,0.85f,0.9f,1.f);
-        ImGui::Text("Time:"); ImGui::SameLine(); ImGui::TextColored(V,"%s",tsd);
-        modview::kv("Station:", focus.station[0]?focus.station:"LOCAL", ImVec4(0.85f,0.75f,0.5f,1.f));
-        { char mm[16]; snprintf(mm,sizeof(mm),"%u",focus.mmsi); modview::kv("MMSI:", mm, ImVec4(0.5f,0.8f,1.f,1.f)); }
-        { char ty[8]; snprintf(ty,sizeof(ty),"%d",focus.msg_type); modview::kv("Type:", ty, V); }
-        modview::kv("Country:", ais_mid_country(focus.mmsi), ImVec4(0.6f,0.6f,0.6f,1.f));
-        modview::kv("Name:", focus.name, V);
-        modview::kv("Call:", focus.callsign, V);
-        if(focus.ship_type>0) modview::kv("Ship:", ais_shiptype(focus.ship_type), ImVec4(0.62f,0.7f,0.62f,1.f));
+    // 선택 배 focus 를 최신 수신 레코드로 매 프레임 갱신 (GPS 등 계속 업데이트)
+    if(has_focus && sel_mmsi){
+        std::lock_guard<std::mutex> lk(mtx);
+        for(auto it=log.rbegin(); it!=log.rend(); ++it)
+            if(it->mmsi==sel_mmsi){
+                AisRecord nm=*it;
+                // 정적 필드(이름/호출부호/선종)는 비면 기존 focus 값 유지 (위치msg엔 없음)
+                if(!nm.name[0] && focus.name[0]) strncpy(nm.name,focus.name,sizeof(nm.name)-1);
+                if(!nm.callsign[0] && focus.callsign[0]) strncpy(nm.callsign,focus.callsign,sizeof(nm.callsign)-1);
+                if(nm.ship_type<=0 && focus.ship_type>0) nm.ship_type=focus.ship_type;
+                focus=nm; break;
+            }
+    }
+    // ── 선택 선박 정보: 일반 모드=하단 세부패널 / 전체화면=우상단 카드 (flightradar 스타일) ──
+    auto draw_detail_body=[&](){
+        ImVec4 V(0.85f,0.85f,0.9f,1.f), K(0.55f,0.62f,0.72f,1.f);
+        auto row=[&](const char* k, const char* val, ImVec4 vc){    // 라벨/값 한 줄, 값 잘림 방지
+            ImGui::TextColored(K,"%s",k); ImGui::SameLine(); ImGui::TextColored(vc,"%s",val);
+        };
+        { char mm[16]; snprintf(mm,sizeof(mm),"%u",focus.mmsi); row("MMSI", mm, ImVec4(0.5f,0.8f,1.f,1.f)); }
+        if(focus.name[0]) row("Name", focus.name, V);
+        if(focus.callsign[0]) row("Call", focus.callsign, V);
+        row("Country", ais_mid_country(focus.mmsi), ImVec4(0.6f,0.6f,0.6f,1.f));
+        if(focus.ship_type>0) row("Ship", ais_shiptype(focus.ship_type), ImVec4(0.62f,0.7f,0.62f,1.f));
         ImGui::Separator();
-        if(focus.has_pos){ char p[40]; snprintf(p,sizeof(p),"%.5f",focus.lat); ImGui::Text("Lat:"); ImGui::SameLine(); ImGui::TextColored(V,"%s",p);
-                           snprintf(p,sizeof(p),"%.5f",focus.lon); modview::kv("Lon:", p, V); }
-        else { ImGui::Text("Lat:"); ImGui::SameLine(); ImGui::TextDisabled("-"); }
-        if(focus.sog>=0){ char s[12]; snprintf(s,sizeof(s),"%.1f kt",focus.sog); modview::kv("SOG:", s, V); }
-        if(focus.cog>=0){ char s[12]; snprintf(s,sizeof(s),"%.1f",focus.cog); modview::kv("COG:", s, V); }
-        if(focus.heading!=511){ char s[12]; snprintf(s,sizeof(s),"%d",focus.heading); modview::kv("HDG:", s, V); }
-        if(focus.nav_status>=0) modview::kv("Status:", ais_navstatus(focus.nav_status), V);
-        modview::detail_end();
+        if(focus.has_pos){ char p[40]; snprintf(p,sizeof(p),"%.5f",focus.lat); row("Lat", p, V);
+                           snprintf(p,sizeof(p),"%.5f",focus.lon); row("Lon", p, V); }
+        if(focus.sog>=0){ char s[16]; snprintf(s,sizeof(s),"%.1f kt",focus.sog); row("SOG", s, V); }
+        if(focus.cog>=0){ char s[16]; snprintf(s,sizeof(s),"%.1f°",focus.cog); row("COG", s, V); }
+        if(focus.heading!=511){ char s[16]; snprintf(s,sizeof(s),"%d°",focus.heading); row("HDG", s, V); }
+        if(focus.nav_status>=0) row("Status", ais_navstatus(focus.nav_status), V);
+    };
+    if(has_focus && mv.big){
+        // 전체화면: 지도 우상단 박스 카드. 상단은 헤더바(30) 아래 + 여백, 우측 여백 동일.
+        const float CW=150.f, MX=16.f;   // 폭은 데이터 최대(MMSI/"SOG 10.2 kt")에 맞춤, 높이 자동
+        ImGui::SetCursorPos(ImVec2(x0 + W-CW-MX, y0+30.f+MX));  // 헤더바(30) 아래 + MX, 우측도 MX
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.06f,0.09f,0.13f,0.94f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12,10));
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8,6));
+        ImGui::BeginChild("##ais_card", ImVec2(CW,0), ImGuiChildFlags_Borders|ImGuiChildFlags_AutoResizeY,
+                          ImGuiWindowFlags_NoScrollbar);   // 높이=내용맞춤 (Status 에서 끝, 아래 여백 없음)
+        draw_detail_body();
+        ImGui::EndChild();
+        ImGui::PopStyleVar(3); ImGui::PopStyleColor();
     }
 }
 
