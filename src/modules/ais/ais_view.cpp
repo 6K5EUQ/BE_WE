@@ -64,7 +64,8 @@ struct AisTrack { AisRecord head; std::deque<std::array<float,3>> trail; int shi
 // ── MMSI 그룹 (표: 동일 MMSI 묶음, 최신값 + Up/Down/Cnt) ──
 struct AisGrp {
     uint32_t mmsi;
-    int      cnt;          // 수신 누계
+    int      cnt;          // 수신 누계 (레코드수 집계; auth_cnt>0 이면 그 값으로 대체)
+    uint32_t auth_cnt=0;   // Central 요약이 실어보낸 실제 누계 (요약 rx_cnt) — 있으면 권위
     int64_t  first;        // Up — 최초 수신(불변)
     int64_t  last;         // Down — 최근 수신(갱신)
     AisRecord latest;      // last 시점의 최신 레코드 (Type/Lat/Lon/SOG/COG/Info)
@@ -113,10 +114,11 @@ void draw_content(FFTViewer& v, bool just_opened){
     static uint32_t map_pin=0;                 // 지도에서 핀(필터)된 MMSI (0=없음)
     static uint32_t sel_mmsi=0;                // 표/지도에서 선택된 MMSI (0=없음) — 강조+full꼬리 공통
     static std::string sel_station;            // 클릭된 수신소 이름 (그 기지 수신선박 점선; 빈=없음)
+    static std::set<uint32_t> vloaded;         // JOIN: 전체 이력 온디맨드 이미 요청한 MMSI (중복 요청 방지)
     // 필터 박스를 수동으로 바꾸면 핀 해제 (지도 토글 일관성)
     if(map_pin){ char ms[16]; snprintf(ms,sizeof(ms),"%u",map_pin); if(strcmp(filter,ms)!=0) map_pin=0; }
 
-    auto on_clear=[&](){ std::lock_guard<std::mutex> lk(mtx); log.clear(); sel.clear(); anchor.clear(); has_focus=false; };
+    auto on_clear=[&](){ std::lock_guard<std::mutex> lk(mtx); log.clear(); sel.clear(); anchor.clear(); has_focus=false; vloaded.clear(); };
 
     // 스페이스바 Recv 토글 + Ctrl+F/Tab 필터 포커스
     modview::space_toggle_recv(v, "ais", remote, win_focus, on_clear);
@@ -147,6 +149,8 @@ void draw_content(FFTViewer& v, bool just_opened){
     static int nav_pos = 0;                          // 현재 위치
     uint32_t cur_view = nav_stack[nav_pos];          // 0=목록, else=MMSI 이력
     auto nav_go = [&](uint32_t mmsi){                // 새 화면 이동 (앞쪽 히스토리 버림)
+        // JOIN: 배 활성화 시 그 MMSI 전체 이력 온디맨드 다운로드 (구독 요약엔 최초/최근10분만 있음)
+        if(remote && mmsi && !vloaded.count(mmsi)){ bewe_mod_req_vessel("ais", mmsi); vloaded.insert(mmsi); }
         if(nav_stack[nav_pos]==mmsi) return;
         nav_stack.resize(nav_pos+1); nav_stack.push_back(mmsi); nav_pos=(int)nav_stack.size()-1;
     };
@@ -258,10 +262,12 @@ void draw_content(FFTViewer& v, bool just_opened){
                     AisGrp ng{}; ng.mmsi=m.mmsi; ng.first=m.t_ms; ng.last=-1; g.push_back(ng); }
                 else gi=it->second;
                 AisGrp& G=g[gi]; G.cnt++;
+                if(m.rx_cnt>G.auth_cnt) G.auth_cnt=m.rx_cnt;   // Central 요약 실제 누계 (권위)
                 if(m.t_ms<G.first) G.first=m.t_ms;          // Up = 최초(불변)
                 if(m.t_ms>=G.last){ G.last=m.t_ms; G.latest=m; }   // Down = 최근 + 최신 레코드
                 if(m.name[0] && !G.name[0]){ strncpy(G.name,m.name,sizeof(G.name)-1); G.name[sizeof(G.name)-1]=0; }
             }
+            for(AisGrp& G : g) if(G.auth_cnt) G.cnt=(int)G.auth_cnt;   // 요약 상태: 실제 누계로 표시/정렬 통일
             std::stable_sort(g.begin(),g.end(),[&](const AisGrp&a,const AisGrp&b){ int c=grp_cmp(sort_col<0?0:sort_col,a,b); return (sort_col<0?true:sort_asc)? c<0:c>0; });
             grps.swap(g);
             c_n=n_now; c_last=last_t; strncpy(c_filter,filter,sizeof(c_filter)-1); c_filter[sizeof(c_filter)-1]=0; c_sc=sort_col; c_asc=sort_asc;

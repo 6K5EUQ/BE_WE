@@ -38,6 +38,9 @@ struct BeweModule {
     // ── 온디맨드 녹음(WAV) 페치 ──
     void (*on_rec_req)(FFTViewer& v, int ch, uint64_t rec_id);  // HOST: 요청 수신 → WAV 청크 회신
     void (*on_rec_data)(FFTViewer& v, uint64_t rec_id, uint32_t total, uint32_t off, const uint8_t* b, uint32_t n); // JOIN: 청크 수신
+    // ── 단일 대상 온디맨드 전체 이력 (JOIN): d = 레코드 스트림(u32 len + MpData+payload)*.
+    // 그 대상(예: MMSI) 기존 log 레코드를 이 전체 세트로 교체 (구독 요약과 중복 제거). nullptr=미지원.
+    void (*on_vessel_hist)(FFTViewer& v, const uint8_t* d, size_t n);
 };
 
 void bewe_register_module(const BeweModule& m);
@@ -76,6 +79,9 @@ void bewe_mod_host_ch_hold(int ch, bool holding);
 bool bewe_mod_recv(const char* id);                              // Recv 구독 상태
 void bewe_mod_set_recv(FFTViewer& v, const char* id, bool on);   // 구독 토글 (on → 히스토리+라이브)
 bool bewe_mod_hist_loading(const char* id);
+// JOIN→Central: 단일 대상(key=AIS MMSI)의 오늘 전체 이력 온디맨드 요청. 응답 레코드는
+// on_data 로 흘러 log 에 병합 (구독 요약이 보낸 최초/최근만 → 전체로 채워짐). 뷰가 배 활성화 시 호출.
+void bewe_mod_req_vessel(const char* id, uint32_t key);
 void bewe_mod_req_ch_list(const char* id);                       // 타깃 목록 요청 (런처 폴링)
 std::vector<MpChEntry> bewe_mod_targets(FFTViewer& v, const char* id); // 타깃 목록 (LOCAL 이면 로컬 채널)
 void bewe_mod_set_target(FFTViewer& v, const char* id, const char* station, int ch, bool on); // 디코드 on/off

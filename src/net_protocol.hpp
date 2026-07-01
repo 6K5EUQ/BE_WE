@@ -128,6 +128,7 @@ enum : uint8_t {
     BEWE_MK_REC_DATA    = 0xFC,  // HOST→Central→구독 JOIN: MpRecData + 바이트 청크 (WAV 회신)
     BEWE_MK_CH_ADD      = 0xFD,  // JOIN→Central→해당 HOST: MpChEdit (새 채널 생성 — HOST 가 빈 슬롯 선택; ch 무시, lo/hi/mode 사용)
     BEWE_MK_CH_DEL      = 0xFE,  // JOIN→Central→해당 HOST: MpChEdit (채널 삭제 — ch 로 지정)
+    BEWE_MK_VHIST_REQ   = 0xFF,  // JOIN→Central: MpVHistReq (단일 대상 전체 이력 온디맨드 요청; 응답=HIST_* stream_kind=1)
 };
 struct __attribute__((packed)) MpSet      { char station[24]; uint8_t ch; uint8_t on; };
 struct __attribute__((packed)) MpState    { char station[24]; uint64_t mask; };
@@ -138,7 +139,9 @@ struct __attribute__((packed)) MpTune     { char station[24]; float cf_mhz; floa
 struct __attribute__((packed)) MpRecv     { uint8_t on; };
 // total_bytes = CHUNK 으로 운반될 (압축된) 바이트 수. raw_bytes = 압축해제 후 원본 크기.
 // raw_bytes==0 → 비압축(구버전 호환 경로). >0 → zlib(deflate) 압축본.
-struct __attribute__((packed)) MpHistMeta { uint32_t total_bytes; uint32_t raw_bytes; };
+// stream_kind: 0=구독(오늘 요약/전체) — 라이브 버퍼링 후 합류. 1=단일 대상 온디맨드 이력 — 즉시 append.
+struct __attribute__((packed)) MpHistMeta { uint32_t total_bytes; uint32_t raw_bytes; uint32_t stream_kind; };
+struct __attribute__((packed)) MpVHistReq { uint32_t key; };  // 대상 키 (AIS=MMSI). 그 대상의 오늘 전체 이력 요청
 struct __attribute__((packed)) MpData     { char station[24]; };  // 뒤에 모듈 payload
 struct __attribute__((packed)) MpRecReq   { char station[24]; uint8_t ch; uint8_t _r[3]; uint64_t rec_id; };  // WAV 요청
 struct __attribute__((packed)) MpRecData  { uint64_t rec_id; uint32_t total; uint32_t offset; uint32_t n; };  // 뒤에 n 바이트(WAV 청크); total=0 → 파일없음

@@ -67,6 +67,10 @@ struct ModFw {
     uint32_t hist_total = 0;
     uint32_t hist_raw = 0;                    // META.raw_bytes (>0 → hist_buf 는 zlib 압축본)
     std::vector<std::vector<uint8_t>> live_pending;  // hist 전송 중 도착한 라이브 레코드 (MpData+payload)
+    // 단일 대상 온디맨드 이력 (stream_kind=1) — 구독 스트림과 독립. 라이브 버퍼링 안 함.
+    bool     vhist_active = false;
+    std::string vhist_buf;
+    uint32_t vhist_raw = 0;
 };
 static std::mutex g_fw_mtx;
 static std::map<std::string, ModFw> g_fw;
@@ -449,6 +453,10 @@ void bewe_mod_set_recv(FFTViewer& v, const char* id, bool on){
 void bewe_mod_req_ch_list(const char* id){
     send_up(id, BEWE_MK_CH_LIST_REQ, nullptr, 0);
 }
+void bewe_mod_req_vessel(const char* id, uint32_t key){
+    MpVHistReq r{ key };
+    send_up(id, BEWE_MK_VHIST_REQ, &r, sizeof(r));
+}
 
 std::vector<MpChEntry> bewe_mod_targets(FFTViewer& v, const char* id){
     if(g_send_up && v.remote_mode){
@@ -685,17 +693,23 @@ void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t
     }
     case BEWE_MK_HIST_META: {
         if(n < sizeof(MpHistMeta)) break;
+        auto* hm = reinterpret_cast<const MpHistMeta*>(d);
         std::lock_guard<std::mutex> lk(g_fw_mtx);
         ModFw& f = fw(id);
+        if(hm->stream_kind == 1){                 // 단일 대상 온디맨드 이력 (구독과 독립)
+            f.vhist_active = true; f.vhist_raw = hm->raw_bytes; f.vhist_buf.clear();
+            break;
+        }
         if(!f.hist_loading) break;   // 구독 안 한 상태의 잔여 스트림 무시
-        f.hist_total = reinterpret_cast<const MpHistMeta*>(d)->total_bytes;
-        f.hist_raw   = reinterpret_cast<const MpHistMeta*>(d)->raw_bytes;
+        f.hist_total = hm->total_bytes;
+        f.hist_raw   = hm->raw_bytes;
         f.hist_buf.clear(); f.hist_started = true;
         break;
     }
     case BEWE_MK_HIST_CHUNK: {
         std::lock_guard<std::mutex> lk(g_fw_mtx);
         ModFw& f = fw(id);
+        if(f.vhist_active){ if(n) f.vhist_buf.append((const char*)d, n); break; }
         if(f.hist_loading && f.hist_started && n) f.hist_buf.append((const char*)d, n);
         break;
     }
@@ -703,14 +717,20 @@ void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t
         std::string buf;
         std::vector<std::vector<uint8_t>> pending;
         uint32_t raw = 0;
+        bool vessel = false;
         {
             std::lock_guard<std::mutex> lk(g_fw_mtx);
             ModFw& f = fw(id);
-            if(!f.hist_loading || !f.hist_started) break;   // META 없이 온 잔여 DONE 무시
-            buf.swap(f.hist_buf);
-            pending.swap(f.live_pending);
-            raw = f.hist_raw;
-            f.hist_loading = false; f.hist_started = false; f.hist_raw = 0;
+            if(f.vhist_active){                     // 단일 대상 이력 — 즉시 append (라이브 병합 없음)
+                vessel = true; buf.swap(f.vhist_buf); raw = f.vhist_raw;
+                f.vhist_active = false; f.vhist_raw = 0;
+            } else {
+                if(!f.hist_loading || !f.hist_started) break;   // META 없이 온 잔여 DONE 무시
+                buf.swap(f.hist_buf);
+                pending.swap(f.live_pending);
+                raw = f.hist_raw;
+                f.hist_loading = false; f.hist_started = false; f.hist_raw = 0;
+            }
         }
         // raw>0 → buf 는 zlib 압축본. 풀어서 레코드 스트림 복원. 실패 시 빈 히스토리.
         if(raw > 0 && !buf.empty()){
@@ -720,6 +740,8 @@ void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t
                           (uLong)buf.size()) == Z_OK && dlen == raw) buf.swap(out);
             else buf.clear();
         }
+        // 단일 대상 전체 이력: 배치 훅으로 그 대상 레코드 통째 교체 (요약↔전체 중복 방지).
+        if(vessel && m->on_vessel_hist){ m->on_vessel_hist(v, (const uint8_t*)buf.data(), buf.size()); break; }
         // 레코드 스트림: u32 len + (MpData + module payload) 반복
         auto dispatch = [&](const uint8_t* rec, size_t rl){
             if(rl < sizeof(MpData)) return;

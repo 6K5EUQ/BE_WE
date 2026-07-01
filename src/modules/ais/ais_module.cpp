@@ -12,6 +12,8 @@
 #include <cstdlib>
 #include <ctime>
 #include <thread>
+#include <algorithm>
+#include <vector>
 #include <sys/stat.h>
 
 namespace ais_mod {
@@ -169,6 +171,32 @@ static void on_data(FFTViewer& v, const char* station, const uint8_t* d, size_t 
     append_log(m);
 }
 
+// JOIN: 단일 MMSI 온디맨드 전체 이력 도착 → 그 MMSI 기존 log 레코드(구독 요약분)를
+// 이 전체 세트로 교체. 스트림 = u32 len + (MpData + AisWireMsg) 반복 (시간순).
+static void on_vessel_hist(FFTViewer& v, const uint8_t* d, size_t n){
+    (void)v;
+    std::vector<AisRecord> recs; uint32_t key = 0;
+    size_t off = 0;
+    while(off + 4 <= n){
+        uint32_t rl; memcpy(&rl, d+off, 4); off += 4;
+        if(off + rl > n) break;
+        const uint8_t* rec = d + off; off += rl;
+        if(rl < sizeof(MpData) + sizeof(AisWireMsg)){ continue; }
+        AisWireMsg w; memcpy(&w, rec + sizeof(MpData), sizeof(AisWireMsg));
+        AisRecord m; ais_wire_to_msg(w, m);
+        char stn[25] = {}; memcpy(stn, rec, 24);       // MpData.station (raw station_id)
+        station_disp(stn, m.station, sizeof(m.station));
+        key = m.mmsi;
+        recs.push_back(m);
+    }
+    if(recs.empty()) return;
+    std::lock_guard<std::mutex> lk(mtx);
+    log.erase(std::remove_if(log.begin(), log.end(),
+        [key](const AisRecord& r){ return r.mmsi == key; }), log.end());
+    for(const auto& m : recs) log.push_back(m);
+    if((int)log.size() > LOG_MAX) log.erase(log.begin(), log.end()-LOG_MAX);
+}
+
 #ifndef BEWE_HEADLESS
 void local_load_today(FFTViewer& v){
     (void)v;
@@ -197,6 +225,7 @@ static bool s_registered = [](){
     m.host_stop  = &host_stop;
     m.on_ch_stop = &on_ch_stop;
     m.on_data    = &on_data;
+    m.on_vessel_hist = &on_vessel_hist;
     bewe_register_module(m);
     return true;
 }();

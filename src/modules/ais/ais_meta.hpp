@@ -25,15 +25,18 @@ struct AisRecord {
     int      ship_type = 0;       // 0..99
     // ── 메타 ──
     char     station[16] = {};    // 복조 기지 표시명 (DGS-2 / LOCAL)
+    uint32_t rx_cnt = 0;          // >0 = Central 요약이 실어보낸 그 MMSI 실제 누계 수신수 (표 Cnt 권위값). 0=미상(레코드수로 집계)
 };
 
 // wire 포맷 (framework BEWE_MK_DATA payload; station 은 MpData 봉투가 운반)
+// rx_cnt 는 끝에 추가 — 기존 필드 오프셋 불변(구버전 .dat 레코드도 앞 필드 파싱 안전).
 struct __attribute__((packed)) AisWireMsg {
     int64_t  t_ms; float freq; int32_t ch;
     uint8_t  crc_ok; int32_t msg_type; uint32_t mmsi;
     uint8_t  has_pos; double lat; double lon;
     float    sog; float cog; int32_t heading; int32_t nav_status;
     char     name[21]; char callsign[8]; int32_t ship_type;
+    uint32_t rx_cnt;
 };
 
 inline void ais_msg_to_wire(const AisRecord& m, AisWireMsg& w){
@@ -43,7 +46,7 @@ inline void ais_msg_to_wire(const AisRecord& m, AisWireMsg& w){
     w.has_pos=m.has_pos?1:0; w.lat=m.lat; w.lon=m.lon;
     w.sog=m.sog; w.cog=m.cog; w.heading=m.heading; w.nav_status=m.nav_status;
     memcpy(w.name,m.name,sizeof(w.name)); memcpy(w.callsign,m.callsign,sizeof(w.callsign));
-    w.ship_type=m.ship_type;
+    w.ship_type=m.ship_type; w.rx_cnt=m.rx_cnt;
 }
 inline void ais_wire_to_msg(const AisWireMsg& w, AisRecord& m){
     m = AisRecord{};
@@ -53,7 +56,7 @@ inline void ais_wire_to_msg(const AisWireMsg& w, AisRecord& m){
     m.sog=w.sog; m.cog=w.cog; m.heading=w.heading; m.nav_status=w.nav_status;
     memcpy(m.name,w.name,sizeof(m.name)); m.name[sizeof(m.name)-1]=0;
     memcpy(m.callsign,w.callsign,sizeof(m.callsign)); m.callsign[sizeof(m.callsign)-1]=0;
-    m.ship_type=w.ship_type;
+    m.ship_type=w.ship_type; m.rx_cnt=w.rx_cnt;
 }
 
 // ── AIS 6-bit ASCII → 8-bit ASCII (ITU-R M.1371 Table 47) ──────────────────

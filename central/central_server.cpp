@@ -2,6 +2,7 @@
 #include "../src/net_protocol.hpp"
 #include "../src/json_scan.hpp"
 #include "../src/sigmf.hpp"
+#include "../src/modules/ais/ais_meta.hpp"   // AisWireMsg — AIS 구독 요약/단일선박 이력 빌더용
 #include "info_parse.hpp"
 #include <cstdio>
 #include <cstring>
@@ -1715,6 +1716,88 @@ static std::string module_store_today(const char* mod){
     return dir + f;
 }
 
+// 오늘 .dat 전체를 out 으로 읽기
+static bool module_read_today(const char* mod, std::string& out){
+    FILE* f = fopen(module_store_today(mod).c_str(), "rb");
+    if(!f) return false;
+    char buf[8192]; size_t n;
+    while((n=fread(buf,1,sizeof(buf),f))>0) out.append(buf,n);
+    fclose(f); return true;
+}
+
+// ── AIS 온디맨드 스트림 빌더 (Central) ───────────────────────────────────────
+// 저장 .dat 레코드 = u32 len + (MpData + AisWireMsg). 아래 빌더는 재직렬화하여 항상
+// 현행 AisWireMsg 포맷으로 출력 (구버전 .dat 레코드는 앞 필드 오프셋 불변 → 안전, rx_cnt=0).
+namespace {
+struct AisRB { std::array<uint8_t, sizeof(MpData)> md; AisWireMsg w; };
+
+// 저장 레코드 → (MpData 24B, AisWireMsg). rl<MpData 면 false.
+inline bool ais_parse(const uint8_t* rec, uint32_t rl, AisRB& rb){
+    if(rl < sizeof(MpData)) return false;
+    memcpy(rb.md.data(), rec, sizeof(MpData));
+    memset(&rb.w, 0, sizeof(rb.w));
+    size_t plen = rl - sizeof(MpData);
+    memcpy(&rb.w, rec + sizeof(MpData), std::min(plen, sizeof(AisWireMsg)));
+    return true;
+}
+inline void ais_emit(std::string& out, const AisRB& rb){
+    uint32_t rl = (uint32_t)(sizeof(MpData) + sizeof(AisWireMsg));
+    out.append((const char*)&rl, 4);
+    out.append((const char*)rb.md.data(), sizeof(MpData));
+    out.append((const char*)&rb.w, sizeof(AisWireMsg));
+}
+template<class F> void ais_foreach(const std::string& body, F&& fn){
+    size_t off = 0;
+    while(off + 4 <= body.size()){
+        uint32_t rl; memcpy(&rl, body.data()+off, 4); off += 4;
+        if(off + rl > body.size()) break;
+        AisRB rb;
+        if(ais_parse((const uint8_t*)body.data()+off, rl, rb) && rb.w.mmsi) fn(rb);
+        off += rl;
+    }
+}
+
+// 구독 요약: MMSI 당 [최초 + 최신위치 + 최신정적(name) + 최근10분 구간 전부], 중복 t_ms 제거.
+// 최초 레코드에 rx_cnt=실제누계 실어보냄 (표 Cnt 권위값).
+std::string ais_build_summary(const std::string& body){
+    int64_t cutoff = (int64_t)time(nullptr)*1000 - 10LL*60*1000;   // now-10min (KST 무관, epoch)
+    struct Agg {
+        std::map<int64_t, AisRB> win;                 // 최근10분 (t_ms 중복제거·시간순)
+        AisRB first, lastPos, lastStatic;
+        int64_t firstT=INT64_MAX, lastPosT=-1, lastStaticT=-1;
+        uint32_t cnt=0;
+        bool has_first=false, has_pos=false, has_static=false;
+    };
+    std::map<uint32_t, Agg> per;
+    ais_foreach(body, [&](const AisRB& rb){
+        Agg& a = per[rb.w.mmsi]; a.cnt++;
+        int64_t t = rb.w.t_ms;
+        if(t < a.firstT){ a.firstT=t; a.first=rb; a.has_first=true; }
+        if(rb.w.has_pos && t > a.lastPosT){ a.lastPosT=t; a.lastPos=rb; a.has_pos=true; }
+        if(rb.w.name[0] && t > a.lastStaticT){ a.lastStaticT=t; a.lastStatic=rb; a.has_static=true; }
+        if(t >= cutoff) a.win[t] = rb;
+    });
+    std::string out;
+    for(auto& kv : per){
+        Agg& a = kv.second;
+        std::map<int64_t, AisRB> em = a.win;
+        if(a.has_first)  em.emplace(a.firstT, a.first);       // 창에 같은 t 있으면 그대로 (동일)
+        if(a.has_pos)    em.emplace(a.lastPosT, a.lastPos);
+        if(a.has_static) em.emplace(a.lastStaticT, a.lastStatic);
+        if(!em.empty()) em.begin()->second.w.rx_cnt = a.cnt;  // 최초(최소 t)에 실제 누계
+        for(auto& e : em) ais_emit(out, e.second);
+    }
+    return out;
+}
+
+// 단일 MMSI 전체 이력 (활성화 온디맨드): 그 배 레코드 전부 시간순(파일순=시간순).
+std::string ais_build_vessel(const std::string& body, uint32_t key){
+    std::string out;
+    ais_foreach(body, [&](const AisRB& rb){ if(rb.w.mmsi==key) ais_emit(out, rb); });
+    return out;
+}
+} // anonymous
+
 void CentralServer::broadcast_module_pkt_all(const uint8_t* bewe_pkt, size_t bewe_len,
                                              const char* sub_mod){
     std::lock_guard<std::mutex> rlk(rooms_mtx_);
@@ -1776,6 +1859,39 @@ void CentralServer::handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
         if(n) memcpy(body.data()+sizeof(PktModulePipe), data, n);
         return make_packet(PacketType::MODULE_PIPE, body.data(), (uint32_t)body.size());
     };
+
+    // 이력 스트림 전송 (unicast): body → [zlib] → HIST_META(stream_kind)/CHUNK*/DONE
+    auto send_hist_stream = [&](const std::string& body, uint32_t stream_kind){
+        std::string wire = body; uint32_t raw_bytes = 0;
+        if(!body.empty()){
+            uLongf bound = compressBound((uLong)body.size());
+            std::string z; z.resize(bound);
+            if(compress2((Bytef*)z.data(), &bound, (const Bytef*)body.data(),
+                         (uLong)body.size(), Z_BEST_SPEED) == Z_OK && bound < body.size()){
+                z.resize(bound); wire.swap(z); raw_bytes = (uint32_t)body.size();
+            }
+        }
+        MpHistMeta meta{ (uint32_t)wire.size(), raw_bytes, stream_kind };
+        auto mp = make_mp(BEWE_MK_HIST_META, &meta, sizeof(meta));
+        je->enqueue_ctrl(mp.data(), mp.size());
+        constexpr size_t CHUNK = 8192;
+        for(size_t off=0; off<wire.size(); off+=CHUNK){
+            size_t len = std::min(CHUNK, wire.size()-off);
+            auto cp = make_mp(BEWE_MK_HIST_CHUNK, wire.data()+off, len);
+            je->enqueue_ctrl(cp.data(), cp.size());
+        }
+        auto dp = make_mp(BEWE_MK_HIST_DONE, nullptr, 0);
+        je->enqueue_ctrl(dp.data(), dp.size());
+    };
+
+    if(h->kind == BEWE_MK_VHIST_REQ && h->data_len >= sizeof(MpVHistReq)){
+        // 단일 대상(AIS=MMSI) 오늘 전체 이력 온디맨드 → stream_kind=1
+        uint32_t key = reinterpret_cast<const MpVHistReq*>(d)->key;
+        std::string raw; module_read_today(mod, raw);
+        std::string body = (strcmp(mod,"ais")==0) ? ais_build_vessel(raw, key) : std::string();
+        send_hist_stream(body, 1);
+        return;
+    }
 
     if(h->kind == BEWE_MK_CH_LIST_REQ){
         // 전 스테이션 활성 채널 목록 집계 (cached_ch_sync + mod_mask)
@@ -1894,35 +2010,12 @@ void CentralServer::handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
             if(on) je->mod_recv.insert(mod); else je->mod_recv.erase(mod);
         }
         if(on){
-            // 오늘 집계 파일 → 히스토리 스트림 (unicast)
-            std::string body;
-            FILE* f = fopen(module_store_today(mod).c_str(), "rb");
-            if(f){
-                char buf[8192]; size_t n;
-                while((n=fread(buf,1,sizeof(buf),f))>0) body.append(buf,n);
-                fclose(f);
-            }
-            // zlib 압축 (반복 레코드라 5~10× 흔함). 실패/팽창 시 비압축 폴백(raw_bytes=0).
-            std::string wire = body; uint32_t raw_bytes = 0;
-            if(!body.empty()){
-                uLongf bound = compressBound((uLong)body.size());
-                std::string z; z.resize(bound);
-                if(compress2((Bytef*)z.data(), &bound, (const Bytef*)body.data(),
-                             (uLong)body.size(), Z_BEST_SPEED) == Z_OK && bound < body.size()){
-                    z.resize(bound); wire.swap(z); raw_bytes = (uint32_t)body.size();
-                }
-            }
-            MpHistMeta meta{ (uint32_t)wire.size(), raw_bytes };
-            auto mp = make_mp(BEWE_MK_HIST_META, &meta, sizeof(meta));
-            je->enqueue_ctrl(mp.data(), mp.size());
-            constexpr size_t CHUNK = 8192;
-            for(size_t off=0; off<wire.size(); off+=CHUNK){
-                size_t len = std::min(CHUNK, wire.size()-off);
-                auto cp = make_mp(BEWE_MK_HIST_CHUNK, wire.data()+off, len);
-                je->enqueue_ctrl(cp.data(), cp.size());
-            }
-            auto dp = make_mp(BEWE_MK_HIST_DONE, nullptr, 0);
-            je->enqueue_ctrl(dp.data(), dp.size());
+            // 오늘 집계 파일 → 구독 히스토리 스트림 (unicast, stream_kind=0).
+            // AIS 는 요약(배당 최초+최신위치+최신정적+최근10분)만 — 접속시 전체 덤프 방지.
+            // 그 외 모듈은 종전대로 전체.
+            std::string raw; module_read_today(mod, raw);
+            std::string body = (strcmp(mod,"ais")==0) ? ais_build_summary(raw) : raw;
+            send_hist_stream(body, 0);
         }
         return;
     }
