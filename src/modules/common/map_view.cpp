@@ -239,10 +239,11 @@ MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
 
     // ── 항적 + 마커 ── (최근접 마커 추적 → hover/click)
     int best=-1; float bestd=1e9f; ImVec2 mp=io.MousePos;
+    bool any_sel=false; for(const auto& p : pts) if(p.selected){ any_sel=true; break; }  // 선택 배 있으면 그 배만 꼬리
     for(size_t i=0;i<pts.size();i++){
         const MapPoint& pt=pts[i];
-        // 항적 꼬리 (oldest→newest, alpha ramp)
-        if(v.show_trails && pt.trail && pt.trail_n>1){
+        // 항적 꼬리 (oldest→newest, alpha ramp) — 선택 배 있으면 비선택 배 꼬리 숨김(그 배만 돋보이게)
+        if(v.show_trails && pt.trail && pt.trail_n>1 && (!any_sel || pt.selected)){
             ImU32 base = pt.color & 0x00FFFFFFu;
             ImVec2 tp = LL2PX(pt.trail[0], pt.trail[1]);
             if(pt.selected) dl->AddCircleFilled(tp, 1.25f, base|0xC0000000u, 8);  // GPS 기록점
@@ -251,6 +252,14 @@ MapResult draw_map(const char* id, MapView& v, const std::vector<MapPoint>& pts,
                 int a = 40 + (int)(140.0*k/(pt.trail_n-1));
                 dl->AddLine(tp, tc, base|((ImU32)a<<24), pt.selected?2.0f:1.2f);
                 if(pt.selected) dl->AddCircleFilled(tc, 1.25f, base|0xC0000000u, 8);  // 각 기록 위치에 점
+                // 항적선 클릭 판정: 마우스↔선분 최단거리 (꼬리 눌러도 선박 선택)
+                if(hovered && pt.id){
+                    float vx=tc.x-tp.x, vy=tc.y-tp.y, wx=mp.x-tp.x, wy=mp.y-tp.y;
+                    float L2=vx*vx+vy*vy, t=(L2>1e-3f)?((wx*vx+wy*vy)/L2):0.f;
+                    if(t<0)t=0; if(t>1)t=1;
+                    float cxp=tp.x+t*vx-mp.x, cyp=tp.y+t*vy-mp.y, d=cxp*cxp+cyp*cyp;
+                    if(d<bestd){ bestd=d; best=(int)i; }
+                }
                 tp=tc;
             }
         }

@@ -60,7 +60,7 @@ void info_str(const AisRecord& m, char* o, size_t n){
     else o[0]=0;
 }
 // MMSI별 최신 head + 항적 꼬리 (지도용)
-struct AisTrack { AisRecord head; std::deque<std::array<float,2>> trail; int ship_type=0; char name[24]={0}; };
+struct AisTrack { AisRecord head; std::deque<std::array<float,3>> trail; int ship_type=0; char name[24]={0}; };  // trail: {lat, lon, t_ms_초}
 // ── MMSI 그룹 (표: 동일 MMSI 묶음, 최신값 + Up/Down/Cnt) ──
 struct AisGrp {
     uint32_t mmsi;
@@ -178,12 +178,15 @@ void draw_content(FFTViewer& v, bool just_opened){
                 if(m.name[0] && !t.name[0]) { strncpy(t.name,m.name,sizeof(t.name)-1); }
                 if(!m.has_pos) continue;                       // head/trail은 위치 msg만
                 if(t.head.t_ms==0 || m.t_ms>=t.head.t_ms) t.head=m;
-                float la=(float)m.lat, lo=(float)m.lon;
-                if(t.trail.empty()) t.trail.push_back({la,lo});
+                float la=(float)m.lat, lo=(float)m.lon, tt=(float)(m.t_ms/1000);
+                if(t.trail.empty()) t.trail.push_back({la,lo,tt});
                 else { auto& bk=t.trail.back();
                        float dla=la-bk[0], dlo=(lo-bk[1])*cosf(la*(float)M_PI/180.f);
-                       if(dla*dla+dlo*dlo > 4.5e-5f*4.5e-5f) t.trail.push_back({la,lo}); }
-                while(t.trail.size()>500) t.trail.pop_front();   // 개수 무방 — 사실상 30분 트랙수명이 한계 (안전상한 500)
+                       if(dla*dla+dlo*dlo > 4.5e-5f*4.5e-5f) t.trail.push_back({la,lo,tt}); }
+                // 비선택 배 꼬리는 최근 10분치만 (선택 배는 log 전체 별도 경로)
+                float cut10=(float)(last/1000)-600.f;
+                while(!t.trail.empty() && t.trail.front()[2]<cut10) t.trail.pop_front();
+                while(t.trail.size()>800) t.trail.pop_front();   // 안전상한
             }
             int64_t cutoff=last-30LL*60*1000;                     // 30분 지난 트랙 제거
             for(auto it=tracks.begin(); it!=tracks.end();)
@@ -328,18 +331,17 @@ void draw_content(FFTViewer& v, bool just_opened){
         ImGui::EndTable();
     }
     // ── 선박 이력 뷰: 선택 MMSI 의 Up~Down 사이 모든 메시지 (시간순) ──
-    else if(!mv.big && cur_view!=0 && ImGui::BeginTable("##ais_hist", 9, tf, ImVec2(tw, upper_h))){
+    else if(!mv.big && cur_view!=0 && ImGui::BeginTable("##ais_hist", 7, tf, ImVec2(tw, upper_h))){
         ImGui::TableSetupScrollFreeze(1,1);
         ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 70);
-        ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 40);
         ImGui::TableSetupColumn("Lat",  ImGuiTableColumnFlags_WidthFixed, 78);
         ImGui::TableSetupColumn("Lon",  ImGuiTableColumnFlags_WidthFixed, 84);
         ImGui::TableSetupColumn("SOG",  ImGuiTableColumnFlags_WidthFixed, 48);
         ImGui::TableSetupColumn("COG",  ImGuiTableColumnFlags_WidthFixed, 48);
         ImGui::TableSetupColumn("HDG",  ImGuiTableColumnFlags_WidthFixed, 44);
-        ImGui::TableSetupColumn("Sta",  ImGuiTableColumnFlags_WidthFixed, 60);
         ImGui::TableSetupColumn("Info", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableHeadersRow();
+        static int hsc=-1; static bool hsa=true;
+        modview::sortable_headers(7, hsc, hsa, 6);   // Info(6)만 좌측, 나머지(Time/Lat/Lon/SOG/COG/HDG) 중앙
 
         std::lock_guard<std::mutex> lk(mtx);
         static std::vector<int> hvis; hvis.clear();
@@ -350,16 +352,14 @@ void draw_content(FFTViewer& v, bool just_opened){
             const AisRecord& m=log[hvis[r]];
             ImGui::TableNextRow();
             char ts[12]; hms(m.t_ms,ts);
-            ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted(ts);
             char b[24];
-            ImGui::TableSetColumnIndex(1); snprintf(b,sizeof(b),"%d",m.msg_type); modview::cell(b);
-            ImGui::TableSetColumnIndex(2); if(m.has_pos){ snprintf(b,sizeof(b),"%.5f",m.lat); modview::cell(b); }
-            ImGui::TableSetColumnIndex(3); if(m.has_pos){ snprintf(b,sizeof(b),"%.5f",m.lon); modview::cell(b); }
-            ImGui::TableSetColumnIndex(4); if(m.sog>=0){ snprintf(b,sizeof(b),"%.1f",m.sog); modview::cell(b); }
-            ImGui::TableSetColumnIndex(5); if(m.cog>=0){ snprintf(b,sizeof(b),"%.0f",m.cog); modview::cell(b); }
-            ImGui::TableSetColumnIndex(6); if(m.heading!=511){ snprintf(b,sizeof(b),"%d",m.heading); modview::cell(b); }
-            ImGui::TableSetColumnIndex(7); modview::cell(m.station[0]?m.station:"LOCAL", ImVec4(0.85f,0.75f,0.5f,1.f));
-            ImGui::TableSetColumnIndex(8); { char inf[64]; info_str(m,inf,sizeof(inf)); if(inf[0]) ImGui::TextUnformatted(inf); }
+            ImGui::TableSetColumnIndex(0); modview::cell(ts);   // Time 중앙정렬
+            ImGui::TableSetColumnIndex(1); if(m.has_pos){ snprintf(b,sizeof(b),"%.5f",m.lat); modview::cell(b); }
+            ImGui::TableSetColumnIndex(2); if(m.has_pos){ snprintf(b,sizeof(b),"%.5f",m.lon); modview::cell(b); }
+            ImGui::TableSetColumnIndex(3); if(m.sog>=0){ snprintf(b,sizeof(b),"%.1f",m.sog); modview::cell(b); }
+            ImGui::TableSetColumnIndex(4); if(m.cog>=0){ snprintf(b,sizeof(b),"%.0f",m.cog); modview::cell(b); }
+            ImGui::TableSetColumnIndex(5); if(m.heading!=511){ snprintf(b,sizeof(b),"%d",m.heading); modview::cell(b); }
+            ImGui::TableSetColumnIndex(6); { char inf[64]; info_str(m,inf,sizeof(inf)); if(inf[0]) ImGui::TextUnformatted(inf); }
         }
         modview::tail_follow(atb, false);
         ImGui::EndTable();
@@ -441,11 +441,11 @@ void draw_content(FFTViewer& v, bool just_opened){
     }
     if(mres.clicked_id){
         uint32_t id=(uint32_t)mres.clicked_id;
-        if(map_pin==id){ map_pin=0; sel_mmsi=0; filter[0]=0; }         // 같은 배 재클릭 → 해제
-        else { map_pin=id; sel_mmsi=id; snprintf(filter,sizeof(filter),"%u",id); }  // 그 MMSI 선택
-        std::lock_guard<std::mutex> lk(mtx);
-        for(const AisRecord& m : log) if(m.mmsi==id && m.has_pos) focus=m;
+        sel_mmsi=id; map_pin=id;                        // 지도 핀(필터링 안 함)
+        { std::lock_guard<std::mutex> lk(mtx);
+          for(const AisRecord& m : log) if(m.mmsi==id && m.has_pos) focus=m; }
         has_focus=true;
+        nav_go(id);                                     // 표 행 클릭과 동일 — 그 선박 전체 이력 화면으로
     }
 
     // ── 세부 패널 (표 폭까지만, 표 바로 밑 — 지도는 안 가려 더 길게) ──
