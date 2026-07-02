@@ -97,7 +97,11 @@ public:
         for(auto& kv : db_){
             MmsiRf& s=kv.second;
             if(s.n<ESTABLISH_N) continue;
-            double var = s.n>1 ? s.m2/(s.n-1) : 1.0; if(var<CFO_FLOOR*CFO_FLOOR) var=CFO_FLOOR*CFO_FLOOR;
+            // 분산 = 레퍼런스 분산과 단일버스트 CFO 스프레드(데이터불균형 바이어스 ~150Hz) 중 큰 값.
+            // identify 는 단일 incoming 버스트를 다중버스트 레퍼런스와 비교 → Mahalanobis 상 incoming 잡음 반영해야 과신뢰 방지.
+            double var = s.n>1 ? s.m2/(s.n-1) : 1.0;
+            if(var<CFO_FLOOR*CFO_FLOOR) var=CFO_FLOOR*CFO_FLOOR;
+            if(var<BURST_CFO_STD*BURST_CFO_STD) var=BURST_CFO_STD*BURST_CFO_STD;
             double dc=(m.cfo_hz-s.mean); double dz=dc*dc/var;                   // CFO 정규화 거리²
             double dp=(m.clk_ppm-s.ppm_mean)/PPM_SC; dz += dp*dp;              // 보조 (Doppler무관)
             double df=(m.fdev_std_hz-s.fdev_mean)/FDEV_SC; dz += df*df;
@@ -121,7 +125,8 @@ public:
 
 private:
     static constexpr long   ESTABLISH_N = 8;
-    static constexpr double CFO_FLOOR   = 30.0;   // Hz, 최소 분산 바닥 (버스트 추정잡음)
+    static constexpr double CFO_FLOOR   = 30.0;   // Hz, 레퍼런스 분산 하한 (버스트간 emitter 지터)
+    static constexpr double BURST_CFO_STD = 150.0; // Hz, 단일버스트 CFO 스프레드 (데이터불균형 바이어스; de-bias 후 40~60 로 하향)
     static constexpr double PPM_SC      = 5.0;    // ppm 정규화 스케일
     static constexpr double FDEV_SC     = 200.0;  // Hz 정규화 스케일
     static constexpr double MATCH_MAXD  = 9.0;    // 최근접 정규화거리² 상한 (~3σ)

@@ -14,8 +14,9 @@
 class AisDecoder {
 public:
     std::function<void(const AisRecord&)> on_record;
+    std::function<void(bool)>             on_gate;   // payload(ST_DATA) 구간 알림 (RF 지문 게이팅). true=시작 false=종결
 
-    void reset_all(){ reset_frame(); state=ST_SKURR; nskurr=0; npreamble=0; last=0; }
+    void reset_all(){ if(on_gate) on_gate(false); reset_frame(); state=ST_SKURR; nskurr=0; npreamble=0; last=0; }
 
     // NRZI 디코드된 데이터 비트 1개 투입 (0/1)
     void feed_bit(uint8_t in){
@@ -56,7 +57,8 @@ public:
         case ST_STARTSIGN:                                     // 플래그 닫는 0 → 데이터 시작
             if(nstartsign>=7){
                 if(in==0){ state=ST_DATA; nstartsign=0; antallenner=0;
-                           memset(buffer,0,sizeof(buffer)); bufferpos=0; }
+                           memset(buffer,0,sizeof(buffer)); bufferpos=0;
+                           if(on_gate) on_gate(true); }   // 페이로드 시작 → RF 지문 누산 개시
                 else reset_all();
             } else if(in==0) reset_all();
             nstartsign++;

@@ -16,6 +16,8 @@
 #include <array>
 #include <unordered_map>
 #include <ctime>
+#include <chrono>
+#include <algorithm>
 
 namespace ais_mod {
 
@@ -101,6 +103,14 @@ ImU32 type_color(int t){
     if(t>=40&&t<=59) return IM_COL32(200,150,255,255);  // 고속/특수 보라
     return IM_COL32(90,200,255,255);                    // 미상 시안
 }
+// "YYYYMMDD" y/m/d → 그날 00:00 KST 의 epoch ms (타임라인 하루축 기준점)
+int64_t kst_day_base_ms(int y,int mo,int d){
+    struct tm tv{}; tv.tm_year=y-1900; tv.tm_mon=mo-1; tv.tm_mday=d;
+    time_t utc = timegm(&tv);                     // 그 날짜 00:00 을 UTC 로 해석
+    return ((int64_t)utc - 9*3600) * 1000;        // KST(UTC+9) 자정 = UTC-9h
+}
+// 재생용 위치 표본 (MMSI별 시간순)
+struct PosPt { int64_t t; float lat, lon, cog, hdg, sog; };
 } // anonymous
 
 void draw_content(FFTViewer& v, bool just_opened){
@@ -121,7 +131,7 @@ void draw_content(FFTViewer& v, bool just_opened){
     static std::string sel_station;            // 클릭된 수신소 이름 (그 기지 수신선박 점선; 빈=없음)
     static std::set<uint32_t> vloaded;         // JOIN: 전체 이력 온디맨드 이미 요청한 MMSI (중복 요청 방지)
     // 과거조회(Hist) 모드 전환 감지 → 선택/캐시 리셋 (log 통째 교체되므로)
-    bool histm = remote && bewe_mod_hist_mode("ais", nullptr);
+    char hdate[9]={}; bool histm = remote && bewe_mod_hist_mode("ais", hdate);
     { static bool prev_hist=false;
       if(histm!=prev_hist){ prev_hist=histm; vloaded.clear(); sel.clear(); anchor.clear();
                             has_focus=false; sel_mmsi=0; map_pin=0; } }
@@ -172,9 +182,85 @@ void draw_content(FFTViewer& v, bool just_opened){
     if(nav_fwd  && nav_pos<(int)nav_stack.size()-1) nav_pos++;
     cur_view = nav_stack[nav_pos];
 
-    // 세부패널 제거 — 표/지도 모두 헤더바(30) 아래 전체 높이 사용
-    float upper_h = H - 36; if(upper_h<80) upper_h=80;   // 표 높이
-    float map_h   = H - 34; if(map_h<80) map_h=80;       // 지도 높이
+    // ── 타임라인 스크러버 + 재생 (00~24시 하루축, 구간 A/B, Play) ────────────
+    const float TL_H = 46.f;
+    static float tl_a=0.f, tl_b=1440.f, tl_head=0.f;   // 분(0~1440)
+    static bool  tl_play=false;
+    // 하루 기준점: DB(과거)모드=그 날짜 / 라이브=오늘, KST 자정 epoch ms
+    int64_t day_base;
+    {
+        int y,mo,d;
+        if(histm && hdate[0]){
+            y=(hdate[0]-'0')*1000+(hdate[1]-'0')*100+(hdate[2]-'0')*10+(hdate[3]-'0');
+            mo=(hdate[4]-'0')*10+(hdate[5]-'0'); d=(hdate[6]-'0')*10+(hdate[7]-'0');
+        } else {
+            int64_t nowms=(int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            time_t tt=(time_t)(nowms/1000); struct tm kt; KST::to_tm(tt,kt);
+            y=kt.tm_year+1900; mo=kt.tm_mon+1; d=kt.tm_mday;
+        }
+        day_base=kst_day_base_ms(y,mo,d);
+    }
+    // 기준일 변경 시 리셋 — 단 재생 중이면 진행 보존(자정 넘어가도 replay 안 끊김)
+    { static int64_t prev_base=-1; if(day_base!=prev_base){ prev_base=day_base; if(!tl_play){ tl_a=0.f;tl_b=1440.f;tl_head=0.f; } } }
+    if(tl_play){ tl_head += io.DeltaTime * 1.0f; if(tl_head>=tl_b){ tl_head=tl_b; tl_play=false; } }   // 실1초=데이터1분
+    // 타임라인 바 UI
+    {
+        ImGui::SetCursorPos(ImVec2(x0, y0+32.f));
+        ImVec2 p0 = ImGui::GetCursorScreenPos();
+        const float PB=28.f;
+        if(ImGui::Button(tl_play?"##tlpause":"##tlplay", ImVec2(PB, TL_H-16))){
+            if(tl_head>=tl_b-0.02f) tl_head=tl_a;      // 끝에서 재생 → 처음부터
+            tl_play=!tl_play;
+        }
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        { // Play/Pause 아이콘
+            ImVec2 c(p0.x+PB*0.5f, p0.y+(TL_H-16)*0.5f); ImU32 ic=IM_COL32(220,230,245,255);
+            if(tl_play){ dl->AddRectFilled(ImVec2(c.x-5,c.y-6),ImVec2(c.x-1,c.y+6),ic); dl->AddRectFilled(ImVec2(c.x+1,c.y-6),ImVec2(c.x+5,c.y+6),ic); }
+            else dl->AddTriangleFilled(ImVec2(c.x-4,c.y-6),ImVec2(c.x-4,c.y+6),ImVec2(c.x+6,c.y),ic);
+        }
+        float tx0=p0.x+PB+12, tx1=p0.x+W-12, tw_=tx1-tx0; if(tw_<20)tw_=20;
+        float ty=p0.y+(TL_H-16)*0.5f;
+        auto m2x=[&](float m){ return tx0+tw_*m/1440.f; };
+        auto x2m=[&](float x){ float m=(x-tx0)/tw_*1440.f; return m<0.f?0.f:(m>1440.f?1440.f:m); };
+        dl->AddLine(ImVec2(tx0,ty),ImVec2(tx1,ty),IM_COL32(80,90,105,255),2.f);
+        for(int hh=0;hh<=24;hh+=6){ float x=m2x(hh*60.f);
+            dl->AddLine(ImVec2(x,ty-4),ImVec2(x,ty+4),IM_COL32(110,120,135,255),1.f);
+            char lb[4]; snprintf(lb,sizeof(lb),"%02d",hh);
+            dl->AddText(ImVec2(x-6,ty+7),IM_COL32(130,140,155,255),lb);
+        }
+        float hi_min_v = tl_play? tl_head : tl_b;
+        dl->AddRectFilled(ImVec2(m2x(tl_a),ty-3),ImVec2(m2x(hi_min_v),ty+3),IM_COL32(90,150,220,110));  // 선택밴드
+        auto handle=[&](const char* hid,float& mv,float lo,float hi){
+            float hx=m2x(mv);
+            ImGui::SetCursorScreenPos(ImVec2(hx-6,ty-12));
+            ImGui::InvisibleButton(hid,ImVec2(12,24));
+            bool act=ImGui::IsItemActive();
+            if(act){ float m=x2m(io.MousePos.x); if(m<lo)m=lo; if(m>hi)m=hi; mv=m; }  // clamp → 교차 방지(커서 이탈 없음)
+            ImU32 c=act?IM_COL32(255,220,120,255):IM_COL32(205,215,232,255);
+            dl->AddTriangleFilled(ImVec2(hx-5,ty-12),ImVec2(hx+5,ty-12),ImVec2(hx,ty-4),c);
+            dl->AddLine(ImVec2(hx,ty-6),ImVec2(hx,ty+8),c,2.f);
+            if(ImGui::IsItemHovered()||act) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        };
+        handle("##tlA",tl_a, 0.f, tl_b);   handle("##tlB",tl_b, tl_a, 1440.f);   // A≤B 유지
+        if(tl_head<tl_a)tl_head=tl_a; if(tl_head>tl_b)tl_head=tl_b;
+        if(tl_play){ float hx=m2x(tl_head); dl->AddLine(ImVec2(hx,ty-13),ImVec2(hx,ty+13),IM_COL32(255,120,90,255),2.f); }
+        char sa[8],sb[8],sh[8]; auto hm=[&](float m,char*o){int mi=(int)(m+0.5f);snprintf(o,8,"%02d:%02d",mi/60,mi%60);};
+        hm(tl_a,sa);hm(tl_b,sb);hm(hi_min_v,sh);
+        char tlab[40]; if(tl_play) snprintf(tlab,sizeof(tlab),"%s  [%s-%s]",sh,sa,sb); else snprintf(tlab,sizeof(tlab),"%s - %s",sa,sb);
+        ImVec2 tsz=ImGui::CalcTextSize(tlab);
+        dl->AddText(ImVec2(tx1-tsz.x,p0.y-1),IM_COL32(170,180,195,255),tlab);
+        ImGui::SetCursorPos(ImVec2(x0, y0+32.f+TL_H));
+    }
+    // 재생/구간 필터 범위 (표·지도 공용)
+    bool    tl_filt = tl_play || tl_a>0.5f || tl_b<1439.5f;
+    float   hi_min  = tl_play? tl_head : tl_b;
+    int64_t lo_ms = day_base + (int64_t)(tl_a*60000.0f);
+    int64_t hi_ms = day_base + (int64_t)(hi_min*60000.0f);
+
+    // 세부패널 제거 — 표/지도 모두 헤더바(30)+타임라인(TL_H) 아래 전체 높이 사용
+    float upper_h = H - 36 - TL_H; if(upper_h<80) upper_h=80;   // 표 높이
+    float map_h   = H - 34 - TL_H; if(map_h<80) map_h=80;       // 지도 높이
 
     // ── MMSI별 최신위치 + 항적 캐시 (signature 게이팅, 증분; FIFO/clear 안전) ──
     static std::unordered_map<uint32_t, AisTrack> tracks;
@@ -216,7 +302,65 @@ void draw_content(FFTViewer& v, bool just_opened){
     static std::vector<modview_map::MapPoint> pts;
     static std::vector<std::vector<float>>    trailbuf;
     static std::vector<std::string>           tip1, tip2;
+    static bool pidx_valid=false;   // 재생/구간 스냅샷 유효 (tl_filt 진입 시 1회 색인; 재생 중 라이브 무시)
     pts.clear(); trailbuf.clear(); tip1.clear(); tip2.clear();
+    if(tl_filt){
+        // ── 타임라인 재생/구간 모드: MMSI별 위치색인(pidx)에서 hi_ms 시점 위치(보간)+10분꼬리 ──
+        // pidx 는 tl_filt 진입 시 1회만 색인(스냅샷) — 재생 중 라이브 append 로 매프레임 재색인하지 않음
+        // (합의된 "재생 중 실시간 일시정지"; 성능: 100k 재색인 매패킷 방지).
+        static std::unordered_map<uint32_t, std::vector<PosPt>> pidx;
+        static std::unordered_map<uint32_t, std::pair<int,std::string>> pmeta;   // {ship_type, name}
+        static int64_t pidx_base=-1;
+        if(!pidx_valid || day_base!=pidx_base){
+            std::lock_guard<std::mutex> lk(mtx);
+            pidx.clear(); pmeta.clear();
+            for(const AisRecord& m : log){
+                if(m.ship_type>0 || m.name[0]){ auto& mt=pmeta[m.mmsi];
+                    if(m.ship_type>0) mt.first=m.ship_type; if(m.name[0]&&mt.second.empty()) mt.second=m.name; }
+                if(!m.has_pos) continue;
+                pidx[m.mmsi].push_back({m.t_ms,(float)m.lat,(float)m.lon,m.cog,(float)m.heading,m.sog});
+            }
+            for(auto& kv : pidx) std::sort(kv.second.begin(),kv.second.end(),
+                [](const PosPt&a,const PosPt&b){return a.t<b.t;});
+            pidx_valid=true; pidx_base=day_base;
+        }
+        int64_t tgt=hi_ms, tail0=tgt-600000;   // 10분 꼬리
+        for(auto& kv : pidx){
+            auto& vec=kv.second; if(vec.empty()) continue;
+            int lo=0,hi=(int)vec.size(); while(lo<hi){int mid=(lo+hi)>>1; if(vec[mid].t<=tgt)lo=mid+1;else hi=mid;}
+            int idx=lo-1; if(idx<0) continue;              // 그 시각 이전 위치 없음 → 아직 미출현
+            const PosPt& p0=vec[idx];
+            float la=p0.lat, ln=p0.lon, cg=p0.cog, sg=p0.sog;
+            if(tl_play && idx+1<(int)vec.size()){          // 다음 표본과 선형보간(부드럽게)
+                const PosPt& p1=vec[idx+1];
+                double f=(p1.t>p0.t)?(double)(tgt-p0.t)/(double)(p1.t-p0.t):0.0; if(f>1)f=1; if(f<0)f=0;
+                la=p0.lat+(float)((p1.lat-p0.lat)*f); ln=p0.lon+(float)((p1.lon-p0.lon)*f);
+                if(p0.cog>=0&&p1.cog>=0){ float dd=fmodf(p1.cog-p0.cog+540.f,360.f)-180.f;  // 최단각(0/360 경계)
+                                          cg=fmodf(p0.cog+dd*(float)f+360.f,360.f); }
+            }
+            modview_map::MapPoint mpt; mpt.lat=la; mpt.lon=ln; mpt.id=kv.first;
+            mpt.heading=(cg>=0.f)?cg:(p0.hdg!=511?p0.hdg:-1.f);
+            mpt.selected=(sel_mmsi==kv.first);
+            auto mit=pmeta.find(kv.first);
+            int st=(mit!=pmeta.end())?mit->second.first:0;
+            mpt.color=mpt.selected?IM_COL32(255,210,80,255):type_color(st);
+            mpt.label=(mit!=pmeta.end()&&!mit->second.second.empty())?mit->second.second.c_str():nullptr;
+            trailbuf.emplace_back();
+            int tl=0,th=idx+1; while(tl<th){int mid=(tl+th)>>1; if(vec[mid].t<tail0)tl=mid+1;else th=mid;}  // tail0 시작 이진탐색
+            for(int j=tl;j<=idx;j++){ trailbuf.back().push_back(vec[j].lat); trailbuf.back().push_back(vec[j].lon); }
+            trailbuf.back().push_back(la); trailbuf.back().push_back(ln);   // 현재(보간) 끝점
+            char b1[32],b2[96],sog[16],cog[16],hdg[16];
+            snprintf(b1,sizeof(b1),"%u",kv.first);
+            if(sg>=0) snprintf(sog,sizeof(sog),"%.1f kt",sg); else snprintf(sog,sizeof(sog),"-");
+            if(cg>=0) snprintf(cog,sizeof(cog),"%.1f°",cg); else snprintf(cog,sizeof(cog),"-");
+            if(p0.hdg!=511) snprintf(hdg,sizeof(hdg),"%d°",(int)p0.hdg); else snprintf(hdg,sizeof(hdg),"-");
+            snprintf(b2,sizeof(b2),"SOG : %s\nCOG : %s\nHDG : %s",sog,cog,hdg);
+            tip1.emplace_back(b1); tip2.emplace_back(b2);
+            pts.push_back(mpt);
+        }
+    }
+    else {
+    pidx_valid=false;   // tl_filt 해제 → 다음 진입 시 pidx 재색인(스냅샷 갱신)
     for(auto& kv : tracks){
         const AisRecord& m=kv.second.head;
         modview_map::MapPoint mpt;
@@ -244,6 +388,7 @@ void draw_content(FFTViewer& v, bool just_opened){
         tip1.emplace_back(b1); tip2.emplace_back(b2);
         pts.push_back(mpt);
     }
+    }
     for(size_t i=0;i<pts.size();i++){
         pts[i].trail   = trailbuf[i].empty()? nullptr : trailbuf[i].data();
         pts[i].trail_n = (int)trailbuf[i].size()/2;
@@ -259,14 +404,20 @@ void draw_content(FFTViewer& v, bool just_opened){
         std::lock_guard<std::mutex> lk(mtx);
         static size_t c_n=(size_t)-1; static int64_t c_last=-1;
         static char c_filter[64]={'\xff'}; static int c_sc=-99; static bool c_asc=false;
+        static int64_t c_lo=-1, c_hi=-1;
+        // 게이팅은 분 단위로 양자화 — 재생 중 hi_ms 매프레임 변해도 재집계는 1분(=실1초)당 1회
+        int64_t lo_q=(int64_t)tl_a, hi_q=(int64_t)hi_min;
         size_t n_now=log.size(); int64_t last_t=n_now?log.back().t_ms:0;
-        if(n_now!=c_n||last_t!=c_last||strncmp(c_filter,filter,sizeof(c_filter))||c_sc!=sort_col||c_asc!=sort_asc){
+        bool datachg = (n_now!=c_n||last_t!=c_last);   // tl_filt(재생/구간) 중엔 라이브 변경 무시 = 스냅샷
+        if((!tl_filt && datachg)||strncmp(c_filter,filter,sizeof(c_filter))||c_sc!=sort_col||c_asc!=sort_asc
+           ||c_lo!=lo_q||c_hi!=hi_q){
             std::vector<AisGrp> g; g.reserve(256);
             std::unordered_map<uint32_t,int> idx; idx.reserve(512);
             rx_stations.clear();
             for(size_t i=0;i<n_now;i++){
                 const AisRecord& m=log[i];
                 if(!match(m,filter)) continue;
+                if(tl_filt && (m.t_ms<lo_ms||m.t_ms>hi_ms)) continue;   // 타임라인 구간 필터
                 rx_stations.insert(m.station);   // 복조한 기지 수집 (빈문자=LOCAL)
                 auto it=idx.find(m.mmsi); int gi;
                 if(it==idx.end()){ gi=(int)g.size(); idx[m.mmsi]=gi;
@@ -275,14 +426,15 @@ void draw_content(FFTViewer& v, bool just_opened){
                 AisGrp& G=g[gi]; G.cnt++;
                 if(m.rx_cnt>G.auth_cnt) G.auth_cnt=m.rx_cnt;   // Central 요약 실제 누계 (권위)
                 if(m.t_ms<G.first) G.first=m.t_ms;          // Up = 최초(불변)
-                if(m.t_ms>=G.last){ G.last=m.t_ms; G.latest=m; G.match_mmsi=m.match_mmsi; G.match_conf=m.match_conf; }   // Down = 최근
+                if(m.t_ms>=G.last){ G.last=m.t_ms; G.latest=m; }   // Down = 최근
+                if(m.match_mmsi){ G.match_mmsi=m.match_mmsi; G.match_conf=m.match_conf; }  // sticky: non-zero 만 갱신 → 빈 버스트는 이전 매치 유지
                 if(m.spoof_flag>G.spoof) G.spoof=m.spoof_flag;   // RF 판정 (최대)
                 if(m.name[0] && !G.name[0]){ strncpy(G.name,m.name,sizeof(G.name)-1); G.name[sizeof(G.name)-1]=0; }
             }
             for(AisGrp& G : g) if(G.auth_cnt) G.cnt=(int)G.auth_cnt;   // 요약 상태: 실제 누계로 표시/정렬 통일
             std::stable_sort(g.begin(),g.end(),[&](const AisGrp&a,const AisGrp&b){ int c=grp_cmp(sort_col<0?0:sort_col,a,b); return (sort_col<0?true:sort_asc)? c<0:c>0; });
             grps.swap(g);
-            c_n=n_now; c_last=last_t; strncpy(c_filter,filter,sizeof(c_filter)-1); c_filter[sizeof(c_filter)-1]=0; c_sc=sort_col; c_asc=sort_asc;
+            c_n=n_now; c_last=last_t; strncpy(c_filter,filter,sizeof(c_filter)-1); c_filter[sizeof(c_filter)-1]=0; c_sc=sort_col; c_asc=sort_asc; c_lo=lo_q; c_hi=hi_q;
             // Info 폭 = 실제 데이터 최대 길이에 맞춤 (헤더 글자폭 무시)
             float mw=8.f;
             for(const AisGrp& G : grps){ char inf[64]; info_str(G.latest,inf,sizeof(inf));
@@ -374,7 +526,8 @@ void draw_content(FFTViewer& v, bool just_opened){
 
         std::lock_guard<std::mutex> lk(mtx);
         static std::vector<int> hvis; hvis.clear();
-        for(int i=0;i<(int)log.size();i++) if(log[i].mmsi==cur_view) hvis.push_back(i);
+        for(int i=0;i<(int)log.size();i++) if(log[i].mmsi==cur_view &&
+               (!tl_filt || (log[i].t_ms>=lo_ms && log[i].t_ms<=hi_ms))) hvis.push_back(i);
 
         ImGuiListClipper hc; hc.Begin((int)hvis.size());
         while(hc.Step()) for(int r=hc.DisplayStart;r<hc.DisplayEnd;r++){
