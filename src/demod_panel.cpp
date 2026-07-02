@@ -382,7 +382,7 @@ void demod_draw_panel(FFTViewer& v, bool just_opened){
     if(ImGui::BeginTabBar("##demod_tabs", ImGuiTabBarFlags_Reorderable)){
 
         // ── Modules 탭 (런처): 좌측 모듈 목록 + 우측 타깃 테이블 ──
-        if(ImGui::BeginTabItem("Modules", nullptr, sel_flag("Modules"))){
+        if(ImGui::BeginTabItem("Main", nullptr, sel_flag("Main"))){
             for(size_t i=0;i<mods.size();i++) was_active[i]=false;
             auto shown=[&](int i){ return i>=0 && i<(int)mods.size() &&
                 (mods[i].planned || mods[i].target_modes || mods[i].draw_content); };

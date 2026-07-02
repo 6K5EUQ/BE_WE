@@ -133,54 +133,81 @@ inline void header_bar(FFTViewer& v, const char* id, char* filter, size_t cap,
     if(bewe_mod_hist_loading(id) || bewe_mod_hist_fetching(id)){
         ImGui::SameLine(0,12); ImGui::SetCursorPosY(tcy); ImGui::TextDisabled("loading...");
     }
+    // ── 우측 버튼군: [Recv][Hist][Clear] — 고정폭 + 균일 간격(GAP) + 우측정렬 ──
+    const float GAP = 8.f, RMARGIN = 12.f;
     float pad2=ImGui::GetStyle().FramePadding.x*2;
     float cwb=ImGui::CalcTextSize("Clear").x   +pad2;
-    float rwb=ImGui::CalcTextSize("Recv OFF").x+pad2;  // 넓은쪽 기준 고정폭
-    bool hsup = remote && bewe_mod_hist_supported(id);
-    float hwb  = hsup ? ImGui::CalcTextSize("Hist").x+pad2 : 0.f;
-    float hgap = hsup ? 8.f : 0.f;
+    float rwb=ImGui::CalcTextSize("Recv OFF").x+pad2;   // ON/OFF 넓은쪽 고정 → 전환 시 안 흔들림
+    bool  hsup = remote && bewe_mod_hist_supported(id);
+    float hwb  = hsup ? ImGui::CalcTextSize("DB").x+pad2+6.f : 0.f;
     if(remote){
+        float total = rwb + (hsup? GAP+hwb : 0.f) + GAP + cwb;
+        ImGui::SameLine(); ImGui::SetCursorPos(ImVec2(W-total-RMARGIN, fy));
         bool rcv=bewe_mod_recv(id);
-        ImGui::SameLine(); ImGui::SetCursorPos(ImVec2(W-cwb-hwb-hgap-rwb-20, fy));
         // 기본 Recv OFF(빨강) → 켜면 Recv ON(초록). Hist 모드에선 OFF — 클릭 시 버퍼 복원+재구독.
         ImGui::PushStyleColor(ImGuiCol_Button, rcv?ImVec4(0.15f,0.55f,0.2f,1.f):ImVec4(0.6f,0.15f,0.15f,1.f));
-        if(ImGui::Button(rcv?"Recv ON":"Recv OFF")){
+        if(ImGui::Button(rcv?"Recv ON":"Recv OFF", ImVec2(rwb,0))){
             if(histm) bewe_mod_hist_exit(v, id);                    // 과거 폐기 + 라이브 버퍼 복원 + 재구독
             else { if(!rcv) on_clear(); bewe_mod_set_recv(v,id,!rcv); }
         }
         ImGui::PopStyleColor();
         if(hsup){
-            ImGui::SameLine(); ImGui::SetCursorPos(ImVec2(W-cwb-hwb-16, fy));
+            ImGui::SameLine(0,GAP); ImGui::SetCursorPosY(fy);
             if(histm) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f,0.55f,0.15f,1.f));
-            char hpid[40]; snprintf(hpid,sizeof(hpid),"##%s_histpop",id);
-            if(ImGui::Button("Hist")){ bewe_mod_hist_list_req(id); ImGui::OpenPopup(hpid); }
+            char up[12]={}; for(int i=0;id[i]&&i<8;i++) up[i]=(char)toupper((unsigned char)id[i]);
+            char hpid[56]; snprintf(hpid,sizeof(hpid),"%s DataBase##%s_histwin", up, id);
+            if(ImGui::Button("DB", ImVec2(hwb,0))){ bewe_mod_hist_list_req(id); ImGui::OpenPopup(hpid); }
             if(histm) ImGui::PopStyleColor();
-            if(ImGui::BeginPopup(hpid)){
-                ImGui::TextDisabled("Archive dates");
-                ImGui::Separator();
-                if(bewe_mod_hist_list_loading(id)) ImGui::TextDisabled("loading...");
-                else {
+            // ── 날짜 목록: 미션창과 동일한 중앙 모달 (타이틀 중앙, Date 만, 행 구분선) ──
+            const float LW = 210.f;   // 리스트 폭
+            ImVec2 ctr = ImGui::GetMainViewport()->GetCenter();
+            ImGui::SetNextWindowPos(ctr, ImGuiCond_Appearing, ImVec2(0.5f,0.5f));
+            ImGui::SetNextWindowSize(ImVec2(LW+22.f,0), ImGuiCond_Appearing);
+            bool wopen=true;
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowTitleAlign, ImVec2(0.5f,0.5f));  // 타이틀 중앙정렬
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(11,8));          // 여백 절반
+            if(ImGui::BeginPopupModal(hpid, &wopen, ImGuiWindowFlags_AlwaysAutoResize)){
+                if(bewe_mod_hist_list_loading(id)){
+                    ImGui::Dummy(ImVec2(LW,0)); ImGui::TextDisabled("loading...");
+                } else {
                     auto dates = bewe_mod_hist_dates(id);
-                    if(dates.empty()) ImGui::TextDisabled("no data");
-                    for(const auto& e : dates){
-                        char lbl[64]; float mb = e.bytes/1048576.f;
-                        if(mb>=0.1f) snprintf(lbl,sizeof(lbl),"%.4s-%.2s-%.2s   %.1f MB  %d st",
-                                              e.date, e.date+4, e.date+6, mb, (int)e.stations);
-                        else snprintf(lbl,sizeof(lbl),"%.4s-%.2s-%.2s   %u KB  %d st",
-                                      e.date, e.date+4, e.date+6, e.bytes/1024u, (int)e.stations);
-                        bool cur = histm && !strncmp(hdate, e.date, 8);
-                        if(ImGui::Selectable(lbl, cur)){
-                            bewe_mod_hist_fetch(v, id, e.date);      // 진입/날짜 전환 (Recv 자동 OFF)
-                            ImGui::CloseCurrentPopup();
+                    if(dates.empty()){ ImGui::Dummy(ImVec2(LW,0)); ImGui::TextDisabled("no archived data"); }
+                    else {
+                        float rowh = ImGui::GetFrameHeight() + 5.f;
+                        float h = (float)dates.size()*rowh + 2.f; if(h>400.f) h=400.f;
+                        ImGui::BeginChild("##hlist", ImVec2(LW, h), false);
+                        ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.5f,0.5f));
+                        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0,5));
+                        for(size_t i=0;i<dates.size();i++){
+                            const auto& e = dates[i];
+                            bool cur = histm && !strncmp(hdate, e.date, 8);
+                            char lbl[24]; snprintf(lbl,sizeof(lbl),"%.4s-%.2s-%.2s", e.date, e.date+4, e.date+6);
+                            if(cur) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f,0.80f,0.35f,1.f));
+                            bool clicked = ImGui::Selectable(lbl, cur, 0, ImVec2(0, ImGui::GetFrameHeight()));
+                            if(cur) ImGui::PopStyleColor();
+                            if(clicked){ bewe_mod_hist_fetch(v, id, e.date); ImGui::CloseCurrentPopup(); }
+                            if(i+1<dates.size()){   // 날짜 구분: 연한 회색 선
+                                ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(1,1,1,0.07f));
+                                ImGui::Separator();
+                                ImGui::PopStyleColor();
+                            }
                         }
+                        ImGui::PopStyleVar(2);
+                        ImGui::EndChild();
                     }
                 }
+                ImGui::Dummy(ImVec2(0,2));
+                if(ImGui::Button("Close", ImVec2(-1,0))) ImGui::CloseCurrentPopup();
                 ImGui::EndPopup();
             }
+            ImGui::PopStyleVar(2);   // WindowPadding + WindowTitleAlign (모달 미개방 시에도 짝 맞춤)
         }
-        ImGui::SameLine(); ImGui::SetCursorPos(ImVec2(W-cwb-12, fy));
-    } else { ImGui::SameLine(); ImGui::SetCursorPos(ImVec2(W-cwb-12, fy)); }
-    if(ImGui::Button("Clear")) on_clear();
+        ImGui::SameLine(0,GAP); ImGui::SetCursorPosY(fy);
+        if(ImGui::Button("Clear", ImVec2(cwb,0))) on_clear();
+    } else {
+        ImGui::SameLine(); ImGui::SetCursorPos(ImVec2(W-cwb-RMARGIN, fy));
+        if(ImGui::Button("Clear")) on_clear();
+    }
     ImGui::EndChild();
     ImGui::PopStyleColor();
 }
