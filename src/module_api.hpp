@@ -41,6 +41,11 @@ struct BeweModule {
     // ── 단일 대상 온디맨드 전체 이력 (JOIN): d = 레코드 스트림(u32 len + MpData+payload)*.
     // 그 대상(예: MMSI) 기존 log 레코드를 이 전체 세트로 교체 (구독 요약과 중복 제거). nullptr=미지원.
     void (*on_vessel_hist)(FFTViewer& v, const uint8_t* d, size_t n);
+    // ── 과거(전일) 데이터 조회 (JOIN, Hist 버튼) — 셋 다 구현해야 Hist 지원 ──
+    // v 안 받음 (log/mtx 만 접근) → 재접속 리셋(set_my_station, v 없음) 에서도 복원 호출 가능.
+    void (*log_stash)();     // 라이브 log → 임시버퍼 (Hist 진입; log 비움)
+    void (*log_restore)();   // 임시버퍼 → log 복원 (Hist 종료; 과거 데이터 폐기)
+    void (*on_hist_file)(const char* station, const char* data, size_t n); // 과거 JSONL 1개 파싱→log append
 };
 
 void bewe_register_module(const BeweModule& m);
@@ -82,6 +87,18 @@ bool bewe_mod_hist_loading(const char* id);
 // JOIN→Central: 단일 대상(key=AIS MMSI)의 오늘 전체 이력 온디맨드 요청. 응답 레코드는
 // on_data 로 흘러 log 에 병합 (구독 요약이 보낸 최초/최근만 → 전체로 채워짐). 뷰가 배 활성화 시 호출.
 void bewe_mod_req_vessel(const char* id, uint32_t key);
+// ── 과거 데이터 조회 (Hist 버튼; HOST 가 00시 push 한 전일 아카이브를 Central 서 다운로드) ──
+struct BeweHistDate { char date[9]; uint32_t bytes; uint8_t stations; };  // date="YYYYMMDD"
+bool bewe_mod_hist_supported(const char* id);                    // 모듈이 Hist 훅 구현?
+void bewe_mod_hist_list_req(const char* id);                     // 날짜 목록 요청 (Hist 팝업 열 때)
+std::vector<BeweHistDate> bewe_mod_hist_dates(const char* id);   // 수신된 날짜 목록
+bool bewe_mod_hist_list_loading(const char* id);
+// Hist 진입/날짜 전환: 라이브 log 버퍼 대피(첫 진입) + Recv OFF + 그 날짜 데이터 다운로드→오버레이
+void bewe_mod_hist_fetch(FFTViewer& v, const char* id, const char* date8);
+// Hist 종료 (Recv ON 클릭): 과거 데이터 폐기 + 버퍼 복원 + 재구독 (clear 없음)
+void bewe_mod_hist_exit(FFTViewer& v, const char* id);
+bool bewe_mod_hist_mode(const char* id, char* date8_out /*[9], nullable*/);  // 현재 과거조회 모드?
+bool bewe_mod_hist_fetching(const char* id);                     // 과거 데이터 다운로드 중?
 void bewe_mod_req_ch_list(const char* id);                       // 타깃 목록 요청 (런처 폴링)
 std::vector<MpChEntry> bewe_mod_targets(FFTViewer& v, const char* id); // 타깃 목록 (LOCAL 이면 로컬 채널)
 void bewe_mod_set_target(FFTViewer& v, const char* id, const char* station, int ch, bool on); // 디코드 on/off

@@ -7,6 +7,7 @@
 #include "fft_viewer.hpp"
 #include "bewe_paths.hpp"
 #include "kst_time.hpp"
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -249,6 +250,28 @@ static void on_data(FFTViewer& v, const char* station, const uint8_t* d, size_t 
     append_log(m);
 }
 
+// ── 과거조회(Hist): 라이브 log 대피/복원 + 과거 JSONL 오버레이 ──────────────
+static std::vector<AcarsMsg> g_stash;   // Hist 진입 시 라이브 log 대피 버퍼
+static void log_stash(){
+    std::lock_guard<std::mutex> lk(mtx);
+    g_stash = std::move(msglog); msglog.clear();   // move: 이전 잔여 버퍼 폐기
+}
+static void log_restore(){
+    std::lock_guard<std::mutex> lk(mtx);
+    msglog = std::move(g_stash); g_stash.clear();
+}
+// 과거 날짜 아카이브 기지별 JSONL 1개 → 파싱·기지명 태그·시간순 병합 (기지 수만큼 호출)
+static void on_hist_file(const char* station, const char* data, size_t n){
+    std::vector<AcarsMsg> parsed;
+    store_parse_jsonl(data, n, parsed);
+    for(auto& m : parsed){ strncpy(m.station, station, sizeof(m.station)-1); m.station[sizeof(m.station)-1]=0; }
+    std::lock_guard<std::mutex> lk(mtx);
+    msglog.insert(msglog.end(), parsed.begin(), parsed.end());
+    std::stable_sort(msglog.begin(), msglog.end(),
+                     [](const AcarsMsg& a, const AcarsMsg& b){ return a.t_ms < b.t_ms; });
+    if((int)msglog.size() > LOG_MAX) msglog.erase(msglog.begin(), msglog.end()-LOG_MAX);
+}
+
 #ifndef BEWE_HEADLESS
 // LOCAL: 오늘 아카이브 직접 로드 (Recv 개념 없음)
 void local_load_today(FFTViewer& v){
@@ -285,6 +308,9 @@ static bool s_registered = [](){
     m.host_stop  = &host_stop;
     m.on_ch_stop = &on_ch_stop;
     m.on_data    = &on_data;
+    m.log_stash    = &log_stash;
+    m.log_restore  = &log_restore;
+    m.on_hist_file = &on_hist_file;
     bewe_register_module(m);
     return true;
 }();

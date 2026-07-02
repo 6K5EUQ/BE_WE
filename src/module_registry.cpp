@@ -15,6 +15,9 @@
 #include <utility>
 #include <deque>
 #include <string>
+#include <thread>
+#include <atomic>
+#include <unistd.h>
 
 static int64_t mod_now_ms(){
     return (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -71,6 +74,17 @@ struct ModFw {
     bool     vhist_active = false;
     std::string vhist_buf;
     uint32_t vhist_raw = 0;
+    // 과거 날짜 아카이브 조회 (Hist 버튼; stream_kind=2)
+    bool     hist_mode = false;              // 과거조회 모드 (라이브 log 는 모듈측 버퍼에 대피)
+    char     hist_date[9] = {};              // 조회 중 날짜 "YYYYMMDD"
+    bool     hist2_fetching = false;         // HFETCH 응답 대기/수신 중
+    bool     hist2_active = false;           // META(kind2) 수신 후 CHUNK 수락
+    std::string hist2_buf;
+    uint32_t hist2_raw = 0;
+    uint32_t hist2_gen = 0;                  // fetch 세대 — stale(옛 날짜) 응답 스트림 폐기용
+    bool     hlist_loading = false;          // 날짜 목록 요청 중
+    std::vector<BeweHistDate> hlist;         // 수신된 날짜 목록
+    bool     hist_resub_skip = false;        // Hist 종료 재구독 시 오늘 히스토리(kind0) 무시 (버퍼 복원분과 중복 방지)
 };
 static std::mutex g_fw_mtx;
 static std::map<std::string, ModFw> g_fw;
@@ -81,11 +95,23 @@ void bewe_mod_set_my_station(const char* s){
     if(s) strncpy(g_my_station, s, sizeof(g_my_station)-1);
     // (재)접속 시점 — 이전 연결의 구독/히스토리 + 타깃/마스크 잔여 상태 전부 무효
     // (다른 기지로 전환 시 이전 기지 채널/RUN 상태가 남아 어긋나 보이는 것 방지)
-    std::lock_guard<std::mutex> lk(g_fw_mtx);
-    for(auto& kv : g_fw){
-        kv.second.recv=false; kv.second.hist_loading=false; kv.second.hist_started=false;
-        kv.second.hist_buf.clear(); kv.second.live_pending.clear();
-        kv.second.targets.clear(); kv.second.masks.clear(); kv.second.pending.clear();
+    std::vector<std::string> was_hist;   // Hist 모드였던 모듈 — 락 밖에서 log_restore (모듈 mtx 는 다른 락)
+    {
+        std::lock_guard<std::mutex> lk(g_fw_mtx);
+        for(auto& kv : g_fw){
+            if(kv.second.hist_mode) was_hist.push_back(kv.first);
+            kv.second.recv=false; kv.second.hist_loading=false; kv.second.hist_started=false;
+            kv.second.hist_buf.clear(); kv.second.live_pending.clear();
+            kv.second.targets.clear(); kv.second.masks.clear(); kv.second.pending.clear();
+            kv.second.hist_mode=false; kv.second.hist_date[0]=0;
+            kv.second.hist2_fetching=false; kv.second.hist2_active=false; kv.second.hist2_buf.clear(); kv.second.hist2_raw=0;
+            kv.second.hlist_loading=false; kv.second.hlist.clear(); kv.second.hist_resub_skip=false;
+        }
+    }
+    // Hist 모드에서 재접속/기지전환 → 대피(stash)된 라이브 log 복원 (안 하면 과거 데이터가 라이브로 오인 + 버퍼 유실)
+    for(const std::string& id : was_hist){
+        const BeweModule* m = find_mod(id.c_str());
+        if(m && m->log_restore) m->log_restore();
     }
 }
 
@@ -152,7 +178,63 @@ static void host_apply_set(FFTViewer& v, const BeweModule& m, int ch, bool on){
 // ── 복조 의도(want) ↔ 실제동작(host_mask) 재조정 ─────────────────────────────
 // 필터 깜빡임/SDR 스트림에러로 워커가 죽어 host_mask 가 비어도, 사용자가 켠 want 가 남으면
 // 채널이 다시 active 가 됐을 때 자동 재시작. HOST 주기 호출(cli_host/ui). SDR 에러 중엔 보류.
+// ── HOST: 전일 JSONL 아카이브 자동 push (00시 KST 넘으면 어제 파일 → Central) ──
+// 미션 on/off 무관 자동. 지난 7일 중 미push 파일도 회수 (기지 다운 후 복구 대비).
+// 완료 마커 = <파일>.pushed (fire-and-forget; Central 다운 중 push 는 손실 가능 — 마커 지우면 재push).
+static std::atomic<bool> g_arch_pushing{false};
+static void host_arch_push_file(std::string id, std::string path, std::string date8){
+    std::string body;
+    { FILE* f=fopen(path.c_str(),"rb"); if(!f){ g_arch_pushing=false; return; }
+      char b[8192]; size_t n; while((n=fread(b,1,sizeof(b),f))>0) body.append(b,n); fclose(f); }
+    // zlib 압축 (JSONL 반복 텍스트 — 5~10× 흔함). 실패/팽창 시 비압축(raw=0).
+    std::string wire = body; uint32_t raw = 0;
+    if(!body.empty()){
+        uLongf bound = compressBound((uLong)body.size());
+        std::string z; z.resize(bound);
+        if(compress2((Bytef*)z.data(), &bound, (const Bytef*)body.data(),
+                     (uLong)body.size(), Z_BEST_SPEED)==Z_OK && bound < body.size()){
+            z.resize(bound); wire.swap(z); raw=(uint32_t)body.size();
+        }
+    }
+    MpArchMeta meta{}; memcpy(meta.date, date8.c_str(), 8);
+    meta.total_bytes=(uint32_t)wire.size(); meta.raw_bytes=raw;
+    if(!bcast(id.c_str(), BEWE_MK_ARCH_META, &meta, sizeof(meta))){ g_arch_pushing=false; return; }
+    constexpr size_t CHUNK = 8192;
+    for(size_t off=0; off<wire.size(); off+=CHUNK){
+        size_t len = wire.size()-off; if(len>CHUNK) len=CHUNK;
+        if(!bcast(id.c_str(), BEWE_MK_ARCH_CHUNK, wire.data()+off, len)){ g_arch_pushing=false; return; }
+        usleep(10000);   // ~800KB/s — FFT 스트림/송신큐 보호
+    }
+    bcast(id.c_str(), BEWE_MK_ARCH_DONE, nullptr, 0);
+    FILE* mk=fopen((path+".pushed").c_str(),"wb");
+    if(mk){ fputs(date8.c_str(), mk); fclose(mk); }
+    g_arch_pushing=false;
+}
+static void host_arch_push_check(){
+    if(!g_broadcast) return;                          // HOST 송신로 없으면 스킵
+    static int64_t last=0; int64_t now=mod_now_ms();
+    if(now-last < 60000) return; last=now;            // 1분 주기
+    if(g_arch_pushing.load()) return;                 // 한 번에 한 파일
+    const char* home = getenv("HOME");
+    std::string base = home ? std::string(home) : std::string(".");
+    time_t tnow = time(nullptr);
+    for(int back=1; back<=7; back++){                 // 어제~7일 전 (오늘 제외 — 파일 진행 중)
+        struct tm tv{}; KST::to_tm(tnow - (time_t)back*86400, tv);
+        char d[9]; snprintf(d,sizeof(d),"%04d%02d%02d",tv.tm_year+1900,tv.tm_mon+1,tv.tm_mday);
+        for(auto& m : reg()){
+            if(!m.target_modes) continue;
+            std::string path = base + "/BE_WE/modules/" + m.id + "/" + m.id + "_" + d + ".jsonl";
+            FILE* f=fopen(path.c_str(),"rb"); if(!f) continue; fclose(f);
+            FILE* mk=fopen((path+".pushed").c_str(),"rb"); if(mk){ fclose(mk); continue; }
+            g_arch_pushing=true;
+            std::thread(host_arch_push_file, std::string(m.id), path, std::string(d)).detach();
+            return;                                    // 이번 틱 1파일 — 다음 틱에 다음 파일
+        }
+    }
+}
+
 void bewe_mod_reconcile(FFTViewer& v){
+    host_arch_push_check();                            // 00시 롤오버/미push 회수 (SDR 에러와 무관)
     if(v.sdr_stream_error.load()) return;
     for(auto& m : reg()){
         if(!m.target_modes) continue;
@@ -458,6 +540,73 @@ void bewe_mod_req_vessel(const char* id, uint32_t key){
     send_up(id, BEWE_MK_VHIST_REQ, &r, sizeof(r));
 }
 
+// ── 과거 데이터 조회 (Hist) ─────────────────────────────────────────────────
+bool bewe_mod_hist_supported(const char* id){
+    const BeweModule* m = find_mod(id);
+    return m && m->log_stash && m->log_restore && m->on_hist_file;
+}
+void bewe_mod_hist_list_req(const char* id){
+    { std::lock_guard<std::mutex> lk(g_fw_mtx); fw(id).hlist_loading=true; fw(id).hlist.clear(); }
+    if(!send_up(id, BEWE_MK_HLIST_REQ, nullptr, 0)){
+        std::lock_guard<std::mutex> lk(g_fw_mtx); fw(id).hlist_loading=false;   // LOCAL: 목록 없음
+    }
+}
+std::vector<BeweHistDate> bewe_mod_hist_dates(const char* id){
+    std::lock_guard<std::mutex> lk(g_fw_mtx); return fw(id).hlist;
+}
+bool bewe_mod_hist_list_loading(const char* id){
+    std::lock_guard<std::mutex> lk(g_fw_mtx); return fw(id).hlist_loading;
+}
+void bewe_mod_hist_fetch(FFTViewer& v, const char* id, const char* date8){
+    const BeweModule* m = find_mod(id);
+    if(!m || !m->log_stash || !date8 || strlen(date8)<8) return;
+    bool already;
+    { std::lock_guard<std::mutex> lk(g_fw_mtx); already = fw(id).hist_mode; }
+    // 구독 중이면 OFF (라이브 수신 중단; clear 없음 — stash 가 대피)
+    if(bewe_mod_recv(id)) bewe_mod_set_recv(v, id, false);
+    if(already){
+        // 날짜 전환: restore(버퍼→log) 후 재-stash = 현 과거 데이터만 버리고 버퍼 보존
+        if(m->log_restore) m->log_restore();
+    }
+    m->log_stash();
+    uint32_t gen;
+    {
+        std::lock_guard<std::mutex> lk(g_fw_mtx);
+        ModFw& f = fw(id);
+        f.hist_mode=true; memcpy(f.hist_date, date8, 8); f.hist_date[8]=0;
+        gen = ++f.hist2_gen;                 // 새 세대 — 이전 날짜의 늦게 온 스트림은 폐기됨
+        f.hist2_fetching=true; f.hist2_active=false; f.hist2_buf.clear(); f.hist2_raw=0;
+    }
+    MpHFetch q{}; memcpy(q.date, date8, 8); q.gen = gen;
+    if(!send_up(id, BEWE_MK_HFETCH, &q, sizeof(q))){
+        std::lock_guard<std::mutex> lk(g_fw_mtx); fw(id).hist2_fetching=false;
+    }
+}
+void bewe_mod_hist_exit(FFTViewer& v, const char* id){
+    const BeweModule* m = find_mod(id);
+    if(!m) return;
+    {
+        std::lock_guard<std::mutex> lk(g_fw_mtx);
+        ModFw& f = fw(id);
+        if(!f.hist_mode) return;
+        f.hist_mode=false; f.hist_date[0]=0;
+        ++f.hist2_gen;                        // 진행 중 과거 스트림 무효화
+        f.hist2_fetching=false; f.hist2_active=false; f.hist2_buf.clear(); f.hist2_raw=0;
+        f.hist_resub_skip=true;               // 곧 오는 재구독 히스토리(kind0)는 버림 — 복원 log 와 중복 방지
+    }
+    if(m->log_restore) m->log_restore();    // 과거 데이터 폐기 + 라이브 버퍼 복원
+    bewe_mod_set_recv(v, id, true);         // 재구독 (라이브만 재개; 오늘 히스토리는 resub_skip 으로 폐기)
+}
+bool bewe_mod_hist_mode(const char* id, char* date8_out){
+    std::lock_guard<std::mutex> lk(g_fw_mtx);
+    ModFw& f = fw(id);
+    if(date8_out){ memcpy(date8_out, f.hist_date, 9); }
+    return f.hist_mode;
+}
+bool bewe_mod_hist_fetching(const char* id){
+    std::lock_guard<std::mutex> lk(g_fw_mtx); return fw(id).hist2_fetching;
+}
+
 std::vector<MpChEntry> bewe_mod_targets(FFTViewer& v, const char* id){
     if(g_send_up && v.remote_mode){
         std::lock_guard<std::mutex> lk(g_fw_mtx);
@@ -700,6 +849,11 @@ void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t
             f.vhist_active = true; f.vhist_raw = hm->raw_bytes; f.vhist_buf.clear();
             break;
         }
+        if(hm->stream_kind == 2){                 // 과거 날짜 아카이브 (HFETCH 응답)
+            if(!f.hist_mode || hm->req_id != f.hist2_gen) break;  // 옛 날짜의 늦게 온(stale) 스트림 폐기
+            f.hist2_active = true; f.hist2_raw = hm->raw_bytes; f.hist2_buf.clear();
+            break;
+        }
         if(!f.hist_loading) break;   // 구독 안 한 상태의 잔여 스트림 무시
         f.hist_total = hm->total_bytes;
         f.hist_raw   = hm->raw_bytes;
@@ -709,19 +863,37 @@ void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t
     case BEWE_MK_HIST_CHUNK: {
         std::lock_guard<std::mutex> lk(g_fw_mtx);
         ModFw& f = fw(id);
+        if(f.hist2_active){ if(n) f.hist2_buf.append((const char*)d, n); break; }
         if(f.vhist_active){ if(n) f.vhist_buf.append((const char*)d, n); break; }
         if(f.hist_loading && f.hist_started && n) f.hist_buf.append((const char*)d, n);
+        break;
+    }
+    case BEWE_MK_HLIST: {
+        std::lock_guard<std::mutex> lk(g_fw_mtx);
+        ModFw& f = fw(id);
+        f.hlist.clear();
+        size_t cnt = n / sizeof(MpHistDate);
+        auto* e = reinterpret_cast<const MpHistDate*>(d);
+        for(size_t i=0;i<cnt;i++){
+            BeweHistDate b{}; memcpy(b.date, e[i].date, 8); b.date[8]=0;
+            b.bytes=e[i].bytes; b.stations=e[i].stations;
+            f.hlist.push_back(b);
+        }
+        f.hlist_loading = false;
         break;
     }
     case BEWE_MK_HIST_DONE: {
         std::string buf;
         std::vector<std::vector<uint8_t>> pending;
         uint32_t raw = 0;
-        bool vessel = false;
+        bool vessel = false, arch = false, skip_hist = false;
         {
             std::lock_guard<std::mutex> lk(g_fw_mtx);
             ModFw& f = fw(id);
-            if(f.vhist_active){                     // 단일 대상 이력 — 즉시 append (라이브 병합 없음)
+            if(f.hist2_active){                     // 과거 날짜 아카이브 (Hist 모드 오버레이)
+                arch = true; buf.swap(f.hist2_buf); raw = f.hist2_raw;
+                f.hist2_active = false; f.hist2_raw = 0; f.hist2_fetching = false;
+            } else if(f.vhist_active){              // 단일 대상 이력 — 즉시 append (라이브 병합 없음)
                 vessel = true; buf.swap(f.vhist_buf); raw = f.vhist_raw;
                 f.vhist_active = false; f.vhist_raw = 0;
             } else {
@@ -730,6 +902,7 @@ void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t
                 pending.swap(f.live_pending);
                 raw = f.hist_raw;
                 f.hist_loading = false; f.hist_started = false; f.hist_raw = 0;
+                skip_hist = f.hist_resub_skip; f.hist_resub_skip = false;   // Hist 종료 재구독: 히스토리 버림, 라이브만
             }
         }
         // raw>0 → buf 는 zlib 압축본. 풀어서 레코드 스트림 복원. 실패 시 빈 히스토리.
@@ -740,6 +913,20 @@ void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t
                           (uLong)buf.size()) == Z_OK && dlen == raw) buf.swap(out);
             else buf.clear();
         }
+        // 과거 아카이브: [station 24B][u32 len][JSONL] 블록 반복 → 모듈이 파싱해 log 오버레이
+        if(arch){
+            if(m->on_hist_file){
+                size_t off = 0;
+                while(off + 28 <= buf.size()){
+                    char stn[25]={}; memcpy(stn, buf.data()+off, 24);
+                    uint32_t fl; memcpy(&fl, buf.data()+off+24, 4); off += 28;
+                    if(off + fl > buf.size()) break;
+                    m->on_hist_file(stn, buf.data()+off, fl);
+                    off += fl;
+                }
+            }
+            break;
+        }
         // 단일 대상 전체 이력: 배치 훅으로 그 대상 레코드 통째 교체 (요약↔전체 중복 방지).
         if(vessel && m->on_vessel_hist){ m->on_vessel_hist(v, (const uint8_t*)buf.data(), buf.size()); break; }
         // 레코드 스트림: u32 len + (MpData + module payload) 반복
@@ -749,12 +936,15 @@ void bewe_mod_route(FFTViewer& v, bool host_side, const uint8_t* payload, size_t
             char stn[25]={}; memcpy(stn, md->station, 24);
             if(m->on_data) m->on_data(v, stn, rec+sizeof(MpData), rl-sizeof(MpData));
         };
-        size_t off = 0;
-        while(off + 4 <= buf.size()){
-            uint32_t rl; memcpy(&rl, buf.data()+off, 4); off += 4;
-            if(off + rl > buf.size()) break;
-            dispatch((const uint8_t*)buf.data()+off, rl);
-            off += rl;
+        // skip_hist(Hist 종료 재구독): 오늘 히스토리는 복원된 log 와 중복 → 버림. 라이브(pending)만 반영.
+        if(!skip_hist){
+            size_t off = 0;
+            while(off + 4 <= buf.size()){
+                uint32_t rl; memcpy(&rl, buf.data()+off, 4); off += 4;
+                if(off + rl > buf.size()) break;
+                dispatch((const uint8_t*)buf.data()+off, rl);
+                off += rl;
+            }
         }
         // 히스토리 후 라이브 버퍼 합류 (모듈측 append dedup 이 경계 중복 제거)
         for(auto& r : pending) dispatch(r.data(), r.size());

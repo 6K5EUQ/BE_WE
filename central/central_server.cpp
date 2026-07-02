@@ -1716,6 +1716,35 @@ static std::string module_store_today(const char* mod){
     return dir + f;
 }
 
+// 아카이브 저장: ~/BE_WE/modules/<mod>/archive/<YYYYMMDD>/<기지>.jsonl (기지별·날짜별)
+static std::string module_archive_dir(const char* mod, const char* date8){
+    const char* home = getenv("HOME");
+    std::string dir = std::string(home?home:".") + "/BE_WE/modules/" + mod + "/archive";
+    std::string p;
+    for(char c : dir){ p += c; if(c=='/' && p.size()>1) mkdir(p.c_str(), 0755); }
+    mkdir(dir.c_str(), 0755);
+    dir += "/"; dir += date8;
+    mkdir(dir.c_str(), 0755);
+    return dir;
+}
+// "YYYYMMDD" 검증 (JOIN/HOST 공급 문자열 — 경로 주입 방지)
+static bool valid_date8(const char* d){
+    for(int i=0;i<8;i++) if(d[i]<'0'||d[i]>'9') return false;
+    return d[8]==0 || true;
+}
+// station_id ("DGS-2_DGS-2") → 표시명 ("DGS-2"). 경로주입 방어: 파일명이 되므로
+// 영숫자/'-'/'_' 만 허용 ('/'·'.'·기타 → '_' 치환). '_' 는 station_id 구분자라 첫 토큰만 취함.
+static void arch_station_disp(const std::string& sid, char* out, size_t cap){
+    size_t o=0;
+    for(char c : sid){
+        if(c=='_'||o+1>=cap) break;                       // 구분자 전까지
+        bool ok = (c>='0'&&c<='9')||(c>='A'&&c<='Z')||(c>='a'&&c<='z')||c=='-';
+        out[o++] = ok ? c : '_';                          // 위험문자(/ . 등) 무해화
+    }
+    if(o==0 && cap>6){ memcpy(out,"LOCAL",6); return; }
+    out[o]=0;
+}
+
 // 오늘 .dat 전체를 out 으로 읽기
 static bool module_read_today(const char* mod, std::string& out){
     FILE* f = fopen(module_store_today(mod).c_str(), "rb");
@@ -1840,6 +1869,47 @@ void CentralServer::handle_host_module_pipe(std::shared_ptr<HostRoom> room,
         broadcast_module_pkt_all(bewe_pkt, bewe_len, mod);
         return;
     }
+    // ── HOST 전일 JSONL 아카이브 push (00시 롤오버) → 기지별/날짜별 파일 저장 ──
+    if(h->kind == BEWE_MK_ARCH_META && h->data_len >= sizeof(MpArchMeta)){
+        auto* am = reinterpret_cast<const MpArchMeta*>(d);
+        char date8[9]={}; memcpy(date8, am->date, 8);
+        if(!valid_date8(date8)) return;
+        auto& rx = room->arch_rx[mod];
+        rx = HostRoom::ArchRx{};                    // 이전 미완 수신 폐기
+        memcpy(rx.date, date8, 9);
+        rx.total = am->total_bytes; rx.raw = am->raw_bytes;
+        if(rx.total > 256u*1024*1024) return;       // 폭주 방어 (256MB 상한)
+        rx.buf.reserve(rx.total); rx.active = true;
+        return;
+    }
+    if(h->kind == BEWE_MK_ARCH_CHUNK){
+        auto it = room->arch_rx.find(mod);
+        if(it==room->arch_rx.end() || !it->second.active) return;
+        auto& rx = it->second;
+        if(rx.buf.size() + h->data_len > rx.total){ rx.active=false; rx.buf.clear(); return; }
+        rx.buf.append((const char*)d, h->data_len);
+        return;
+    }
+    if(h->kind == BEWE_MK_ARCH_DONE){
+        auto it = room->arch_rx.find(mod);
+        if(it==room->arch_rx.end() || !it->second.active) return;
+        auto& rx = it->second;
+        rx.active = false;
+        std::string body; body.swap(rx.buf);
+        if(rx.raw > 0 && !body.empty()){            // zlib 해제
+            std::string out; out.resize(rx.raw);
+            uLongf dlen = rx.raw;
+            if(uncompress((Bytef*)out.data(), &dlen, (const Bytef*)body.data(),
+                          (uLong)body.size())==Z_OK && dlen==rx.raw) body.swap(out);
+            else { printf("[ARCH] %s %s: inflate 실패 — 폐기\n", mod, rx.date); return; }
+        }
+        char stn[24]; arch_station_disp(room->station_id, stn, sizeof(stn));
+        std::string path = module_archive_dir(mod, rx.date) + "/" + stn + ".jsonl";
+        FILE* f = fopen(path.c_str(), "wb");        // 재push = 교체
+        if(f){ fwrite(body.data(),1,body.size(),f); fclose(f);
+               printf("[ARCH] %s %s %s: %zu bytes 저장\n", mod, rx.date, stn, body.size()); }
+        return;
+    }
 }
 
 void CentralServer::handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
@@ -1860,8 +1930,8 @@ void CentralServer::handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
         return make_packet(PacketType::MODULE_PIPE, body.data(), (uint32_t)body.size());
     };
 
-    // 이력 스트림 전송 (unicast): body → [zlib] → HIST_META(stream_kind)/CHUNK*/DONE
-    auto send_hist_stream = [&](const std::string& body, uint32_t stream_kind){
+    // 이력 스트림 전송 (unicast): body → [zlib] → HIST_META(stream_kind,req_id)/CHUNK*/DONE
+    auto send_hist_stream = [&](const std::string& body, uint32_t stream_kind, uint32_t req_id){
         std::string wire = body; uint32_t raw_bytes = 0;
         if(!body.empty()){
             uLongf bound = compressBound((uLong)body.size());
@@ -1871,7 +1941,7 @@ void CentralServer::handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
                 z.resize(bound); wire.swap(z); raw_bytes = (uint32_t)body.size();
             }
         }
-        MpHistMeta meta{ (uint32_t)wire.size(), raw_bytes, stream_kind };
+        MpHistMeta meta{ (uint32_t)wire.size(), raw_bytes, stream_kind, req_id };
         auto mp = make_mp(BEWE_MK_HIST_META, &meta, sizeof(meta));
         je->enqueue_ctrl(mp.data(), mp.size());
         constexpr size_t CHUNK = 8192;
@@ -1889,7 +1959,79 @@ void CentralServer::handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
         uint32_t key = reinterpret_cast<const MpVHistReq*>(d)->key;
         std::string raw; module_read_today(mod, raw);
         std::string body = (strcmp(mod,"ais")==0) ? ais_build_vessel(raw, key) : std::string();
-        send_hist_stream(body, 1);
+        send_hist_stream(body, 1, 0);
+        return;
+    }
+
+    if(h->kind == BEWE_MK_HLIST_REQ){
+        // 아카이브 보유 날짜 목록: archive/ 하위 YYYYMMDD 디렉토리 스캔 (최신순, 최대 64)
+        const char* home = getenv("HOME");
+        std::string base = std::string(home?home:".") + "/BE_WE/modules/" + mod + "/archive";
+        std::vector<MpHistDate> list;
+        DIR* dp = opendir(base.c_str());
+        if(dp){
+            struct dirent* de;
+            while((de = readdir(dp))){
+                if(strlen(de->d_name)!=8 || !valid_date8(de->d_name)) continue;
+                std::string ddir = base + "/" + de->d_name;
+                uint64_t bytes=0; int nst=0;
+                DIR* d2 = opendir(ddir.c_str());
+                if(!d2) continue;
+                struct dirent* fe;
+                while((fe = readdir(d2))){
+                    size_t l = strlen(fe->d_name);
+                    if(l<7 || strcmp(fe->d_name+l-6, ".jsonl")) continue;
+                    struct stat st{};
+                    if(stat((ddir+"/"+fe->d_name).c_str(), &st)==0){ bytes += (uint64_t)st.st_size; nst++; }
+                }
+                closedir(d2);
+                if(!nst) continue;
+                MpHistDate e{}; memcpy(e.date, de->d_name, 8);
+                e.stations = (uint8_t)(nst>255?255:nst);
+                e.bytes = (uint32_t)(bytes>0xFFFFFFFFull?0xFFFFFFFFu:bytes);
+                list.push_back(e);
+            }
+            closedir(dp);
+        }
+        std::sort(list.begin(), list.end(),
+                  [](const MpHistDate& a, const MpHistDate& b){ return memcmp(a.date,b.date,8)>0; });
+        if(list.size()>64) list.resize(64);
+        auto pkt = make_mp(BEWE_MK_HLIST, list.data(), list.size()*sizeof(MpHistDate));
+        je->enqueue_ctrl(pkt.data(), pkt.size());
+        return;
+    }
+
+    if(h->kind == BEWE_MK_HFETCH && h->data_len >= sizeof(MpHFetch)){
+        // 그 날짜 전 기지 JSONL → [station 24B][u32 len][내용] 블록 스트림 (stream_kind=2)
+        auto* hf = reinterpret_cast<const MpHFetch*>(d);
+        uint32_t gen = hf->gen;
+        char date8[9]={}; memcpy(date8, hf->date, 8);
+        std::string body;
+        if(valid_date8(date8)){
+            const char* home = getenv("HOME");
+            std::string ddir = std::string(home?home:".") + "/BE_WE/modules/" + mod + "/archive/" + date8;
+            DIR* d2 = opendir(ddir.c_str());
+            if(d2){
+                struct dirent* fe;
+                while((fe = readdir(d2))){
+                    size_t l = strlen(fe->d_name);
+                    if(l<7 || strcmp(fe->d_name+l-6, ".jsonl")) continue;
+                    std::string content;
+                    FILE* f = fopen((ddir+"/"+fe->d_name).c_str(), "rb");
+                    if(!f) continue;
+                    char b[8192]; size_t n;
+                    while((n=fread(b,1,sizeof(b),f))>0) content.append(b,n);
+                    fclose(f);
+                    char stn[24]={}; memcpy(stn, fe->d_name, std::min(l-6, sizeof(stn)-1));  // 파일명(확장자 제외)=기지 표시명
+                    uint32_t fl = (uint32_t)content.size();
+                    body.append(stn, 24);
+                    body.append((const char*)&fl, 4);
+                    body.append(content);
+                }
+                closedir(d2);
+            }
+        }
+        send_hist_stream(body, 2, gen);
         return;
     }
 
@@ -2015,7 +2157,7 @@ void CentralServer::handle_join_module_pipe(std::shared_ptr<JoinEntry> je,
             // 그 외 모듈은 종전대로 전체.
             std::string raw; module_read_today(mod, raw);
             std::string body = (strcmp(mod,"ais")==0) ? ais_build_summary(raw) : raw;
-            send_hist_stream(body, 0);
+            send_hist_stream(body, 0, 0);
         }
         return;
     }

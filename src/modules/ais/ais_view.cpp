@@ -116,6 +116,11 @@ void draw_content(FFTViewer& v, bool just_opened){
     static uint32_t sel_mmsi=0;                // 표/지도에서 선택된 MMSI (0=없음) — 강조+full꼬리 공통
     static std::string sel_station;            // 클릭된 수신소 이름 (그 기지 수신선박 점선; 빈=없음)
     static std::set<uint32_t> vloaded;         // JOIN: 전체 이력 온디맨드 이미 요청한 MMSI (중복 요청 방지)
+    // 과거조회(Hist) 모드 전환 감지 → 선택/캐시 리셋 (log 통째 교체되므로)
+    bool histm = remote && bewe_mod_hist_mode("ais", nullptr);
+    { static bool prev_hist=false;
+      if(histm!=prev_hist){ prev_hist=histm; vloaded.clear(); sel.clear(); anchor.clear();
+                            has_focus=false; sel_mmsi=0; map_pin=0; } }
     // 필터 박스를 수동으로 바꾸면 핀 해제 (지도 토글 일관성)
     if(map_pin){ char ms[16]; snprintf(ms,sizeof(ms),"%u",map_pin); if(strcmp(filter,ms)!=0) map_pin=0; }
 
@@ -151,7 +156,8 @@ void draw_content(FFTViewer& v, bool just_opened){
     uint32_t cur_view = nav_stack[nav_pos];          // 0=목록, else=MMSI 이력
     auto nav_go = [&](uint32_t mmsi){                // 새 화면 이동 (앞쪽 히스토리 버림)
         // JOIN: 배 활성화 시 그 MMSI 전체 이력 온디맨드 다운로드 (구독 요약엔 최초/최근10분만 있음)
-        if(remote && mmsi && !vloaded.count(mmsi)){ bewe_mod_req_vessel("ais", mmsi); vloaded.insert(mmsi); }
+        // Hist 모드는 제외 — 과거 아카이브는 이미 전체 데이터라 요청 불필요 (요청하면 오늘 데이터가 섞임)
+        if(remote && mmsi && !histm && !vloaded.count(mmsi)){ bewe_mod_req_vessel("ais", mmsi); vloaded.insert(mmsi); }
         if(nav_stack[nav_pos]==mmsi) return;
         nav_stack.resize(nav_pos+1); nav_stack.push_back(mmsi); nav_pos=(int)nav_stack.size()-1;
     };

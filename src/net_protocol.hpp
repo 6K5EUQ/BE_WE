@@ -112,7 +112,14 @@ struct __attribute__((packed)) PktModulePipe {
 };
 
 // framework kind (코어/Central 이 처리; 모듈은 payload 포맷만 소유)
+// 0xF0~0xFF 소진 → 0xEA~0xEF 도 framework 예약 (모듈 자체 kind 는 0x01~0xE9)
 enum : uint8_t {
+    BEWE_MK_ARCH_META   = 0xEA,  // HOST→Central: MpArchMeta — 전일 JSONL 아카이브 push 시작
+    BEWE_MK_ARCH_CHUNK  = 0xEB,  // HOST→Central: (zlib 압축) 파일 바이트 청크
+    BEWE_MK_ARCH_DONE   = 0xEC,  // HOST→Central: push 끝 → Central 이 기지별/날짜별 저장
+    BEWE_MK_HLIST_REQ   = 0xED,  // JOIN→Central: 과거 데이터 보유 날짜 목록 요청
+    BEWE_MK_HLIST       = 0xEE,  // Central→JOIN: MpHistDate[n]
+    BEWE_MK_HFETCH      = 0xEF,  // JOIN→Central: MpHFetch — 그 날짜 전 기지 데이터 (응답 = HIST_* stream_kind=2)
     BEWE_MK_CH_LIST_REQ = 0xF0,  // JOIN→Central: 전 스테이션 채널 타깃 목록 요청
     BEWE_MK_CH_LIST     = 0xF1,  // Central→JOIN(unicast): MpChEntry[n]
     BEWE_MK_SET         = 0xF2,  // JOIN→Central→해당 HOST: MpSet (디코드 on/off)
@@ -140,7 +147,13 @@ struct __attribute__((packed)) MpRecv     { uint8_t on; };
 // total_bytes = CHUNK 으로 운반될 (압축된) 바이트 수. raw_bytes = 압축해제 후 원본 크기.
 // raw_bytes==0 → 비압축(구버전 호환 경로). >0 → zlib(deflate) 압축본.
 // stream_kind: 0=구독(오늘 요약/전체) — 라이브 버퍼링 후 합류. 1=단일 대상 온디맨드 이력 — 즉시 append.
-struct __attribute__((packed)) MpHistMeta { uint32_t total_bytes; uint32_t raw_bytes; uint32_t stream_kind; };
+//              2=과거 날짜 아카이브(HFETCH 응답) — 압축해제 후 [station 24B][u32 len][JSONL] 블록 반복.
+// req_id: kind==2 일 때 HFETCH.gen 에코 (클라 세대 매칭 → 옛 날짜의 늦게 온 스트림 폐기). 그 외 0.
+struct __attribute__((packed)) MpHistMeta { uint32_t total_bytes; uint32_t raw_bytes; uint32_t stream_kind; uint32_t req_id; };
+// ── 과거 데이터 아카이브 (HOST 00시 push + JOIN 과거 조회) ──
+struct __attribute__((packed)) MpArchMeta { char date[9]; uint8_t _r[3]; uint32_t total_bytes; uint32_t raw_bytes; }; // date="YYYYMMDD"
+struct __attribute__((packed)) MpHistDate { char date[9]; uint8_t stations; uint8_t _r[2]; uint32_t bytes; };        // 날짜별 보유 요약
+struct __attribute__((packed)) MpHFetch   { char date[9]; uint8_t _r[3]; uint32_t gen; };   // gen=클라 요청 세대
 struct __attribute__((packed)) MpVHistReq { uint32_t key; };  // 대상 키 (AIS=MMSI). 그 대상의 오늘 전체 이력 요청
 struct __attribute__((packed)) MpData     { char station[24]; };  // 뒤에 모듈 payload
 struct __attribute__((packed)) MpRecReq   { char station[24]; uint8_t ch; uint8_t _r[3]; uint64_t rec_id; };  // WAV 요청

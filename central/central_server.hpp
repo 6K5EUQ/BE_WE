@@ -267,6 +267,9 @@ struct HostRoom {
     // ── HOST→Central DB 업로드 수신 상태 (룸당 단일 mux_loop 스레드, mutex 불필요) ─
     FILE*       db_fp   = nullptr;
     std::string db_path;
+    // ── HOST→Central 모듈 전일 JSONL 아카이브 push 수신 (mux_loop 단일 스레드) ─
+    struct ArchRx { char date[9]={}; uint32_t total=0, raw=0; std::string buf; bool active=false; };
+    std::map<std::string, ArchRx> arch_rx;   // 모듈 id → 수신 중 상태
 
     mutable std::mutex                    joins_mtx;
     std::vector<std::shared_ptr<JoinEntry>> joins;

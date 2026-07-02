@@ -13,6 +13,7 @@
 #include <dirent.h>
 #include <map>
 #include <algorithm>
+#include <vector>
 #include <string>
 
 namespace dmr_mod {
@@ -197,6 +198,31 @@ static void on_data(FFTViewer& v, const char* station, const uint8_t* d, size_t 
     append_log(m);
 }
 
+// ── 과거조회(Hist): 라이브 log 대피/복원 + 과거 JSONL 오버레이 ──────────────
+static std::vector<DmrRecord> g_stash;   // Hist 진입 시 라이브 log 대피 버퍼
+static void log_stash(){
+    std::lock_guard<std::mutex> lk(mtx);
+    g_stash = std::move(log); log.clear();   // move: 이전 잔여 버퍼 폐기
+}
+static void log_restore(){
+    std::lock_guard<std::mutex> lk(mtx);
+    log = std::move(g_stash); g_stash.clear();
+}
+// 과거 날짜 아카이브 기지별 JSONL 1개 → 파싱·기지명 태그·시간순 병합 (기지 수만큼 호출)
+static void on_hist_file(const char* station, const char* data, size_t n){
+    std::vector<DmrRecord> parsed;
+    store_parse_jsonl(data, n, parsed);
+    for(auto& m : parsed){
+        strncpy(m.station, station, sizeof(m.station)-1); m.station[sizeof(m.station)-1]=0;
+        m.rec_id = 0;   // 과거 아카이브: station_id 없어 WAV 페치 불가 → Play 숨김(무한 loading 방지)
+    }
+    std::lock_guard<std::mutex> lk(mtx);
+    log.insert(log.end(), parsed.begin(), parsed.end());
+    std::stable_sort(log.begin(), log.end(),
+                     [](const DmrRecord& a, const DmrRecord& b){ return a.t_ms < b.t_ms; });
+    if((int)log.size() > LOG_MAX) log.erase(log.begin(), log.end()-LOG_MAX);
+}
+
 #ifndef BEWE_HEADLESS
 void local_load_today(FFTViewer& v){
     (void)v;
@@ -291,6 +317,9 @@ static bool s_registered = [](){
     m.on_data    = &on_data;
     m.on_rec_req  = &rec_on_req;    // HOST: WAV 요청 수신
     m.on_rec_data = &rec_on_data;   // JOIN: WAV 청크 수신
+    m.log_stash    = &log_stash;
+    m.log_restore  = &log_restore;
+    m.on_hist_file = &on_hist_file;
     bewe_register_module(m);
     return true;
 }();

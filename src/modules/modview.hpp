@@ -124,16 +124,60 @@ inline void header_bar(FFTViewer& v, const char* id, char* filter, size_t cap,
         if(ImGui::Button(">##nav_fwd") && nav_fwd) *nav_fwd=true;
         ImGui::EndDisabled();
     }
-    if(bewe_mod_hist_loading(id)){ ImGui::SameLine(0,12); ImGui::SetCursorPosY(tcy); ImGui::TextDisabled("loading..."); }
-    float cwb=ImGui::CalcTextSize("Clear").x   +ImGui::GetStyle().FramePadding.x*2;
-    float rwb=ImGui::CalcTextSize("Recv OFF").x+ImGui::GetStyle().FramePadding.x*2;  // 넓은쪽 기준 고정폭
+    // 과거조회(Hist) 모드: 조회 중 날짜 앰버 라벨
+    char hdate[9]={}; bool histm = remote && bewe_mod_hist_mode(id, hdate);
+    if(histm && hdate[0]){
+        ImGui::SameLine(0,12); ImGui::SetCursorPosY(tcy);
+        ImGui::TextColored(ImVec4(0.95f,0.75f,0.30f,1.f), "HIST %.4s-%.2s-%.2s", hdate, hdate+4, hdate+6);
+    }
+    if(bewe_mod_hist_loading(id) || bewe_mod_hist_fetching(id)){
+        ImGui::SameLine(0,12); ImGui::SetCursorPosY(tcy); ImGui::TextDisabled("loading...");
+    }
+    float pad2=ImGui::GetStyle().FramePadding.x*2;
+    float cwb=ImGui::CalcTextSize("Clear").x   +pad2;
+    float rwb=ImGui::CalcTextSize("Recv OFF").x+pad2;  // 넓은쪽 기준 고정폭
+    bool hsup = remote && bewe_mod_hist_supported(id);
+    float hwb  = hsup ? ImGui::CalcTextSize("Hist").x+pad2 : 0.f;
+    float hgap = hsup ? 8.f : 0.f;
     if(remote){
         bool rcv=bewe_mod_recv(id);
-        ImGui::SameLine(); ImGui::SetCursorPos(ImVec2(W-cwb-rwb-20, fy));
-        // 기본 Recv OFF(빨강) → 켜면 Recv ON(초록)
+        ImGui::SameLine(); ImGui::SetCursorPos(ImVec2(W-cwb-hwb-hgap-rwb-20, fy));
+        // 기본 Recv OFF(빨강) → 켜면 Recv ON(초록). Hist 모드에선 OFF — 클릭 시 버퍼 복원+재구독.
         ImGui::PushStyleColor(ImGuiCol_Button, rcv?ImVec4(0.15f,0.55f,0.2f,1.f):ImVec4(0.6f,0.15f,0.15f,1.f));
-        if(ImGui::Button(rcv?"Recv ON":"Recv OFF")){ if(!rcv) on_clear(); bewe_mod_set_recv(v,id,!rcv); }
+        if(ImGui::Button(rcv?"Recv ON":"Recv OFF")){
+            if(histm) bewe_mod_hist_exit(v, id);                    // 과거 폐기 + 라이브 버퍼 복원 + 재구독
+            else { if(!rcv) on_clear(); bewe_mod_set_recv(v,id,!rcv); }
+        }
         ImGui::PopStyleColor();
+        if(hsup){
+            ImGui::SameLine(); ImGui::SetCursorPos(ImVec2(W-cwb-hwb-16, fy));
+            if(histm) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f,0.55f,0.15f,1.f));
+            char hpid[40]; snprintf(hpid,sizeof(hpid),"##%s_histpop",id);
+            if(ImGui::Button("Hist")){ bewe_mod_hist_list_req(id); ImGui::OpenPopup(hpid); }
+            if(histm) ImGui::PopStyleColor();
+            if(ImGui::BeginPopup(hpid)){
+                ImGui::TextDisabled("Archive dates");
+                ImGui::Separator();
+                if(bewe_mod_hist_list_loading(id)) ImGui::TextDisabled("loading...");
+                else {
+                    auto dates = bewe_mod_hist_dates(id);
+                    if(dates.empty()) ImGui::TextDisabled("no data");
+                    for(const auto& e : dates){
+                        char lbl[64]; float mb = e.bytes/1048576.f;
+                        if(mb>=0.1f) snprintf(lbl,sizeof(lbl),"%.4s-%.2s-%.2s   %.1f MB  %d st",
+                                              e.date, e.date+4, e.date+6, mb, (int)e.stations);
+                        else snprintf(lbl,sizeof(lbl),"%.4s-%.2s-%.2s   %u KB  %d st",
+                                      e.date, e.date+4, e.date+6, e.bytes/1024u, (int)e.stations);
+                        bool cur = histm && !strncmp(hdate, e.date, 8);
+                        if(ImGui::Selectable(lbl, cur)){
+                            bewe_mod_hist_fetch(v, id, e.date);      // 진입/날짜 전환 (Recv 자동 OFF)
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                }
+                ImGui::EndPopup();
+            }
+        }
         ImGui::SameLine(); ImGui::SetCursorPos(ImVec2(W-cwb-12, fy));
     } else { ImGui::SameLine(); ImGui::SetCursorPos(ImVec2(W-cwb-12, fy)); }
     if(ImGui::Button("Clear")) on_clear();
@@ -148,6 +192,7 @@ inline void space_toggle_recv(FFTViewer& v, const char* id, bool remote, bool wi
     ImGuiIO& io=ImGui::GetIO();
     if(io.WantTextInput) return;
     if(ImGui::IsKeyPressed(ImGuiKey_Space,false)){
+        if(bewe_mod_hist_mode(id, nullptr)){ bewe_mod_hist_exit(v, id); return; }  // Hist 모드: 복원+재구독
         bool rcv=bewe_mod_recv(id);
         if(!rcv) on_clear();
         bewe_mod_set_recv(v,id,!rcv);
