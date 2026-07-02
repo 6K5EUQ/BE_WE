@@ -31,6 +31,19 @@ struct AisRecord {
     char     dest[21] = {};       // 목적지 (UN/LOCODE 등 자유문자)
     float    draught = -1.f;      // 최대 현재 흘수 m (-1 = n/a)
     uint8_t  eta_mon = 0, eta_day = 0, eta_hour = 24, eta_min = 60;  // ETA (mon 0 = n/a)
+    // ── RF 지문 (워커 실시간 추출; has_rf=false 면 미상) ──
+    uint16_t fp_ver = 0;          // 특징벡터 버전 (0=없음, ais_fp.hpp FP_VER)
+    bool     has_rf = false;
+    float    cfo_hz = 0.f;        // 반송파 오프셋 (상대비교용; 수신기 공통오차 상쇄)
+    float    fdev_std_hz = 0.f;   // 판별기 표준편차 (변조지수 서명, Doppler 무관)
+    float    rssi_db = 0.f;       // 버스트 평균 전력 (전파 지배 — 보조)
+    float    clk_ppm = 0.f;       // DPLL 평균보정 → 심볼클럭 오차 (Doppler 무관)
+    float    dur_ms = 0.f;        // 버스트 길이
+    // ── 지문 판정 결과 (ais_module.cpp 채움) ──
+    uint8_t  spoof_flag = 0;      // 0=미확립 1=정상 2=이상(2nd tx 의심)
+    float    cfo_z = 0.f;         // 그 MMSI 서명 대비 편차 (진단)
+    uint32_t match_mmsi = 0;      // 지문 최근접 MMSI (0=미상/저신뢰)
+    float    match_conf = 0.f;    // Match 신뢰도 0..1
 };
 
 // wire 포맷 (framework BEWE_MK_DATA payload; station 은 MpData 봉투가 운반)
@@ -44,6 +57,10 @@ struct __attribute__((packed)) AisWireMsg {
     uint32_t rx_cnt;
     uint32_t imo; char dest[21]; float draught;
     uint8_t  eta_mon, eta_day, eta_hour, eta_min;
+    // ── RF 지문 (끝에 추가; 구버전 짧은 payload 는 on_data n<sizeof 가드가 안전 거부) ──
+    uint16_t fp_ver; uint8_t has_rf;
+    float    cfo_hz, fdev_std_hz, rssi_db, clk_ppm, dur_ms;
+    uint8_t  spoof_flag; float cfo_z; uint32_t match_mmsi; float match_conf;
 };
 
 inline void ais_msg_to_wire(const AisRecord& m, AisWireMsg& w){
@@ -56,6 +73,9 @@ inline void ais_msg_to_wire(const AisRecord& m, AisWireMsg& w){
     w.ship_type=m.ship_type; w.rx_cnt=m.rx_cnt;
     w.imo=m.imo; memcpy(w.dest,m.dest,sizeof(w.dest)); w.draught=m.draught;
     w.eta_mon=m.eta_mon; w.eta_day=m.eta_day; w.eta_hour=m.eta_hour; w.eta_min=m.eta_min;
+    w.fp_ver=m.fp_ver; w.has_rf=m.has_rf?1:0;
+    w.cfo_hz=m.cfo_hz; w.fdev_std_hz=m.fdev_std_hz; w.rssi_db=m.rssi_db; w.clk_ppm=m.clk_ppm; w.dur_ms=m.dur_ms;
+    w.spoof_flag=m.spoof_flag; w.cfo_z=m.cfo_z; w.match_mmsi=m.match_mmsi; w.match_conf=m.match_conf;
 }
 inline void ais_wire_to_msg(const AisWireMsg& w, AisRecord& m){
     m = AisRecord{};
@@ -68,6 +88,9 @@ inline void ais_wire_to_msg(const AisWireMsg& w, AisRecord& m){
     m.ship_type=w.ship_type; m.rx_cnt=w.rx_cnt;
     m.imo=w.imo; memcpy(m.dest,w.dest,sizeof(m.dest)); m.dest[sizeof(m.dest)-1]=0; m.draught=w.draught;
     m.eta_mon=w.eta_mon; m.eta_day=w.eta_day; m.eta_hour=w.eta_hour; m.eta_min=w.eta_min;
+    m.fp_ver=w.fp_ver; m.has_rf=w.has_rf!=0;
+    m.cfo_hz=w.cfo_hz; m.fdev_std_hz=w.fdev_std_hz; m.rssi_db=w.rssi_db; m.clk_ppm=w.clk_ppm; m.dur_ms=w.dur_ms;
+    m.spoof_flag=w.spoof_flag; m.cfo_z=w.cfo_z; m.match_mmsi=w.match_mmsi; m.match_conf=w.match_conf;
 }
 
 // ── AIS 6-bit ASCII → 8-bit ASCII (ITU-R M.1371 Table 47) ──────────────────

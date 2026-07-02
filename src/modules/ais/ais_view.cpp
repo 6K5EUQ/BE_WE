@@ -70,8 +70,11 @@ struct AisGrp {
     int64_t  last;         // Down — 최근 수신(갱신)
     AisRecord latest;      // last 시점의 최신 레코드 (Type/Lat/Lon/SOG/COG/Info)
     char     name[21]={};  // 최신 비공백 선박명
+    uint8_t  spoof=0;      // RF 지문 판정 (max spoof_flag)
+    uint32_t match_mmsi=0; // 지문 최근접 MMSI (최신 버스트)
+    float    match_conf=0.f;
 };
-// 컬럼: 0 Up 1 Down 2 MMSI 3 Type 4 Name 5 Country 6 Lat 7 Lon 8 SOG 9 COG 10 Cnt 11 Info
+// 컬럼: 0 Up 1 Down 2 MMSI 3 Type 4 Name 5 Country 6 Lat 7 Lon 8 SOG 9 COG 10 Cnt 11 Match 12 Info
 int grp_cmp(int c, const AisGrp& a, const AisGrp& b){
     switch(c){
         case 0:  return a.first<b.first?-1:(a.first>b.first?1:0);
@@ -85,6 +88,7 @@ int grp_cmp(int c, const AisGrp& a, const AisGrp& b){
         case 8:  return a.latest.sog<b.latest.sog?-1:(a.latest.sog>b.latest.sog?1:0);
         case 9:  return a.latest.cog<b.latest.cog?-1:(a.latest.cog>b.latest.cog?1:0);
         case 10: return a.cnt-b.cnt;
+        case 11: return (int)a.match_mmsi-(int)b.match_mmsi;
         default: return a.latest.nav_status-b.latest.nav_status;
     }
 }
@@ -271,7 +275,8 @@ void draw_content(FFTViewer& v, bool just_opened){
                 AisGrp& G=g[gi]; G.cnt++;
                 if(m.rx_cnt>G.auth_cnt) G.auth_cnt=m.rx_cnt;   // Central 요약 실제 누계 (권위)
                 if(m.t_ms<G.first) G.first=m.t_ms;          // Up = 최초(불변)
-                if(m.t_ms>=G.last){ G.last=m.t_ms; G.latest=m; }   // Down = 최근 + 최신 레코드
+                if(m.t_ms>=G.last){ G.last=m.t_ms; G.latest=m; G.match_mmsi=m.match_mmsi; G.match_conf=m.match_conf; }   // Down = 최근
+                if(m.spoof_flag>G.spoof) G.spoof=m.spoof_flag;   // RF 판정 (최대)
                 if(m.name[0] && !G.name[0]){ strncpy(G.name,m.name,sizeof(G.name)-1); G.name[sizeof(G.name)-1]=0; }
             }
             for(AisGrp& G : g) if(G.auth_cnt) G.cnt=(int)G.auth_cnt;   // 요약 상태: 실제 누계로 표시/정렬 통일
@@ -292,10 +297,10 @@ void draw_content(FFTViewer& v, bool just_opened){
     float tw, mapw;
     if(mv.big){ tw=0.f; mapw=W; }
     else {
-        const float FIXED_COLS = 70+70+82+40+130+78+84+48+48+46;  // Up Down MMSI Type Name Lat Lon SOG COG Cnt
-        // 11컬럼 cell padding(~8px each) + inner border + 세로스크롤바(~14). 이만큼만 더해
+        const float FIXED_COLS = 70+70+82+40+130+64+78+84+48+48+46+82;  // Up Down MMSI Type Name Country Lat Lon SOG COG Cnt Match
+        // 컬럼 cell padding(~8px each) + inner border + 세로스크롤바(~14). 이만큼만 더해
         // Info 셀 뒤 빈 여백 없이 마지막 Info 가 데이터폭에서 끝나게.
-        float auto_tw = FIXED_COLS + info_w + 11*8.f + 14.f;
+        float auto_tw = FIXED_COLS + info_w + 13*8.f + 14.f;
         tw = (split_tw>0.f) ? split_tw : auto_tw;       // 드래그로 조절했으면 그 값
         float maxtw = W-50; if(tw>maxtw) tw=maxtw; if(tw<200) tw=200;
         mapw=W-tw-6; if(mapw<10)mapw=10;                // 6px = 스플리터
@@ -304,7 +309,7 @@ void draw_content(FFTViewer& v, bool just_opened){
     ImGui::SetCursorPosX(x0);
     ImGuiTableFlags tf = ImGuiTableFlags_ScrollY|ImGuiTableFlags_ScrollX|ImGuiTableFlags_RowBg|
         ImGuiTableFlags_BordersInnerV|ImGuiTableFlags_Resizable;
-    if(!mv.big && cur_view==0 && ImGui::BeginTable("##ais_tbl", 12, tf, ImVec2(tw, upper_h))){
+    if(!mv.big && cur_view==0 && ImGui::BeginTable("##ais_tbl", 13, tf, ImVec2(tw, upper_h))){
         ImGui::TableSetupScrollFreeze(3,1);
         ImGui::TableSetupColumn("Up",      ImGuiTableColumnFlags_WidthFixed, 70);
         ImGui::TableSetupColumn("Down",    ImGuiTableColumnFlags_WidthFixed, 70);
@@ -317,8 +322,9 @@ void draw_content(FFTViewer& v, bool just_opened){
         ImGui::TableSetupColumn("SOG",     ImGuiTableColumnFlags_WidthFixed, 48);
         ImGui::TableSetupColumn("COG",     ImGuiTableColumnFlags_WidthFixed, 48);
         ImGui::TableSetupColumn("Cnt",     ImGuiTableColumnFlags_WidthFixed, 46);
+        ImGui::TableSetupColumn("Match",   ImGuiTableColumnFlags_WidthFixed, 82);  // 지문 예상 MMSI
         ImGui::TableSetupColumn("Info",    ImGuiTableColumnFlags_WidthStretch);  // 남는 폭 흡수 → Info 뒤 빈 칸 없음
-        modview::sortable_headers(12, sort_col, sort_asc, 11);  // Info(11)만 좌측, 나머지 중앙
+        modview::sortable_headers(13, sort_col, sort_asc, 12);  // Info(12)만 좌측, 나머지 중앙
 
         ImGuiListClipper clip; clip.Begin((int)grps.size());
         while(clip.Step()) for(int r=clip.DisplayStart;r<clip.DisplayEnd;r++){
@@ -334,7 +340,8 @@ void draw_content(FFTViewer& v, bool just_opened){
             }
             char b[24];
             ImGui::TableSetColumnIndex(1); { char dn[12]; hms(G.last,dn); modview::cell(dn); }
-            ImGui::TableSetColumnIndex(2); snprintf(b,sizeof(b),"%u",G.mmsi); modview::cell(b);
+            ImGui::TableSetColumnIndex(2); snprintf(b,sizeof(b),"%u",G.mmsi);
+            if(G.spoof==2) modview::cell(b, ImVec4(1.f,0.35f,0.30f,1.f)); else modview::cell(b);  // 스푸핑 의심=빨강
             ImGui::TableSetColumnIndex(3); snprintf(b,sizeof(b),"%d",m.msg_type); modview::cell(b);
             ImGui::TableSetColumnIndex(4);
             if(G.name[0]) modview::cell(G.name); else { const char* cc=ais_mid_country(G.mmsi); if(cc[0]) modview::cell(cc, ImVec4(0.6f,0.6f,0.6f,1.f)); }
@@ -344,7 +351,11 @@ void draw_content(FFTViewer& v, bool just_opened){
             ImGui::TableSetColumnIndex(8); if(m.sog>=0){ snprintf(b,sizeof(b),"%.1f",m.sog); modview::cell(b); }
             ImGui::TableSetColumnIndex(9); if(m.cog>=0){ snprintf(b,sizeof(b),"%.0f",m.cog); modview::cell(b); }
             ImGui::TableSetColumnIndex(10); snprintf(b,sizeof(b),"%d",G.cnt); modview::cell(b);
-            ImGui::TableSetColumnIndex(11); { char inf[64]; info_str(m,inf,sizeof(inf)); if(inf[0]) ImGui::TextUnformatted(inf); }
+            ImGui::TableSetColumnIndex(11);   // Match: 고신뢰 예상 MMSI (claimed 불일치=빨강)
+            if(G.match_mmsi){ snprintf(b,sizeof(b),"%u",G.match_mmsi);
+                modview::cell(b, G.match_mmsi==G.mmsi? ImVec4(0.55f,0.8f,0.55f,1.f):ImVec4(1.f,0.5f,0.4f,1.f)); }
+            else modview::cell("-", ImVec4(0.4f,0.4f,0.4f,1.f));
+            ImGui::TableSetColumnIndex(12); { char inf[64]; info_str(m,inf,sizeof(inf)); if(inf[0]) ImGui::TextUnformatted(inf); }
         }
         ImGui::EndTable();
     }
@@ -513,6 +524,16 @@ void draw_content(FFTViewer& v, bool just_opened){
         if(focus.dest[0]) row("Dest", focus.dest, ImVec4(0.82f,0.76f,0.55f,1.f));
         if(focus.draught>=0){ char s[16]; snprintf(s,sizeof(s),"%.1f m",focus.draught); row("Draught", s, V); }
         if(focus.eta_mon){ char s[24]; snprintf(s,sizeof(s),"%02d-%02d %02d:%02d",focus.eta_mon,focus.eta_day,focus.eta_hour,focus.eta_min); row("ETA", s, V); }
+        // ── RF 지문 (스푸핑 검증 / Match) ──
+        if(focus.has_rf){
+            ImGui::Separator();
+            { char s[24]; snprintf(s,sizeof(s),"%.0f Hz",focus.cfo_hz); row("CFO", s, V); }
+            if(focus.spoof_flag==2)      row("RF ALERT","2nd TX 의심", ImVec4(1.f,0.4f,0.35f,1.f));
+            else if(focus.spoof_flag==1) row("RF","서명 정상", ImVec4(0.55f,0.85f,0.55f,1.f));
+            else                          row("RF","확립 중…", ImVec4(0.6f,0.6f,0.6f,1.f));
+            if(focus.match_mmsi){ char s[32]; snprintf(s,sizeof(s),"%u (%.0f%%)",focus.match_mmsi,focus.match_conf*100.f);
+                row("Match", s, focus.match_mmsi==focus.mmsi? ImVec4(0.55f,0.8f,0.55f,1.f):ImVec4(1.f,0.5f,0.4f,1.f)); }
+        }
     };
     if(has_focus && mv.big){
         // 전체화면: 지도 우상단 박스 카드. 상단은 헤더바(30) 아래 + 여백, 우측 여백 동일.

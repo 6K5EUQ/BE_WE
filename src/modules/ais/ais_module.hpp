@@ -25,6 +25,8 @@ void worker_natural_exit(FFTViewer& v, int ch);
 void worker(FFTViewer& v, int ch_idx);
 // 워커 → 스탬프 + 호스트 아카이브 + framework emit
 void host_emit(FFTViewer& v, AisRecord m);
+// RF 지문 raw 시리즈 캡처 (BEWE_AIS_FPCAP; 학습데이터 사이드카)
+void host_fpcap(uint32_t mmsi, const float* series, int n);
 
 // 공통 (ais_module.cpp)
 void append_log(const AisRecord& m);

@@ -4,17 +4,33 @@
 #include "fft_viewer.hpp"
 #include "ais_module.hpp"
 #include "ais_decode.hpp"
+#include "ais_fp.hpp"
 #include "module_api.hpp"
 #include <cmath>
 #include <algorithm>
 #include <chrono>
 #include <thread>
+#include <vector>
 
 namespace ais_mod {
 
 static int64_t now_ms(){
     return (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+// ── 버스트 RF 지문 누산기 (워커 hot loop → on_record 서 finalize) ───────────
+// 마지막 emit 이후 구간을 한 버스트로 간주 (상대비교라 preamble 노이즈 공통상쇄).
+struct BurstAcc {
+    double sum_d=0, sumsq_d=0, sum_mag2=0, sum_pll=0;
+    long   n_d=0, n_bits=0;
+    std::vector<float> series;   // 옵션 raw 캡처 (BEWE_AIS_FPCAP; off면 비움)
+    void reset(){ sum_d=sumsq_d=sum_mag2=sum_pll=0; n_d=n_bits=0; series.clear(); }
+};
+// raw 캡처 플래그 (env BEWE_AIS_FPCAP=1). 1회 평가 캐시.
+static bool fpcap_enabled(){
+    static int c=-1; if(c<0){ const char* e=getenv("BEWE_AIS_FPCAP"); c=(e&&e[0]=='1')?1:0; }
+    return c==1;
 }
 
 // GMSK 정합 가우시안 LPF (9600 bps @ ~48 kHz, 5 sps). GNU AIS receiver.c 계수.
@@ -59,10 +75,27 @@ void worker(FFTViewer& v, int ch_idx){
 
     AisDecoder dec; dec.reset_all();
     long frames=0;
+    BurstAcc acc; acc.reset();
+    const bool cap = fpcap_enabled();
     dec.on_record = [&](const AisRecord& r){
         frames++;
         AisRecord m=r; m.ch=ch_idx;
+        // ── RF 지문 finalize (이 버스트 acc → 레코드) ──
+        if(acc.n_d>2){
+            double inv=1.0/acc.n_d, hz=(double)out_sr/(2.0*M_PI);
+            double mean=acc.sum_d*inv;
+            double var =acc.sumsq_d*inv - mean*mean; if(var<0) var=0;
+            m.cfo_hz      = (float)(mean*hz);
+            m.fdev_std_hz = (float)(std::sqrt(var)*hz);
+            m.rssi_db     = (float)(10.0*std::log10(acc.sum_mag2*inv + 1e-20));
+            m.dur_ms      = (float)(acc.n_d*1000.0/out_sr);
+            m.clk_ppm     = acc.n_bits ? (float)(acc.sum_pll/acc.n_bits*1e6/(double)PLLINC) : 0.f;
+            m.fp_ver      = ais_fp::FP_VER;
+            m.has_rf      = true;
+            if(cap && !acc.series.empty()) host_fpcap(m.mmsi, acc.series.data(), (int)acc.series.size());
+        }
         host_emit(v, m);
+        acc.reset();
     };
 
     bewe_log_push(0,"AIS[%d] start: %.4f MHz  BW=%.1f kHz  station=%u  decim=%u out=%u Hz (%.2f sps)\n",
@@ -82,7 +115,7 @@ void worker(FFTViewer& v, int ch_idx){
         if(hold!=hold_prev){
             bewe_mod_host_ch_hold(ch_idx, hold);
             if(hold){ for(int k=0;k<4;k++){ lpi[k].s=lpq[k].s=0; } dec_i=dec_q=0; dec_cnt=0; prev_i=prev_q=0;
-                      std::fill(fir,fir+36,0.f); fir_pos=0; pll=0; prev_zc=0; lastbit=0; dec.reset_all(); }
+                      std::fill(fir,fir+36,0.f); fir_pos=0; pll=0; prev_zc=0; lastbit=0; dec.reset_all(); acc.reset(); }
             hold_prev=hold;
         }
         if(hold){
@@ -103,7 +136,7 @@ void worker(FFTViewer& v, int ch_idx){
             size_t keep=(size_t)(msr*0.02);
             rp=(wp-keep)&IQ_RING_MASK; my_rp.store(rp,std::memory_order_release);
             for(int k=0;k<4;k++){ lpi[k].s=lpq[k].s=0; }
-            dec_i=dec_q=0; dec_cnt=0; prev_i=prev_q=0;
+            dec_i=dec_q=0; dec_cnt=0; prev_i=prev_q=0; acc.reset();
             lag=(wp-rp)&IQ_RING_MASK;
         }
         if(lag==0){ std::this_thread::sleep_for(std::chrono::microseconds(1000)); continue; }
@@ -123,6 +156,10 @@ void worker(FFTViewer& v, int ch_idx){
             // FM 판별: arg(z * conj(prev)) — 순시주파수 (GMSK mark/space). 부호모호성은 NRZI 가 흡수.
             float d = atan2f(oq*prev_i - oi*prev_q, oi*prev_i + oq*prev_q + 1e-20f);
             prev_i=oi; prev_q=oq;
+            // RF 지문 누산 (버스트당; on_record 서 finalize)
+            acc.sum_d += d; acc.sumsq_d += (double)d*d;
+            acc.sum_mag2 += (double)oi*oi + (double)oq*oq; acc.n_d++;
+            if(cap && acc.series.size()<512) acc.series.push_back(d);   // 옵션 raw 시리즈
 
             // GMSK 정합 가우시안 FIR
             fir[fir_pos]=d;
@@ -132,14 +169,15 @@ void worker(FFTViewer& v, int ch_idx){
 
             // DPLL: 영교차마다 위상 보정, wrap 마다 1심볼 샘플 → slice → NRZI → 디코더
             int curr=(out>0);
-            if((curr^prev_zc)==1){ if(pll<0x8000) pll+=PLLINC/16; else pll-=PLLINC/16; }
+            if((curr^prev_zc)==1){ if(pll<0x8000){ pll+=PLLINC/16; acc.sum_pll+=(double)(PLLINC/16); }
+                                   else          { pll-=PLLINC/16; acc.sum_pll-=(double)(PLLINC/16); } }
             prev_zc=curr;
             pll+=PLLINC;
             if(pll>0xFFFF){
                 uint8_t bit=(out>0)?1:0;
                 uint8_t b=(uint8_t)!(bit^lastbit);          // NRZI
                 dec.feed_bit(b);
-                lastbit=bit; pll&=0xFFFF; diag_bits++;
+                lastbit=bit; pll&=0xFFFF; diag_bits++; acc.n_bits++;
             }
         }
         my_rp.store((rp+avail)&IQ_RING_MASK,std::memory_order_release);

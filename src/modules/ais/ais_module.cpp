@@ -2,6 +2,7 @@
 // FM(GMSK) 채널필터에 활성화 → IQ ring 독립 탭 → 자체 FM 판별 복조 → HDLC 디코드.
 // 제어/전송은 전부 framework(module_api) 경유. 코어 변경 없음 (ACARS 와 동형 격리).
 #include "ais_module.hpp"
+#include "ais_fp.hpp"
 #include "module_api.hpp"
 #include "fft_viewer.hpp"
 #include "bewe_paths.hpp"
@@ -39,8 +40,11 @@ void worker_natural_exit(FFTViewer& v, int ch){
     bewe_mod_host_mask_clear(v, "ais", ch);
 }
 
+static void fpdb_load();   // 전방선언 (정의는 host_emit 근처)
+static void fpdb_flush();
 static bool host_start(FFTViewer& v, int ch){
     if(ch<0 || ch>=MAX_CHANNELS) return false;
+    static std::once_flag fp_once; std::call_once(fp_once, [](){ fpdb_load(); });   // 지문DB 1회 로드
     std::lock_guard<std::mutex> lk(g_mgmt);
     ChWork& w = g_w[ch];
     if(!w.on.load() && w.thr.joinable()) w.thr.join();
@@ -61,6 +65,7 @@ static void host_stop(FFTViewer& v, int ch){
         w.stop.store(true);
         if(w.thr.joinable()) w.thr.join();
         w.on.store(false);
+        fpdb_flush();   // 채널 종료 시 지문DB 저장
     } else if(w.thr.joinable()) w.thr.join();
 }
 
@@ -114,10 +119,16 @@ void store_append(const AisRecord& m){
     fprintf(f,"{\"t\":%lld,\"ch\":%d,\"f\":%.4f,\"crc\":%d,\"ty\":%d,\"mmsi\":%u,"
               "\"hp\":%d,\"lat\":%.6f,\"lon\":%.6f,\"sog\":%.1f,\"cog\":%.1f,"
               "\"hdg\":%d,\"ns\":%d,\"nm\":\"%s\",\"cs\":\"%s\",\"st\":%d,"
-              "\"imo\":%u,\"dst\":\"%s\",\"dr\":%.1f,\"em\":%d,\"ed\":%d,\"eh\":%d,\"ei\":%d}\n",
+              "\"imo\":%u,\"dst\":\"%s\",\"dr\":%.1f,\"em\":%d,\"ed\":%d,\"eh\":%d,\"ei\":%d",
         (long long)m.t_ms,m.ch,m.freq,m.crc_ok?1:0,m.msg_type,m.mmsi,
         m.has_pos?1:0,m.lat,m.lon,m.sog,m.cog,m.heading,m.nav_status,nm,cs,m.ship_type,
         m.imo,dt,m.draught,m.eta_mon,m.eta_day,m.eta_hour,m.eta_min);
+    if(m.has_rf)   // RF 지문 (버스트 특징 + 판정)
+        fprintf(f,",\"fpv\":%u,\"cfo\":%.1f,\"fstd\":%.1f,\"rssi\":%.1f,\"ppm\":%.2f,\"dur\":%.1f,"
+                  "\"sf\":%d,\"cz\":%.2f,\"mm\":%u,\"mc\":%.2f",
+            m.fp_ver,m.cfo_hz,m.fdev_std_hz,m.rssi_db,m.clk_ppm,m.dur_ms,
+            m.spoof_flag,m.cfo_z,m.match_mmsi,m.match_conf);
+    fprintf(f,"}\n");
     fclose(f);
 }
 bool store_read_today(std::string& out){
@@ -153,17 +164,87 @@ void store_parse_jsonl(const char* data, size_t n, std::vector<AisRecord>& out){
         if(strstr(l,"\"dr\":")) m.draught=(float)jf(l,"\"dr\":");    // 없으면 기본 -1(n/a) 유지
         m.eta_mon=(uint8_t)jll(l,"\"em\":"); m.eta_day=(uint8_t)jll(l,"\"ed\":");
         m.eta_hour=(uint8_t)jll(l,"\"eh\":"); m.eta_min=(uint8_t)jll(l,"\"ei\":");
+        if(strstr(l,"\"fpv\":")){   // RF 지문 (없으면 has_rf=false 유지)
+            m.fp_ver=(uint16_t)jll(l,"\"fpv\":"); m.has_rf=true;
+            m.cfo_hz=(float)jf(l,"\"cfo\":"); m.fdev_std_hz=(float)jf(l,"\"fstd\":");
+            m.rssi_db=(float)jf(l,"\"rssi\":"); m.clk_ppm=(float)jf(l,"\"ppm\":"); m.dur_ms=(float)jf(l,"\"dur\":");
+            m.spoof_flag=(uint8_t)jll(l,"\"sf\":"); m.cfo_z=(float)jf(l,"\"cz\":");
+            m.match_mmsi=(uint32_t)jll(l,"\"mm\":"); m.match_conf=(float)jf(l,"\"mc\":");
+        }
         out.push_back(m);
     }
 }
 
-// ── HOST: 워커 → 스탬프 + 아카이브 + framework emit ────────────────────────
+// ── RF 지문 스코어러 (기지-로컬; DL 교체 seam. 기본=통계) ───────────────────
+static ais_fp::StatFpScorer g_stat_scorer;
+static ais_fp::FpScorer*     g_scorer = &g_stat_scorer;
+static int64_t g_fpdb_dirty_ms = 0;   // 마지막 갱신시각 (주기 flush 트리거)
+static std::string fpdb_path(){ return store_dir() + "/ais_fpdb.json"; }
+
+// 지문DB 영속: g_stat_scorer table → JSONL (기지-로컬, 누적 레퍼런스)
+static void fpdb_flush(){
+    mkdir((BEWEPaths::data_dir()+"/modules").c_str(),0755); mkdir(store_dir().c_str(),0755);
+    FILE* f=fopen(fpdb_path().c_str(),"wb"); if(!f) return;
+    std::lock_guard<std::mutex> lk(mtx);
+    for(auto& kv : g_stat_scorer.table()){
+        auto& s=kv.second;
+        fprintf(f,"{\"mmsi\":%u,\"n\":%ld,\"mean\":%.2f,\"m2\":%.2f,\"cA\":%.2f,\"nA\":%ld,"
+                  "\"cB\":%.2f,\"nB\":%ld,\"hb\":%d,\"fdev\":%.2f,\"ppm\":%.3f,\"msog\":%.1f,\"last\":%lld}\n",
+            kv.first,s.n,s.mean,s.m2,s.cA,s.nA,s.cB,s.nB,s.hasB?1:0,s.fdev_mean,s.ppm_mean,s.max_sog,(long long)s.last_ms);
+    }
+    fclose(f);
+}
+static void fpdb_load(){
+    FILE* f=fopen(fpdb_path().c_str(),"rb"); if(!f) return;
+    std::string body; char buf[8192]; size_t rn;
+    while((rn=fread(buf,1,sizeof(buf),f))>0) body.append(buf,rn);
+    fclose(f);
+    std::lock_guard<std::mutex> lk(mtx);
+    auto& tbl=g_stat_scorer.table();
+    size_t i=0, n=body.size();
+    while(i<n){
+        size_t e=i; while(e<n && body[e]!='\n') e++;
+        std::string line=body.substr(i,e-i); i=e+1;
+        if(line.size()<8) continue; const char* l=line.c_str();
+        uint32_t mmsi=(uint32_t)jll(l,"\"mmsi\":"); if(!mmsi) continue;
+        auto& s=tbl[mmsi];
+        s.n=(long)jll(l,"\"n\":"); s.mean=jf(l,"\"mean\":"); s.m2=jf(l,"\"m2\":");
+        s.cA=jf(l,"\"cA\":"); s.nA=(long)jll(l,"\"nA\":"); s.cB=jf(l,"\"cB\":"); s.nB=(long)jll(l,"\"nB\":");
+        s.hasB=jll(l,"\"hb\":")!=0; s.fdev_mean=jf(l,"\"fdev\":"); s.ppm_mean=jf(l,"\"ppm\":");
+        s.max_sog=(float)jf(l,"\"msog\":"); s.last_ms=jll(l,"\"last\":");
+    }
+}
+
+// raw 시리즈 사이드카 (학습데이터; BEWE_AIS_FPCAP 켤 때만 호출됨)
+void host_fpcap(uint32_t mmsi, const float* series, int n){
+    if(n<=0) return;
+    mkdir((BEWEPaths::data_dir()+"/modules").c_str(),0755); mkdir(store_dir().c_str(),0755);
+    int64_t now=(int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    struct tm tmv; KST::to_tm((time_t)(now/1000),tmv); char d[16]; strftime(d,sizeof(d),"%Y%m%d",&tmv);
+    FILE* f=fopen((store_dir()+"/fpcap_"+d+".f32").c_str(),"ab"); if(!f) return;
+    uint16_t cnt=(uint16_t)n; fwrite(&mmsi,4,1,f); fwrite(&cnt,2,1,f); fwrite(series,4,n,f);
+    fclose(f);
+}
+
+// ── HOST: 워커 → 지문판정 + 스탬프 + 아카이브 + framework emit ──────────────
 void host_emit(FFTViewer& v, AisRecord m){
     if(m.ch>=0 && m.ch<MAX_CHANNELS && v.channels[m.ch].filter_active)
         m.freq = (v.channels[m.ch].s + v.channels[m.ch].e)/2.0f;
     m.t_ms = (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
                  std::chrono::system_clock::now().time_since_epoch()).count();
+    // RF 지문 판정 (로컬 수신만; CFO 수신기-상대). Match 는 갱신 전 조회(자기 자신 편향 방지).
+    if(m.has_rf){
+        std::lock_guard<std::mutex> lk(mtx);
+        float conf=0.f; m.match_mmsi = g_scorer->identify(m, conf); m.match_conf = conf;
+        m.spoof_flag = g_scorer->classify(m.mmsi, m, m.cfo_z);
+        g_scorer->observe(m.mmsi, m, m.t_ms);
+        g_fpdb_dirty_ms = m.t_ms;
+    }
     store_append(m);
+    // 지문DB 주기 flush (60초마다)
+    static int64_t last_flush=0;
+    if(g_fpdb_dirty_ms && m.t_ms-last_flush>60000){ last_flush=m.t_ms; fpdb_flush(); }
     AisWireMsg w; ais_msg_to_wire(m, w);
     bewe_mod_emit(v, "ais", &w, sizeof(w));
 }
